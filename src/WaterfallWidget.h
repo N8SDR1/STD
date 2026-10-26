@@ -7,20 +7,21 @@
 #include <QString>
 #include <QVector>
 #include <QWidget>
+#include <QtGlobal>
 
 class QMouseEvent;
 class QPainter;
+class QTimer;
 class QWheelEvent;
 class QWindow;
 
 // Waterfall for one real RX-audio channel.
 //
-// With no samples it paints a graticule and an empty state. Type-1 TCI
-// audio scrolls under a frequency ruler. The default span is the full
-// receive audio, about 0–4 kHz. The wheel zooms that span, and a drag on
-// the ruler sets it. A later renderer can pass a QWindow — including a
-// QVulkanWindow — to setRenderSurface(). This widget embeds that surface
-// with QWidget::createWindowContainer and stops painting. Vulkan is not
+// Time runs downward, one pixel per spectrum. Frequency runs across the
+// top. The default span is the full receive audio, about 0–4 kHz. The
+// wheel zooms around the cursor and a drag pans. Each pixel of the
+// visible span is its own FFT bin. A later renderer can pass a QWindow
+// — including a QVulkanWindow — to setRenderSurface(). Vulkan is not
 // linked here. Nothing here decodes a modem.
 class WaterfallWidget : public QWidget {
   Q_OBJECT
@@ -51,34 +52,56 @@ protected:
   void mouseDoubleClickEvent(QMouseEvent* event) override;
 
 private:
+  struct TraceRow {
+    qint64 endSample = 0;
+    float lo = 0.0f;
+    float hi = 0.0f;
+    int width = 0;
+    QVector<QRgb> px;
+  };
+
   void paintPlaceholder(QPainter& painter) const;
   void paintAudio(QPainter& painter) const;
   void paintRuler(QPainter& painter) const;
   void paintDial(QPainter& painter, int y) const;
-  void appendSpectrum(const float* samples, int count);
-  void rebuildImage();
+  void pushTrace(qint64 endSample);
+  void analyze(qint64 endSample, TraceRow* row);
+  void scheduleRebuild();
+  void rebuildSome();
   void setView(float loHz, float hiHz);
   void resetView();
   float fullSpanHz() const;
+  float minSpanHz(int width) const;
+  bool rowMatches(const TraceRow& row) const;
   QRect rulerRect() const;
   QRect plotRect() const;
   float hzAtX(int x) const;
   int xAtHz(float hz) const;
-  const float* spectrumRow(int age) const;
+  float sampleAt(qint64 absolute) const;
+  int hopSamples() const;
+  TraceRow& rowAt(int age);
+  const TraceRow& rowAt(int age) const;
 
   QWidget* surfaceContainer_ = nullptr;
+  QTimer* rebuildTimer_ = nullptr;
   bool radioConnected_ = false;
   QString dialText_ = QString::fromUtf8("—");
   QVector<float> pending_;
-  QVector<float> spectra_;
-  QImage columns_;
+  QVector<float> ring_;
+  QVector<float> fftRe_;
+  QVector<float> fftIm_;
+  QVector<TraceRow> rows_;
+  int ringWrite_ = 0;
+  int ringFilled_ = 0;
+  int newest_ = -1;
+  int rowCount_ = 0;
   int rateHz_ = 0;
-  int filled_ = 0;
-  int head_ = 0;
+  qint64 totalSamples_ = 0;
   float viewLoHz_ = 0.0f;
   float viewHiHz_ = 4000.0f;
   bool zoomed_ = false;
   bool dragging_ = false;
   int dragX0_ = 0;
-  int dragX1_ = 0;
+  float dragLo_ = 0.0f;
+  float dragHi_ = 0.0f;
 };

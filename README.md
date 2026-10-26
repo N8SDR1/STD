@@ -16,7 +16,7 @@ Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier
 
 ## What this window contains
 
-- **Waterfall** — the large dock. With no audio it paints a standby graticule, the dial, and “No signal”. Once type-1 RX frames arrive it scrolls one real channel under a frequency ruler. The default span is the full receive audio, about 0–4 kHz. The mouse wheel zooms that span around the cursor. A drag on the ruler sets the visible hertz, and the ticks and pixels follow. Double-click the ruler to return to the full span. Nothing is decoded. The widget can embed a `QWindow` later (a Vulkan surface included). This slice does not link Vulkan.
+- **Waterfall** — the large dock. With no audio it paints a standby graticule, the dial, and “No signal”. Once type-1 RX frames arrive, time scrolls downward and frequency runs across the top. Each pixel of the visible span is its own FFT bin, so a signal is a thin vertical trace on a dark blue field. The default span is the full receive audio, about 0–4 kHz. The wheel zooms around the cursor, a drag pans, and a double-click returns to that full span. Nothing is decoded. The widget can embed a `QWindow` later (a Vulkan surface included). This slice does not link Vulkan.
 - **Receive** — empty, read-only text. While the socket is down it says no radio is connected. While TCI is up it says audio is arriving and nothing is decoded yet.
 - **Transmit** — empty compose box. Text stays on this machine. A line under it says nothing is transmitted.
 - **Macros** — eight empty slots, M1–M8, and “No macros loaded”.

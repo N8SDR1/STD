@@ -10,6 +10,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QResizeEvent>
+#include <QTimer>
 #include <QWheelEvent>
 #include <QWindow>
 
@@ -18,23 +19,14 @@
 
 namespace {
 
-constexpr int kFft = 2048;
-constexpr int kSpecBins = kFft / 2;
-constexpr int kColumns = 512;
-constexpr int kMaxRows = 420;
+constexpr int kMaxRows = 480;
+constexpr int kRingBits = 22;
+constexpr int kRingSize = 1 << kRingBits;
 constexpr int kRulerHeight = 32;
+constexpr int kMaxDisplayFft = 8192;
 constexpr float kFullHz = 4000.0f;
-constexpr float kMinSpanHz = 200.0f;
-
-float tickStepHz(float span) {
-  const float raw = span / 8.0f;
-  const float steps[] = {10.0f, 20.0f, 25.0f, 50.0f, 100.0f, 200.0f, 250.0f, 500.0f, 1000.0f, 2000.0f};
-  for (float step : steps) {
-    if (step >= raw)
-      return step;
-  }
-  return 2000.0f;
-}
+constexpr float kMinSpanFloor = 40.0f;
+constexpr QRgb kField = qRgb(0, 2, 12);
 
 void fft(float* re, float* im, int n) {
   for (int i = 1, j = 0; i < n; ++i) {
@@ -71,37 +63,39 @@ void fft(float* re, float* im, int n) {
   }
 }
 
-QRgb colorForDb(float db) {
-  float t = (db + 108.0f) / 90.0f;
-  if (t < 0.0f)
-    t = 0.0f;
-  if (t > 1.0f)
-    t = 1.0f;
-  int r = 8;
-  int g = 12;
-  int b = 20;
-  if (t < 0.30f) {
-    const float u = t / 0.30f;
-    r = int(8.0f + u * 48.0f);
-    g = int(12.0f + u * 6.0f);
-    b = int(20.0f + u * 62.0f);
-  } else if (t < 0.62f) {
-    const float u = (t - 0.30f) / 0.32f;
-    r = int(56.0f + u * 98.0f);
-    g = int(18.0f + u * 28.0f);
-    b = int(82.0f + u * 80.0f);
-  } else if (t < 0.84f) {
-    const float u = (t - 0.62f) / 0.22f;
-    r = int(154.0f - u * 90.0f);
-    g = int(46.0f + u * 150.0f);
-    b = int(162.0f + u * 50.0f);
-  } else {
-    const float u = (t - 0.84f) / 0.16f;
-    r = int(64.0f + u * 191.0f);
-    g = int(196.0f + u * 40.0f);
-    b = int(212.0f - u * 150.0f);
+int nextPow2(int n) {
+  int p = 64;
+  while (p < n && p < kMaxDisplayFft)
+    p <<= 1;
+  return p;
+}
+
+float tickStepHz(float span) {
+  const float raw = span / 8.0f;
+  const float steps[] = {10.0f, 20.0f, 25.0f, 50.0f, 100.0f, 200.0f,
+                          250.0f, 500.0f, 1000.0f, 2000.0f};
+  for (float step : steps) {
+    if (step >= raw)
+      return step;
   }
-  return qRgb(qBound(0, r, 255), qBound(0, g, 255), qBound(0, b, 255));
+  return 2000.0f;
+}
+
+QRgb traceColor(float db, float noise) {
+  const float rise = (db - noise - 9.0f) / 14.0f;
+  if (!(rise > 0.0f))
+    return kField;
+  const float u = rise > 1.0f ? 1.0f : rise;
+  if (u < 0.35f) {
+    const float k = u / 0.35f;
+    return qRgb(0, int(8.0f + 36.0f * k), int(36.0f + 90.0f * k));
+  }
+  if (u < 0.72f) {
+    const float k = (u - 0.35f) / 0.37f;
+    return qRgb(0, int(44.0f + 170.0f * k), int(126.0f + 110.0f * k));
+  }
+  const float k = (u - 0.72f) / 0.28f;
+  return qRgb(int(30.0f + 225.0f * k), int(214.0f + 41.0f * k), 255);
 }
 
 }  // namespace
@@ -115,12 +109,15 @@ WaterfallWidget::WaterfallWidget(QWidget* parent) : QWidget(parent) {
   setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   setAccessibleName("Waterfall");
   setAccessibleDescription("No signal. Radio not connected.");
+  rebuildTimer_ = new QTimer(this);
+  rebuildTimer_->setInterval(0);
+  connect(rebuildTimer_, &QTimer::timeout, this, [this] { rebuildSome(); });
 }
 
 void WaterfallWidget::setRadio(bool connected, const QString& dial) {
   radioConnected_ = connected;
   dialText_ = dial.isEmpty() ? QString::fromUtf8("—") : dial;
-  if (filled_ > 0)
+  if (rowCount_ > 0)
     setAccessibleDescription(QStringLiteral("Receiver audio. Nothing is decoded."));
   else
     setAccessibleDescription(connected ? QStringLiteral("No signal. Connected.")
@@ -130,12 +127,17 @@ void WaterfallWidget::setRadio(bool connected, const QString& dial) {
 
 void WaterfallWidget::clearAudio() {
   pending_.clear();
-  spectra_.clear();
-  columns_ = QImage();
-  filled_ = 0;
-  head_ = 0;
+  ring_.clear();
+  ringWrite_ = 0;
+  ringFilled_ = 0;
+  totalSamples_ = 0;
+  rows_.clear();
+  newest_ = -1;
+  rowCount_ = 0;
   rateHz_ = 0;
   dragging_ = false;
+  if (rebuildTimer_)
+    rebuildTimer_->stop();
   resetView();
 }
 
@@ -154,6 +156,14 @@ float WaterfallWidget::fullSpanHz() const {
   return kFullHz;
 }
 
+float WaterfallWidget::minSpanHz(int width) const {
+  const int pixels = std::max(width, 1);
+  if (rateHz_ <= 0)
+    return kMinSpanFloor;
+  const float fromRing = float(rateHz_) * float(pixels) / float(kRingSize / 2);
+  return std::max(kMinSpanFloor, fromRing);
+}
+
 QRect WaterfallWidget::rulerRect() const {
   return QRect(0, 0, width(), kRulerHeight);
 }
@@ -163,30 +173,31 @@ QRect WaterfallWidget::plotRect() const {
 }
 
 float WaterfallWidget::hzAtX(int x) const {
-  const QRect plot = rulerRect();
+  const QRect ruler = rulerRect();
   const float span = qMax(1.0f, viewHiHz_ - viewLoHz_);
-  const float t = float(x - plot.left()) / float(qMax(1, plot.width() - 1));
-  const float clamped = qBound(0.0f, t, 1.0f);
-  return viewLoHz_ + clamped * span;
+  const float t = float(x - ruler.left()) / float(qMax(1, ruler.width() - 1));
+  return viewLoHz_ + qBound(0.0f, t, 1.0f) * span;
 }
 
 int WaterfallWidget::xAtHz(float hz) const {
-  const QRect plot = rulerRect();
+  const QRect ruler = rulerRect();
   const float span = qMax(1.0f, viewHiHz_ - viewLoHz_);
   const float t = qBound(0.0f, (hz - viewLoHz_) / span, 1.0f);
-  return plot.left() + int(t * float(plot.width() - 1));
+  return ruler.left() + int(t * float(qMax(1, ruler.width() - 1)));
 }
 
 void WaterfallWidget::setView(float loHz, float hiHz) {
   const float full = fullSpanHz();
-  if (hiHz < loHz)
-    std::swap(loHz, hiHz);
-  if (hiHz - loHz < kMinSpanHz) {
+  const int pixels = std::max(1, plotRect().width());
+  float span = hiHz - loHz;
+  const float minimum = minSpanHz(pixels);
+  if (span < minimum) {
     const float mid = 0.5f * (loHz + hiHz);
-    loHz = mid - kMinSpanHz * 0.5f;
-    hiHz = loHz + kMinSpanHz;
+    span = minimum;
+    loHz = mid - span * 0.5f;
+    hiHz = loHz + span;
   }
-  if (hiHz - loHz >= full) {
+  if (span >= full - 0.5f) {
     loHz = 0.0f;
     hiHz = full;
   }
@@ -203,44 +214,83 @@ void WaterfallWidget::setView(float loHz, float hiHz) {
   viewLoHz_ = loHz;
   viewHiHz_ = hiHz;
   zoomed_ = viewLoHz_ > 0.5f || viewHiHz_ < full - 0.5f;
-  rebuildImage();
   update();
 }
 
-const float* WaterfallWidget::spectrumRow(int age) const {
-  int index = head_ - 1 - age;
+float WaterfallWidget::sampleAt(qint64 absolute) const {
+  if (ring_.isEmpty() || absolute < 0 || absolute >= totalSamples_)
+    return 0.0f;
+  const qint64 age = totalSamples_ - 1 - absolute;
+  if (age < 0 || age >= ringFilled_)
+    return 0.0f;
+  const int mask = ring_.size() - 1;
+  return ring_[(ringWrite_ - 1 - int(age)) & mask];
+}
+
+int WaterfallWidget::hopSamples() const {
+  if (rateHz_ <= 0)
+    return 2048;
+  return qBound(512, rateHz_ / 10, 8192);
+}
+
+WaterfallWidget::TraceRow& WaterfallWidget::rowAt(int age) {
+  int index = newest_ - age;
   index %= kMaxRows;
   if (index < 0)
     index += kMaxRows;
-  return spectra_.constData() + index * kSpecBins;
+  return rows_[index];
+}
+
+const WaterfallWidget::TraceRow& WaterfallWidget::rowAt(int age) const {
+  int index = newest_ - age;
+  index %= kMaxRows;
+  if (index < 0)
+    index += kMaxRows;
+  return rows_[index];
+}
+
+bool WaterfallWidget::rowMatches(const TraceRow& row) const {
+  return row.width == plotRect().width() && row.px.size() == row.width &&
+         std::fabs(row.lo - viewLoHz_) < 0.05f && std::fabs(row.hi - viewHiHz_) < 0.05f;
 }
 
 void WaterfallWidget::pushRealAudio(const float* samples, int count, int sampleRateHz) {
   if (!samples || count <= 0 || sampleRateHz < 1000 || surfaceContainer_)
     return;
   if (rateHz_ != sampleRateHz) {
+    const bool keepZoom = zoomed_;
+    const float lo = viewLoHz_;
+    const float hi = viewHiHz_;
+    clearAudio();
     rateHz_ = sampleRateHz;
-    pending_.clear();
-    filled_ = 0;
-    head_ = 0;
-    columns_ = QImage();
-    spectra_.clear();
-    zoomed_ = false;
-    viewLoHz_ = 0.0f;
-    viewHiHz_ = fullSpanHz();
+    if (keepZoom)
+      setView(lo, hi);
+    else {
+      viewLoHz_ = 0.0f;
+      viewHiHz_ = fullSpanHz();
+    }
   }
-  const int room = kFft * 8 - pending_.size();
-  if (room <= 0)
-    pending_.remove(0, pending_.size() - kFft);
-  else if (count > room)
-    samples += count - room, count = room;
+  if (ring_.size() != kRingSize)
+    ring_ = QVector<float>(kRingSize, 0.0f);
+  const int mask = kRingSize - 1;
+  for (int i = 0; i < count; ++i) {
+    const float sample = std::isfinite(samples[i]) ? samples[i] : 0.0f;
+    ring_[ringWrite_] = sample;
+    ringWrite_ = (ringWrite_ + 1) & mask;
+    if (ringFilled_ < kRingSize)
+      ++ringFilled_;
+  }
+  totalSamples_ += count;
   pending_.reserve(pending_.size() + count);
   for (int i = 0; i < count; ++i)
-    pending_.push_back(samples[i]);
+    pending_.push_back(std::isfinite(samples[i]) ? samples[i] : 0.0f);
+
+  const int hop = hopSamples();
   bool drew = false;
-  while (pending_.size() >= kFft) {
-    appendSpectrum(pending_.constData(), kFft);
-    pending_.remove(0, kFft);
+  while (pending_.size() >= hop) {
+    const qint64 end = totalSamples_ - qint64(pending_.size() - hop);
+    pushTrace(end);
+    pending_.remove(0, hop);
     drew = true;
   }
   if (drew) {
@@ -249,58 +299,126 @@ void WaterfallWidget::pushRealAudio(const float* samples, int count, int sampleR
   }
 }
 
-void WaterfallWidget::appendSpectrum(const float* samples, int count) {
-  Q_UNUSED(count);
-  float re[kFft];
-  float im[kFft];
-  for (int i = 0; i < kFft; ++i) {
-    const float window = 0.5f - 0.5f * std::cos(6.28318530718f * float(i) / float(kFft - 1));
-    const float sample = std::isfinite(samples[i]) ? samples[i] : 0.0f;
-    re[i] = sample * window;
-    im[i] = 0.0f;
-  }
-  fft(re, im, kFft);
-
-  if (spectra_.size() != kMaxRows * kSpecBins)
-    spectra_ = QVector<float>(kMaxRows * kSpecBins, -120.0f);
-  float* row = spectra_.data() + head_ * kSpecBins;
-  const float scale = 2.0f / float(kFft);
-  for (int i = 0; i < kSpecBins; ++i) {
-    const float mag = std::sqrt(re[i] * re[i] + im[i] * im[i]) * scale;
-    row[i] = 20.0f * std::log10(mag + 1.0e-12f);
-  }
-  head_ = (head_ + 1) % kMaxRows;
-  if (filled_ < kMaxRows)
-    ++filled_;
-  if (!zoomed_) {
-    viewLoHz_ = 0.0f;
-    viewHiHz_ = fullSpanHz();
-  }
-  rebuildImage();
+void WaterfallWidget::pushTrace(qint64 endSample) {
+  if (rows_.size() != kMaxRows)
+    rows_.resize(kMaxRows);
+  if (rowCount_ < kMaxRows)
+    ++rowCount_;
+  newest_ = (newest_ + 1) % kMaxRows;
+  TraceRow& row = rows_[newest_];
+  row.endSample = endSample;
+  analyze(endSample, &row);
 }
 
-void WaterfallWidget::rebuildImage() {
-  if (filled_ <= 0 || spectra_.size() != kMaxRows * kSpecBins || rateHz_ <= 0) {
-    columns_ = QImage();
+void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
+  const int width = std::max(0, plotRect().width());
+  row->lo = viewLoHz_;
+  row->hi = viewHiHz_;
+  row->width = width;
+  row->px = QVector<QRgb>(std::max(width, 0), kField);
+  if (width < 8 || rateHz_ <= 0 || endSample <= 0)
     return;
+
+  const double span = std::max(1.0, double(viewHiHz_ - viewLoHz_));
+  const double pixelHz = span / double(width);
+  const int nfft = nextPow2(std::max(width, 64));
+  int groups = int(std::ceil(double(rateHz_) / (pixelHz * double(nfft))));
+  if (groups < 1)
+    groups = 1;
+  int aperture = groups * nfft;
+  if (aperture > kRingSize / 2) {
+    groups = std::max(1, (kRingSize / 2) / nfft);
+    aperture = groups * nfft;
   }
-  columns_ = QImage(kColumns, filled_, QImage::Format_RGB32);
-  const float span = qMax(1.0f, viewHiHz_ - viewLoHz_);
-  const int lastBin = kSpecBins - 1;
-  for (int y = 0; y < filled_; ++y) {
-    const float* spec = spectrumRow(y);
-    auto* dst = reinterpret_cast<QRgb*>(columns_.scanLine(y));
-    for (int c = 0; c < kColumns; ++c) {
-      const float hz = viewLoHz_ + span * float(c) / float(kColumns - 1);
-      const float bin = hz * float(kFft) / float(rateHz_);
-      const float clamped = qBound(0.0f, bin, float(lastBin));
-      const int i0 = int(clamped);
-      const int i1 = qMin(i0 + 1, lastBin);
-      const float frac = clamped - float(i0);
-      const float db = spec[i0] + (spec[i1] - spec[i0]) * frac;
-      dst[c] = colorForDb(db);
+  // Samples before the stream started are gone. Keep this row dark for
+  // the current span so the rebuild timer does not spin on it.
+  if (endSample < aperture)
+    return;
+
+  if (fftRe_.size() < nfft) {
+    fftRe_.resize(nfft);
+    fftIm_.resize(nfft);
+  }
+  std::fill(fftRe_.begin(), fftRe_.begin() + nfft, 0.0f);
+  std::fill(fftIm_.begin(), fftIm_.begin() + nfft, 0.0f);
+
+  const double rotate = -6.283185307179586 * double(viewLoHz_) / double(rateHz_);
+  double cs = 1.0;
+  double sn = 0.0;
+  const double dcs = std::cos(rotate);
+  const double dsn = std::sin(rotate);
+  const qint64 start = endSample - aperture;
+  int n = 0;
+  for (int i = 0; i < nfft; ++i) {
+    double accRe = 0.0;
+    double accIm = 0.0;
+    for (int g = 0; g < groups; ++g, ++n) {
+      const double hann = 0.5 - 0.5 * std::cos(6.283185307179586 * double(n) / double(aperture - 1));
+      const double x = double(sampleAt(start + n)) * hann;
+      accRe += x * cs;
+      accIm += x * sn;
+      const double nextCs = cs * dcs - sn * dsn;
+      sn = cs * dsn + sn * dcs;
+      cs = nextCs;
+      if ((n & 1023) == 0) {
+        const double gain = 1.0 / std::max(1.0e-12, std::hypot(cs, sn));
+        cs *= gain;
+        sn *= gain;
+      }
+    }
+    fftRe_[i] = float(accRe);
+    fftIm_[i] = float(accIm);
+  }
+  fft(fftRe_.data(), fftIm_.data(), nfft);
+
+  const double df = double(rateHz_) / (double(groups) * double(nfft));
+  QVector<float> db(width, -160.0f);
+  int lastBin = -1;
+  for (int c = 0; c < width; ++c) {
+    const double freq = (double(c) + 0.5) * pixelHz;
+    int bin = int(std::lround(freq / df));
+    if (bin <= lastBin)
+      bin = lastBin + 1;
+    if (bin >= nfft)
+      bin = nfft - 1;
+    lastBin = bin;
+    const float mag = std::sqrt(fftRe_[bin] * fftRe_[bin] + fftIm_[bin] * fftIm_[bin]) / float(nfft);
+    db[c] = 20.0f * std::log10(mag + 1.0e-12f);
+  }
+  const int rank = std::clamp(width * 40 / 100, 0, width - 1);
+  QVector<float> order = db;
+  std::nth_element(order.begin(), order.begin() + rank, order.end());
+  const float noise = order[rank];
+  for (int c = 0; c < width; ++c)
+    row->px[c] = traceColor(db[c], noise);
+}
+
+void WaterfallWidget::scheduleRebuild() {
+  if (rowCount_ <= 0 || !rebuildTimer_)
+    return;
+  if (!rebuildTimer_->isActive())
+    rebuildTimer_->start();
+}
+
+void WaterfallWidget::rebuildSome() {
+  int budget = 1;
+  for (int age = 0; age < rowCount_ && budget > 0; ++age) {
+    TraceRow& row = rowAt(age);
+    if (rowMatches(row))
+      continue;
+    analyze(row.endSample, &row);
+    --budget;
+    update();
+  }
+  bool pending = false;
+  for (int age = 0; age < rowCount_; ++age) {
+    if (!rowMatches(rowAt(age))) {
+      pending = true;
+      break;
     }
   }
+  if (!pending && rebuildTimer_)
+    rebuildTimer_->stop();
 }
 
 void WaterfallWidget::setRenderSurface(QWindow* surface) {
@@ -334,7 +452,8 @@ void WaterfallWidget::paintEvent(QPaintEvent* event) {
   if (surfaceContainer_)
     return;
   QPainter painter(this);
-  if (filled_ > 0 && !columns_.isNull())
+  painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+  if (rowCount_ > 0)
     paintAudio(painter);
   else
     paintPlaceholder(painter);
@@ -344,6 +463,8 @@ void WaterfallWidget::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
   if (surfaceContainer_)
     surfaceContainer_->setGeometry(rect());
+  if (rowCount_ > 0)
+    scheduleRebuild();
 }
 
 void WaterfallWidget::paintPlaceholder(QPainter& painter) const {
@@ -382,11 +503,11 @@ void WaterfallWidget::paintPlaceholder(QPainter& painter) const {
 
   painter.setPen(QColor("#8399ac"));
   const QStringList ticks = {
-    QString::fromUtf8("−2"),
-    QString::fromUtf8("−1"),
-    QStringLiteral("0"),
-    QStringLiteral("+1"),
-    QStringLiteral("+2"),
+      QString::fromUtf8("−2"),
+      QString::fromUtf8("−1"),
+      QStringLiteral("0"),
+      QStringLiteral("+1"),
+      QStringLiteral("+2"),
   };
   for (int i = 0; i < ticks.size(); ++i) {
     const int x = area.width() * (i + 1) / (ticks.size() + 1);
@@ -461,25 +582,24 @@ void WaterfallWidget::paintRuler(QPainter& painter) const {
   painter.setPen(QColor("#5a7080"));
   painter.drawText(QRect(ruler.right() - hzReserve, ruler.top(), hzReserve - 4, ruler.height() - 6),
                    Qt::AlignRight | Qt::AlignVCenter, QStringLiteral("Hz"));
-
-  if (dragging_) {
-    const int left = qBound(ruler.left(), qMin(dragX0_, dragX1_), ruler.right());
-    const int right = qBound(ruler.left(), qMax(dragX0_, dragX1_), ruler.right());
-    painter.fillRect(QRect(left, ruler.top(), qMax(1, right - left), ruler.height()),
-                     QColor(0, 229, 255, 48));
-    const QRect plot = plotRect();
-    painter.fillRect(QRect(left, plot.top(), qMax(1, right - left), plot.height()),
-                     QColor(0, 229, 255, 28));
-  }
 }
 
 void WaterfallWidget::paintAudio(QPainter& painter) const {
-  painter.fillRect(rect(), QColor("#05080c"));
+  painter.fillRect(rect(), QColor("#00020c"));
   const QRect plot = plotRect();
-  if (!columns_.isNull() && filled_ > 0)
-    painter.drawImage(plot, columns_, QRect(0, 0, columns_.width(), columns_.height()));
+  const int shown = std::min(rowCount_, plot.height());
+  QImage frame(plot.width(), std::max(shown, 1), QImage::Format_RGB32);
+  frame.fill(kField);
+  for (int y = 0; y < shown; ++y) {
+    const TraceRow& row = rowAt(y);
+    if (!rowMatches(row))
+      continue;
+    auto* dst = reinterpret_cast<QRgb*>(frame.scanLine(y));
+    std::copy(row.px.cbegin(), row.px.cend(), dst);
+  }
+  painter.drawImage(plot.topLeft(), frame);
   paintRuler(painter);
-  painter.fillRect(QRect(8, plot.top() + 4, 248, 18), QColor(5, 8, 12, 190));
+  painter.fillRect(QRect(8, plot.top() + 4, 248, 18), QColor(0, 2, 12, 210));
   paintDial(painter, plot.top() + 5);
 }
 
@@ -495,47 +615,50 @@ void WaterfallWidget::wheelEvent(QWheelEvent* event) {
   const float span = qMax(1.0f, viewHiHz_ - viewLoHz_);
   const float steps = float(delta) / 120.0f;
   const float factor = std::pow(1.25f, -steps);
-  float next = span * factor;
+  const float next = span * factor;
   if (next >= full - 1.0f) {
     setView(0.0f, full);
   } else {
-    next = qMax(next, kMinSpanHz);
     const float anchor = hzAtX(int(event->position().x()));
     const float place = qBound(0.0f, (anchor - viewLoHz_) / span, 1.0f);
     const float lo = anchor - place * next;
     setView(lo, lo + next);
   }
+  scheduleRebuild();
   event->accept();
 }
 
 void WaterfallWidget::mousePressEvent(QMouseEvent* event) {
-  if (event->button() == Qt::RightButton && rulerRect().contains(event->position().toPoint())) {
+  if (event->button() == Qt::RightButton) {
     setView(0.0f, fullSpanHz());
+    scheduleRebuild();
     event->accept();
     return;
   }
-  if (event->button() != Qt::LeftButton || filled_ <= 0 ||
-      !rulerRect().contains(event->position().toPoint())) {
+  if (event->button() != Qt::LeftButton) {
     QWidget::mousePressEvent(event);
     return;
   }
   dragging_ = true;
   dragX0_ = int(event->position().x());
-  dragX1_ = dragX0_;
+  dragLo_ = viewLoHz_;
+  dragHi_ = viewHiHz_;
+  setCursor(Qt::ClosedHandCursor);
   event->accept();
-  update();
 }
 
 void WaterfallWidget::mouseMoveEvent(QMouseEvent* event) {
-  if (dragging_) {
-    dragX1_ = int(event->position().x());
-    event->accept();
-    update();
+  if (!dragging_) {
+    setCursor(Qt::ArrowCursor);
+    QWidget::mouseMoveEvent(event);
     return;
   }
-  const bool onRuler = filled_ > 0 && rulerRect().contains(event->position().toPoint());
-  setCursor(onRuler ? Qt::SplitHCursor : Qt::ArrowCursor);
-  QWidget::mouseMoveEvent(event);
+  const int width = std::max(1, plotRect().width());
+  const float span = dragHi_ - dragLo_;
+  const float shift = -float(int(event->position().x()) - dragX0_) * span / float(width);
+  setView(dragLo_ + shift, dragHi_ + shift);
+  scheduleRebuild();
+  event->accept();
 }
 
 void WaterfallWidget::mouseReleaseEvent(QMouseEvent* event) {
@@ -544,20 +667,16 @@ void WaterfallWidget::mouseReleaseEvent(QMouseEvent* event) {
     return;
   }
   dragging_ = false;
-  dragX1_ = int(event->position().x());
-  const float lo = hzAtX(qMin(dragX0_, dragX1_));
-  const float hi = hzAtX(qMax(dragX0_, dragX1_));
-  if (std::fabs(hi - lo) < 40.0f || std::abs(dragX1_ - dragX0_) < 6)
-    update();
-  else
-    setView(lo, hi);
+  setCursor(Qt::ArrowCursor);
   event->accept();
 }
 
 void WaterfallWidget::mouseDoubleClickEvent(QMouseEvent* event) {
-  if (event->button() == Qt::LeftButton && rulerRect().contains(event->position().toPoint())) {
+  if (event->button() == Qt::LeftButton) {
     dragging_ = false;
+    setCursor(Qt::ArrowCursor);
     setView(0.0f, fullSpanHz());
+    scheduleRebuild();
     event->accept();
     return;
   }
