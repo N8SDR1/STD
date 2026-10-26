@@ -12,14 +12,21 @@
 #include <QIcon>
 #include <QDockWidget>
 #include <QFont>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLinearGradient>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPaintEvent>
+#include <QPen>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QShowEvent>
+#include <QSizePolicy>
 #include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
@@ -39,6 +46,73 @@ QFont monoFont(int pixelSize) {
   font.setPixelSize(pixelSize);
   return font;
 }
+
+// Raised capsule lettering: bruise-purple face, amber tube glow.
+class RaisedBrandTitle : public QWidget {
+public:
+  explicit RaisedBrandTitle(QWidget* parent = nullptr) : QWidget(parent) {
+    setObjectName("brandName");
+    setAccessibleName("STD");
+    QFont face("Inter");
+    face.setPixelSize(32);
+    face.setWeight(QFont::Black);
+    face.setLetterSpacing(QFont::AbsoluteSpacing, 1.6);
+    setFont(face);
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    setAttribute(Qt::WA_TranslucentBackground);
+    setAutoFillBackground(false);
+  }
+
+  QSize sizeHint() const override {
+    const QFontMetrics metrics(font());
+    return {metrics.horizontalAdvance(QStringLiteral("STD")) + 28, metrics.height() + 24};
+  }
+
+  QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::TextAntialiasing);
+
+    const QFontMetrics metrics(font());
+    const qreal padX = 12.0;
+    const qreal padY = 12.0;
+    QPainterPath letters;
+    letters.addText(padX, padY + metrics.ascent(), font(), QStringLiteral("STD"));
+
+    painter.setBrush(Qt::NoBrush);
+    const int glowWidths[] = {18, 12, 7};
+    const int glowAlpha[] = {18, 32, 54};
+    for (int i = 0; i < 3; ++i) {
+      painter.setPen(QPen(QColor(255, 146, 38, glowAlpha[i]), glowWidths[i], Qt::SolidLine,
+                          Qt::RoundCap, Qt::RoundJoin));
+      painter.drawPath(letters);
+    }
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(22, 4, 16, 220));
+    painter.drawPath(letters.translated(2.6, 3.4));
+    painter.setBrush(QColor(96, 28, 78, 235));
+    painter.drawPath(letters.translated(1.3, 1.8));
+
+    const QRectF bounds = letters.boundingRect();
+    QLinearGradient face(bounds.topLeft(), bounds.bottomLeft());
+    face.setColorAt(0.0, QColor(232, 206, 246));
+    face.setColorAt(0.38, QColor(154, 72, 196));
+    face.setColorAt(0.72, QColor(108, 36, 158));
+    face.setColorAt(1.0, QColor(62, 16, 96));
+    painter.setBrush(face);
+    painter.drawPath(letters);
+
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor(244, 226, 255, 190), 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.drawPath(letters.translated(-0.7, -0.85));
+    painter.setPen(QPen(QColor(255, 176, 62, 220), 1.15, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.drawPath(letters.translated(0.65, 0.8));
+  }
+};
 
 }  // namespace
 
@@ -76,30 +150,27 @@ void MainWindow::buildBrandBar() {
   brandBar_->setAllowedAreas(Qt::TopToolBarArea);
 
   auto* host = new QWidget(brandBar_);
-  host->setFixedHeight(60);
+  host->setFixedHeight(110);
   auto* layout = new QHBoxLayout(host);
-  layout->setContentsMargins(8, 6, 12, 6);
-  layout->setSpacing(12);
+  layout->setContentsMargins(10, 8, 16, 8);
+  layout->setSpacing(14);
 
   auto* mark = new QLabel(host);
   const QPixmap icon(":/std/std-icon.png");
-  mark->setPixmap(icon.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-  mark->setFixedSize(48, 48);
+  mark->setPixmap(icon.scaled(72, 72, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+  mark->setFixedSize(72, 72);
 
   auto* words = new QWidget(host);
   auto* wordLayout = new QVBoxLayout(words);
   wordLayout->setContentsMargins(0, 0, 0, 0);
-  wordLayout->setSpacing(0);
+  wordLayout->setSpacing(4);
 
-  auto* name = new QLabel("STD", words);
-  name->setObjectName("brandName");
-  QFont nameFont = interfaceFont(22, QFont::DemiBold);
-  nameFont.setLetterSpacing(QFont::AbsoluteSpacing, 0.8);
-  name->setFont(nameFont);
+  auto* name = new RaisedBrandTitle(words);
 
   auto* subtitle = new QLabel("Shift, Tone, Decode", words);
   subtitle->setObjectName("brandSubtitle");
-  subtitle->setFont(interfaceFont(13));
+  subtitle->setFont(interfaceFont(18));
+  subtitle->setContentsMargins(12, 0, 0, 0);
 
   wordLayout->addWidget(name);
   wordLayout->addWidget(subtitle);

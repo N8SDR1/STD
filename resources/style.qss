@@ -54,12 +54,8 @@ QToolBar#brandBar {
   padding: 0;
 }
 
-QLabel#brandName {
-  color: #e7f2f8;
-}
-
 QLabel#brandSubtitle {
-  color: #8399ac;
+  color: #d5e2ee;
 }
 
 QDockWidget {
