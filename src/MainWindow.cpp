@@ -205,6 +205,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     if (statusStrip_)
       statusStrip_->setPtt(on, tci_->isOpen());
   });
+  connect(tci_, &TciClient::rxAudio, this, [this](int rate, const QByteArray& mono) {
+    if (!waterfall_ || mono.size() < int(sizeof(float)))
+      return;
+    const auto* samples = reinterpret_cast<const float*>(mono.constData());
+    waterfall_->pushRealAudio(samples, mono.size() / int(sizeof(float)), rate);
+  });
 }
 
 void MainWindow::buildBrandBar() {
@@ -433,7 +439,7 @@ void MainWindow::setReceivePlaceholder(bool connected) {
   if (!receive)
     return;
   receive->setPlaceholderText(
-      connected ? QStringLiteral("Sharing the radio.\nNothing is decoded yet.")
+      connected ? QStringLiteral("Audio is arriving.\nNothing is decoded yet.")
                 : QStringLiteral(
                       "Received text will appear here.\nNo radio is connected, so nothing is being decoded."));
 }
@@ -450,8 +456,10 @@ void MainWindow::showRadioDown(const QString& error) {
     statusStrip_->setPtt(false, false);
     statusStrip_->setRadio(false, line);
   }
-  if (waterfall_)
+  if (waterfall_) {
+    waterfall_->clearAudio();
     waterfall_->setRadio(false, dash);
+  }
 }
 
 void MainWindow::showRadioUp(const QString& host, quint16 port) {
@@ -462,8 +470,10 @@ void MainWindow::showRadioUp(const QString& host, quint16 port) {
     statusStrip_->setDial(dialText_);
     statusStrip_->setPtt(false, true);
   }
-  if (waterfall_)
+  if (waterfall_) {
+    waterfall_->clearAudio();
     waterfall_->setRadio(true, dialText_);
+  }
 }
 
 void MainWindow::showDial(qint64 hz) {

@@ -3,14 +3,15 @@
 
 #pragma once
 
+#include <QByteArray>
 #include <QObject>
 
 class QWidget;
 
 // One TCI WebSocket. Connect shares a radio that is already on the
-// air: it sends no START, audio-stream, modulation, VFO, or TRX
-// command. Those reset or replace the server's session. This client
-// does not open a sound device and does not key.
+// air. The only command it sends is AUDIO_START for receiver 0, which
+// subscribes this socket to real RX audio. It does not send START,
+// MODULATION, a VFO write, TRX, or the global audio-format setters.
 class TciClient : public QObject {
   Q_OBJECT
 
@@ -35,12 +36,15 @@ signals:
   void dialChanged(qint64 hz);
   void modeChanged(const QString& mode);
   void pttChanged(bool on);
+  // Mono float32, one real channel taken from a type-1 RX frame.
+  void rxAudio(int sampleRateHz, const QByteArray& mono);
 
 private:
   void sendCommand(const QString& command);
   void beginSession();
   void handleCommand(const QString& raw);
   void yieldSingleClient();
+  void stopAudio();
   void onBinary(const QByteArray& frame);
   void sendTxAudio(const float* samples, int count);
   void settle(const QString& error);
@@ -56,6 +60,7 @@ private:
   bool settled_ = true;
   bool userClose_ = false;
   bool transmit_ = false;
+  bool audioStarted_ = false;
 };
 
 void openTciConnectDialog(QWidget* parent, TciClient* client);

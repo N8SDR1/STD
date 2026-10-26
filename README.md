@@ -16,11 +16,11 @@ Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier
 
 ## What this window contains
 
-- **Waterfall** — the large dock. It paints a standby graticule, the dial, and “No signal”. The line under that says “Radio not connected” until a TCI socket is up, then “Connected”. The widget can embed a `QWindow` later (a Vulkan surface included). This slice does not link Vulkan.
-- **Receive** — empty, read-only text. While the socket is down it says no radio is connected. While TCI is up it says the radio is shared and nothing is decoded yet.
+- **Waterfall** — the large dock. With no audio it paints a standby graticule, the dial, and “No signal”. Once type-1 RX frames arrive it scrolls one real channel across 0–4 kHz. Nothing is decoded. The widget can embed a `QWindow` later (a Vulkan surface included). This slice does not link Vulkan.
+- **Receive** — empty, read-only text. While the socket is down it says no radio is connected. While TCI is up it says audio is arriving and nothing is decoded yet.
 - **Transmit** — empty compose box. Text stays on this machine. A line under it says nothing is transmitted.
 - **Macros** — eight empty slots, M1–M8, and “No macros loaded”.
-- **Connect** — the gear on the brand bar, and Radio → Connect…. Host and port, default port 50001. One WebSocket. Connect sends nothing: no `START`, no `AUDIO_START`, no audio-format setters, no `MODULATION`, no `VFO`, no `TRX`. The dial, mode, and PTT come from the server's own messages. `START` is what made Lyra drop the rig. A server that allows only one client is reported on the status line, and STD closes so it does not keep that slot. The window never sends `TRX:…,true`.
+- **Connect** — the gear on the brand bar, and Radio → Connect…. Host and port, default port 50001. One WebSocket. Connect sends `AUDIO_START:0` and nothing else: no `START`, no `MODULATION`, no VFO write, no `TRX`, and no global audio-format setter. Lyra keeps that subscription on this socket. The dial, mode, and PTT come from the server's own messages. Disconnect sends `AUDIO_STOP:0` for this socket only. A server that allows only one client is reported on the status line, and STD closes so it does not keep that slot. The window never sends `TRX`.
 - **Status strip** — Mode, AFC, Squelch, the dial, a PTT lamp that follows the radio, and “Connected …”, or “Radio not connected” with the socket error. The lamp does not key.
 
 Panels can dock, float, and tab. View → Reset layout puts them back. The status strip stays pinned to the column.

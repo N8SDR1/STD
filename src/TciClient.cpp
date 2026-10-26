@@ -3,6 +3,8 @@
 
 #include "TciClient.h"
 
+#include <QtEndian>
+
 #include <QAbstractSocket>
 #include <QDataStream>
 #include <QDialog>
@@ -19,6 +21,8 @@
 #include <QVBoxLayout>
 #include <QWebSocket>
 #include <QWidget>
+
+#include <cstring>
 
 namespace {
 
@@ -79,6 +83,7 @@ void TciClient::connectToHost(const QString& hostText, quint16 port) {
   userClose_ = false;
   open_ = false;
   transmit_ = false;
+  audioStarted_ = false;
   text_.clear();
   sampleRate_ = kAudioRate;
 
@@ -168,8 +173,8 @@ void TciClient::disconnectFromHost() {
     return;
   userClose_ = true;
   ++generation_;
-  // No AUDIO_STOP. This socket never started a stream, and a stop
-  // can be the command that drops the client which did.
+  // AUDIO_STOP is per socket. It drops this subscription only.
+  stopAudio();
   open_ = false;
   transmit_ = false;
   if (socket_)
@@ -190,17 +195,20 @@ void TciClient::sendCommand(const QString& command) {
 }
 
 void TciClient::beginSession() {
-  // Listen only. The server's connect burst already carries protocol,
-  // vfo, modulation, trx, and the audio format.
-  //
-  // START is the command that kicked Lyra off the rig. Lyra's TCI
-  // server turns a client START into startRequested, and the main
-  // window's handler closes a live Protocol 2 session when the
-  // Protocol 1 stream is not the one running.
-  // AUDIO_SAMPLERATE and the other AUDIO_STREAM_* setters are global
-  // on Lyra, so they replace every client's audio. AUDIO_START is the
-  // stream many servers keep exclusive. MODULATION sets the mode.
-  // TRX:0,false,tci unkeys. None of those are sent.
+  // Receiver 0, real RX audio, this socket only. Lyra stores that
+  // flag per client and does not treat it as startRequested, so a
+  // live Protocol 2 session stays up. START would close that session.
+  // AUDIO_SAMPLERATE and AUDIO_STREAM_* are global, so they are not
+  // sent. MODULATION, VFO, and TRX are not sent either.
+  sendCommand(QStringLiteral("AUDIO_START:0"));
+  audioStarted_ = true;
+}
+
+void TciClient::stopAudio() {
+  if (!audioStarted_)
+    return;
+  audioStarted_ = false;
+  sendCommand(QStringLiteral("AUDIO_STOP:0"));
 }
 
 void TciClient::yieldSingleClient() {
@@ -208,6 +216,7 @@ void TciClient::yieldSingleClient() {
     return;
   // Drop our socket so the client that was already there can have the
   // radio back. Staying connected is what leaves that session down.
+  stopAudio();
   userClose_ = true;
   ++generation_;
   open_ = false;
@@ -273,23 +282,44 @@ void TciClient::onBinary(const QByteArray& frame) {
     return;
 
   Q_UNUSED(receiver);
-  Q_UNUSED(sampleRate);
-  Q_UNUSED(format);
   Q_UNUSED(codec);
   Q_UNUSED(crc);
-  Q_UNUSED(channels);
-  if (type == kRxAudio) {
-    // Type 1 is the receiver's real audio. No modem reads it yet.
+  if (type != kRxAudio)
     return;
-  }
 
-  if (type == kTxChrono && transmit_) {
-    const int count = qBound(0, static_cast<int>(length), 2048);
-    if (count <= 0)
-      return;
-    QList<float> silence(count, 0.0f);
-    sendTxAudio(silence.constData(), count);
+  // Lyra's type-1 payload is one demodulated channel, duplicated when
+  // the header says stereo. Channel 0 is that real audio. No TX reply.
+  const int ch = channels < 1 ? 1 : int(channels);
+  const int bps = format == kFloat32 ? 4 : format == 0 ? 2 : 0;
+  if (bps == 0 || length == 0)
+    return;
+  const int scalars = int(length);
+  const int payload = frame.size() - kHeaderBytes;
+  if (payload < scalars * bps)
+    return;
+  const int frames = scalars / ch;
+  if (frames <= 0)
+    return;
+
+  QByteArray mono(frames * int(sizeof(float)), Qt::Uninitialized);
+  float* dst = reinterpret_cast<float*>(mono.data());
+  const char* src = frame.constData() + kHeaderBytes;
+  if (format == kFloat32) {
+    for (int i = 0; i < frames; ++i) {
+      const quint32 bits = qFromLittleEndian<quint32>(src + (i * ch) * 4);
+      float value = 0.0f;
+      std::memcpy(&value, &bits, sizeof(value));
+      dst[i] = value;
+    }
+  } else {
+    for (int i = 0; i < frames; ++i) {
+      const qint16 sample = qFromLittleEndian<qint16>(src + (i * ch) * 2);
+      dst[i] = float(sample) / 32768.0f;
+    }
   }
+  if (sampleRate > 0)
+    sampleRate_ = int(sampleRate);
+  emit rxAudio(sampleRate_, mono);
 }
 
 void TciClient::sendTxAudio(const float* samples, int count) {
@@ -361,8 +391,8 @@ void openTciConnectDialog(QWidget* parent, TciClient* client) {
 
   auto* note = new QLabel(
       QStringLiteral(
-          "Connect shares the radio. It does not send START or take over "
-          "the session, and it does not key."),
+          "Connect shares the radio and subscribes to receive audio. "
+          "It does not send START, and it does not key."),
       &dialog);
   note->setWordWrap(true);
   note->setObjectName(QStringLiteral("panelNote"));

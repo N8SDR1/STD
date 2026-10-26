@@ -3,18 +3,21 @@
 
 #pragma once
 
+#include <QImage>
 #include <QString>
+#include <QVector>
 #include <QWidget>
 
 class QPainter;
 class QWindow;
 
-// Standby waterfall.
+// Waterfall for one real RX-audio channel.
 //
-// Phase 1 paints a graticule and an empty state. A later renderer can pass a
-// QWindow — including a QVulkanWindow — to setRenderSurface(). This widget
-// embeds that surface with QWidget::createWindowContainer and stops painting
-// the placeholder. Vulkan is not linked here.
+// With no samples it paints a graticule and an empty state. Type-1 TCI
+// audio scrolls a 0–4 kHz waterfall. A later renderer can pass a QWindow
+// — including a QVulkanWindow — to setRenderSurface(). This widget embeds
+// that surface with QWidget::createWindowContainer and stops painting.
+// Vulkan is not linked here. Nothing here decodes a modem.
 class WaterfallWidget : public QWidget {
   Q_OBJECT
 public:
@@ -27,6 +30,10 @@ public:
   // dial is the VFO text. connected changes the standby line under "No signal".
   void setRadio(bool connected, const QString& dial);
 
+  // Real mono samples, already one channel. sampleRateHz is the frame rate.
+  void pushRealAudio(const float* samples, int count, int sampleRateHz);
+  void clearAudio();
+
   QSize sizeHint() const override;
   QSize minimumSizeHint() const override;
 
@@ -36,8 +43,15 @@ protected:
 
 private:
   void paintPlaceholder(QPainter& painter) const;
+  void paintAudio(QPainter& painter) const;
+  void paintDial(QPainter& painter) const;
+  void appendSpectrum(const float* samples, int count);
 
   QWidget* surfaceContainer_ = nullptr;
   bool radioConnected_ = false;
   QString dialText_ = QString::fromUtf8("—");
+  QVector<float> pending_;
+  QImage columns_;
+  int rateHz_ = 0;
+  int filled_ = 0;
 };
