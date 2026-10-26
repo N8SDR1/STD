@@ -15,6 +15,7 @@ class QWindow;
 // embeds that surface with QWidget::createWindowContainer and stops painting
 // the placeholder. Vulkan is not linked here.
 class WaterfallWidget : public QWidget {
+  Q_OBJECT
 public:
   explicit WaterfallWidget(QWidget* parent = nullptr);
 
