@@ -7,8 +7,10 @@
 
 class QWidget;
 
-// One TCI WebSocket. Text commands share the socket with type-1 RX audio
-// and type-2 TX audio. This client does not open a sound device.
+// One TCI WebSocket. Connect shares a radio that is already on the
+// air: it sends no START, audio-stream, modulation, VFO, or TRX
+// command. Those reset or replace the server's session. This client
+// does not open a sound device and does not key.
 class TciClient : public QObject {
   Q_OBJECT
 
@@ -24,9 +26,7 @@ public:
   QString host() const { return host_; }
   quint16 port() const { return port_; }
 
-  // TRX:0,true,tci keys the radio. TRX:0,false,tci selects the TCI
-  // audio source and stays in receive. The window does not call this
-  // with true.
+  // Kept off. TRX true would key, and TRX false would unkey.
   void setTransmit(bool on);
 
 signals:
@@ -40,6 +40,7 @@ private:
   void sendCommand(const QString& command);
   void beginSession();
   void handleCommand(const QString& raw);
+  void yieldSingleClient();
   void onBinary(const QByteArray& frame);
   void sendTxAudio(const float* samples, int count);
   void settle(const QString& error);

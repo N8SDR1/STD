@@ -41,6 +41,19 @@ QStringList commandArgs(const QString& raw, QString* name) {
   return args;
 }
 
+bool exclusiveSession(const QString& text) {
+  const QString lower = text.toLower();
+  return lower.contains(QLatin1String("one client")) ||
+         lower.contains(QLatin1String("single client")) ||
+         lower.contains(QLatin1String("another client")) ||
+         lower.contains(QLatin1String("second client")) ||
+         lower.contains(QLatin1String("already connected")) ||
+         lower.contains(QLatin1String("already in use")) ||
+         lower.contains(QLatin1String("only one")) ||
+         lower.contains(QLatin1String("client limit")) ||
+         (lower.contains(QLatin1String("busy")) && lower.contains(QLatin1String("client")));
+}
+
 bool flagIsTrue(const QString& text, bool* ok) {
   const QString value = text.trimmed().toLower();
   if (value == QLatin1String("true") || value == QLatin1String("1")) {
@@ -107,12 +120,25 @@ void TciClient::connectToHost(const QString& hostText, quint16 port) {
       return;
     if (!open_)
       return;
-    settle(QStringLiteral("the TCI socket closed"));
+    const QString reason = socket_ ? socket_->closeReason() : QString();
+    if (exclusiveSession(reason)) {
+      yieldSingleClient();
+      return;
+    }
+    settle(reason.isEmpty() ? QStringLiteral("the TCI socket closed") : reason);
   });
   connect(socket_, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
     if (settled_ || userClose_)
       return;
     const QString reason = socket_ ? socket_->errorString() : QString();
+    if (exclusiveSession(reason)) {
+      yieldSingleClient();
+      return;
+    }
+    // A live socket reports the close reason on disconnected. Settling
+    // here would hide "this TCI server allows one client".
+    if (open_)
+      return;
     settle(reason.isEmpty() ? QStringLiteral("the TCI socket failed") : reason);
   });
   connect(socket_, &QWebSocket::textMessageReceived, this, [this](const QString& message) {
@@ -142,8 +168,8 @@ void TciClient::disconnectFromHost() {
     return;
   userClose_ = true;
   ++generation_;
-  if (open_)
-    sendCommand(QStringLiteral("AUDIO_STOP:0"));
+  // No AUDIO_STOP. This socket never started a stream, and a stop
+  // can be the command that drops the client which did.
   open_ = false;
   transmit_ = false;
   if (socket_)
@@ -151,12 +177,10 @@ void TciClient::disconnectFromHost() {
   settle(QString());
 }
 
-void TciClient::setTransmit(bool on) {
-  transmit_ = on && open_;
-  if (!open_)
-    return;
-  // false keeps the radio in receive. true would key it.
-  sendCommand(on ? QStringLiteral("TRX:0,true,tci") : QStringLiteral("TRX:0,false,tci"));
+void TciClient::setTransmit(bool) {
+  // This build does not send TRX. true would key. false would unkey
+  // through Lyra's requestMoxFromTci(false).
+  transmit_ = false;
 }
 
 void TciClient::sendCommand(const QString& command) {
@@ -166,20 +190,38 @@ void TciClient::sendCommand(const QString& command) {
 }
 
 void TciClient::beginSession() {
-  // One receiver, real audio, DIGU. VFO:0,0 reads the dial and does not
-  // retune. TRX false,tci selects the TCI transmit stream without keying.
-  sendCommand(QStringLiteral("START"));
-  sendCommand(QStringLiteral("AUDIO_STREAM_CHANNELS:1"));
-  sendCommand(QStringLiteral("AUDIO_STREAM_SAMPLE_TYPE:float32"));
-  sendCommand(QStringLiteral("AUDIO_STREAM_SAMPLES:512"));
-  sendCommand(QStringLiteral("AUDIO_SAMPLERATE:%1").arg(kAudioRate));
-  sendCommand(QStringLiteral("AUDIO_START:0"));
-  sendCommand(QStringLiteral("MODULATION:0,DIGU"));
-  sendCommand(QStringLiteral("VFO:0,0"));
-  sendCommand(QStringLiteral("TRX:0,false,tci"));
+  // Listen only. The server's connect burst already carries protocol,
+  // vfo, modulation, trx, and the audio format.
+  //
+  // START is the command that kicked Lyra off the rig. Lyra's TCI
+  // server turns a client START into startRequested, and the main
+  // window's handler closes a live Protocol 2 session when the
+  // Protocol 1 stream is not the one running.
+  // AUDIO_SAMPLERATE and the other AUDIO_STREAM_* setters are global
+  // on Lyra, so they replace every client's audio. AUDIO_START is the
+  // stream many servers keep exclusive. MODULATION sets the mode.
+  // TRX:0,false,tci unkeys. None of those are sent.
+}
+
+void TciClient::yieldSingleClient() {
+  if (settled_)
+    return;
+  // Drop our socket so the client that was already there can have the
+  // radio back. Staying connected is what leaves that session down.
+  userClose_ = true;
+  ++generation_;
+  open_ = false;
+  transmit_ = false;
+  settle(QStringLiteral("this TCI server allows one client"));
+  if (socket_ && socket_->state() != QAbstractSocket::UnconnectedState)
+    socket_->close();
 }
 
 void TciClient::handleCommand(const QString& raw) {
+  if (exclusiveSession(raw)) {
+    yieldSingleClient();
+    return;
+  }
   QString name;
   const QStringList args = commandArgs(raw, &name);
   if (name == QLatin1String("audio_samplerate") && !args.isEmpty()) {
@@ -318,7 +360,10 @@ void openTciConnectDialog(QWidget* parent, TciClient* client) {
   form->addRow(QStringLiteral("Port"), portEdit);
 
   auto* note = new QLabel(
-      QStringLiteral("One TCI socket. Connect does not key the radio."), &dialog);
+      QStringLiteral(
+          "Connect shares the radio. It does not send START or take over "
+          "the session, and it does not key."),
+      &dialog);
   note->setWordWrap(true);
   note->setObjectName(QStringLiteral("panelNote"));
 

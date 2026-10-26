@@ -433,7 +433,7 @@ void MainWindow::setReceivePlaceholder(bool connected) {
   if (!receive)
     return;
   receive->setPlaceholderText(
-      connected ? QStringLiteral("Audio is arriving.\nNothing is decoded yet.")
+      connected ? QStringLiteral("Sharing the radio.\nNothing is decoded yet.")
                 : QStringLiteral(
                       "Received text will appear here.\nNo radio is connected, so nothing is being decoded."));
 }
