@@ -94,6 +94,13 @@ int shellReady(const MainWindow& window) {
   if (!ptt || ptt->isChecked() || ptt->isEnabled())
     return fail("PTT is not the idle on-air control");
 
+  const auto* dial = window.findChild<QLabel*>("dialValue");
+  if (!dial || dial->text() != QString::fromUtf8("—"))
+    return fail("dial is not blank");
+
+  if (!window.findChild<QWidget*>("radioConnect"))
+    return fail("connect control is missing");
+
   qInfo("STD self-test ok");
   return 0;
 }
@@ -102,6 +109,7 @@ int shellReady(const MainWindow& window) {
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
+  QApplication::setOrganizationName("N8SDR");
   QApplication::setApplicationName("STD");
   QApplication::setApplicationDisplayName("STD");
   QApplication::setApplicationVersion(STD_VERSION);

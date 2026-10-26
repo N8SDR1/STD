@@ -5,10 +5,14 @@
 
 #include <QIcon>
 #include <QMainWindow>
+#include <QString>
 
 class QDockWidget;
 class QShowEvent;
 class QToolBar;
+class StatusStrip;
+class TciClient;
+class WaterfallWidget;
 
 // Square window icon cropped from resources/std-icon.jpg, at the sizes a
 // window manager asks for. A single large file often never reaches _NET_WM_ICON.
@@ -28,12 +32,20 @@ private:
   void arrangeDefault();
   void resizeToHero();
   void showAbout();
+  void openRadioDialog();
+  void showRadioDown(const QString& error);
+  void showRadioUp(const QString& host, quint16 port);
+  void showDial(qint64 hz);
 
   QWidget* makeTextPanel(const QString& editName, const QString& placeholder,
                          bool readOnly, const QString& note);
   QWidget* makeMacroRow();
 
   QToolBar* brandBar_ = nullptr;
+  WaterfallWidget* waterfall_ = nullptr;
+  StatusStrip* statusStrip_ = nullptr;
+  TciClient* tci_ = nullptr;
+  QString dialText_ = QString::fromUtf8("—");
   QDockWidget* waterfallDock_ = nullptr;
   QDockWidget* receiveDock_ = nullptr;
   QDockWidget* transmitDock_ = nullptr;

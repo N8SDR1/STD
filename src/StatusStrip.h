@@ -3,11 +3,17 @@
 
 #pragma once
 
+#include <QString>
 #include <QWidget>
 
-// Bottom strip: mode, AFC, squelch, an on-air PTT lamp, and the radio line.
-// This slice has no radio, so the lamp stays off and the radio line says so.
+// Bottom strip: mode, dial, an on-air PTT lamp, and the radio line.
+// The lamp follows the radio. It does not key.
 class StatusStrip : public QWidget {
 public:
   explicit StatusStrip(QWidget* parent = nullptr);
+
+  void setMode(const QString& text);
+  void setDial(const QString& text);
+  void setPtt(bool onAir, bool connected);
+  void setRadio(bool connected, const QString& line);
 };

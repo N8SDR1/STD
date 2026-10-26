@@ -2,7 +2,7 @@
 
 **Shift, Tone, Decode**
 
-STD is a standalone digimode console. This repository is the first slice: a Qt 6 dock shell. It does not decode, transmit, or open a radio connection.
+STD is a standalone digimode console. This slice is a Qt 6 dock shell plus one TCI radio socket. It does not decode and it does not transmit.
 
 The title bar is **STD**. The subtitle under the name is Shift, Tone, Decode. That subtitle is not drawn on the icon.
 
@@ -16,22 +16,23 @@ Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier
 
 ## What this window contains
 
-- **Waterfall** — the large dock. It paints a standby graticule, an empty dial, and “No signal / Radio not connected”. The widget can embed a `QWindow` later (a Vulkan surface included). This slice does not link Vulkan.
+- **Waterfall** — the large dock. It paints a standby graticule, the dial, and “No signal”. The line under that says “Radio not connected” until a TCI socket is up, then “Connected”. The widget can embed a `QWindow` later (a Vulkan surface included). This slice does not link Vulkan.
 - **Receive** — empty, read-only text.
 - **Transmit** — empty compose box. Text stays on this machine. A line under it says nothing is transmitted.
 - **Macros** — eight empty slots, M1–M8, and “No macros loaded”.
-- **Status strip** — Mode —, AFC Off, Squelch —, a PTT lamp drawn as an on-air control and left off, and “Radio not connected”.
+- **Connect** — the gear on the brand bar, and Radio → Connect…. Host and port, default port 50001. One WebSocket. Connect sends `START`, one real audio channel, float32, 12 kHz, `AUDIO_START`, `MODULATION` DIGU, a VFO read, and `TRX:0,false,tci`. That last command selects the TCI transmit stream and stays in receive. The window never sends `TRX:…,true`.
+- **Status strip** — Mode, AFC, Squelch, the dial, a PTT lamp that follows the radio, and “Connected …”, or “Radio not connected” with the socket error. The lamp does not key.
 
 Panels can dock, float, and tab. View → Reset layout puts them back. The status strip stays pinned to the column.
 
 ## Build
 
-Requirements: a C++17 compiler, CMake 3.21 or newer, and Qt 6 Widgets (6.2 or newer).
+Requirements: a C++17 compiler, CMake 3.21 or newer, Qt 6 Widgets, and Qt 6 WebSockets (6.2 or newer).
 
-On Debian and Ubuntu the Qt package is **`qt6-base-dev`**:
+On Debian and Ubuntu:
 
 ```bash
-sudo apt install build-essential cmake qt6-base-dev
+sudo apt install build-essential cmake qt6-base-dev qt6-websockets-dev
 ```
 
 Configure and build from the repository root:
@@ -41,7 +42,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-If CMake cannot find Qt, the error names `qt6-base-dev` on Debian/Ubuntu (`qt6-qtbase-devel` on Fedora, `qt6-base` on Arch). A custom prefix can be passed as `-DQt6_DIR=/path/to/lib/cmake/Qt6`.
+If CMake cannot find Qt, the error names the missing piece: Widgets (`qt6-base-dev`) or WebSockets (`qt6-websockets-dev`). A custom prefix can be passed as `-DQt6_DIR=/path/to/lib/cmake/Qt6`.
 
 ## Run
 
@@ -61,4 +62,4 @@ Exit status 0 prints `STD self-test ok`.
 
 ## Not in this slice
 
-No modem code, no waterfall math, no sound device, and no TCI socket. Mode, squelch, and the dial stay blank on purpose.
+No modem code and no sound device. The dial stays blank until the radio sends `VFO`. AFC and squelch stay blank on purpose.

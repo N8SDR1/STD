@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <QString>
 #include <QWidget>
 
 class QPainter;
@@ -23,6 +24,9 @@ public:
   // placeholder again. The container deletes the window when it is destroyed.
   void setRenderSurface(QWindow* surface);
 
+  // dial is the VFO text. connected changes the standby line under "No signal".
+  void setRadio(bool connected, const QString& dial);
+
   QSize sizeHint() const override;
   QSize minimumSizeHint() const override;
 
@@ -34,4 +38,6 @@ private:
   void paintPlaceholder(QPainter& painter) const;
 
   QWidget* surfaceContainer_ = nullptr;
+  bool radioConnected_ = false;
+  QString dialText_ = QString::fromUtf8("—");
 };

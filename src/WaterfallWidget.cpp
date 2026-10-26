@@ -20,6 +20,14 @@ WaterfallWidget::WaterfallWidget(QWidget* parent) : QWidget(parent) {
   setAccessibleDescription("No signal. Radio not connected.");
 }
 
+void WaterfallWidget::setRadio(bool connected, const QString& dial) {
+  radioConnected_ = connected;
+  dialText_ = dial.isEmpty() ? QString::fromUtf8("—") : dial;
+  setAccessibleDescription(connected ? QStringLiteral("No signal. Connected.")
+                                      : QStringLiteral("No signal. Radio not connected."));
+  update();
+}
+
 void WaterfallWidget::setRenderSurface(QWindow* surface) {
   if (surfaceContainer_) {
     surfaceContainer_->hide();
@@ -95,8 +103,7 @@ void WaterfallWidget::paintPlaceholder(QPainter& painter) const {
   painter.setPen(QColor("#6d8496"));
   painter.drawText(QRect(12, 8, 42, 16), Qt::AlignLeft | Qt::AlignVCenter, "DIAL");
   painter.setPen(QColor("#00e5ff"));
-  painter.drawText(QRect(54, 8, 24, 16), Qt::AlignLeft | Qt::AlignVCenter,
-                   QString::fromUtf8("—"));
+  painter.drawText(QRect(54, 8, 180, 16), Qt::AlignLeft | Qt::AlignVCenter, dialText_);
 
   painter.setPen(QColor("#8399ac"));
   const QStringList ticks = {
@@ -129,5 +136,6 @@ void WaterfallWidget::paintPlaceholder(QPainter& painter) const {
   painter.setFont(mono);
   painter.setPen(QColor("#e08a3d"));
   painter.drawText(plate.adjusted(0, 36, 0, 0), Qt::AlignHCenter | Qt::AlignTop,
-                   "Radio not connected");
+                   radioConnected_ ? QStringLiteral("Connected")
+                                   : QStringLiteral("Radio not connected"));
 }

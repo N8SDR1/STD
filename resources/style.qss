@@ -89,6 +89,33 @@ QDockWidget::close-button, QDockWidget::float-button {
   padding: 0;
 }
 
+QLineEdit, QSpinBox {
+  background: #080d13;
+  color: #d7e6f2;
+  border: 1px solid #1c3344;
+  border-radius: 4px;
+  padding: 3px 6px;
+  min-height: 22px;
+}
+
+QPushButton {
+  background: #121a24;
+  color: #d7e6f2;
+  border: 1px solid #274150;
+  border-radius: 6px;
+  padding: 5px 12px;
+}
+
+QPushButton:hover {
+  border-color: #00e5ff;
+  color: #00e5ff;
+}
+
+QPushButton:disabled {
+  color: #5c7284;
+  border-color: #1c3344;
+}
+
 QPlainTextEdit {
   background: #080d13;
   color: #d7e6f2;
@@ -112,7 +139,7 @@ QLabel#readoutLabel {
   color: #6d8496;
 }
 
-QLabel#modeValue, QLabel#afcValue, QLabel#squelchValue {
+QLabel#modeValue, QLabel#afcValue, QLabel#squelchValue, QLabel#dialValue {
   color: #00e5ff;
 }
 

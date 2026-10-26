@@ -4,6 +4,7 @@
 #include "MainWindow.h"
 
 #include "StatusStrip.h"
+#include "TciClient.h"
 #include "WaterfallWidget.h"
 
 #include <algorithm>
@@ -29,6 +30,7 @@
 #include <QSizePolicy>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
@@ -114,6 +116,54 @@ protected:
   }
 };
 
+class GearButton : public QToolButton {
+public:
+  explicit GearButton(QWidget* parent = nullptr) : QToolButton(parent) {
+    setObjectName("radioConnect");
+    setFixedSize(40, 40);
+    setCursor(Qt::PointingHandCursor);
+    setFocusPolicy(Qt::NoFocus);
+    setToolTip("Connect to a TCI radio");
+    setAccessibleName("Connect radio");
+  }
+
+protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    painter.setPen(QPen(underMouse() ? QColor("#00e5ff") : QColor("#274150"), 1));
+    painter.setBrush(underMouse() ? QColor(0, 229, 255, 28) : QColor("#101820"));
+    painter.drawRoundedRect(box, 8, 8);
+
+    painter.save();
+    painter.translate(rect().center());
+    painter.setPen(QPen(QColor("#00e5ff"), 1.4));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawEllipse(QPointF(0, 0), 5.2, 5.2);
+    painter.setBrush(QColor("#0b1218"));
+    painter.drawEllipse(QPointF(0, 0), 2.1, 2.1);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor("#00e5ff"));
+    for (int tooth = 0; tooth < 8; ++tooth) {
+      painter.save();
+      painter.rotate(tooth * 45.0);
+      painter.drawRoundedRect(QRectF(-1.25, -9.0, 2.5, 3.2), 0.6, 0.6);
+      painter.restore();
+    }
+    painter.restore();
+  }
+};
+
+QString formatDial(qint64 hz) {
+  if (hz < 0)
+    return QString::fromUtf8("—");
+  QString digits = QString::number(hz);
+  for (int i = digits.size() - 3; i > 0; i -= 3)
+    digits.insert(i, QLatin1Char('.'));
+  return digits;
+}
+
 }  // namespace
 
 QIcon stdIcon() {
@@ -140,6 +190,21 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildDocks();
   buildMenus();
   arrangeDefault();
+
+  tci_ = new TciClient(this);
+  connect(tci_, &TciClient::sessionUp, this, [this](const QString& host, quint16 port) {
+    showRadioUp(host, port);
+  });
+  connect(tci_, &TciClient::sessionDown, this, [this](const QString& error) { showRadioDown(error); });
+  connect(tci_, &TciClient::dialChanged, this, [this](qint64 hz) { showDial(hz); });
+  connect(tci_, &TciClient::modeChanged, this, [this](const QString& mode) {
+    if (statusStrip_)
+      statusStrip_->setMode(mode);
+  });
+  connect(tci_, &TciClient::pttChanged, this, [this](bool on) {
+    if (statusStrip_)
+      statusStrip_->setPtt(on, tci_->isOpen());
+  });
 }
 
 void MainWindow::buildBrandBar() {
@@ -179,14 +244,18 @@ void MainWindow::buildBrandBar() {
   layout->addWidget(words);
   layout->addStretch(1);
 
+  auto* gear = new GearButton(host);
+  connect(gear, &QToolButton::clicked, this, [this] { openRadioDialog(); });
+  layout->addWidget(gear);
+
   brandBar_->addWidget(host);
 }
 
 void MainWindow::buildDocks() {
-  auto* waterfall = new WaterfallWidget(this);
+  waterfall_ = new WaterfallWidget(this);
   waterfallDock_ = new QDockWidget("Waterfall", this);
   waterfallDock_->setObjectName("waterfallDock");
-  waterfallDock_->setWidget(waterfall);
+  waterfallDock_->setWidget(waterfall_);
   waterfallDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
   waterfallDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable |
                               QDockWidget::DockWidgetClosable);
@@ -203,8 +272,8 @@ void MainWindow::buildDocks() {
   transmitDock_->setObjectName("transmitDock");
   transmitDock_->setWidget(makeTextPanel(
       "transmitText",
-      "Transmit text.\nCharacters stay in this window until a radio is connected.",
-      false, "Held locally. Nothing is transmitted while the radio is disconnected."));
+      "Transmit text.\nCharacters stay in this window. Nothing is sent to the radio.",
+      false, "Held locally. This build does not transmit."));
   transmitDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
 
   macroDock_ = new QDockWidget("Macros", this);
@@ -216,7 +285,8 @@ void MainWindow::buildDocks() {
 
   statusDock_ = new QDockWidget("Status", this);
   statusDock_->setObjectName("statusDock");
-  statusDock_->setWidget(new StatusStrip(statusDock_));
+  statusStrip_ = new StatusStrip(statusDock_);
+  statusDock_->setWidget(statusStrip_);
   statusDock_->setAllowedAreas(Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea);
   statusDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
   statusDock_->setMinimumHeight(40);
@@ -286,6 +356,10 @@ void MainWindow::buildMenus() {
   quit->setShortcut(QKeySequence::Quit);
   connect(quit, &QAction::triggered, this, &QWidget::close);
 
+  auto* radioMenu = menuBar()->addMenu("Radio");
+  auto* connectRadio = radioMenu->addAction("Connect…");
+  connect(connectRadio, &QAction::triggered, this, [this] { openRadioDialog(); });
+
   auto* viewMenu = menuBar()->addMenu("View");
   const struct {
     QDockWidget* dock;
@@ -349,6 +423,47 @@ void MainWindow::showEvent(QShowEvent* event) {
   }
 }
 
+void MainWindow::openRadioDialog() {
+  if (tci_)
+    openTciConnectDialog(this, tci_);
+}
+
+void MainWindow::showRadioDown(const QString& error) {
+  const QString dash = QString::fromUtf8("—");
+  dialText_ = dash;
+  const QString line = error.isEmpty() ? QStringLiteral("Radio not connected")
+                                        : QStringLiteral("Radio not connected: %1").arg(error);
+  if (statusStrip_) {
+    statusStrip_->setMode(dash);
+    statusStrip_->setDial(dash);
+    statusStrip_->setPtt(false, false);
+    statusStrip_->setRadio(false, line);
+  }
+  if (waterfall_)
+    waterfall_->setRadio(false, dash);
+}
+
+void MainWindow::showRadioUp(const QString& host, quint16 port) {
+  dialText_ = QString::fromUtf8("—");
+  if (statusStrip_) {
+    statusStrip_->setRadio(true, QStringLiteral("Connected %1:%2").arg(host).arg(port));
+    statusStrip_->setDial(dialText_);
+    statusStrip_->setPtt(false, true);
+  }
+  if (waterfall_)
+    waterfall_->setRadio(true, dialText_);
+}
+
+void MainWindow::showDial(qint64 hz) {
+  if (!tci_ || !tci_->isOpen())
+    return;
+  dialText_ = formatDial(hz);
+  if (statusStrip_)
+    statusStrip_->setDial(dialText_);
+  if (waterfall_)
+    waterfall_->setRadio(true, dialText_);
+}
+
 void MainWindow::showAbout() {
   QMessageBox about(this);
   about.setWindowTitle("About STD");
@@ -360,7 +475,6 @@ void MainWindow::showAbout() {
       "Copyright (C) 2026 Rick Langford (N8SDR)\n\n"
       "Licensed under the GNU General Public License, version 3 "
       "or any later version. See the file COPYING.\n\n"
-      "This build is the dock shell. It does not decode, transmit, "
-      "or open a radio connection.");
+      "This build speaks TCI. It does not decode or transmit.");
   about.exec();
 }

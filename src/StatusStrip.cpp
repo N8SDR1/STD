@@ -4,6 +4,7 @@
 #include "StatusStrip.h"
 
 #include <QFont>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -115,6 +116,8 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
   layout->addWidget(separator());
   layout->addWidget(readout("SQUELCH", "squelchValue", QString::fromUtf8("—")));
   layout->addWidget(separator());
+  layout->addWidget(readout("DIAL", "dialValue", QString::fromUtf8("—")));
+  layout->addWidget(separator());
   layout->addWidget(new PttLamp(this));
   layout->addStretch(1);
 
@@ -128,4 +131,52 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
 
   layout->addWidget(dot);
   layout->addWidget(radio);
+}
+
+namespace {
+
+QLabel* labeled(StatusStrip* strip, const char* name) {
+  return strip->findChild<QLabel*>(name);
+}
+
+}  // namespace
+
+void StatusStrip::setMode(const QString& text) {
+  if (QLabel* label = labeled(this, "modeValue"))
+    label->setText(text);
+}
+
+void StatusStrip::setDial(const QString& text) {
+  if (QLabel* label = labeled(this, "dialValue"))
+    label->setText(text);
+}
+
+void StatusStrip::setPtt(bool onAir, bool connected) {
+  auto* lamp = findChild<QPushButton*>("ptt");
+  if (!lamp)
+    return;
+  lamp->setChecked(onAir);
+  lamp->setEnabled(false);
+  if (!connected)
+    lamp->setToolTip(QStringLiteral("Off. The radio is not connected."));
+  else if (onAir)
+    lamp->setToolTip(QStringLiteral("The radio is reporting PTT. STD does not key from this lamp."));
+  else
+    lamp->setToolTip(QStringLiteral("PTT is off."));
+  lamp->update();
+}
+
+void StatusStrip::setRadio(bool connected, const QString& line) {
+  QLabel* radio = labeled(this, "radioState");
+  QLabel* dot = labeled(this, "radioDot");
+  if (!radio)
+    return;
+  const QFontMetrics metrics(radio->font());
+  radio->setText(metrics.elidedText(line, Qt::ElideRight, 520));
+  radio->setToolTip(line);
+  const QString style = QStringLiteral("color: %1;").arg(connected ? QStringLiteral("#00e5ff")
+                                                                     : QStringLiteral("#e08a3d"));
+  radio->setStyleSheet(style);
+  if (dot)
+    dot->setStyleSheet(style);
 }
