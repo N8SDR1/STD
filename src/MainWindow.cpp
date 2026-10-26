@@ -76,15 +76,15 @@ void MainWindow::buildBrandBar() {
   brandBar_->setAllowedAreas(Qt::TopToolBarArea);
 
   auto* host = new QWidget(brandBar_);
-  host->setFixedHeight(52);
+  host->setFixedHeight(60);
   auto* layout = new QHBoxLayout(host);
   layout->setContentsMargins(8, 6, 12, 6);
-  layout->setSpacing(10);
+  layout->setSpacing(12);
 
   auto* mark = new QLabel(host);
   const QPixmap icon(":/std/std-icon.png");
-  mark->setPixmap(icon.scaled(40, 40, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-  mark->setFixedSize(40, 40);
+  mark->setPixmap(icon.scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+  mark->setFixedSize(48, 48);
 
   auto* words = new QWidget(host);
   auto* wordLayout = new QVBoxLayout(words);
@@ -93,13 +93,13 @@ void MainWindow::buildBrandBar() {
 
   auto* name = new QLabel("STD", words);
   name->setObjectName("brandName");
-  QFont nameFont = interfaceFont(18, QFont::DemiBold);
+  QFont nameFont = interfaceFont(22, QFont::DemiBold);
   nameFont.setLetterSpacing(QFont::AbsoluteSpacing, 0.8);
   name->setFont(nameFont);
 
   auto* subtitle = new QLabel("Shift, Tone, Decode", words);
   subtitle->setObjectName("brandSubtitle");
-  subtitle->setFont(interfaceFont(11));
+  subtitle->setFont(interfaceFont(13));
 
   wordLayout->addWidget(name);
   wordLayout->addWidget(subtitle);
