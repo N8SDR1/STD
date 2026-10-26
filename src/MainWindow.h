@@ -33,6 +33,7 @@ private:
   void resizeToHero();
   void showAbout();
   void openRadioDialog();
+  void setReceivePlaceholder(bool connected);
   void showRadioDown(const QString& error);
   void showRadioUp(const QString& host, quint16 port);
   void showDial(qint64 hz);

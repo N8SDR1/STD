@@ -17,7 +17,7 @@ Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier
 ## What this window contains
 
 - **Waterfall** — the large dock. It paints a standby graticule, the dial, and “No signal”. The line under that says “Radio not connected” until a TCI socket is up, then “Connected”. The widget can embed a `QWindow` later (a Vulkan surface included). This slice does not link Vulkan.
-- **Receive** — empty, read-only text.
+- **Receive** — empty, read-only text. While the socket is down it says no radio is connected. While TCI is up it says audio is arriving and nothing is decoded yet.
 - **Transmit** — empty compose box. Text stays on this machine. A line under it says nothing is transmitted.
 - **Macros** — eight empty slots, M1–M8, and “No macros loaded”.
 - **Connect** — the gear on the brand bar, and Radio → Connect…. Host and port, default port 50001. One WebSocket. Connect sends `START`, one real audio channel, float32, 12 kHz, `AUDIO_START`, `MODULATION` DIGU, a VFO read, and `TRX:0,false,tci`. That last command selects the TCI transmit stream and stays in receive. The window never sends `TRX:…,true`.

@@ -428,9 +428,20 @@ void MainWindow::openRadioDialog() {
     openTciConnectDialog(this, tci_);
 }
 
+void MainWindow::setReceivePlaceholder(bool connected) {
+  auto* receive = findChild<QPlainTextEdit*>("receiveText");
+  if (!receive)
+    return;
+  receive->setPlaceholderText(
+      connected ? QStringLiteral("Audio is arriving.\nNothing is decoded yet.")
+                : QStringLiteral(
+                      "Received text will appear here.\nNo radio is connected, so nothing is being decoded."));
+}
+
 void MainWindow::showRadioDown(const QString& error) {
   const QString dash = QString::fromUtf8("—");
   dialText_ = dash;
+  setReceivePlaceholder(false);
   const QString line = error.isEmpty() ? QStringLiteral("Radio not connected")
                                         : QStringLiteral("Radio not connected: %1").arg(error);
   if (statusStrip_) {
@@ -445,6 +456,7 @@ void MainWindow::showRadioDown(const QString& error) {
 
 void MainWindow::showRadioUp(const QString& host, quint16 port) {
   dialText_ = QString::fromUtf8("—");
+  setReceivePlaceholder(true);
   if (statusStrip_) {
     statusStrip_->setRadio(true, QStringLiteral("Connected %1:%2").arg(host).arg(port));
     statusStrip_->setDial(dialText_);
