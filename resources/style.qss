@@ -58,6 +58,35 @@ QLabel#brandSubtitle {
   color: #d5e2ee;
 }
 
+QWidget#waterfallTone {
+  background: #0c141c;
+  border-top: 1px solid #274150;
+}
+
+QLabel#waterfallToneLabel {
+  color: #9fb4c4;
+  background: transparent;
+}
+
+QLabel#waterfallToneValue {
+  color: #00e5ff;
+  background: transparent;
+}
+
+QWidget#waterfallTone QSlider::groove:horizontal {
+  height: 4px;
+  background: #1a2e3c;
+  border-radius: 2px;
+}
+
+QWidget#waterfallTone QSlider::handle:horizontal {
+  background: #00e5ff;
+  border: none;
+  width: 12px;
+  margin: -6px 0;
+  border-radius: 6px;
+}
+
 QDockWidget {
   color: #8ea6b8;
   font-size: 11px;

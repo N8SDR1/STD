@@ -5,11 +5,15 @@
 
 #include <QFont>
 #include <QFontMetrics>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QLinearGradient>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QResizeEvent>
+#include <QSettings>
+#include <QSlider>
 #include <QTimer>
 #include <QWheelEvent>
 #include <QWindow>
@@ -23,6 +27,7 @@ constexpr int kMaxRows = 480;
 constexpr int kRingBits = 22;
 constexpr int kRingSize = 1 << kRingBits;
 constexpr int kRulerHeight = 32;
+constexpr int kToneBarHeight = 40;
 constexpr int kMaxDisplayFft = 8192;
 constexpr float kFullHz = 4000.0f;
 constexpr float kMinSpanFloor = 40.0f;
@@ -81,8 +86,10 @@ float tickStepHz(float span) {
   return 2000.0f;
 }
 
-QRgb traceColor(float db, float noise) {
-  const float rise = (db - noise - 9.0f) / 14.0f;
+QRgb traceColor(float dbAboveNoise, int contrast, int brightness) {
+  const float threshold = 18.0f * (1.0f - float(brightness) / 100.0f);
+  const float span = 22.0f - 16.0f * (float(contrast) / 100.0f);
+  const float rise = (dbAboveNoise - threshold) / span;
   if (!(rise > 0.0f))
     return kField;
   const float u = rise > 1.0f ? 1.0f : rise;
@@ -112,6 +119,8 @@ WaterfallWidget::WaterfallWidget(QWidget* parent) : QWidget(parent) {
   rebuildTimer_ = new QTimer(this);
   rebuildTimer_->setInterval(0);
   connect(rebuildTimer_, &QTimer::timeout, this, [this] { rebuildSome(); });
+  buildToneBar();
+  placeToneBar();
 }
 
 void WaterfallWidget::setRadio(bool connected, const QString& dial) {
@@ -169,7 +178,7 @@ QRect WaterfallWidget::rulerRect() const {
 }
 
 QRect WaterfallWidget::plotRect() const {
-  return QRect(0, kRulerHeight, width(), qMax(1, height() - kRulerHeight));
+  return QRect(0, kRulerHeight, width(), qMax(1, height() - kRulerHeight - kToneBarHeight));
 }
 
 float WaterfallWidget::hzAtX(int x) const {
@@ -250,7 +259,7 @@ const WaterfallWidget::TraceRow& WaterfallWidget::rowAt(int age) const {
 }
 
 bool WaterfallWidget::rowMatches(const TraceRow& row) const {
-  return row.width == plotRect().width() && row.px.size() == row.width &&
+  return row.width == plotRect().width() && row.level.size() == row.width &&
          std::fabs(row.lo - viewLoHz_) < 0.05f && std::fabs(row.hi - viewHiHz_) < 0.05f;
 }
 
@@ -315,7 +324,7 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
   row->lo = viewLoHz_;
   row->hi = viewHiHz_;
   row->width = width;
-  row->px = QVector<QRgb>(std::max(width, 0), kField);
+  row->level = QVector<float>(std::max(width, 0), -80.0f);
   if (width < 8 || rateHz_ <= 0 || endSample <= 0)
     return;
 
@@ -390,7 +399,70 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
   std::nth_element(order.begin(), order.begin() + rank, order.end());
   const float noise = order[rank];
   for (int c = 0; c < width; ++c)
-    row->px[c] = traceColor(db[c], noise);
+    row->level[c] = db[c] - noise;
+}
+
+void WaterfallWidget::buildToneBar() {
+  QSettings settings;
+  contrast_ = std::clamp(settings.value(QStringLiteral("waterfall/contrast"), 50).toInt(), 0, 100);
+  brightness_ = std::clamp(settings.value(QStringLiteral("waterfall/brightness"), 50).toInt(), 0, 100);
+
+  toneBar_ = new QWidget(this);
+  toneBar_->setObjectName("waterfallTone");
+  toneBar_->setFixedHeight(kToneBarHeight);
+  toneBar_->setAutoFillBackground(true);
+
+  auto* layout = new QHBoxLayout(toneBar_);
+  layout->setContentsMargins(12, 4, 12, 4);
+  layout->setSpacing(8);
+
+  auto addSlider = [this, layout](const QString& name, const QString& objectName, int value,
+                                   int* slot) {
+    auto* label = new QLabel(name, toneBar_);
+    label->setObjectName("waterfallToneLabel");
+    QFont face("Inter");
+    face.setPixelSize(12);
+    label->setFont(face);
+    auto* slider = new QSlider(Qt::Horizontal, toneBar_);
+    slider->setObjectName(objectName);
+    slider->setRange(0, 100);
+    slider->setValue(value);
+    slider->setFixedWidth(160);
+    slider->setFocusPolicy(Qt::NoFocus);
+    slider->setAccessibleName(name);
+    slider->setToolTip(name == QLatin1String("Contrast")
+                            ? QStringLiteral("Contrast. Display only. Does not change the span.")
+                            : QStringLiteral("Brightness. Display only. Does not change the span."));
+    auto* readout = new QLabel(QString::number(value), toneBar_);
+    readout->setObjectName("waterfallToneValue");
+    readout->setFont(face);
+    readout->setMinimumWidth(24);
+    layout->addWidget(label);
+    layout->addWidget(slider);
+    layout->addWidget(readout);
+    connect(slider, &QSlider::valueChanged, this, [this, slot, readout](int next) {
+      *slot = std::clamp(next, 0, 100);
+      readout->setText(QString::number(*slot));
+      QSettings saved;
+      saved.setValue(slot == &contrast_ ? QStringLiteral("waterfall/contrast")
+                                         : QStringLiteral("waterfall/brightness"),
+                     *slot);
+      update();
+    });
+  };
+
+  addSlider(QStringLiteral("Contrast"), QStringLiteral("waterfallContrast"), contrast_, &contrast_);
+  layout->addSpacing(18);
+  addSlider(QStringLiteral("Brightness"), QStringLiteral("waterfallBrightness"), brightness_,
+            &brightness_);
+  layout->addStretch(1);
+}
+
+void WaterfallWidget::placeToneBar() {
+  if (!toneBar_)
+    return;
+  toneBar_->setGeometry(0, std::max(0, height() - kToneBarHeight), std::max(1, width()), kToneBarHeight);
+  toneBar_->raise();
 }
 
 void WaterfallWidget::scheduleRebuild() {
@@ -434,9 +506,9 @@ void WaterfallWidget::setRenderSurface(QWindow* surface) {
 
   surfaceContainer_ = QWidget::createWindowContainer(surface, this);
   surfaceContainer_->setFocusPolicy(Qt::NoFocus);
-  surfaceContainer_->setGeometry(rect());
+  surfaceContainer_->setGeometry(0, 0, width(), qMax(1, height() - kToneBarHeight));
   surfaceContainer_->show();
-  surfaceContainer_->raise();
+  placeToneBar();
 }
 
 QSize WaterfallWidget::sizeHint() const {
@@ -462,7 +534,8 @@ void WaterfallWidget::paintEvent(QPaintEvent* event) {
 void WaterfallWidget::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
   if (surfaceContainer_)
-    surfaceContainer_->setGeometry(rect());
+    surfaceContainer_->setGeometry(0, 0, width(), qMax(1, height() - kToneBarHeight));
+  placeToneBar();
   if (rowCount_ > 0)
     scheduleRebuild();
 }
@@ -595,7 +668,9 @@ void WaterfallWidget::paintAudio(QPainter& painter) const {
     if (!rowMatches(row))
       continue;
     auto* dst = reinterpret_cast<QRgb*>(frame.scanLine(y));
-    std::copy(row.px.cbegin(), row.px.cend(), dst);
+    const int columns = std::min(int(row.level.size()), plot.width());
+    for (int c = 0; c < columns; ++c)
+      dst[c] = traceColor(row.level[c], contrast_, brightness_);
   }
   painter.drawImage(plot.topLeft(), frame);
   paintRuler(painter);

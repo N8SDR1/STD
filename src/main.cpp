@@ -12,6 +12,7 @@
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSlider>
 #include <QStyleFactory>
 #include <QTimer>
 
@@ -55,6 +56,12 @@ int shellReady(const MainWindow& window) {
     return fail("window icon is missing");
   if (!window.findChild<WaterfallWidget*>())
     return fail("waterfall widget is missing");
+
+  const auto* contrast = window.findChild<QSlider*>("waterfallContrast");
+  const auto* brightness = window.findChild<QSlider*>("waterfallBrightness");
+  if (!contrast || !brightness || !contrast->isEnabled() || !brightness->isEnabled() ||
+      contrast->maximum() != 100 || brightness->maximum() != 100)
+    return fail("waterfall contrast or brightness is missing");
 
   const auto* subtitle = window.findChild<QLabel*>("brandSubtitle");
   if (!subtitle || subtitle->text() != QLatin1String("Shift, Tone, Decode"))
