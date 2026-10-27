@@ -20,8 +20,9 @@ class QWindow;
 // Time runs downward, one pixel per spectrum. Frequency runs across the
 // top. The default span is the full receive audio, about 0–4 kHz. The
 // wheel zooms around the cursor and a drag pans. Each pixel of the
-// visible span is its own FFT bin. Contrast and brightness sit on the
-// bottom of this widget and recolor the trace only. A later renderer
+// visible span is its own FFT bin. Contrast, brightness, and a palette
+// menu sit on the bottom of this widget and recolor the trace only. A
+// later renderer
 // can pass a QWindow
 // — including a QVulkanWindow — to setRenderSurface(). Vulkan is not
 // linked here. Nothing here decodes a modem.
@@ -111,4 +112,5 @@ private:
   QWidget* toneBar_ = nullptr;
   int contrast_ = 50;
   int brightness_ = 50;
+  int palette_ = 0;
 };

@@ -3,11 +3,13 @@
 
 #include "WaterfallWidget.h"
 
+#include <QAction>
 #include <QFont>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLinearGradient>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
@@ -15,6 +17,7 @@
 #include <QSettings>
 #include <QSlider>
 #include <QTimer>
+#include <QToolButton>
 #include <QWheelEvent>
 #include <QWindow>
 
@@ -86,23 +89,136 @@ float tickStepHz(float span) {
   return 2000.0f;
 }
 
-QRgb traceColor(float dbAboveNoise, int contrast, int brightness) {
+struct Stop {
+  float pos;
+  int r;
+  int g;
+  int b;
+};
+
+// Named waterfall patterns. Stops match Lyra's presets, weak to strong.
+struct Palette {
+  const char* name;
+  Stop stops[8];
+  int count;
+};
+
+constexpr Palette kPalettes[] = {
+    {"Classic",
+     {{0.00f, 4, 8, 16},
+      {0.15f, 10, 24, 60},
+      {0.35f, 20, 80, 180},
+      {0.55f, 30, 180, 220},
+      {0.75f, 230, 220, 120},
+      {0.90f, 240, 100, 40},
+      {1.00f, 255, 80, 80},
+      {}},
+     7},
+    {"Inferno",
+     {{0.00f, 0, 0, 4},
+      {0.20f, 40, 11, 84},
+      {0.40f, 101, 21, 110},
+      {0.60f, 159, 42, 99},
+      {0.75f, 212, 72, 66},
+      {0.87f, 245, 125, 21},
+      {0.95f, 250, 193, 39},
+      {1.00f, 252, 255, 164}},
+     8},
+    {"Viridis",
+     {{0.00f, 68, 1, 84},
+      {0.25f, 59, 82, 139},
+      {0.50f, 33, 145, 140},
+      {0.75f, 94, 201, 98},
+      {1.00f, 253, 231, 37},
+      {},
+      {},
+      {}},
+     5},
+    {"Plasma",
+     {{0.00f, 13, 8, 135},
+      {0.20f, 84, 2, 163},
+      {0.40f, 156, 23, 158},
+      {0.60f, 218, 57, 105},
+      {0.80f, 249, 149, 63},
+      {1.00f, 240, 249, 33},
+      {},
+      {}},
+     6},
+    {"Rainbow",
+     {{0.00f, 0, 0, 0},
+      {0.15f, 0, 0, 128},
+      {0.30f, 0, 128, 255},
+      {0.45f, 0, 255, 128},
+      {0.60f, 255, 255, 0},
+      {0.80f, 255, 128, 0},
+      {1.00f, 255, 0, 0},
+      {}},
+     7},
+    {"Ocean",
+     {{0.00f, 0, 0, 0},
+      {0.25f, 8, 25, 64},
+      {0.50f, 18, 95, 130},
+      {0.75f, 80, 200, 220},
+      {1.00f, 230, 245, 255},
+      {},
+      {},
+      {}},
+     5},
+    {"Night",
+     {{0.00f, 0, 0, 0},
+      {0.30f, 40, 0, 0},
+      {0.60f, 130, 10, 10},
+      {0.85f, 220, 80, 30},
+      {1.00f, 255, 180, 60},
+      {},
+      {},
+      {}},
+     5},
+    {"Grayscale",
+     {{0.00f, 0, 0, 0}, {1.00f, 255, 255, 255}, {}, {}, {}, {}, {}, {}},
+     2},
+    {"Amber",
+     {{0.00f, 12, 6, 0},
+      {0.35f, 90, 40, 0},
+      {0.65f, 200, 110, 10},
+      {0.85f, 245, 175, 40},
+      {1.00f, 255, 230, 130},
+      {},
+      {},
+      {}},
+     5},
+};
+
+constexpr int kPaletteCount = int(sizeof(kPalettes) / sizeof(kPalettes[0]));
+
+QRgb samplePalette(const Palette& palette, float u) {
+  const Stop* left = &palette.stops[0];
+  const Stop* right = &palette.stops[palette.count - 1];
+  for (int i = 0; i + 1 < palette.count; ++i) {
+    if (u >= palette.stops[i].pos && u <= palette.stops[i + 1].pos) {
+      left = &palette.stops[i];
+      right = &palette.stops[i + 1];
+      break;
+    }
+  }
+  float blend = 0.0f;
+  if (right->pos > left->pos)
+    blend = (u - left->pos) / (right->pos - left->pos);
+  auto mix = [blend](int from, int to) {
+    return std::clamp(int(from + (to - from) * blend + 0.5f), 0, 255);
+  };
+  return qRgb(mix(left->r, right->r), mix(left->g, right->g), mix(left->b, right->b));
+}
+
+QRgb traceColor(float dbAboveNoise, int contrast, int brightness, int palette) {
   const float threshold = 18.0f * (1.0f - float(brightness) / 100.0f);
   const float span = 22.0f - 16.0f * (float(contrast) / 100.0f);
   const float rise = (dbAboveNoise - threshold) / span;
   if (!(rise > 0.0f))
     return kField;
   const float u = rise > 1.0f ? 1.0f : rise;
-  if (u < 0.35f) {
-    const float k = u / 0.35f;
-    return qRgb(0, int(8.0f + 36.0f * k), int(36.0f + 90.0f * k));
-  }
-  if (u < 0.72f) {
-    const float k = (u - 0.35f) / 0.37f;
-    return qRgb(0, int(44.0f + 170.0f * k), int(126.0f + 110.0f * k));
-  }
-  const float k = (u - 0.72f) / 0.28f;
-  return qRgb(int(30.0f + 225.0f * k), int(214.0f + 41.0f * k), 255);
+  const int index = std::clamp(palette, 0, kPaletteCount - 1);
+  return samplePalette(kPalettes[index], u);
 }
 
 }  // namespace
@@ -406,6 +522,13 @@ void WaterfallWidget::buildToneBar() {
   QSettings settings;
   contrast_ = std::clamp(settings.value(QStringLiteral("waterfall/contrast"), 50).toInt(), 0, 100);
   brightness_ = std::clamp(settings.value(QStringLiteral("waterfall/brightness"), 50).toInt(), 0, 100);
+  palette_ = 0;
+  const QString savedPalette =
+      settings.value(QStringLiteral("waterfall/palette"), QStringLiteral("Classic")).toString();
+  for (int i = 0; i < kPaletteCount; ++i) {
+    if (savedPalette == QLatin1String(kPalettes[i].name))
+      palette_ = i;
+  }
 
   toneBar_ = new QWidget(this);
   toneBar_->setObjectName("waterfallTone");
@@ -456,6 +579,44 @@ void WaterfallWidget::buildToneBar() {
   addSlider(QStringLiteral("Brightness"), QStringLiteral("waterfallBrightness"), brightness_,
             &brightness_);
   layout->addStretch(1);
+
+  auto* paletteLabel = new QLabel(QStringLiteral("Palette"), toneBar_);
+  paletteLabel->setObjectName("waterfallToneLabel");
+  QFont face("Inter");
+  face.setPixelSize(12);
+  paletteLabel->setFont(face);
+  auto* paletteButton = new QToolButton(toneBar_);
+  paletteButton->setObjectName("waterfallPalette");
+  paletteButton->setPopupMode(QToolButton::InstantPopup);
+  paletteButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  paletteButton->setFocusPolicy(Qt::NoFocus);
+  paletteButton->setFont(face);
+  paletteButton->setText(QString::fromUtf8(kPalettes[palette_].name));
+  paletteButton->setAccessibleName("Waterfall palette");
+  paletteButton->setToolTip(QStringLiteral("Color pattern. Display only. Does not change the span."));
+  auto* menu = new QMenu(paletteButton);
+  menu->setObjectName("waterfallPaletteMenu");
+  for (int i = 0; i < kPaletteCount; ++i) {
+    QAction* action = menu->addAction(QString::fromUtf8(kPalettes[i].name));
+    action->setCheckable(true);
+    action->setChecked(i == palette_);
+    action->setData(i);
+  }
+  connect(menu, &QMenu::triggered, this, [this, paletteButton](QAction* chosen) {
+    if (!chosen)
+      return;
+    palette_ = std::clamp(chosen->data().toInt(), 0, kPaletteCount - 1);
+    const auto actions = paletteButton->menu()->actions();
+    for (QAction* action : actions)
+      action->setChecked(action == chosen);
+    paletteButton->setText(QString::fromUtf8(kPalettes[palette_].name));
+    QSettings saved;
+    saved.setValue(QStringLiteral("waterfall/palette"), paletteButton->text());
+    update();
+  });
+  paletteButton->setMenu(menu);
+  layout->addWidget(paletteLabel);
+  layout->addWidget(paletteButton);
 }
 
 void WaterfallWidget::placeToneBar() {
@@ -670,7 +831,7 @@ void WaterfallWidget::paintAudio(QPainter& painter) const {
     auto* dst = reinterpret_cast<QRgb*>(frame.scanLine(y));
     const int columns = std::min(int(row.level.size()), plot.width());
     for (int c = 0; c < columns; ++c)
-      dst[c] = traceColor(row.level[c], contrast_, brightness_);
+      dst[c] = traceColor(row.level[c], contrast_, brightness_, palette_);
   }
   painter.drawImage(plot.topLeft(), frame);
   paintRuler(painter);

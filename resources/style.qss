@@ -87,6 +87,20 @@ QWidget#waterfallTone QSlider::handle:horizontal {
   border-radius: 6px;
 }
 
+QToolButton#waterfallPalette {
+  background: #121a24;
+  color: #d7e6f2;
+  border: 1px solid #274150;
+  border-radius: 4px;
+  padding: 2px 12px 2px 8px;
+  min-width: 88px;
+}
+
+QToolButton#waterfallPalette:hover {
+  border-color: #00e5ff;
+  color: #00e5ff;
+}
+
 QDockWidget {
   color: #8ea6b8;
   font-size: 11px;

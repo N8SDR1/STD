@@ -10,9 +10,11 @@
 #include <QIcon>
 #include <QLabel>
 #include <QPalette>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSlider>
+#include <QToolButton>
 #include <QStyleFactory>
 #include <QTimer>
 
@@ -62,6 +64,16 @@ int shellReady(const MainWindow& window) {
   if (!contrast || !brightness || !contrast->isEnabled() || !brightness->isEnabled() ||
       contrast->maximum() != 100 || brightness->maximum() != 100)
     return fail("waterfall contrast or brightness is missing");
+
+  const auto* palette = window.findChild<QToolButton*>("waterfallPalette");
+  const char* paletteNames[] = {"Classic", "Inferno", "Viridis", "Plasma", "Rainbow",
+                                 "Ocean",   "Night",   "Grayscale", "Amber"};
+  if (!palette || !palette->menu() || palette->menu()->actions().size() != 9)
+    return fail("waterfall palette menu is missing");
+  for (int i = 0; i < 9; ++i) {
+    if (palette->menu()->actions().at(i)->text() != QLatin1String(paletteNames[i]))
+      return fail("waterfall palette name is wrong");
+  }
 
   const auto* subtitle = window.findChild<QLabel*>("brandSubtitle");
   if (!subtitle || subtitle->text() != QLatin1String("Shift, Tone, Decode"))
