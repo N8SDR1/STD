@@ -51,6 +51,8 @@ qt_add_executable(std
   src/MainWindow.h
   src/WaterfallWidget.cpp
   src/WaterfallWidget.h
+  src/ModeProfile.cpp
+  src/ModeProfile.h
   src/StatusStrip.cpp
   src/StatusStrip.h
   src/TciClient.cpp

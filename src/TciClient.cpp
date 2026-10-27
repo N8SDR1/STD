@@ -188,6 +188,22 @@ void TciClient::setTransmit(bool) {
   transmit_ = false;
 }
 
+void TciClient::setDialHz(qint64 hz) {
+  if (hz <= 0)
+    return;
+  // MSHV Network::set_freq for a TCI model. Receiver 0, VFO A.
+  sendCommand(QStringLiteral("vfo:0,0,%1").arg(hz));
+}
+
+void TciClient::setSideband(const QString& sideband) {
+  const QString token = sideband.trimmed().toLower();
+  if (token != QLatin1String("digu") && token != QLatin1String("digl"))
+    return;
+  // MSHV Network::set_mode writes modulation:<trx>,<mode>. DIGL is
+  // the same command with the lower sideband token.
+  sendCommand(QStringLiteral("modulation:0,%1").arg(token));
+}
+
 void TciClient::sendCommand(const QString& command) {
   if (!socket_ || socket_->state() != QAbstractSocket::ConnectedState)
     return;
@@ -199,7 +215,8 @@ void TciClient::beginSession() {
   // flag per client and does not treat it as startRequested, so a
   // live Protocol 2 session stays up. START would close that session.
   // AUDIO_SAMPLERATE and AUDIO_STREAM_* are global, so they are not
-  // sent. MODULATION, VFO, and TRX are not sent either.
+  // sent. A band button may write VFO and MODULATION later. TRX is
+  // never sent.
   sendCommand(QStringLiteral("AUDIO_START:0"));
   audioStarted_ = true;
 }
@@ -245,6 +262,17 @@ void TciClient::handleCommand(const QString& raw) {
     const qint64 hz = args.at(2).toLongLong(&ok);
     if (ok && args.at(0) == QLatin1String("0") && args.at(1) == QLatin1String("0"))
       emit dialChanged(hz);
+    return;
+  }
+  if (name == QLatin1String("rx_filter_band") && args.size() >= 3) {
+    if (args.at(0) != QLatin1String("0"))
+      return;
+    bool okLo = false;
+    bool okHi = false;
+    const int low = args.at(1).toInt(&okLo);
+    const int high = args.at(2).toInt(&okHi);
+    if (okLo && okHi)
+      emit receiveBandChanged(low, high);
     return;
   }
   if (name == QLatin1String("modulation") && args.size() >= 2) {
@@ -392,7 +420,8 @@ void openTciConnectDialog(QWidget* parent, TciClient* client) {
   auto* note = new QLabel(
       QStringLiteral(
           "Connect shares the radio and subscribes to receive audio. "
-          "It does not send START, and it does not key."),
+          "It does not send START, and it does not key. "
+          "A band button sets the FT8 dial and the sideband."),
       &dialog);
   note->setWordWrap(true);
   note->setObjectName(QStringLiteral("panelNote"));

@@ -1,6 +1,7 @@
 /* STD shell. Near-black glass, cyan readouts, amber for transmit and warnings. */
 
-QMainWindow, QWidget#textPanel, QWidget#macroRow, QWidget#statusStrip {
+QMainWindow, QWidget#textPanel, QWidget#macroRow, QWidget#statusStrip, QWidget#modeProfile,
+QWidget#mshvProfile {
   background: #06090e;
   color: #cdd9e5;
 }
@@ -204,6 +205,31 @@ QPushButton#macro {
   min-width: 46px;
   min-height: 26px;
   padding: 2px 8px;
+}
+
+QPushButton#profileBand {
+  background: #101820;
+  color: #cdd9e5;
+  border: 1px solid #274150;
+  border-radius: 4px;
+  min-width: 36px;
+  min-height: 24px;
+  padding: 1px 6px;
+}
+
+QPushButton#profileBand:checked {
+  background: #143024;
+  color: #b6f5c8;
+  border: 1px solid #3ddc84;
+}
+
+QPushButton#profileBand:hover {
+  border-color: #3d6a84;
+}
+
+QLabel#keyboardProfile {
+  color: #8ea3b5;
+  padding: 8px 10px;
 }
 
 QPushButton#macro:disabled {

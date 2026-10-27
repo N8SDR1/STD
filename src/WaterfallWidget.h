@@ -18,8 +18,9 @@ class QWindow;
 // Waterfall for one real RX-audio channel.
 //
 // Time runs downward, one pixel per spectrum. Frequency runs across the
-// top. The default span is the full receive audio, about 0–4 kHz. The
-// wheel zooms around the cursor and a drag pans. Each pixel of the
+// top. The outer span is the receive band reported by TCI
+// (rx_filter_band). The wheel, a drag, and the mode window can narrow
+// inside that span and cannot cross its edges. Each pixel of the
 // visible span is its own FFT bin. Contrast, brightness, and a palette
 // menu sit on the bottom of this widget and recolor the trace only. A
 // later renderer
@@ -41,6 +42,17 @@ public:
   // Real mono samples, already one channel. sampleRateHz is the frame rate.
   void pushRealAudio(const float* samples, int count, int sampleRateHz);
   void clearAudio();
+
+  // Narrow the ruler. The result stays inside the reported receive band.
+  void setFrequencyWindow(int startHz, int widthHz);
+
+  // rx_filter_band edges, in Hz, as the radio sent them. This is the
+  // outer limit. A later narrow view cannot cross it.
+  void setReceiveBand(int lowHz, int highHz);
+  void clearReceiveBand();
+
+  // 1 is slow, 9 is the FT8 default and matches the earlier hop.
+  void setTraceSpeed(int speed);
 
   QSize sizeHint() const override;
   QSize minimumSizeHint() const override;
@@ -75,7 +87,9 @@ private:
   void placeToneBar();
   void setView(float loHz, float hiHz);
   void resetView();
-  float fullSpanHz() const;
+  float limitLoHz() const;
+  float limitHiHz() const;
+  bool hasLimit() const;
   float minSpanHz(int width) const;
   bool rowMatches(const TraceRow& row) const;
   QRect rulerRect() const;
@@ -103,7 +117,10 @@ private:
   int rateHz_ = 0;
   qint64 totalSamples_ = 0;
   float viewLoHz_ = 0.0f;
-  float viewHiHz_ = 4000.0f;
+  float viewHiHz_ = 0.0f;
+  bool haveBand_ = false;
+  float bandLoHz_ = 0.0f;
+  float bandHiHz_ = 0.0f;
   bool zoomed_ = false;
   bool dragging_ = false;
   int dragX0_ = 0;
@@ -113,4 +130,5 @@ private:
   int contrast_ = 50;
   int brightness_ = 50;
   int palette_ = 0;
+  int traceSpeed_ = 9;
 };

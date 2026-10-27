@@ -32,7 +32,6 @@ constexpr int kRingSize = 1 << kRingBits;
 constexpr int kRulerHeight = 32;
 constexpr int kToneBarHeight = 40;
 constexpr int kMaxDisplayFft = 8192;
-constexpr float kFullHz = 4000.0f;
 constexpr float kMinSpanFloor = 40.0f;
 constexpr QRgb kField = qRgb(0, 2, 12);
 
@@ -268,17 +267,31 @@ void WaterfallWidget::clearAudio() {
 
 void WaterfallWidget::resetView() {
   zoomed_ = false;
-  viewLoHz_ = 0.0f;
-  viewHiHz_ = kFullHz;
-  update();
+  if (hasLimit())
+    setView(limitLoHz(), limitHiHz());
+  else {
+    viewLoHz_ = 0.0f;
+    viewHiHz_ = 0.0f;
+    update();
+  }
 }
 
-float WaterfallWidget::fullSpanHz() const {
-  if (rateHz_ >= 8000)
-    return kFullHz;
+float WaterfallWidget::limitLoHz() const {
+  if (haveBand_)
+    return bandLoHz_;
+  return 0.0f;
+}
+
+float WaterfallWidget::limitHiHz() const {
+  if (haveBand_)
+    return bandHiHz_;
   if (rateHz_ > 0)
     return float(rateHz_) * 0.5f;
-  return kFullHz;
+  return 0.0f;
+}
+
+bool WaterfallWidget::hasLimit() const {
+  return limitHiHz() > limitLoHz() + 1.0f;
 }
 
 float WaterfallWidget::minSpanHz(int width) const {
@@ -312,33 +325,45 @@ int WaterfallWidget::xAtHz(float hz) const {
 }
 
 void WaterfallWidget::setView(float loHz, float hiHz) {
-  const float full = fullSpanHz();
+  if (hiHz < loHz)
+    std::swap(loHz, hiHz);
+  const float edgeLo = limitLoHz();
+  const float edgeHi = limitHiHz();
+  if (!hasLimit()) {
+    viewLoHz_ = loHz;
+    viewHiHz_ = hiHz;
+    zoomed_ = hiHz > loHz + 1.0f;
+    update();
+    return;
+  }
   const int pixels = std::max(1, plotRect().width());
   float span = hiHz - loHz;
-  const float minimum = minSpanHz(pixels);
+  const float minimum = std::min(minSpanHz(pixels), edgeHi - edgeLo);
   if (span < minimum) {
     const float mid = 0.5f * (loHz + hiHz);
     span = minimum;
     loHz = mid - span * 0.5f;
     hiHz = loHz + span;
   }
-  if (span >= full - 0.5f) {
-    loHz = 0.0f;
-    hiHz = full;
+  if (span >= (edgeHi - edgeLo) - 0.5f) {
+    loHz = edgeLo;
+    hiHz = edgeHi;
   }
-  if (loHz < 0.0f) {
-    hiHz -= loHz;
-    loHz = 0.0f;
+  if (loHz < edgeLo) {
+    hiHz += edgeLo - loHz;
+    loHz = edgeLo;
   }
-  if (hiHz > full) {
-    loHz -= hiHz - full;
-    hiHz = full;
+  if (hiHz > edgeHi) {
+    loHz -= hiHz - edgeHi;
+    hiHz = edgeHi;
   }
-  if (loHz < 0.0f)
-    loHz = 0.0f;
+  if (loHz < edgeLo)
+    loHz = edgeLo;
+  if (hiHz > edgeHi)
+    hiHz = edgeHi;
   viewLoHz_ = loHz;
   viewHiHz_ = hiHz;
-  zoomed_ = viewLoHz_ > 0.5f || viewHiHz_ < full - 0.5f;
+  zoomed_ = viewLoHz_ > edgeLo + 0.5f || viewHiHz_ < edgeHi - 0.5f;
   update();
 }
 
@@ -355,7 +380,65 @@ float WaterfallWidget::sampleAt(qint64 absolute) const {
 int WaterfallWidget::hopSamples() const {
   if (rateHz_ <= 0)
     return 2048;
-  return qBound(512, rateHz_ / 10, 8192);
+  const int speed = qBound(1, traceSpeed_, 9);
+  return qBound(512, rateHz_ / (speed + 1), 8192);
+}
+
+void WaterfallWidget::setFrequencyWindow(int startHz, int widthHz) {
+  float lo = float(std::max(0, startHz));
+  float hi = lo + float(std::max(1, widthHz));
+  const float edgeLo = limitLoHz();
+  const float edgeHi = limitHiHz();
+  if (edgeHi > edgeLo + 1.0f) {
+    lo = std::max(lo, edgeLo);
+    hi = std::min(hi, edgeHi);
+    if (hi <= lo + 1.0f)
+      return;
+  }
+  setView(lo, hi);
+  scheduleRebuild();
+}
+
+void WaterfallWidget::setReceiveBand(int lowHz, int highHz) {
+  float lo = float(std::min(lowHz, highHz));
+  float hi = float(std::max(lowHz, highHz));
+  float left = 0.0f;
+  float right = 0.0f;
+  if (lo < 0.0f && hi > 0.0f) {
+    left = 0.0f;
+    right = std::max(std::fabs(lo), std::fabs(hi));
+  } else {
+    left = std::min(std::fabs(lo), std::fabs(hi));
+    right = std::max(std::fabs(lo), std::fabs(hi));
+  }
+  if (!(right > left + 1.0f))
+    return;
+  const bool keep = zoomed_;
+  const float viewLo = viewLoHz_;
+  const float viewHi = viewHiHz_;
+  haveBand_ = true;
+  bandLoHz_ = left;
+  bandHiHz_ = right;
+  if (keep)
+    setView(viewLo, viewHi);
+  else
+    setView(left, right);
+  scheduleRebuild();
+}
+
+void WaterfallWidget::clearReceiveBand() {
+  haveBand_ = false;
+  bandLoHz_ = 0.0f;
+  bandHiHz_ = 0.0f;
+  if (!zoomed_)
+    resetView();
+  else if (hasLimit())
+    setView(viewLoHz_, viewHiHz_);
+  scheduleRebuild();
+}
+
+void WaterfallWidget::setTraceSpeed(int speed) {
+  traceSpeed_ = qBound(1, speed, 9);
 }
 
 WaterfallWidget::TraceRow& WaterfallWidget::rowAt(int age) {
@@ -390,10 +473,10 @@ void WaterfallWidget::pushRealAudio(const float* samples, int count, int sampleR
     rateHz_ = sampleRateHz;
     if (keepZoom)
       setView(lo, hi);
-    else {
-      viewLoHz_ = 0.0f;
-      viewHiHz_ = fullSpanHz();
-    }
+    else if (!haveBand_)
+      setView(0.0f, float(sampleRateHz) * 0.5f);
+    else
+      setView(bandLoHz_, bandHiHz_);
   }
   if (ring_.size() != kRingSize)
     ring_ = QVector<float>(kRingSize, 0.0f);
@@ -550,7 +633,7 @@ void WaterfallWidget::buildToneBar() {
     slider->setObjectName(objectName);
     slider->setRange(0, 100);
     slider->setValue(value);
-    slider->setFixedWidth(160);
+    slider->setFixedWidth(72);
     slider->setFocusPolicy(Qt::NoFocus);
     slider->setAccessibleName(name);
     slider->setToolTip(name == QLatin1String("Contrast")
@@ -847,13 +930,19 @@ void WaterfallWidget::wheelEvent(QWheelEvent* event) {
     event->ignore();
     return;
   }
-  const float full = fullSpanHz();
+  if (!hasLimit()) {
+    event->ignore();
+    return;
+  }
+  const float edgeLo = limitLoHz();
+  const float edgeHi = limitHiHz();
+  const float full = edgeHi - edgeLo;
   const float span = qMax(1.0f, viewHiHz_ - viewLoHz_);
   const float steps = float(delta) / 120.0f;
   const float factor = std::pow(1.25f, -steps);
   const float next = span * factor;
   if (next >= full - 1.0f) {
-    setView(0.0f, full);
+    setView(edgeLo, edgeHi);
   } else {
     const float anchor = hzAtX(int(event->position().x()));
     const float place = qBound(0.0f, (anchor - viewLoHz_) / span, 1.0f);
@@ -866,7 +955,8 @@ void WaterfallWidget::wheelEvent(QWheelEvent* event) {
 
 void WaterfallWidget::mousePressEvent(QMouseEvent* event) {
   if (event->button() == Qt::RightButton) {
-    setView(0.0f, fullSpanHz());
+    if (hasLimit())
+      setView(limitLoHz(), limitHiHz());
     scheduleRebuild();
     event->accept();
     return;
@@ -911,7 +1001,8 @@ void WaterfallWidget::mouseDoubleClickEvent(QMouseEvent* event) {
   if (event->button() == Qt::LeftButton) {
     dragging_ = false;
     setCursor(Qt::ArrowCursor);
-    setView(0.0f, fullSpanHz());
+    if (hasLimit())
+      setView(limitLoHz(), limitHiHz());
     scheduleRebuild();
     event->accept();
     return;

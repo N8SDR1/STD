@@ -7,6 +7,7 @@
 #include <QMainWindow>
 #include <QString>
 
+class ModeProfile;
 class QDockWidget;
 class QShowEvent;
 class QToolBar;
@@ -32,6 +33,8 @@ private:
   void arrangeDefault();
   void resizeToHero();
   void showAbout();
+  void showGuide();
+  void tuneActiveBand();
   void openRadioDialog();
   void setReceivePlaceholder(bool connected);
   void showRadioDown(const QString& error);
@@ -44,6 +47,7 @@ private:
 
   QToolBar* brandBar_ = nullptr;
   WaterfallWidget* waterfall_ = nullptr;
+  ModeProfile* profile_ = nullptr;
   StatusStrip* statusStrip_ = nullptr;
   TciClient* tci_ = nullptr;
   QString dialText_ = QString::fromUtf8("—");

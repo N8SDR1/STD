@@ -9,9 +9,10 @@
 class QWidget;
 
 // One TCI WebSocket. Connect shares a radio that is already on the
-// air. The only command it sends is AUDIO_START for receiver 0, which
-// subscribes this socket to real RX audio. It does not send START,
-// MODULATION, a VFO write, TRX, or the global audio-format setters.
+// air. The only command it sends then is AUDIO_START for receiver 0,
+// which subscribes this socket to real RX audio. It does not send
+// START, TRX, or the global audio-format setters. A later band or
+// mode choice may send one VFO write and one MODULATION.
 class TciClient : public QObject {
   Q_OBJECT
 
@@ -30,12 +31,21 @@ public:
   // Kept off. TRX true would key, and TRX false would unkey.
   void setTransmit(bool on);
 
+  // FT8 dial on receiver 0, VFO A. No-op unless the socket is open.
+  // Does not send START and does not key.
+  void setDialHz(qint64 hz);
+
+  // DIGU or DIGL on receiver 0. Any other token is ignored.
+  void setSideband(const QString& sideband);
+
 signals:
   void sessionUp(const QString& host, quint16 port);
   void sessionDown(const QString& error);
   void dialChanged(qint64 hz);
   void modeChanged(const QString& mode);
   void pttChanged(bool on);
+  // Receiver 0 passband, as reported. low and high keep the radio's sign.
+  void receiveBandChanged(int lowHz, int highHz);
   // Mono float32, one real channel taken from a type-1 RX frame.
   void rxAudio(int sampleRateHz, const QByteArray& mono);
 

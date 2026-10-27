@@ -3,6 +3,7 @@
 
 #include "MainWindow.h"
 
+#include "ModeProfile.h"
 #include "StatusStrip.h"
 #include "TciClient.h"
 #include "WaterfallWidget.h"
@@ -10,6 +11,8 @@
 #include <algorithm>
 
 #include <QAction>
+#include <QActionGroup>
+#include <QDialog>
 #include <QIcon>
 #include <QDockWidget>
 #include <QFont>
@@ -25,6 +28,7 @@
 #include <QPen>
 #include <QPixmap>
 #include <QPlainTextEdit>
+#include <QTextBrowser>
 #include <QPushButton>
 #include <QShowEvent>
 #include <QSizePolicy>
@@ -192,6 +196,23 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   arrangeDefault();
 
   tci_ = new TciClient(this);
+  if (profile_ && waterfall_) {
+    waterfall_->setTraceSpeed(profile_->speed());
+    connect(profile_, &ModeProfile::displayChanged, waterfall_, &WaterfallWidget::setFrequencyWindow);
+    connect(profile_, &ModeProfile::speedChanged, waterfall_, &WaterfallWidget::setTraceSpeed);
+    connect(profile_, &ModeProfile::tuneRequested, this,
+            [this](qint64 hz, const QString& sideband) {
+              if (!tci_ || !profile_->mshvFamily())
+                return;
+              tci_->setSideband(sideband);
+              tci_->setDialHz(hz);
+            });
+  }
+
+  connect(tci_, &TciClient::receiveBandChanged, this, [this](int lowHz, int highHz) {
+    if (waterfall_)
+      waterfall_->setReceiveBand(lowHz, highHz);
+  });
   connect(tci_, &TciClient::sessionUp, this, [this](const QString& host, quint16 port) {
     showRadioUp(host, port);
   });
@@ -259,9 +280,18 @@ void MainWindow::buildBrandBar() {
 
 void MainWindow::buildDocks() {
   waterfall_ = new WaterfallWidget(this);
+  profile_ = new ModeProfile(this);
+  auto* column = new QWidget(this);
+  column->setObjectName("waterfallColumn");
+  auto* columnLayout = new QVBoxLayout(column);
+  columnLayout->setContentsMargins(0, 0, 0, 0);
+  columnLayout->setSpacing(0);
+  columnLayout->addWidget(waterfall_, 1);
+  columnLayout->addWidget(profile_);
+
   waterfallDock_ = new QDockWidget("Waterfall", this);
   waterfallDock_->setObjectName("waterfallDock");
-  waterfallDock_->setWidget(waterfall_);
+  waterfallDock_->setWidget(column);
   waterfallDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
   waterfallDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable |
                               QDockWidget::DockWidgetClosable);
@@ -366,6 +396,29 @@ void MainWindow::buildMenus() {
   auto* connectRadio = radioMenu->addAction("Connect…");
   connect(connectRadio, &QAction::triggered, this, [this] { openRadioDialog(); });
 
+  auto* modeMenu = menuBar()->addMenu("Mode");
+  modeMenu->setObjectName("modeMenu");
+  auto* modes = new QActionGroup(this);
+  modes->setExclusive(true);
+  const struct {
+    const char* label;
+    bool mshv;
+  } modeRows[] = {{"FT8", true}, {"RTTY", false}, {"PSK31", false}};
+  for (const auto& row : modeRows) {
+    auto* action = modeMenu->addAction(row.label);
+    action->setCheckable(true);
+    action->setChecked(row.mshv);
+    if (row.mshv)
+      action->setObjectName(QStringLiteral("modeFt8"));
+    modes->addAction(action);
+    connect(action, &QAction::triggered, this, [this, mshv = row.mshv] {
+      if (profile_)
+        profile_->setMshvFamily(mshv);
+      if (mshv)
+        tuneActiveBand();
+    });
+  }
+
   auto* viewMenu = menuBar()->addMenu("View");
   const struct {
     QDockWidget* dock;
@@ -390,8 +443,66 @@ void MainWindow::buildMenus() {
   });
 
   auto* helpMenu = menuBar()->addMenu("Help");
+  auto* guide = helpMenu->addAction("Guide");
+  guide->setObjectName("helpGuide");
+  connect(guide, &QAction::triggered, this, [this] { showGuide(); });
   auto* about = helpMenu->addAction("About STD");
   connect(about, &QAction::triggered, this, [this] { showAbout(); });
+}
+
+void MainWindow::tuneActiveBand() {
+  if (!tci_ || !profile_ || !profile_->mshvFamily())
+    return;
+  tci_->setSideband(profile_->sideband());
+  tci_->setDialHz(profile_->dialHz());
+}
+
+void MainWindow::showGuide() {
+  const struct {
+    const char* title;
+    const char* body;
+  } sections[] = {
+      {"Connect",
+       "Radio → Connect opens one TCI socket. It sends AUDIO_START for receiver 0 and nothing else. "
+       "It does not send START, and it does not key."},
+      {"Waterfall zoom",
+       "The wheel zooms around the cursor. Drag pans. Both stay inside the receive band the radio "
+       "reports. A double-click or a right-click opens that whole band again. Start and BW narrow "
+       "the same way, and they cannot cross the reported edges."},
+      {"Contrast and brightness",
+       "The two sliders on the bottom bar recolor the trace. They do not change the frequency span."},
+      {"Palettes",
+       "Palette on that same bar lists Classic, Inferno, Viridis, Plasma, Rainbow, Ocean, Night, "
+       "Grayscale, and Amber."},
+      {"Mode profile",
+       "Mode → FT8 shows Speed, Start, BW, Auto Dec, and the band buttons. RTTY and PSK31 hide that bar. "
+       "Choosing FT8, or a band button, sends the FT8 dial with vfo:0,0,<Hz> and the sideband with "
+       "modulation:0,digl or modulation:0,digu. 40 m and below are DIGL. 30 m, 20 m, and above are DIGU. "
+       "The dials are MSHV’s FT8 column. Neither command keys the radio, and neither is START."},
+  };
+
+  QString html;
+  for (const auto& section : sections) {
+    html += QStringLiteral("<h3>%1</h3><p>%2</p>")
+                .arg(QString::fromLatin1(section.title), QString::fromLatin1(section.body));
+  }
+
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("STD guide"));
+  dialog.setObjectName(QStringLiteral("helpGuideDialog"));
+  dialog.resize(520, 420);
+  auto* text = new QTextBrowser(&dialog);
+  text->setOpenExternalLinks(false);
+  text->setHtml(html);
+  auto* close = new QPushButton(QStringLiteral("Close"), &dialog);
+  connect(close, &QPushButton::clicked, &dialog, &QDialog::accept);
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->addWidget(text);
+  auto* buttons = new QHBoxLayout;
+  buttons->addStretch(1);
+  buttons->addWidget(close);
+  layout->addLayout(buttons);
+  dialog.exec();
 }
 
 void MainWindow::arrangeDefault() {
@@ -457,6 +568,7 @@ void MainWindow::showRadioDown(const QString& error) {
     statusStrip_->setRadio(false, line);
   }
   if (waterfall_) {
+    waterfall_->clearReceiveBand();
     waterfall_->clearAudio();
     waterfall_->setRadio(false, dash);
   }

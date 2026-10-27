@@ -5,6 +5,7 @@
 
 #include "WaterfallWidget.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QFile>
 #include <QIcon>
@@ -12,7 +13,10 @@
 #include <QPalette>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QCheckBox>
+#include <QMenuBar>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QSlider>
 #include <QToolButton>
 #include <QStyleFactory>
@@ -119,6 +123,45 @@ int shellReady(const MainWindow& window) {
 
   if (!window.findChild<QWidget*>("radioConnect"))
     return fail("connect control is missing");
+
+  const auto* profile = window.findChild<QWidget*>("mshvProfile");
+  if (!profile || profile->isHidden())
+    return fail("FT8 profile is hidden");
+  const auto* speed = window.findChild<QSpinBox*>("profileSpeed");
+  const auto* start = window.findChild<QSpinBox*>("profileStart");
+  const auto* bandwidth = window.findChild<QSpinBox*>("profileBandwidth");
+  const auto* autoDec = window.findChild<QCheckBox*>("profileAutoDec");
+  if (!speed || speed->minimum() != 1 || speed->maximum() != 9)
+    return fail("speed control is missing");
+  if (!start || start->singleStep() != 100)
+    return fail("start control is missing");
+  if (!bandwidth || bandwidth->minimum() != 2000 || bandwidth->maximum() != 5000)
+    return fail("bandwidth control is missing");
+  if (!autoDec)
+    return fail("auto decode is missing");
+  const auto bands = window.findChildren<QPushButton*>("profileBand");
+  if (bands.size() != 10)
+    return fail("band buttons are missing");
+  int checked = 0;
+  for (const QPushButton* button : bands) {
+    if (button->isChecked())
+      ++checked;
+  }
+  if (checked != 1)
+    return fail("no band is highlighted");
+  bool guide = false;
+  if (window.menuBar()) {
+    for (QAction* menuAction : window.menuBar()->actions()) {
+      if (!menuAction->menu())
+        continue;
+      for (QAction* item : menuAction->menu()->actions()) {
+        if (item->objectName() == QLatin1String("helpGuide"))
+          guide = true;
+      }
+    }
+  }
+  if (!guide)
+    return fail("guide is missing");
 
   qInfo("STD self-test ok");
   return 0;
