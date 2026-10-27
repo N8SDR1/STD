@@ -120,7 +120,8 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   autoDec->setObjectName(QStringLiteral("profileAutoDec"));
   autoDec->setFont(barFont());
   autoDec->setChecked(savedAuto);
-  autoDec->setToolTip(QStringLiteral("When on, FT8 periods are decoded. This does not key."));
+  autoDec->setToolTip(QStringLiteral(
+      "When on, each FT8 period is written to the Receive pane. This does not key."));
 
   row->addWidget(speed_);
   row->addWidget(start_);

@@ -7,6 +7,7 @@
 #include <QMainWindow>
 #include <QString>
 
+class Ft8Decode;
 class ModeProfile;
 class QDockWidget;
 class QShowEvent;
@@ -50,6 +51,7 @@ private:
   ModeProfile* profile_ = nullptr;
   StatusStrip* statusStrip_ = nullptr;
   TciClient* tci_ = nullptr;
+  Ft8Decode* ft8_ = nullptr;
   QString dialText_ = QString::fromUtf8("—");
   QDockWidget* waterfallDock_ = nullptr;
   QDockWidget* receiveDock_ = nullptr;

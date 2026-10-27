@@ -53,6 +53,8 @@ qt_add_executable(std
   src/WaterfallWidget.h
   src/ModeProfile.cpp
   src/ModeProfile.h
+  src/Ft8Decode.cpp
+  src/Ft8Decode.h
   src/StatusStrip.cpp
   src/StatusStrip.h
   src/TciClient.cpp
@@ -63,6 +65,30 @@ qt_add_executable(std
 target_compile_definitions(std PRIVATE STD_VERSION="${PROJECT_VERSION}")
 
 target_link_libraries(std PRIVATE Qt6::Widgets Qt6::WebSockets)
+
+if(WIN32)
+  set(FT8_DLL "${CMAKE_BINARY_DIR}/ft8dec.dll")
+  add_custom_command(
+    OUTPUT "${FT8_DLL}"
+    COMMAND "${CMAKE_COMMAND}" -DSCRIPT=${CMAKE_SOURCE_DIR}/src/ft8/build_ft8dec.cmd -DOUT=${CMAKE_BINARY_DIR} -P ${CMAKE_SOURCE_DIR}/src/ft8/run_ft8dec.cmake
+    DEPENDS
+      "${CMAKE_SOURCE_DIR}/src/ft8/build_ft8dec.cmd"
+      "${CMAKE_SOURCE_DIR}/src/ft8/run_ft8dec.cmake"
+      "${CMAKE_SOURCE_DIR}/src/ft8/invoke_ft8dec.ps1"
+      "${CMAKE_SOURCE_DIR}/src/ft8/ft8_bridge.cpp"
+      "${CMAKE_SOURCE_DIR}/src/ft8/ft8_api.h"
+      "${CMAKE_SOURCE_DIR}/src/ft8/decoderms_ft8.h"
+      "${CMAKE_SOURCE_DIR}/src/ft8/qt6_compat.h"
+      "${CMAKE_SOURCE_DIR}/src/ft8/patch_qt_import.py"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft8.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft8var.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderpom.cpp"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Building the MSHV FT8 decoder"
+    VERBATIM)
+  add_custom_target(ft8dec DEPENDS "${FT8_DLL}")
+  add_dependencies(std ft8dec)
+endif()
 
 if(MSVC)
   target_compile_options(std PRIVATE /W4)

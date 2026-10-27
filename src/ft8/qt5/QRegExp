@@ -1,0 +1,29 @@
+// Small stand-in so the FT8 decoder can build against Qt 6.
+// MSHV calls QRegExp, which Qt 6 removed. Only the calls the decoder makes are here.
+#pragma once
+
+#include <QRegularExpression>
+#include <QString>
+
+class QRegExp {
+public:
+  QRegExp() = default;
+  explicit QRegExp(const QString& pattern) { re_.setPattern(pattern); }
+
+  void setCaseSensitivity(Qt::CaseSensitivity sensitivity) {
+    QRegularExpression::PatternOptions options = re_.patternOptions();
+    if (sensitivity == Qt::CaseInsensitive)
+      options |= QRegularExpression::CaseInsensitiveOption;
+    else
+      options &= ~QRegularExpression::CaseInsensitiveOption;
+    re_.setPatternOptions(options);
+  }
+
+  bool exactMatch(const QString& text) const {
+    const QRegularExpressionMatch match = re_.match(text);
+    return match.hasMatch() && match.capturedStart() == 0 && match.capturedLength() == text.size();
+  }
+
+private:
+  QRegularExpression re_;
+};

@@ -19,6 +19,7 @@ public:
   void setMshvFamily(bool mshv);
   bool mshvFamily() const { return family_; }
   void setDigitalMode(const QString& mode);
+  QString digitalMode() const { return mode_; }
 
   int speed() const;
   int startHz() const;

@@ -3,6 +3,7 @@
 
 #include "MainWindow.h"
 
+#include "Ft8Decode.h"
 #include "ModeProfile.h"
 #include "StatusStrip.h"
 #include "TciClient.h"
@@ -227,11 +228,32 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       statusStrip_->setPtt(on, tci_->isOpen());
   });
   connect(tci_, &TciClient::rxAudio, this, [this](int rate, const QByteArray& mono) {
-    if (!waterfall_ || mono.size() < int(sizeof(float)))
+    if (mono.size() < int(sizeof(float)))
       return;
     const auto* samples = reinterpret_cast<const float*>(mono.constData());
-    waterfall_->pushRealAudio(samples, mono.size() / int(sizeof(float)), rate);
+    const int count = mono.size() / int(sizeof(float));
+    if (waterfall_)
+      waterfall_->pushRealAudio(samples, count, rate);
+    if (ft8_)
+      ft8_->pushAudio(samples, count, rate);
   });
+
+  ft8_ = new Ft8Decode(this);
+  connect(ft8_, &Ft8Decode::decodedLine, this, [this](const QString& line) {
+    auto* receive = findChild<QPlainTextEdit*>("receiveText");
+    if (receive && !line.isEmpty())
+      receive->appendPlainText(line);
+  });
+  auto* decodeClock = new QTimer(this);
+  connect(decodeClock, &QTimer::timeout, this, [this] {
+    if (!ft8_ || !profile_)
+      return;
+    const bool armed = profile_->mshvFamily() &&
+                       profile_->digitalMode() == QLatin1String("FT8") && profile_->autoDecode();
+    const int low = profile_->startHz();
+    ft8_->setArmed(armed, low, low + profile_->bandwidthHz());
+  });
+  decodeClock->start(200);
 }
 
 void MainWindow::buildBrandBar() {
@@ -485,6 +507,10 @@ void MainWindow::showGuide() {
        "that bar. Choosing FT8, FT4, or a band button sends that mode’s dial with vfo:0,0,<Hz> and the "
        "sideband with modulation:0,digu. FT8 and FT4 are DIGU on every band. Neither command keys the "
        "radio, and neither is START."},
+      {"FT8 decode",
+       "Auto Dec is on by default. With FT8 audio arriving, each finished 15-second period is decoded "
+       "by the MSHV FT8 decoder. A Receive line is Time, dB, DT, Message, and Freq. Freq is the audio "
+       "frequency in Hz. Dist is not computed. Decoding does not send START and it does not key."},
   };
 
   QString html;
@@ -556,7 +582,7 @@ void MainWindow::setReceivePlaceholder(bool connected) {
   if (!receive)
     return;
   receive->setPlaceholderText(
-      connected ? QStringLiteral("Audio is arriving.\nNothing is decoded yet.")
+      connected ? QStringLiteral("Audio is arriving.\nFT8 lines appear here after each period.")
                 : QStringLiteral(
                       "Received text will appear here.\nNo radio is connected, so nothing is being decoded."));
 }
@@ -578,6 +604,8 @@ void MainWindow::showRadioDown(const QString& error) {
     waterfall_->clearAudio();
     waterfall_->setRadio(false, dash);
   }
+  if (ft8_)
+    ft8_->clear();
 }
 
 void MainWindow::showRadioUp(const QString& host, quint16 port) {
