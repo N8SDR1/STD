@@ -24,21 +24,21 @@ QFont barFont() {
   return font;
 }
 
-// MSHV src/config_band_all.h, all_bands_mods_frq, FT8 column (index 3).
-// The dots in "7.074.000" are thousands separators, so the dial is Hz.
-// MSHV does not store a sideband in that table. 40 m and below (dial
-// under 10 MHz) are DIGL. 30 m, 20 m, and above are DIGU.
+// MSHV src/config_band_all.h, all_bands_mods_frq. FT4 is column 2,
+// FT8 is column 3. The dots in "7.074.000" are thousands separators.
+// FT8 and FT4 are upper sideband on every band, so the modulation
+// token is always DIGU.
 struct Ft8Band {
   const char* label;
-  qint64 dialHz;
-  bool digl;
+  qint64 ft8Hz;
+  qint64 ft4Hz;
 };
 
 constexpr Ft8Band kBands[] = {
-    {"1.8", 1840000, true},   {"3.5", 3573000, true},  {"7", 7074000, true},
-    {"10", 10136000, false},  {"14", 14074000, false}, {"18", 18100000, false},
-    {"21", 21074000, false},  {"24", 24915000, false}, {"28", 28074000, false},
-    {"50", 50313000, false},
+    {"1.8", 1840000, 1840000},  {"3.5", 3573000, 3575000}, {"7", 7074000, 7047000},
+    {"10", 10136000, 10140000}, {"14", 14074000, 14080000}, {"18", 18100000, 18104000},
+    {"21", 21074000, 21140000}, {"24", 24915000, 24919000}, {"28", 28074000, 28180000},
+    {"50", 50313000, 50318000},
 };
 
 constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
@@ -113,19 +113,16 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
     button->setFont(barFont());
     button->setCheckable(true);
     button->setChecked(i == band_);
-    button->setToolTip(
-        QStringLiteral("%1 MHz  ·  FT8 %2 Hz  ·  %3")
-            .arg(QString::fromLatin1(kBands[i].label))
-            .arg(kBands[i].dialHz)
-            .arg(kBands[i].digl ? QStringLiteral("DIGL") : QStringLiteral("DIGU")));
+    button->setToolTip(QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  DIGU")
+                           .arg(QString::fromLatin1(kBands[i].label), mode_,
+                                QString::number(kBands[i].ft8Hz)));
     button->setAccessibleName(button->toolTip());
     bands->addButton(button, i);
     row->addWidget(button);
     connect(button, &QPushButton::clicked, this, [this, i] {
       band_ = i;
       remember();
-      emit tuneRequested(kBands[i].dialHz, kBands[i].digl ? QStringLiteral("DIGL")
-                                                          : QStringLiteral("DIGU"));
+      emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
     });
   }
   row->addStretch(1);
@@ -157,6 +154,19 @@ void ModeProfile::setMshvFamily(bool mshv) {
   keyboard_->setVisible(!mshv);
 }
 
+void ModeProfile::setDigitalMode(const QString& mode) {
+  mode_ = (mode == QLatin1String("FT4")) ? QStringLiteral("FT4") : QStringLiteral("FT8");
+  const auto buttons = bar_->findChildren<QPushButton*>(QStringLiteral("profileBand"),
+                                                        Qt::FindDirectChildrenOnly);
+  for (int i = 0; i < buttons.size() && i < kBandCount; ++i) {
+    const qint64 hz = mode_ == QLatin1String("FT4") ? kBands[i].ft4Hz : kBands[i].ft8Hz;
+    buttons[i]->setToolTip(QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  DIGU")
+                               .arg(QString::fromLatin1(kBands[i].label), mode_,
+                                    QString::number(hz)));
+    buttons[i]->setAccessibleName(buttons[i]->toolTip());
+  }
+}
+
 int ModeProfile::speed() const {
   return speed_->value();
 }
@@ -175,11 +185,13 @@ bool ModeProfile::autoDecode() const {
 }
 
 qint64 ModeProfile::dialHz() const {
-  return kBands[band_].dialHz;
+  if (mode_ == QLatin1String("FT4"))
+    return kBands[band_].ft4Hz;
+  return kBands[band_].ft8Hz;
 }
 
 QString ModeProfile::sideband() const {
-  return kBands[band_].digl ? QStringLiteral("DIGL") : QStringLiteral("DIGU");
+  return QStringLiteral("DIGU");
 }
 
 void ModeProfile::applySpan() {

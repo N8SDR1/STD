@@ -403,17 +403,23 @@ void MainWindow::buildMenus() {
   const struct {
     const char* label;
     bool mshv;
-  } modeRows[] = {{"FT8", true}, {"RTTY", false}, {"PSK31", false}};
+    bool checked;
+  } modeRows[] = {{"FT8", true, true}, {"FT4", true, false}, {"RTTY", false, false},
+                  {"PSK31", false, false}};
   for (const auto& row : modeRows) {
     auto* action = modeMenu->addAction(row.label);
     action->setCheckable(true);
-    action->setChecked(row.mshv);
+    action->setChecked(row.checked);
     if (row.mshv)
-      action->setObjectName(QStringLiteral("modeFt8"));
+      action->setObjectName(row.checked ? QStringLiteral("modeFt8") : QStringLiteral("modeFt4"));
     modes->addAction(action);
-    connect(action, &QAction::triggered, this, [this, mshv = row.mshv] {
-      if (profile_)
+    const QString modeName = QString::fromLatin1(row.label);
+    connect(action, &QAction::triggered, this, [this, mshv = row.mshv, modeName] {
+      if (profile_) {
+        if (mshv)
+          profile_->setDigitalMode(modeName);
         profile_->setMshvFamily(mshv);
+      }
       if (mshv)
         tuneActiveBand();
     });
@@ -475,10 +481,10 @@ void MainWindow::showGuide() {
        "Palette on that same bar lists Classic, Inferno, Viridis, Plasma, Rainbow, Ocean, Night, "
        "Grayscale, and Amber."},
       {"Mode profile",
-       "Mode → FT8 shows Speed, Start, BW, Auto Dec, and the band buttons. RTTY and PSK31 hide that bar. "
-       "Choosing FT8, or a band button, sends the FT8 dial with vfo:0,0,<Hz> and the sideband with "
-       "modulation:0,digl or modulation:0,digu. 40 m and below are DIGL. 30 m, 20 m, and above are DIGU. "
-       "The dials are MSHV’s FT8 column. Neither command keys the radio, and neither is START."},
+       "Mode → FT8 or FT4 shows Speed, Start, BW, Auto Dec, and the band buttons. RTTY and PSK31 hide "
+       "that bar. Choosing FT8, FT4, or a band button sends that mode’s dial with vfo:0,0,<Hz> and the "
+       "sideband with modulation:0,digu. FT8 and FT4 are DIGU on every band. Neither command keys the "
+       "radio, and neither is START."},
   };
 
   QString html;

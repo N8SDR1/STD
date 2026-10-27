@@ -18,6 +18,7 @@ public:
 
   void setMshvFamily(bool mshv);
   bool mshvFamily() const { return family_; }
+  void setDigitalMode(const QString& mode);
 
   int speed() const;
   int startHz() const;
@@ -42,4 +43,5 @@ private:
   QSpinBox* bandwidth_ = nullptr;
   int band_ = 0;
   bool family_ = true;
+  QString mode_ = QStringLiteral("FT8");
 };
