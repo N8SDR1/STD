@@ -8,12 +8,16 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QFont>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSpinBox>
+#include <QStyle>
+#include <QStyleOptionSpinBox>
 
 namespace {
 
@@ -44,6 +48,24 @@ constexpr Ft8Band kBands[] = {
 constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
 constexpr int kDefaultBand = 4;  // 14 MHz
 
+void fitSpin(QSpinBox* spin) {
+  spin->ensurePolished();
+  const QFontMetrics metrics(spin->font());
+  const QString shown = spin->text();
+  const int text = metrics.horizontalAdvance(shown);
+  QStyleOptionSpinBox option;
+  option.initFrom(spin);
+  option.rect = QRect(0, 0, 400, 28);
+  option.frame = true;
+  option.buttonSymbols = spin->buttonSymbols();
+  const int button =
+      spin->style()->subControlRect(QStyle::CC_SpinBox, &option, QStyle::SC_SpinBoxUp, spin).width();
+  // Padding and the 1px frame live in the stylesheet. Anything past the
+  // shown string is the empty field the band row cannot use.
+  const int width = text + std::max(button, 1) + 2;
+  spin->setFixedWidth(width);
+}
+
 QSpinBox* makeSpin(QWidget* parent, const QString& name, const QString& prefix,
                    const QString& suffix, int min, int max, int step, int value) {
   auto* spin = new QSpinBox(parent);
@@ -54,8 +76,11 @@ QSpinBox* makeSpin(QWidget* parent, const QString& name, const QString& prefix,
   spin->setPrefix(prefix);
   spin->setSuffix(suffix);
   spin->setValue(value);
-  spin->setAlignment(Qt::AlignRight);
+  spin->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
   spin->setButtonSymbols(QAbstractSpinBox::PlusMinus);
+  spin->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+  fitSpin(spin);
+  QObject::connect(spin, &QSpinBox::valueChanged, spin, [spin](int) { fitSpin(spin); });
   return spin;
 }
 
@@ -83,15 +108,12 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
 
   speed_ = makeSpin(bar_, QStringLiteral("profileSpeed"), QStringLiteral("Speed "), QString(), 1, 9,
                     1, savedSpeed);
-  speed_->setFixedWidth(108);
   speed_->setToolTip(QStringLiteral("Waterfall scroll speed. 9 is the FT8 default."));
   start_ = makeSpin(bar_, QStringLiteral("profileStart"), QStringLiteral("Start "),
                     QStringLiteral(" Hz"), 0, 3000, 100, savedStart);
-  start_->setFixedWidth(148);
   start_->setToolTip(QStringLiteral("Left edge of the FT8 window, in Hz."));
   bandwidth_ = makeSpin(bar_, QStringLiteral("profileBandwidth"), QStringLiteral("BW "),
                         QStringLiteral(" Hz"), 2000, 5000, 100, savedBandwidth);
-  bandwidth_->setFixedWidth(156);
   bandwidth_->setToolTip(QStringLiteral("Width of the FT8 window. 3400 Hz is the usual span."));
 
   auto* autoDec = new QCheckBox(QStringLiteral("Auto Dec"), bar_);
