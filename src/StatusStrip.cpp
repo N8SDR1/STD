@@ -242,8 +242,8 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
   txHot->setObjectName(QStringLiteral("txGainHot"));
   txHot->setFont(monoFont(12));
   txHot->setToolTip(QStringLiteral(
-      "Shown while the transmit audio is past full scale. The waterfall is that "
-      "same audio. Receive levels do not raise this. This does not key."));
+      "Shown while the transmit audio is past full scale, before the waterfall "
+      "draws it near the receive level. Receive levels do not raise this. This does not key."));
   txHot->hide();
   layout->addWidget(txHot);
   layout->addWidget(separator());

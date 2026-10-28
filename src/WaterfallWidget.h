@@ -43,7 +43,8 @@ public:
   // Real mono samples, already one channel. sampleRateHz is the frame rate.
   void pushRealAudio(const float* samples, int count, int sampleRateHz);
   // Loopback of the TCI TX frame, after TX gain. Mixed onto the trace
-  // only while setTransmitting(true). Does not decode and does not key.
+  // only while setTransmitting(true), near the recent RX level, for a
+  // split pair and for locked markers. Does not decode and does not key.
   void mixTxAudio(const float* samples, int count, int sampleRateHz, bool overFullScale);
   void clearAudio();
 
@@ -117,6 +118,9 @@ private:
   void showRxTxChip();
   void writeAudio(const float* samples, int count, int sampleRateHz, bool blendTx);
   void blendTxIntoRecent(int count);
+  void noteRxLevel(const float* samples, int count);
+  void noteTxOverlay(const TraceRow& row);
+  float txMixGain(float txPeak) const;
   void clearTxHot();
   void paintTxHot(QPainter& painter) const;
   void scheduleRebuild();
@@ -188,6 +192,9 @@ private:
   double txMixRead_ = 0.0;
   int txMixRate_ = 0;
   qint64 lastRxMs_ = 0;
+  float rxPeak_ = 0.0f;
+  // Display trim on the TX mix. Never raises the mix above full scale.
+  float txTrim_ = 1.0f;
   bool txHot_ = false;
   int txHotStreak_ = 0;
   int txCoolStreak_ = 0;

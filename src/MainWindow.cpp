@@ -1732,107 +1732,118 @@ void MainWindow::showGuide() {
     const char* title;
     const char* body;
   } sections[] = {
-      {"Connect",
-       "Radio → Connect opens one TCI socket. It sends AUDIO_START for receiver 0 and nothing else. "
-       "It does not send START, and it does not key. Auto-connect opens the last host and port when "
-       "STD starts. Auto monitor stays on receive and decode and does not transmit."},
+      {"TCI",
+       "Radio → Connect opens one TCI socket to the host and port you enter. On connect, STD sends "
+       "AUDIO_START for receiver 0 and nothing else. Disconnect sends AUDIO_STOP for that socket. "
+       "Auto-connect opens the last host and port when STD starts. Auto monitor stays on receive and "
+       "decode. A band button may later send vfo:0,0,<Hz> and modulation:0,digu. TRX goes out only "
+       "after Tune or TX is pressed. Connect does not send START, and it does not key."},
+      {"FT8, FT4, and FT2",
+       "Mode → FT8, FT4, or FT2. All three are DIGU on every band. The band buttons use the WSJT-X "
+       "dials, and FT2 uses the MSHV dials. Choosing a mode or a band sends vfo:0,0,<Hz> and "
+       "modulation:0,digu. Region Auto reads the callsign. N8SDR/VE uses VE, and the call is left as "
+       "typed. Region 1, 2, or 3 overrides that. 40 m FT4 is 7.0475 MHz in every region. 80 m FT4 is "
+       "3.568 MHz in Region 3 and 3.575 MHz otherwise. Type a dial in Extra and press Enter to insert "
+       "it for this mode and band. Right-click Extra clears that list. Clicking the mode again, or the "
+       "same band button, cycles the default and those extras. Those commands do not key, and they are "
+       "not START. FT8 is a 15 second period. Auto Dec is on by default. The decoder starts about 11.8 "
+       "seconds in, then again at 13.6 and 14.6 seconds when three-stage is on. FT4 is one pass at 6.1 "
+       "seconds of its 7.5 second period. FT2 is one pass at 3.4 seconds of its 3.75 second period. "
+       "Each line is painted as soon as the decoder finds it. Columns are Time, dB, DT, Dist, Message, "
+       "and Freq. A click on a CQ or a reply moves TX to that audio frequency, and RX as well while "
+       "Lock is on. That click does not key. A double-click fills Tx1 through Tx5 for that station and "
+       "Tx6 as CQ, then arms TX. FT8 and FT4 wait for the slot, or join the one that is still open. "
+       "FT2 decodes and does not key. Tx1 through Tx5 stay HIS OUR GRID, report, R+report, RR73, and "
+       "73. Tx6 stays CQ OUR GRID. GRID is the locator from Options → User. CLR Now clears the now list "
+       "and the QSO pane and does not unkey. START is never sent."},
+      {"Feld Hell",
+       "Mode → Hell receives Feld Hell from the Fldigi 4.2.06 column detector. The Receive pane paints "
+       "the tape and does not turn the picture into text. The tone starts at 1500 Hz. Click the "
+       "waterfall to move it. The dial is the Feld Hell Club signal minus 1500 Hz, so 20 m is 14.0615 "
+       "MHz for the 14.063 MHz calling frequency. 30 m Region 1 uses 10.144 MHz. The band button sends "
+       "vfo and modulation DIGU and does not key. TX sends the selected line as Feld Hell at once and "
+       "keys TRX with the audio. Halt stops it. A callsign must be saved first. START is never sent."},
+      {"Lock and TX=RX",
+       "A green band is RX and a red band is TX. Each starts at the marker and runs up by the protocol "
+       "width: 50 Hz on FT8, 90 Hz on FT4, 125 Hz on FT2. Super Hound widens the green band, and Super "
+       "Fox widens the red band. Click the waterfall to set RX. Shift+click sets TX. Ctrl+click sets "
+       "both. While Lock is on, RX and TX stay on the same frequency. Turning Lock on copies one marker "
+       "onto the other: RX=TX copies TX onto RX, and TX=RX copies RX onto TX. A waterfall click and a "
+       "click on a CQ then move both markers. With Lock off, TX=RX can leave the markers apart, and a "
+       "click on a CQ moves TX only. Double-click the RX=TX chip to cycle the two names. A single click "
+       "on the chip applies that copy. The choice is saved. None of this keys the radio or sends START."},
+      {"Halt",
+       "Halt ends the transmission immediately, even in the middle of a slot, turns TRX off, and stops "
+       "the sequence. If nothing is transmitting, Halt does not key. It does not send START."},
+      {"User callsign",
+       "Options → User stores the callsign and the locator. DIST is the distance from that locator to "
+       "the grid in a message. Tx1 through Tx5 and the CQ on Tx6 use that locator. TX and Tune stay "
+       "locked until a callsign is saved. Opening User does not key and does not send START."},
+      {"Tune",
+       "Tune sends a tone at the TX marker so the waterfall can show it and TX gain can be set. It "
+       "needs a saved callsign and a connected radio. TRX goes out only while Tune is on. It runs for "
+       "the MSHV length, about 29 seconds, then stops. Uncheck Tune to stop early. Halt stops it at "
+       "once. START is never sent."},
+      {"Waterfall transmit",
+       "While Tune or TX is on the air, the audio STD is sending is mixed onto the waterfall. The trace "
+       "is drawn near the recent receive level, a little hotter, with the markers split or locked. It "
+       "is not drawn at full scale. The notice TX gain is too hot means that audio, before this display "
+       "scale, is past full scale. Receive audio does not raise the notice. The mix does not key and "
+       "does not send START."},
+      {"Docking and layouts",
+       "Waterfall, Receive, Transmit, Macros, and the status strip are docks. Drag a title to move a "
+       "pane or float it. Close hides it. The View menu lists those panes and shows a hidden one again. "
+       "Macros stays hidden on FT8, FT4, FT2, and Hell. Each mode keeps its own dock arrangement, window "
+       "geometry, contrast, and brightness. View → Save layout writes the mode that is open. The next "
+       "time that mode opens, including after a restart, those panes come back. Leaving a mode, or "
+       "closing STD, asks Save layout for this mode? when the docks differ from the saved arrangement. "
+       "Yes writes this mode. No keeps the previous save. Closing also stops Tune or TX before that "
+       "question. View → Reset layout stacks this mode's docks back to the default and forgets the saved "
+       "arrangement. None of this keys the radio or sends START."},
       {"Waterfall zoom",
        "The wheel zooms around the cursor. Drag pans. Both stay inside the receive band the radio "
-       "reports. A double-click or a right-click opens that whole band again. Start and BW narrow "
-       "the same way, and they cannot cross the reported edges. Ticks on the bottom bar sets the "
-       "ruler marks to 100, 250, or 500 Hz."},
+       "reports. A double-click or a right-click opens that whole band again. Start and BW narrow the "
+       "same way, and they cannot cross the reported edges. Ticks on the bottom bar sets the ruler "
+       "marks to 100, 250, or 500 Hz."},
       {"Contrast and brightness",
-       "The two sliders on the bottom bar recolor the trace. Each mode keeps its own contrast and "
-       "brightness with that mode's layout. Switching back to the mode restores them. They do not "
-       "change the frequency span."},
+       "The two sliders on the waterfall bar recolor the trace. View → Save layout stores them with "
+       "that mode's docks, and opening the mode again restores them. They do not change the frequency "
+       "span, and they do not key."},
       {"Palettes",
        "Palette on that same bar lists Classic, Inferno, Viridis, Plasma, Rainbow, Ocean, Night, "
        "Grayscale, and Amber."},
-      {"Mode profile",
-       "Mode → FT8, FT4, or FT2 shows Speed, Start, BW, Auto Dec, Region, and the band buttons. RTTY and PSK31 "
-       "hide that bar. Region Auto reads the callsign. N8SDR/VE uses VE, and the call is left as typed. "
-       "Region 1, 2, or 3 overrides that. The dials are the WSJT-X list. 40 m FT4 is 7.0475 MHz in every "
-       "region. 80 m FT4 is 3.568 MHz in Region 3 and 3.575 MHz otherwise. FT2 uses the MSHV dials. Type a dial in Extra and press "
-       "Enter to insert it for this mode and band. Right-click Extra clears that list. Clicking the mode "
-       "again, or the same band button, cycles the WSJT-X default and those extras. Choosing FT8, FT4, or a band "
-       "button sends vfo:0,0,<Hz> and modulation:0,digu. "
-       "FT8, FT4, FT2, and Hell are DIGU on every band. Neither "
-       "command keys the radio, and neither is START."},
-      {"Feld Hell",
-       "Mode → Hell receives Feld Hell from the Fldigi 4.2.06 column detector. The Receive pane "
-       "paints the tape. It does not turn the picture into text, and it does not transmit. The tone "
-       "starts at 1500 Hz. Click the waterfall to move it. The dial is the Feld Hell Club signal "
-       "minus 1500 Hz, so 20 m is 14.0615 MHz for the 14.063 MHz calling frequency. 30 m Region 1 "
-       "uses 10.144 MHz. The band button sends vfo:0,0,<Hz> and modulation:0,digu. That is not START "
-       "and it does not key."},
-      {"Fox/Hound",
+      {"Fox and Hound",
        "Super Hound or Super Fox, on the mode bar, sets 40 m to 7.056 MHz DIGU and moves the RX marker "
        "to 750 Hz. That is the fox. It is still 15 second FT8. TX FIRST and TX SECOND only remember a "
        "slot. Multi turns on MSHV multi-answer so the decoder keeps a-priori state for more than one "
-       "caller. Transmit stays off. None of these key the radio, and none send START."},
-      {"FT8 and FT4 decode",
-       "Auto Dec is on by default. The MSHV FT8 decoder starts on the period that is still running, "
-       "about 11.8 seconds in, before the tones end, then again at 13.6 and 14.6 seconds when three-stage "
-       "is on. FT4 is one pass at 6.1 seconds of its 7.5 second period. FT2 is one pass at 3.4 seconds of "
-       "its 3.75 second period. MSHV does not run that three-stage "
-       "timer for FT4. Each line is painted as soon as the decoder finds it. The Receive pane has column "
-       "headers Time, dB, DT, Dist, Message, and Freq. Dist is miles or kilometers from your grid. "
-       "Filter keeps lines that contain the text. CLR MSG clears "
-       "the list. Freq is the audio frequency in Hz. The band buttons use the WSJT-X "
-       "dials and send modulation:0,digu on every band. Decoding does not send START and it does not key."},
+       "caller. Turning those on does not key, and it does not send START."},
       {"DX options",
        "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Time "
        "Synchronization calibrates the period clock. Macros edit eight local texts. Network "
-       "Configuration stores a PSK Reporter style address and does not send spots. Decode List "
-       "Options show or hide Time, Dist, and Freq, and can clear the list each period. Log options, ASeq, "
-       "TX confirmation, and Auto RESET QSO are saved. Those options do not key."},
-      {"Callsign and locator",
-       "Options → User stores the callsign and locator. DIST is the distance from that locator "
-       "to the grid in the message. A double-click on a CQ fills Tx1 through Tx6 and the extra "
-       "line from both. TX and Tune stay locked until a callsign is saved. Opening User does not key."},
+       "Configuration stores a PSK Reporter style address and does not send spots. Decode List Options "
+       "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
+       "decode is on by default. Log options, ASeq, TX confirmation, and Auto RESET QSO are saved. "
+       "Those options do not key."},
       {"Text",
-       "Options → RX / TX Text sets the font and the size of the receive list, its column titles, "
-       "and the transmit box. The faces are Consolas, Cascadia Mono, Lucida Console, Courier New, "
-       "and Segoe UI. The sizes are small, medium, and large. The choice is remembered. It does not key."},
-      {"TX",
-       "Double-click a decode to load the MSHV reply sequence and move the TX marker to that "
-       "station. That double-click does not key. Standard lines are Tx1 through Tx6. Extra is the "
-       "CQ kHz line. TX and Tune stay locked until a callsign is saved under "
-       "Options → User. Tune sends a tone at the TX marker for the MSHV length, 29 seconds on FT8, "
-       "then stops. TX sends the selected line. FT8 and FT4 wait for the "
-       "next slot. Hell and Tune start at once. TRX goes out only after Tune or TX is pressed. "
-       "START is never sent. An empty line does not key. FT2, RTTY, and PSK31 do not key."},
-      {"RX and TX markers",
-       "A green band is the RX channel and a red band is the TX channel. Each starts at the marker "
-       "and runs up by the protocol width: 50 Hz on FT8, 90 Hz on FT4, 125 Hz on FT2. Super Hound "
-       "widens the green band to the fox waveform, and Super Fox widens the red band. The TX-gain "
-       "notice stays off on receive. It can show only while STD is transmitting. The gain spin "
-       "does not key. "
-       "Click the waterfall to set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them "
-       "together. Double-click the RX=TX chip to cycle RX=TX and TX=RX. RX=TX copies TX onto RX. "
-       "TX=RX copies RX onto TX. A click on a CQ or a reply moves TX to that audio frequency, and "
-       "RX as well while Lock is on. That choice is saved. None of these key the radio."},
-      {"Layout",
-       "View → Save layout stores the dock arrangement for the mode that is selected. The next time "
-       "that mode opens, including after a restart, those panels come back. Leaving a mode, or "
-       "closing STD, asks to save only when the docks differ from that mode's saved layout. "
-       "View → Reset layout stacks the current mode again."},
+       "Options → RX / TX Text sets the font and the size of the receive list, its column titles, and "
+       "the transmit box. The faces are Consolas, Cascadia Mono, Lucida Console, Courier New, and Segoe "
+       "UI. The sizes are small, medium, and large. The choice is remembered. It does not key."},
       {"Gain",
-       "RX and TX on the status strip are local gains, from -20 dB to +40 dB. RX gain is applied to "
-       "the waterfall and the FT8 decoder so the peak can be brought toward -1 to 0 dB. TX gain is "
-       "kept for a later transmit path. Neither value is sent to the radio, and neither keys."},
+       "RX and TX on the status strip are local gains, from -20 dB to +40 dB. RX gain scales the "
+       "waterfall and the decoder. TX gain scales the audio STD sends while Tune or TX is on the air. "
+       "Neither value is a command to the radio, and neither keys by itself."},
   };
 
   QString html;
   for (const auto& section : sections) {
     html += QStringLiteral("<h3>%1</h3><p>%2</p>")
-                .arg(QString::fromLatin1(section.title), QString::fromLatin1(section.body));
+                .arg(QString::fromUtf8(section.title), QString::fromUtf8(section.body));
   }
 
   QDialog dialog(this);
   dialog.setWindowTitle(QStringLiteral("STD guide"));
   dialog.setObjectName(QStringLiteral("helpGuideDialog"));
-  dialog.resize(520, 420);
+  dialog.resize(640, 560);
   auto* text = new QTextBrowser(&dialog);
   text->setOpenExternalLinks(false);
   text->setHtml(html);

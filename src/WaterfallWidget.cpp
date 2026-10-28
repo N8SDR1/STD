@@ -501,7 +501,9 @@ void WaterfallWidget::noteTxSpill(bool spilling) {
 
 void WaterfallWidget::setRxHz(int hz) {
   rxHz_ = clampTone(hz);
-  if (locked_ && !rxFollowsTx_)
+  // Lock keeps both markers on the tone just set. TX=RX may leave them
+  // apart only while Lock is off.
+  if (locked_)
     txHz_ = rxHz_;
   clearTxHot();
   rememberFrequencies();
@@ -511,7 +513,7 @@ void WaterfallWidget::setRxHz(int hz) {
 
 void WaterfallWidget::setTxHz(int hz) {
   txHz_ = clampTone(hz);
-  if (locked_ && rxFollowsTx_)
+  if (locked_)
     rxHz_ = txHz_;
   clearTxHot();
   rememberFrequencies();
@@ -520,9 +522,10 @@ void WaterfallWidget::setTxHz(int hz) {
 }
 
 void WaterfallWidget::qsyAudio(int hz) {
-  txHz_ = clampTone(hz);
+  const int tone = clampTone(hz);
+  txHz_ = tone;
   if (locked_)
-    rxHz_ = txHz_;
+    rxHz_ = tone;
   clearTxHot();
   rememberFrequencies();
   emit frequenciesChanged(rxHz_, txHz_);
@@ -554,7 +557,8 @@ void WaterfallWidget::showRxTxChip() {
   equal->setToolTip(QStringLiteral(
       "Double-click to cycle RX=TX and TX=RX. RX=TX copies TX onto RX. "
       "TX=RX copies RX onto TX. A click applies that copy. "
-      "Lock makes the other marker follow. This does not key."));
+      "While Lock is on, both markers stay together. "
+      "TX=RX can leave them split while Lock is off. This does not key."));
 }
 
 int WaterfallWidget::clampTone(int hz) const {
@@ -633,11 +637,21 @@ void WaterfallWidget::mixTxAudio(const float* samples, int count, int sampleRate
     txMixRead_ = 0.0;
     txMixRate_ = sampleRateHz;
   }
+  float txPeak = 0.0f;
   for (int i = 0; i < count; ++i) {
     float sample = samples[i];
     if (!std::isfinite(sample))
       sample = 0.0f;
-    txMix_.push_back(std::clamp(sample, -1.0f, 1.0f));
+    txPeak = std::max(txPeak, std::fabs(std::clamp(sample, -1.0f, 1.0f)));
+  }
+  // Time-domain match, then the spectral trim. The product stays at or
+  // below 1, for a split TX and for markers sitting on the same frequency.
+  const float gain = std::min(1.0f, txMixGain(txPeak) * txTrim_);
+  for (int i = 0; i < count; ++i) {
+    float sample = samples[i];
+    if (!std::isfinite(sample))
+      sample = 0.0f;
+    txMix_.push_back(std::clamp(sample, -1.0f, 1.0f) * gain);
   }
   const int cap = sampleRateHz * 2;
   if (txMix_.size() > cap) {
@@ -679,9 +693,35 @@ void WaterfallWidget::blendTxIntoRecent(int count) {
   }
 }
 
+void WaterfallWidget::noteRxLevel(const float* samples, int count) {
+  float peak = 0.0f;
+  for (int i = 0; i < count; ++i) {
+    const float sample = std::fabs(samples[i]);
+    if (std::isfinite(sample) && sample > peak)
+      peak = sample;
+  }
+  if (peak >= rxPeak_)
+    rxPeak_ = 0.6f * rxPeak_ + 0.4f * peak;
+  else
+    rxPeak_ = 0.97f * rxPeak_ + 0.03f * peak;
+}
+
+float WaterfallWidget::txMixGain(float txPeak) const {
+  float ref = rxPeak_;
+  if (!(ref > 1.0e-5f))
+    ref = 0.012f;
+  if (!(txPeak > 1.0e-8f))
+    return 0.0f;
+  // About +3 dB over the recent receive peak. Attenuate a full-scale
+  // monitor down to that. Do not turn a quiet transmission up.
+  return std::min(1.0f, ref * 1.41f / txPeak);
+}
+
 void WaterfallWidget::writeAudio(const float* samples, int count, int sampleRateHz, bool blendTx) {
   if (!samples || count <= 0 || sampleRateHz < 1000 || surfaceContainer_)
     return;
+  if (blendTx)
+    noteRxLevel(samples, count);
   if (rateHz_ != sampleRateHz) {
     const bool keepZoom = zoomed_;
     const float lo = viewLoHz_;
@@ -735,6 +775,53 @@ void WaterfallWidget::pushTrace(qint64 endSample) {
   TraceRow& row = rows_[newest_];
   row.endSample = endSample;
   analyze(endSample, &row);
+  noteTxOverlay(row);
+}
+
+void WaterfallWidget::noteTxOverlay(const TraceRow& row) {
+  if (!transmitting_ || row.level.size() < 8 || !(row.hi > row.lo))
+    return;
+  const double pixel = double(row.hi - row.lo) / double(row.level.size());
+  auto hzOf = [&](int column) {
+    return float(double(row.lo) + (double(column) + 0.5) * pixel);
+  };
+  int peakAt = 0;
+  float peak = -160.0f;
+  for (int column = 0; column < row.level.size(); ++column) {
+    if (row.level.at(column) > peak) {
+      peak = row.level.at(column);
+      peakAt = column;
+    }
+  }
+  const float txCenter = float(txHz_) + float(txWidthHz_) * 0.5f;
+  const bool peakIsOurs = std::fabs(hzOf(peakAt) - txCenter) < 500.0f;
+  const float txLo = float(txHz_) - 20.0f;
+  const float txHi = float(txHz_ + txWidthHz_) + 20.0f;
+  float txMax = -160.0f;
+  float rxMax = -160.0f;
+  for (int column = 0; column < row.level.size(); ++column) {
+    const float hz = hzOf(column);
+    const float level = row.level.at(column);
+    if (hz >= txLo && hz <= txHi) {
+      txMax = std::max(txMax, level);
+      continue;
+    }
+    if (peakIsOurs && std::fabs(hz - hzOf(peakAt)) < 500.0f)
+      continue;
+    rxMax = std::max(rxMax, level);
+  }
+  // An empty TX channel is the noise floor. Leave the trim alone.
+  if (!(txMax > 4.0f))
+    return;
+  const float reference = rxMax > 8.0f ? rxMax : 18.0f;
+  const float error = txMax - (reference + 3.0f);
+  if (std::fabs(error) < 1.5f)
+    return;
+  // One hot row is enough to pull a full-scale tone down. A quiet mix
+  // creeps up, and txMixGain still refuses to pass full scale.
+  const float stepDb = error > 0.0f ? std::min(error, 60.0f) : std::max(error, -18.0f);
+  const float step = std::pow(10.0f, -stepDb / 20.0f);
+  txTrim_ = std::clamp(txTrim_ * step, 1.0e-4f, 64.0f);
 }
 
 void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
@@ -895,9 +982,9 @@ void WaterfallWidget::buildToneBar() {
   lock->setFixedHeight(22);
   lock->setFocusPolicy(Qt::NoFocus);
   lock->setToolTip(QStringLiteral(
-      "Lock the markers so a click moves both. RX=TX makes RX follow TX. "
-      "TX=RX makes TX follow RX. A decode click moves RX too while this is on. "
-      "This does not key."));
+      "Lock the markers so they stay on one frequency. A waterfall click and a "
+      "click on a CQ move both RX and TX. TX=RX can leave them split while Lock "
+      "is off. This does not key."));
   connect(lock, &QPushButton::toggled, this, [this, lock](bool on) {
     locked_ = on;
     if (locked_) {
