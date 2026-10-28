@@ -6,6 +6,7 @@
 #include <QString>
 #include <QWidget>
 
+class QComboBox;
 class QSpinBox;
 
 // The controls an MSHV-family mode shows under the waterfall. Keyboard
@@ -27,6 +28,10 @@ public:
   bool autoDecode() const;
   qint64 dialHz() const;
   QString sideband() const;
+  // "auto", "1", "2", or "3". Auto reads the callsign. A portable
+  // suffix such as N8SDR/VE uses that country. The call text is not rewritten.
+  void setRegionOverride(const QString& choice);
+  void refreshStation();
 
 signals:
   void tuneRequested(qint64 dialHz, const QString& sideband);
@@ -36,12 +41,16 @@ signals:
 private:
   void applySpan();
   void remember() const;
+  void refreshBands();
+  int effectiveRegion() const;
 
   QWidget* bar_ = nullptr;
   QWidget* keyboard_ = nullptr;
   QSpinBox* speed_ = nullptr;
   QSpinBox* start_ = nullptr;
   QSpinBox* bandwidth_ = nullptr;
+  QComboBox* region_ = nullptr;
+  QString regionChoice_ = QStringLiteral("auto");
   int band_ = 0;
   bool family_ = true;
   QString mode_ = QStringLiteral("FT8");

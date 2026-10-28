@@ -14,6 +14,7 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QMenuBar>
 #include <QPushButton>
 #include <QSpinBox>
@@ -185,6 +186,14 @@ int shellReady(const MainWindow& window) {
   }
   if (checked != 1)
     return fail("no band is highlighted");
+  for (const QPushButton* button : bands) {
+    const QString tip = button->toolTip();
+    if (!tip.contains(QStringLiteral("DIGU")) || tip.contains(QStringLiteral("DIGL")))
+      return fail("band sideband is not DIGU");
+  }
+  const auto* region = window.findChild<QComboBox*>("profileRegion");
+  if (!region || region->count() < 4 || !region->itemText(0).contains(QStringLiteral("Auto")))
+    return fail("region control is missing");
   bool guide = false;
   if (window.menuBar()) {
     for (QAction* menuAction : window.menuBar()->actions()) {

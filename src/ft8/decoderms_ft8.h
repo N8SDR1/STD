@@ -12,8 +12,10 @@
 #include "decoderpom.h"
 
 #include "HvMsPlayer/libsound/HvGenFt8/gen_ft8.h"
+#include "HvMsPlayer/libsound/HvGenFt4/gen_ft4.h"
 // FT8 only: gen_sfox.h is not part of this decoder.
 #include <QObject> //2.53
+#include <QStringList>
 
 #define ALL_MSG_SNR 200  //2.70 from 120
 #define MAXDEC 200 		 //2.70 from 120
@@ -377,6 +379,99 @@ private:
 
 ////////// end FT8DecVar //////////////////////////////////////////////////
 
+};
+
+// FT4 is one pass. MSHV does not run the FT8 three-stage timer for it.
+class DecoderFt4 : public QObject
+{
+    Q_OBJECT
+public:
+    explicit DecoderFt4(int id);
+    ~DecoderFt4();
+    void SetStTxFreq(double f);
+    void SetStMultiAnswerMod(bool f);
+    void SetStDecoderDeep(int d);
+    void SetStApDecode(bool f);
+    void SetBandChangedStaticAll(uint8_t);
+    void SetStQSOProgress(int i);
+    void SetStDecode(QString time,int mousebutton,bool);
+    void SetStWords(QString,QString,int,int,QString);
+    void SetStHisCall(QString);
+    void SetMAMCalls(QStringList ls);
+    void ft4_decode(double *dd,double f0a,double f0b,double,double,double fqso,bool &f);
+
+signals:
+    void EmitDecodetTextFt(QStringList);
+    void EmitBackColor();
+
+private:
+    int decid;
+    F2a f2a;
+    PomAll pomAll;
+    PomFt pomFt;
+    GenFt4 *TGenFt4;
+    double DEC_SAMPLE_RATE;
+    double twopi;
+    double pi;
+    uint8_t band4;
+
+    bool first_ft4_ds;
+    double complex cx_ft4_ds[40000];
+    double window_ft4_ds[4096];
+    void ft4_downsample(double *dd,bool newdata,double f0,double complex *c);
+
+    void ft4_baseline(double *s,int nfa,int nfb,double *sbase);
+
+    bool first_ft4detcad;
+    double window_ft4[2314];
+    void getcandidates4(double *dd,double fa,double fb,double,double,double syncmin,double nfqso,
+                        int maxcand,double candidate[2][180],int &ncand,double*);
+
+    bool first_ft4_sync4d;
+    double complex csynca_ft4_sync[70];
+    double complex csyncb_ft4_sync[70];
+    double complex csyncc_ft4_sync[70];
+    double complex csyncd_ft4_sync[70];
+    void sync4d(double complex *cd0,int i0,double complex *ctwk,int itwk,double &sync);
+
+    double pulse_ft4_rx[1748];
+    void gen_ft4cwaveRx(int *i4tone,double f_tx,double complex *cwave);
+
+    bool first_subsft4;
+    double complex cw_subsft4[72800];
+    void subtractft4(double *dd,int *itone,double f0,double dt);
+
+    bool first_ft4bm;
+    bool one_ft4_2[8][256];
+    void get_ft4_bitmetrics(double complex *cd,double bitmetrics_[5][220],bool &badsync,double s4_[120][4],int,int);
+
+    bool first_ft4d;
+    int mrrr_ft4[19];
+    int m73_ft4[19];
+    int mrr73_ft4[19];
+    int mcq_ft4[29];
+    int cont_id0_ft4_2;
+    QString mycall0_ft4;
+    QString hiscall0_ft4;
+    double fac_ft4_sync;
+    double complex ctwk2_ft4_[41][70];
+    int apbits_ft4[174];
+    int apmy_ru_ft4[28];
+    int aphis_fd_ft4[28];
+    int ft4_even_odd(QString s);
+    void sync_dt_df(double complex *cd2,int iseg,int &idfbest,int &ibest,double &smax,double &smax1);
+    double get_xibest(double complex *cd2,int ibest,int idfbest,double smax);
+    int jseq_a7;
+    QString nutc0;
+    int c_zerop;
+    QString msg0[2][2][MAXDEC+50];
+    double dt0[2][2][MAXDEC+50];
+    double f0[2][2][MAXDEC+50];
+    int ndec[2][2];
+    void ft4_a7_save(QString,double,double,QString);
+    void ft4_a7d(double *dd0,bool &newdat,QString call_1,QString call_2,QString grid4,
+                 double &xdt,double &f1,double xbase,int &nharderrors,double &,QString &msg37,double &xsnr);
+    void PrintMsg(QString,int nsnr,double xdt,double f1,QString message,int iaptype,float,bool &have_dec,bool &f_only_one_color,bool);
 };
 
 // moc's generated file includes this header and then Qt's moc helpers.

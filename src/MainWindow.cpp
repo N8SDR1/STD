@@ -16,6 +16,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QDialog>
@@ -230,10 +231,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(profile_, &ModeProfile::displayChanged, waterfall_, &WaterfallWidget::setFrequencyWindow);
     connect(profile_, &ModeProfile::speedChanged, waterfall_, &WaterfallWidget::setTraceSpeed);
     connect(profile_, &ModeProfile::tuneRequested, this,
-            [this](qint64 hz, const QString& sideband) {
+            [this](qint64 hz, const QString&) {
               if (!tci_ || !profile_->mshvFamily())
                 return;
-              tci_->setSideband(sideband);
+              // FT8 and FT4 stay DIGU on every band, including 160, 80, and 40.
+              tci_->setSideband(QStringLiteral("DIGU"));
               tci_->setDialHz(hz);
             });
   }
@@ -340,9 +342,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(decodeClock, &QTimer::timeout, this, [this] {
     if (!ft8_ || !profile_)
       return;
+    const QString mode = profile_->digitalMode();
+    const bool ft4 = mode == QLatin1String("FT4");
     const bool armed = autoMonitor_ && profile_->mshvFamily() &&
-                       profile_->digitalMode() == QLatin1String("FT8") && profile_->autoDecode();
+                       (ft4 || mode == QLatin1String("FT8")) && profile_->autoDecode();
     const int low = profile_->startHz();
+    ft8_->setMode(ft4);
     ft8_->setArmed(armed, low, low + profile_->bandwidthHz());
   });
   decodeClock->start(200);
@@ -644,7 +649,9 @@ void MainWindow::buildMenus() {
 
   addCheck(decodeMenu, "decodeThreeStage", QStringLiteral("Use Three-stage Decoding FT8"), "dx/threeStage",
            true,
-           QStringLiteral("Decode at three points in the FT8 period. The first pass is before the next period."));
+           QStringLiteral(
+               "Decode at three points in the FT8 period. The first pass is before the next period. "
+               "FT4 stays one pass. Does not key."));
   auto* depthGroup = new QActionGroup(this);
   depthGroup->setExclusive(true);
   const int savedDepth = dxSettings.value(QStringLiteral("dx/depth"), 1).toInt();
@@ -818,7 +825,8 @@ void MainWindow::buildMenus() {
 void MainWindow::tuneActiveBand() {
   if (!tci_ || !profile_ || !profile_->mshvFamily())
     return;
-  tci_->setSideband(profile_->sideband());
+  // FT8 and FT4. DIGU on every band. This is not START and it does not key.
+  tci_->setSideband(QStringLiteral("DIGU"));
   tci_->setDialHz(profile_->dialHz());
 }
 
@@ -842,16 +850,19 @@ void MainWindow::showGuide() {
        "Palette on that same bar lists Classic, Inferno, Viridis, Plasma, Rainbow, Ocean, Night, "
        "Grayscale, and Amber."},
       {"Mode profile",
-       "Mode → FT8 or FT4 shows Speed, Start, BW, Auto Dec, and the band buttons. RTTY and PSK31 hide "
-       "that bar. Choosing FT8, FT4, or a band button sends that mode’s dial with vfo:0,0,<Hz> and the "
-       "sideband with modulation:0,digu. FT8 and FT4 are DIGU on every band. Neither command keys the "
-       "radio, and neither is START."},
-      {"FT8 decode",
+       "Mode → FT8 or FT4 shows Speed, Start, BW, Auto Dec, Region, and the band buttons. RTTY and PSK31 "
+       "hide that bar. Region Auto reads the callsign. N8SDR/VE uses VE, and the call is left as typed. "
+       "Region 1, 2, or 3 overrides that. MSHV uses one FT8 and FT4 dial table for every region. Choosing "
+       "FT8, FT4, or a band button sends that dial with vfo:0,0,<Hz> and modulation:0,digu. FT8 and FT4 "
+       "are DIGU on every band. Neither command keys the radio, and neither is START."},
+      {"FT8 and FT4 decode",
        "Auto Dec is on by default. The MSHV FT8 decoder starts on the period that is still running, "
-       "about 11.8 seconds in, before the tones end. Each line is painted as "
-       "soon as the decoder finds it. The Receive pane has column headers Time, dB, DT, Message, and Freq. "
-       "Filter keeps lines that contain the text. CLR MSG clears the list. Freq is the audio frequency "
-       "in Hz. Dist is not computed. Decoding does not send START and it does not key."},
+       "about 11.8 seconds in, before the tones end, then again at 13.6 and 14.6 seconds when three-stage "
+       "is on. FT4 is one pass at 6.1 seconds of its 7.5 second period. MSHV does not run that three-stage "
+       "timer for FT4. Each line is painted as soon as the decoder finds it. The Receive pane has column "
+       "headers Time, dB, DT, Message, and Freq. Filter keeps lines that contain the text. CLR MSG clears "
+       "the list. Freq is the audio frequency in Hz. Dist is not computed. The band buttons use MSHV’s "
+       "FT4 dials and send modulation:0,digu on every band. Decoding does not send START and it does not key."},
       {"DX options",
        "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Time "
        "Synchronization calibrates the period clock. Macros edit eight local texts. Network "
@@ -1164,6 +1175,17 @@ void MainWindow::openNetworkDialog() {
   call->setPlaceholderText(QStringLiteral("Callsign"));
   auto* grid = new QLineEdit(settings.value(QStringLiteral("dx/reportGrid")).toString(), &dialog);
   grid->setPlaceholderText(QStringLiteral("Grid"));
+  auto* region = new QComboBox(&dialog);
+  region->setObjectName(QStringLiteral("profileRegionSetting"));
+  region->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
+  region->addItem(QStringLiteral("Region 1"), QStringLiteral("1"));
+  region->addItem(QStringLiteral("Region 2"), QStringLiteral("2"));
+  region->addItem(QStringLiteral("Region 3"), QStringLiteral("3"));
+  const QString savedRegion = settings.value(QStringLiteral("profile/region"), QStringLiteral("auto")).toString();
+  const int regionIndex = region->findData(savedRegion);
+  region->setCurrentIndex(regionIndex < 0 ? 0 : regionIndex);
+  region->setToolTip(QStringLiteral(
+      "Auto reads the callsign. N8SDR/VE uses VE. The call is stored as typed. DIGU on every band. Does not key."));
   auto* host = new QLineEdit(
       settings.value(QStringLiteral("dx/reportHost"), QStringLiteral("report.pskreporter.info")).toString(),
       &dialog);
@@ -1173,10 +1195,13 @@ void MainWindow::openNetworkDialog() {
   auto* form = new QFormLayout;
   form->addRow(QStringLiteral("Call"), call);
   form->addRow(QStringLiteral("Grid"), grid);
+  form->addRow(QStringLiteral("Region"), region);
   form->addRow(QStringLiteral("Server"), host);
   form->addRow(QStringLiteral("UDP port"), port);
   auto* note = new QLabel(
-      QStringLiteral("The address is saved. This build does not send spots, and it does not key."),
+      QStringLiteral("The call is saved as typed. A portable suffix such as N8SDR/VE sets Auto to that "
+                     "country; Region 1, 2, or 3 overrides it. The address is saved. This build does not "
+                     "send spots, does not send START, and does not key. FT8 and FT4 stay DIGU."),
       &dialog);
   note->setWordWrap(true);
   auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
@@ -1200,6 +1225,10 @@ void MainWindow::openNetworkDialog() {
   store.setValue(QStringLiteral("dx/reportGrid"), grid->text().trimmed());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
+  if (profile_) {
+    profile_->setRegionOverride(region->currentData().toString());
+    profile_->refreshStation();
+  }
 }
 
 void MainWindow::setReceivePlaceholder(bool connected) {

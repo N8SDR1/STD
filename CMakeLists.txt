@@ -82,9 +82,11 @@ if(WIN32)
       "${CMAKE_SOURCE_DIR}/src/ft8/patch_qt_import.py"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft8.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft8var.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft4.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenFt4/gen_ft4.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderpom.cpp"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Building the MSHV FT8 decoder"
+    COMMENT "Building the MSHV FT8 and FT4 decoder"
     VERBATIM)
   add_custom_target(ft8dec DEPENDS "${FT8_DLL}")
   add_dependencies(std ft8dec)

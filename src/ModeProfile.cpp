@@ -7,12 +7,14 @@
 
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QFont>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QSettings>
+#include <QStringList>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -28,10 +30,17 @@ QFont barFont() {
   return font;
 }
 
-// MSHV src/config_band_all.h, all_bands_mods_frq. FT4 is column 2,
-// FT8 is column 3. The dots in "7.074.000" are thousands separators.
-// FT8 and FT4 are upper sideband on every band, so the modulation
-// token is always DIGU.
+// MSHV 2.76.7 src/config_band_all.h, all_bands_mods_frq.
+// Columns are MSK, FSK, FT4, FT8, JT65, Q65, FT2. The dots in
+// "7.047.000" are thousands separators. These ten buttons are the
+// HF set. FT4 Hz is that FT4 column, unchanged:
+//   1.8  1.840.000    3.5  3.575.000    7  7.047.000
+//   10   10.140.000   14   14.080.000   18 18.104.000
+//   21   21.140.000   24   24.919.000   28 28.180.000
+//   50   50.318.000
+// MSHV keeps this one dial table for IARU regions 1, 2, and 3.
+// The region control does not switch the sideband. FT8 and FT4
+// send DIGU on every band, including 1.8, 3.5, and 7.
 struct Ft8Band {
   const char* label;
   qint64 ft8Hz;
@@ -47,6 +56,102 @@ constexpr Ft8Band kBands[] = {
 
 constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
 constexpr int kDefaultBand = 4;  // 14 MHz
+
+bool ignoredPortable(const QString& token) {
+  return token == QLatin1String("P") || token == QLatin1String("M") || token == QLatin1String("MM") ||
+         token == QLatin1String("AM") || token == QLatin1String("QRP") || token == QLatin1String("A") ||
+         (token.size() == 1 && token.at(0).isDigit());
+}
+
+bool looksLikeCall(const QString& token) {
+  bool digit = false;
+  bool letter = false;
+  for (const QChar ch : token) {
+    digit = digit || ch.isDigit();
+    letter = letter || ch.isLetter();
+  }
+  return digit && letter && token.size() >= 3;
+}
+
+// Longest prefix wins. KH6 is Hawaii (region 2) and is listed before KH.
+int regionForToken(const QString& token) {
+  const struct {
+    const char* prefix;
+    int region;
+  } rows[] = {
+      {"KH0", 3}, {"KH2", 3}, {"KH8", 3}, {"KH6", 2}, {"KL", 2},  {"AH6", 2}, {"NH6", 2},
+      {"WH6", 2}, {"AL7", 2}, {"NL7", 2}, {"WL7", 2}, {"VE", 2},  {"VA", 2},  {"VY", 2},
+      {"VO", 2},  {"XE", 2},  {"XF", 2},  {"CM", 2},  {"CO", 2},  {"HI", 2},  {"HH", 2},
+      {"HK", 2},  {"HP", 2},  {"HO", 2},  {"HR", 2},  {"HC", 2},  {"HD", 2},  {"YS", 2},
+      {"YN", 2},  {"YV", 2},  {"YW", 2},  {"TI", 2},  {"TE", 2},  {"TG", 2},  {"TD", 2},
+      {"PY", 2},  {"PP", 2},  {"PQ", 2},  {"PR", 2},  {"PU", 2},  {"PV", 2},  {"PW", 2},
+      {"ZX", 2},  {"LU", 2},  {"CE", 2},  {"CX", 2},  {"CV", 2},  {"CP", 2},  {"OA", 2},
+      {"OB", 2},  {"ZP", 2},  {"8P", 2},  {"6Y", 2},  {"9Y", 2},  {"9Z", 2},  {"J3", 2},
+      {"J6", 2},  {"J7", 2},  {"J8", 2},  {"V2", 2},  {"V3", 2},  {"V4", 2},  {"C6", 2},
+      {"FG", 2},  {"FM", 2},  {"FS", 2},  {"FY", 2},  {"PJ", 2},  {"ZF", 2},  {"P4", 2},
+      {"OX", 2},  {"KP", 2},  {"JA", 3},  {"JE", 3},  {"JF", 3},  {"JG", 3},  {"JH", 3},
+      {"JI", 3},  {"JK", 3},  {"JL", 3},  {"JM", 3},  {"JN", 3},  {"JO", 3},  {"JR", 3},
+      {"JS", 3},  {"JD", 3},  {"VK", 3},  {"AX", 3},  {"ZL", 3},  {"ZM", 3},  {"DU", 3},
+      {"DV", 3},  {"HL", 3},  {"DS", 3},  {"BV", 3},  {"BY", 3},  {"BA", 3},  {"BD", 3},
+      {"BG", 3},  {"BH", 3},  {"VR", 3},  {"VU", 3},  {"9M", 3},  {"9W", 3},  {"9V", 3},
+      {"YB", 3},  {"YC", 3},  {"YD", 3},  {"HS", 3},  {"E2", 3},  {"XU", 3},  {"XW", 3},
+      {"XZ", 3},  {"4S", 3},  {"8Q", 3},  {"P2", 3},  {"H4", 3},  {"3D2", 3}, {"T30", 3},
+      {"T31", 3}, {"T32", 3}, {"T33", 3}, {"T2", 3},  {"V6", 3},  {"V7", 3},  {"V8", 3},
+      {"E5", 3},  {"5W", 3},  {"A3", 3},  {"JT", 3},  {"AP", 3},  {"9N", 3},  {"S2", 3},
+      {"XV", 3},  {"3W", 3},  {"4W", 3},  {"KH", 3},  {"2E", 1},  {"2I", 1},  {"2M", 1},
+      {"2W", 1},  {"IK", 1},  {"IW", 1},  {"DL", 1},  {"EA", 1},  {"EB", 1},  {"EC", 1},
+      {"CT", 1},  {"LZ", 1},  {"OK", 1},  {"OM", 1},  {"SP", 1},  {"YO", 1},  {"HA", 1},
+      {"HG", 1},  {"OE", 1},  {"HB", 1},  {"PA", 1},  {"PD", 1},  {"ON", 1},  {"OZ", 1},
+      {"SM", 1},  {"LA", 1},  {"OH", 1},  {"ES", 1},  {"YL", 1},  {"LY", 1},  {"UA", 1},
+      {"RA", 1},  {"ZS", 1},  {"4X", 1},  {"4Z", 1},  {"TA", 1},  {"A4", 1},  {"A6", 1},
+      {"A7", 1},  {"A9", 1},  {"HZ", 1},  {"9K", 1},  {"JY", 1},  {"YI", 1},  {"SU", 1},
+      {"5A", 1},  {"9A", 1},  {"G", 1},   {"M", 1},   {"F", 1},   {"I", 1},   {"R", 1},
+      {"K", 2},   {"N", 2},   {"W", 2},
+  };
+  int best = 0;
+  int region = 0;
+  for (const auto& row : rows) {
+    const auto prefix = QLatin1String(row.prefix);
+    const int length = prefix.size();
+    if (length > best && token.startsWith(prefix)) {
+      best = length;
+      region = row.region;
+    }
+  }
+  if (region == 0 && token.size() >= 2 && token.at(0) == QLatin1Char('A') && token.at(1) >= QLatin1Char('A') &&
+      token.at(1) <= QLatin1Char('L'))
+    region = 2;
+  return region;
+}
+
+struct CallRegion {
+  QString home;
+  QString place;
+  int region = 0;
+};
+
+CallRegion regionFromCall(const QString& call) {
+  CallRegion out;
+  const QStringList parts = call.toUpper().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+  QStringList kept;
+  for (const QString& part : parts) {
+    if (!ignoredPortable(part))
+      kept.append(part);
+  }
+  for (const QString& part : kept) {
+    if (looksLikeCall(part) && part.size() > out.home.size())
+      out.home = part;
+  }
+  for (const QString& part : kept) {
+    if (part != out.home)
+      out.place = part;
+  }
+  if (out.home.isEmpty() && !kept.isEmpty())
+    out.home = kept.first();
+  const QString key = out.place.isEmpty() ? out.home : out.place;
+  out.region = regionForToken(key);
+  return out;
+}
 
 void fitSpin(QSpinBox* spin) {
   spin->ensurePolished();
@@ -99,6 +204,10 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   band_ = settings.value(QStringLiteral("profile/band"), kDefaultBand).toInt();
   if (band_ < 0 || band_ >= kBandCount)
     band_ = kDefaultBand;
+  regionChoice_ = settings.value(QStringLiteral("profile/region"), QStringLiteral("auto")).toString();
+  if (regionChoice_ != QLatin1String("1") && regionChoice_ != QLatin1String("2") &&
+      regionChoice_ != QLatin1String("3"))
+    regionChoice_ = QStringLiteral("auto");
 
   bar_ = new QWidget(this);
   bar_->setObjectName("mshvProfile");
@@ -123,10 +232,25 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   autoDec->setToolTip(QStringLiteral(
       "When on, each FT8 period is written to the Receive pane. This does not key."));
 
+  region_ = new QComboBox(bar_);
+  region_->setObjectName(QStringLiteral("profileRegion"));
+  region_->setFont(barFont());
+  region_->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
+  region_->addItem(QStringLiteral("Region 1"), QStringLiteral("1"));
+  region_->addItem(QStringLiteral("Region 2"), QStringLiteral("2"));
+  region_->addItem(QStringLiteral("Region 3"), QStringLiteral("3"));
+  {
+    const int index = region_->findData(regionChoice_);
+    const QSignalBlocker block(region_);
+    region_->setCurrentIndex(index < 0 ? 0 : index);
+  }
+  region_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+
   row->addWidget(speed_);
   row->addWidget(start_);
   row->addWidget(bandwidth_);
   row->addWidget(autoDec);
+  row->addWidget(region_);
 
   auto* bands = new QButtonGroup(bar_);
   bands->setExclusive(true);
@@ -136,10 +260,6 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
     button->setFont(barFont());
     button->setCheckable(true);
     button->setChecked(i == band_);
-    button->setToolTip(QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  DIGU")
-                           .arg(QString::fromLatin1(kBands[i].label), mode_,
-                                QString::number(kBands[i].ft8Hz)));
-    button->setAccessibleName(button->toolTip());
     bands->addButton(button, i);
     row->addWidget(button);
     connect(button, &QPushButton::clicked, this, [this, i] {
@@ -169,6 +289,13 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   connect(start_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { applySpan(); });
   connect(bandwidth_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { applySpan(); });
   connect(autoDec, &QCheckBox::toggled, this, [this](bool) { remember(); });
+  connect(region_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+    regionChoice_ = region_->currentData().toString();
+    remember();
+    refreshBands();
+    emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
+  });
+  refreshBands();
 }
 
 void ModeProfile::setMshvFamily(bool mshv) {
@@ -179,15 +306,70 @@ void ModeProfile::setMshvFamily(bool mshv) {
 
 void ModeProfile::setDigitalMode(const QString& mode) {
   mode_ = (mode == QLatin1String("FT4")) ? QStringLiteral("FT4") : QStringLiteral("FT8");
+  refreshBands();
+}
+
+int ModeProfile::effectiveRegion() const {
+  if (regionChoice_ == QLatin1String("1") || regionChoice_ == QLatin1String("2") ||
+      regionChoice_ == QLatin1String("3"))
+    return regionChoice_.toInt();
+  QSettings settings;
+  return regionFromCall(settings.value(QStringLiteral("dx/reportCall")).toString()).region;
+}
+
+void ModeProfile::refreshBands() {
+  QSettings settings;
+  const CallRegion station = regionFromCall(settings.value(QStringLiteral("dx/reportCall")).toString());
+  const int chosen = effectiveRegion();
+  QString where = station.place.isEmpty() ? station.home : station.place;
+  if (where.isEmpty())
+    where = QStringLiteral("the callsign");
+  QString tip = QStringLiteral(
+      "IARU region for these dials. Auto reads the callsign. A portable suffix such as N8SDR/VE uses "
+      "that country, and the home call is left as typed. Pick Region 1, 2, or 3 to override. "
+      "MSHV uses one FT8 and FT4 dial table for every region. DIGU on every band. Does not key.");
+  if (regionChoice_ == QLatin1String("auto")) {
+    if (station.region >= 1)
+      tip.prepend(QStringLiteral("Auto · Region %1 from %2. ").arg(station.region).arg(where));
+    else
+      tip.prepend(QStringLiteral("Auto · no region in the call yet. "));
+  } else {
+    tip.prepend(QStringLiteral("Region %1, set by hand. ").arg(regionChoice_));
+  }
+  if (region_)
+    region_->setToolTip(tip);
   const auto buttons = bar_->findChildren<QPushButton*>(QStringLiteral("profileBand"),
                                                         Qt::FindDirectChildrenOnly);
   for (int i = 0; i < buttons.size() && i < kBandCount; ++i) {
     const qint64 hz = mode_ == QLatin1String("FT4") ? kBands[i].ft4Hz : kBands[i].ft8Hz;
-    buttons[i]->setToolTip(QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  DIGU")
-                               .arg(QString::fromLatin1(kBands[i].label), mode_,
-                                    QString::number(hz)));
+    const QString region = chosen >= 1 ? QStringLiteral("Region %1").arg(chosen) : QStringLiteral("Auto");
+    buttons[i]->setToolTip(QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  %4  ·  DIGU")
+                               .arg(QString::fromLatin1(kBands[i].label), mode_, QString::number(hz), region));
     buttons[i]->setAccessibleName(buttons[i]->toolTip());
   }
+}
+
+void ModeProfile::setRegionOverride(const QString& choice) {
+  const QString key = (choice == QLatin1String("1") || choice == QLatin1String("2") ||
+                       choice == QLatin1String("3"))
+                          ? choice
+                          : QStringLiteral("auto");
+  const bool changed = key != regionChoice_;
+  regionChoice_ = key;
+  if (region_) {
+    const QSignalBlocker block(region_);
+    const int index = region_->findData(key);
+    if (index >= 0)
+      region_->setCurrentIndex(index);
+  }
+  remember();
+  refreshBands();
+  if (changed)
+    emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
+}
+
+void ModeProfile::refreshStation() {
+  refreshBands();
 }
 
 int ModeProfile::speed() const {
@@ -236,4 +418,5 @@ void ModeProfile::remember() const {
   settings.setValue(QStringLiteral("profile/bandwidthHz"), bandwidth_->value());
   settings.setValue(QStringLiteral("profile/autoDec"), autoDecode());
   settings.setValue(QStringLiteral("profile/band"), band_);
+  settings.setValue(QStringLiteral("profile/region"), regionChoice_);
 }
