@@ -101,7 +101,7 @@ public:
   explicit RxLevelMeter(QWidget* parent = nullptr) : QWidget(parent) {
     setObjectName("rxLevelMeter");
     setFixedSize(72, 14);
-    setToolTip(QStringLiteral("Receive peak. Green is about -1 to 0 dB. This does not key."));
+    setToolTip(QStringLiteral("Averaged receive level. Green is about -1 to 0 dB. This does not key."));
   }
 
 protected:
@@ -246,25 +246,27 @@ void StatusStrip::setPtt(bool onAir, bool connected) {
 
 void StatusStrip::setRxLevel(const float* samples, int count) {
   if (!samples || count <= 0) {
-    rxHeld_ = 0.0f;
+    rxMeanSq_ = 0.0;
     rxHeardMs_ = 0;
     refreshRxLevel();
     return;
   }
-  float peak = 0.0f;
-  for (int i = 0; i < count; ++i)
-    peak = std::max(peak, std::fabs(samples[i]));
+  double sum = 0.0;
+  for (int i = 0; i < count; ++i) {
+    const double sample = samples[i];
+    sum += sample * sample;
+  }
+  const double block = sum / static_cast<double>(count);
   const qint64 now = QDateTime::currentMSecsSinceEpoch();
-  double shown = 0.0;
-  if (rxHeardMs_ > 0) {
-    const double age = std::max(0.0, (now - rxHeardMs_) / 1000.0);
-    shown = double(rxHeld_) * std::exp(-age / 0.35);
+  if (rxHeardMs_ <= 0) {
+    rxMeanSq_ = block;
+  } else {
+    const double dt = std::clamp((now - rxHeardMs_) / 1000.0, 0.0, 1.0);
+    // About 0.8 s to follow a new level, so a single spike does not jump the readout.
+    const double alpha = 1.0 - std::exp(-dt / 0.8);
+    rxMeanSq_ += (block - rxMeanSq_) * alpha;
   }
-  if (peak >= shown) {
-    rxHeld_ = peak;
-    rxHeardMs_ = now;
-  }
-  refreshRxLevel();
+  rxHeardMs_ = now;
 }
 
 void StatusStrip::refreshRxLevel() {
@@ -281,11 +283,9 @@ void StatusStrip::refreshRxLevel() {
     meter->update();
     return;
   }
-  const double age = std::max(0.0, (now - rxHeardMs_) / 1000.0);
-  const double held = double(rxHeld_) * std::exp(-age / 0.35);
   double db = -120.0;
-  if (held > 1e-7)
-    db = 20.0 * std::log10(held);
+  if (rxMeanSq_ > 1e-12)
+    db = 10.0 * std::log10(rxMeanSq_);
   int zone = 1;
   if (db > 0.05)
     zone = 3;
@@ -301,7 +301,7 @@ void StatusStrip::refreshRxLevel() {
   else if (zone == 3)
     color = "#ff8d8d";
   label->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(color)));
-  label->setToolTip(QStringLiteral("Receive peak. Green is about -1 to 0 dB. This does not key."));
+  label->setToolTip(QStringLiteral("Averaged receive level. Green is about -1 to 0 dB. This does not key."));
   meter->update();
 }
 

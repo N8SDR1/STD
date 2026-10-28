@@ -22,6 +22,6 @@ public:
 private:
   void refreshRxLevel();
 
-  float rxHeld_ = 0.0f;
+  double rxMeanSq_ = 0.0;
   qint64 rxHeardMs_ = 0;
 };

@@ -63,7 +63,7 @@ private:
   QWidget* makeReceivePanel();
   QWidget* makeMacroRow();
   void refreshDecodes();
-  void saveModeLayout();
+  void saveModeLayout(bool force = false);
   bool restoreModeLayout();
 
   struct DecodeRow {

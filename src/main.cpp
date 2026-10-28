@@ -198,6 +198,8 @@ int shellReady(const MainWindow& window) {
   }
   if (!guide)
     return fail("guide is missing");
+  if (!window.findChild<QAction*>("saveLayout"))
+    return fail("save layout is missing");
 
   qInfo("STD self-test ok");
   return 0;

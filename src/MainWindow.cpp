@@ -223,11 +223,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildDocks();
   buildMenus();
   arrangeDefault();
-  const QList<QDockWidget*> docks = {waterfallDock_, receiveDock_, transmitDock_, macroDock_, statusDock_};
-  for (QDockWidget* dock : docks) {
-    connect(dock, &QDockWidget::dockLocationChanged, this, [this](Qt::DockWidgetArea) { saveModeLayout(); });
-    connect(dock, &QDockWidget::topLevelChanged, this, [this](bool) { saveModeLayout(); });
-  }
 
   tci_ = new TciClient(this);
   if (profile_ && waterfall_) {
@@ -796,6 +791,11 @@ void MainWindow::buildMenus() {
     viewMenu->addAction(toggle);
   }
   viewMenu->addSeparator();
+  auto* saveLayout = viewMenu->addAction(QStringLiteral("Save layout"));
+  saveLayout->setObjectName(QStringLiteral("saveLayout"));
+  saveLayout->setToolTip(QStringLiteral(
+      "Save this dock arrangement for the current mode. It is restored the next time that mode opens. Does not key."));
+  connect(saveLayout, &QAction::triggered, this, [this] { saveModeLayout(true); });
   auto* reset = viewMenu->addAction("Reset layout");
   connect(reset, &QAction::triggered, this, [this] {
     QSettings store;
@@ -863,8 +863,8 @@ void MainWindow::showGuide() {
        "set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them together. RX=TX copies RX "
        "onto TX. None of these key the radio."},
       {"Layout",
-       "The dock arrangement is saved for the selected mode. FT8 can keep Receive and Transmit side "
-       "by side, and that arrangement comes back the next time FT8 is opened. View → Reset layout "
+       "View → Save layout stores the dock arrangement for the mode that is selected. The next time "
+       "that mode opens, including after a restart, those panels come back. View → Reset layout "
        "stacks the current mode again."},
       {"Gain",
        "RX and TX on the status strip are local gains, from -20 dB to +40 dB. RX gain is applied to "
@@ -927,10 +927,19 @@ void MainWindow::showEvent(QShowEvent* event) {
   QMainWindow::showEvent(event);
   if (!heroSized_) {
     heroSized_ = true;
-    const bool restored = !qEnvironmentVariableIsSet("STD_SELFTEST") && restoreModeLayout();
-    layoutReady_ = true;
-    if (!restored)
-      QTimer::singleShot(0, this, [this] { resizeToHero(); });
+    // restoreState during this event is ignored for dock sizes. Wait until
+    // the window is on screen, then put the saved mode layout back.
+    QTimer::singleShot(0, this, [this] {
+      if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
+        resizeToHero();
+        layoutReady_ = true;
+        return;
+      }
+      const bool restored = restoreModeLayout();
+      layoutReady_ = true;
+      if (!restored)
+        resizeToHero();
+    });
   }
 }
 
@@ -939,13 +948,15 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   QMainWindow::closeEvent(event);
 }
 
-void MainWindow::saveModeLayout() {
-  if (layoutGuard_ || !layoutReady_ || layoutMode_.isEmpty() ||
-      qEnvironmentVariableIsSet("STD_SELFTEST"))
+void MainWindow::saveModeLayout(bool force) {
+  if (layoutMode_.isEmpty() || qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return;
+  if (!force && (layoutGuard_ || !layoutReady_))
     return;
   QSettings settings;
   settings.setValue(QStringLiteral("layout/%1/state").arg(layoutMode_), saveState(1));
   settings.setValue(QStringLiteral("layout/%1/geometry").arg(layoutMode_), saveGeometry());
+  settings.sync();
 }
 
 bool MainWindow::restoreModeLayout() {
@@ -956,11 +967,11 @@ bool MainWindow::restoreModeLayout() {
   if (state.isEmpty())
     return false;
   layoutGuard_ = true;
-  const bool restored = restoreState(state, 1);
   const QByteArray geometry =
       settings.value(QStringLiteral("layout/%1/geometry").arg(layoutMode_)).toByteArray();
-  if (restored && !geometry.isEmpty())
+  if (!geometry.isEmpty())
     restoreGeometry(geometry);
+  const bool restored = restoreState(state, 1);
   layoutGuard_ = false;
   return restored;
 }
