@@ -56,6 +56,7 @@ public:
 
   int rxHz() const { return rxHz_; }
   int txHz() const { return txHz_; }
+  void setRxHz(int hz);
   int contrast() const { return contrast_; }
   int brightness() const { return brightness_; }
   // Puts the sliders back without writing settings.

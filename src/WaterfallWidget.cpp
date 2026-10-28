@@ -442,6 +442,15 @@ void WaterfallWidget::setTraceSpeed(int speed) {
   traceSpeed_ = qBound(1, speed, 9);
 }
 
+void WaterfallWidget::setRxHz(int hz) {
+  rxHz_ = clampTone(hz);
+  if (locked_)
+    txHz_ = rxHz_;
+  rememberFrequencies();
+  emit frequenciesChanged(rxHz_, txHz_);
+  update();
+}
+
 int WaterfallWidget::clampTone(int hz) const {
   int lo = 0;
   int hi = 5000;

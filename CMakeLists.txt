@@ -59,10 +59,17 @@ qt_add_executable(std
   src/StatusStrip.h
   src/TciClient.cpp
   src/TciClient.h
+  src/hell/HellEngine.cpp
+  src/hell/HellEngine.h
+  src/hell/HellRaster.cpp
+  src/hell/HellRaster.h
+  src/hell/fldigi/filters.cxx
+  src/hell/fldigi/fftfilt.cxx
   resources/resources.qrc
 )
 
 target_compile_definitions(std PRIVATE STD_VERSION="${PROJECT_VERSION}")
+target_include_directories(std PRIVATE "${CMAKE_SOURCE_DIR}/src/hell/fldigi")
 
 target_link_libraries(std PRIVATE Qt6::Widgets Qt6::WebSockets)
 
@@ -96,6 +103,10 @@ endif()
 
 if(MSVC)
   target_compile_options(std PRIVATE /W4)
+  set_source_files_properties(
+    src/hell/fldigi/filters.cxx
+    src/hell/fldigi/fftfilt.cxx
+    PROPERTIES COMPILE_OPTIONS "/W1")
 else()
   target_compile_options(std PRIVATE -Wall -Wextra -Wpedantic)
 endif()

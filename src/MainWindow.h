@@ -14,6 +14,7 @@
 class QCloseEvent;
 
 class Ft8Decode;
+class HellEngine;
 class ModeProfile;
 class QAction;
 class QDockWidget;
@@ -66,6 +67,7 @@ private:
   QWidget* makeTextPanel(const QString& editName, const QString& placeholder,
                          bool readOnly, const QString& note);
   QWidget* makeReceivePanel();
+  void showHellReceive(bool on);
   QWidget* makeMacroRow();
   void refreshDecodes();
   void saveModeLayout(bool force = false);
@@ -87,6 +89,7 @@ private:
   StatusStrip* statusStrip_ = nullptr;
   TciClient* tci_ = nullptr;
   Ft8Decode* ft8_ = nullptr;
+  HellEngine* hell_ = nullptr;
   QAction* autoConnectAction_ = nullptr;
   QAction* autoMonitorAction_ = nullptr;
   bool autoMonitor_ = true;

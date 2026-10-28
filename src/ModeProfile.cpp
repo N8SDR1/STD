@@ -36,20 +36,30 @@ QFont barFont() {
 // 7.0475 MHz (7047500 Hz) in every region, marked provisional.
 // 80 m FT4 is 3.575 MHz, and 3.568 MHz in Region 3. FT8 and FT4
 // send DIGU on every band. FT2 dials are the MSHV table. MSHV stays the decoder.
+// Hell dials are the Feld Hell Club signal frequency minus 1500 Hz, so DIGU
+// puts the tone at 1500 Hz. 20 m is 14.063 MHz, the club calling frequency.
+// 30 m Region 1 uses 10.144 MHz. The others use the club list.
 struct Ft8Band {
   const char* label;
   qint64 ft8Hz;
   qint64 ft4Hz;
   qint64 ft4Region3Hz;
   qint64 ft2Hz;
+  qint64 hellHz;
+  qint64 hellRegion1Hz;
 };
 
 constexpr Ft8Band kBands[] = {
-    {"1.8", 1840000, 1840000, 0, 1843000},    {"3.5", 3573000, 3575000, 3568000, 3578000},
-    {"7", 7074000, 7047500, 0, 7052000},      {"10", 10136000, 10140000, 0, 10144000},
-    {"14", 14074000, 14080000, 0, 14084000},  {"18", 18100000, 18104000, 0, 18108000},
-    {"21", 21074000, 21140000, 0, 21144000},  {"24", 24915000, 24919000, 0, 24923000},
-    {"28", 28074000, 28180000, 0, 28184000},  {"50", 50313000, 50318000, 0, 50320000},
+    {"1.8", 1840000, 1840000, 0, 1843000, 1841500, 0},
+    {"3.5", 3573000, 3575000, 3568000, 3578000, 3576500, 0},
+    {"7", 7074000, 7047500, 0, 7052000, 7078500, 0},
+    {"10", 10136000, 10140000, 0, 10144000, 10135500, 10142500},
+    {"14", 14074000, 14080000, 0, 14084000, 14061500, 0},
+    {"18", 18100000, 18104000, 0, 18108000, 18103500, 0},
+    {"21", 21074000, 21140000, 0, 21144000, 21061500, 0},
+    {"24", 24915000, 24919000, 0, 24923000, 24922500, 0},
+    {"28", 28074000, 28180000, 0, 28184000, 28061500, 0},
+    {"50", 50313000, 50318000, 0, 50320000, 50284500, 0},
 };
 
 constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
@@ -339,6 +349,8 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     next = QStringLiteral("FT4");
   else if (mode == QLatin1String("FT2"))
     next = QStringLiteral("FT2");
+  else if (mode == QLatin1String("Hell"))
+    next = QStringLiteral("Hell");
   const bool same = next == mode_;
   mode_ = next;
   if (same)
@@ -348,6 +360,15 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     reloadExtras();
   }
   refreshBands();
+  const bool hell = mode_ == QLatin1String("Hell");
+  if (speed_)
+    speed_->setVisible(!hell);
+  if (start_)
+    start_->setVisible(!hell);
+  if (bandwidth_)
+    bandwidth_->setVisible(!hell);
+  if (auto* box = findChild<QCheckBox*>(QStringLiteral("profileAutoDec")))
+    box->setVisible(!hell);
 }
 
 int ModeProfile::effectiveRegion() const {
@@ -449,6 +470,11 @@ bool ModeProfile::autoDecode() const {
 
 qint64 ModeProfile::tableHz(int index) const {
   const Ft8Band& band = kBands[index];
+  if (mode_ == QLatin1String("Hell")) {
+    if (effectiveRegion() == 1 && band.hellRegion1Hz > 0)
+      return band.hellRegion1Hz;
+    return band.hellHz;
+  }
   if (mode_ == QLatin1String("FT2"))
     return band.ft2Hz;
   if (mode_ == QLatin1String("FT4")) {

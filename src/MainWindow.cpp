@@ -4,6 +4,8 @@
 #include "MainWindow.h"
 
 #include "Ft8Decode.h"
+#include "hell/HellEngine.h"
+#include "hell/HellRaster.h"
 #include "ModeProfile.h"
 #include "StatusStrip.h"
 #include "TciClient.h"
@@ -298,8 +300,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       statusStrip_->setRxLevel(gained, count);
     if (ft8_)
       ft8_->pushAudio(gained, count, rate);
+    if (hell_)
+      hell_->pushAudio(gained, count, rate);
   });
 
+  hell_ = new HellEngine(this);
+  connect(hell_, &HellEngine::columnReady, this, [this](const QByteArray& column) {
+    if (auto* raster = findChild<HellRaster*>(QStringLiteral("hellReceive")))
+      raster->addColumn(column);
+  });
   ft8_ = new Ft8Decode(this);
   connect(ft8_, &Ft8Decode::decoded, this,
           [this](const QString& time, int db, const QString& dt, const QString& message, int freqHz) {
@@ -349,8 +358,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const QString mode = profile_->digitalMode();
     const bool ft4 = mode == QLatin1String("FT4");
     const bool ft2 = mode == QLatin1String("FT2");
+    const bool hell = mode == QLatin1String("Hell");
     const bool armed = autoMonitor_ && profile_->mshvFamily() &&
                        (ft4 || ft2 || mode == QLatin1String("FT8")) && profile_->autoDecode();
+    if (hell_) {
+      hell_->setArmed(autoMonitor_ && hell);
+      if (hell && waterfall_)
+        hell_->setToneHz(waterfall_->rxHz());
+    }
     const int low = profile_->startHz();
     ft8_->setMode(ft2 ? Ft8Decode::Period::Ft2 : ft4 ? Ft8Decode::Period::Ft4 : Ft8Decode::Period::Ft8);
     ft8_->setArmed(armed, low, low + profile_->bandwidthHz());
@@ -518,6 +533,10 @@ QWidget* MainWindow::makeReceivePanel() {
   header->setTextInteractionFlags(Qt::NoTextInteraction);
   layout->addWidget(header);
 
+  auto* raster = new HellRaster(panel);
+  raster->hide();
+  layout->addWidget(raster, 1);
+
   auto* edit = new QPlainTextEdit(panel);
   edit->setObjectName("receiveText");
   edit->setPlaceholderText(
@@ -533,6 +552,8 @@ QWidget* MainWindow::makeReceivePanel() {
   connect(clear, &QPushButton::clicked, this, [this] {
     decodes_.clear();
     refreshDecodes();
+    if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
+      tape->clear();
   });
   return panel;
 }
@@ -761,6 +782,7 @@ void MainWindow::buildMenus() {
   } modeRows[] = {{"FT8", "modeFt8", true, true},
                   {"FT4", "modeFt4", true, false},
                   {"FT2", "modeFt2", true, false},
+                  {"Hell", "modeHell", true, false},
                   {"RTTY", nullptr, false, false},
                   {"PSK31", nullptr, false, false}};
   for (const auto& row : modeRows) {
@@ -833,8 +855,9 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
       action->setChecked(on);
     }
   }
+  const bool hell = modeName == QLatin1String("Hell");
   const bool mshv = modeName == QLatin1String("FT8") || modeName == QLatin1String("FT4") ||
-                    modeName == QLatin1String("FT2");
+                    modeName == QLatin1String("FT2") || hell;
   if (modeName != layoutMode_) {
     offerLayoutSave();
     layoutMode_ = modeName;
@@ -854,8 +877,29 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   }
   if (statusStrip_)
     statusStrip_->setDigitalMode(modeName);
+  showHellReceive(hell);
+  if (hell && waterfall_)
+    waterfall_->setRxHz(1500);
+  if (hell_)
+    hell_->setArmed(autoMonitor_ && hell);
   if (mshv)
     tuneActiveBand();
+}
+
+void MainWindow::showHellReceive(bool on) {
+  if (auto* raster = findChild<HellRaster*>(QStringLiteral("hellReceive"))) {
+    if (on)
+      raster->clear();
+    raster->setVisible(on);
+  }
+  if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
+    edit->setVisible(!on);
+  if (auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader")))
+    header->setVisible(!on);
+  if (auto* filter = findChild<QLineEdit*>(QStringLiteral("decodeFilter")))
+    filter->setVisible(!on);
+  if (auto* clear = findChild<QPushButton*>(QStringLiteral("decodeClear")))
+    clear->setVisible(!on);
 }
 
 void MainWindow::cycleDigitalMode() {
@@ -913,8 +957,15 @@ void MainWindow::showGuide() {
        "Enter to insert it for this mode and band. Right-click Extra clears that list. Clicking the mode "
        "again, or the same band button, cycles the WSJT-X default and those extras. Choosing FT8, FT4, or a band "
        "button sends vfo:0,0,<Hz> and modulation:0,digu. "
-       "FT8 and FT4 are DIGU on every band. Neither "
+       "FT8, FT4, FT2, and Hell are DIGU on every band. Neither "
        "command keys the radio, and neither is START."},
+      {"Feld Hell",
+       "Mode → Hell receives Feld Hell from the Fldigi 4.2.06 column detector. The Receive pane "
+       "paints the tape. It does not turn the picture into text, and it does not transmit. The tone "
+       "starts at 1500 Hz. Click the waterfall to move it. The dial is the Feld Hell Club signal "
+       "minus 1500 Hz, so 20 m is 14.0615 MHz for the 14.063 MHz calling frequency. 30 m Region 1 "
+       "uses 10.144 MHz. The band button sends vfo:0,0,<Hz> and modulation:0,digu. That is not START "
+       "and it does not key."},
       {"FT8 and FT4 decode",
        "Auto Dec is on by default. The MSHV FT8 decoder starts on the period that is still running, "
        "about 11.8 seconds in, before the tones end, then again at 13.6 and 14.6 seconds when three-stage "
