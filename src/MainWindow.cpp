@@ -3603,7 +3603,9 @@ void MainWindow::finishTxPass() {
     if (flip && profile_)
       profile_->setTxFirst(!profile_->txFirst());
     selectTxSlot(5);
-    txHisCall_.clear();
+    // Tx6 is the next send. Tx1–Tx5 keep the worked station:
+    // HIS OUR GRID, report, R+report, RR73, 73. GRID is the User
+    // locator from Options, not the other station's grid.
     refreshTxFields();
     txTries_ = 0;
     txSeqStartMs_ = QDateTime::currentMSecsSinceEpoch();
