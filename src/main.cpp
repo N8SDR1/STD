@@ -139,6 +139,11 @@ int shellReady(const MainWindow& window) {
   if (!dial || dial->text() != QString::fromUtf8("—"))
     return fail("dial is not blank");
 
+  const auto* rxLevel = window.findChild<QLabel*>("rxLevel");
+  const auto* rxMeter = window.findChild<QWidget*>("rxLevelMeter");
+  if (!rxLevel || rxLevel->text() != QString::fromUtf8("—") || !rxMeter)
+    return fail("RX level meter is missing");
+
   if (!window.findChild<QWidget*>("radioConnect"))
     return fail("connect control is missing");
 

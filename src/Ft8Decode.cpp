@@ -136,22 +136,19 @@ public:
       for (double& sample : job.samples)
         sample -= average;
       const QByteArray stamp = job.stamp.toLatin1();
-      std::vector<Hit> lines;
       decode(session, job.samples.data(), static_cast<int>(job.samples.size()), job.lowHz, job.highHz,
              job.rxHz, job.txHz, job.depth, job.ap, job.id3dec, stamp.constData(),
              [](const char* time, int db, const char* dt, const char* message, int freqHz, void* user) {
-               auto* out = static_cast<std::vector<Hit>*>(user);
+               auto* worker = static_cast<Worker*>(user);
                Hit hit;
                hit.time = QString::fromUtf8(time);
                hit.db = db;
                hit.dt = QString::fromUtf8(dt);
                hit.message = QString::fromUtf8(message);
                hit.freqHz = freqHz;
-               out->push_back(hit);
+               worker->emitHit(hit);
              },
-             &lines);
-      for (const Hit& hit : lines)
-        emitHit(hit);
+             this);
     }
     close(session);
     FreeLibrary(module);
@@ -206,7 +203,7 @@ Ft8Decode::Ft8Decode(QObject* parent) : QObject(parent), d_(new Private) {
     emit decoded(hit.time, hit.db, hit.dt, hit.message, hit.freqHz);
   };
   connect(&d_->timer, &QTimer::timeout, this, [this] { poll(); });
-  d_->timer.start(200);
+  d_->timer.start(50);
 }
 
 Ft8Decode::~Ft8Decode() {
@@ -321,8 +318,12 @@ void Ft8Decode::poll() {
         qint64 at;
         int count;
       };
-      // MSHV's three FT8 intervals: 141696, 162432, and 172800 samples.
-      const Step steps[] = {{1, 11820, 141696}, {2, 13536, 162432}, {3, 14400, 172800}};
+      // MSHV lists the period that is still on the air. main_ms.cpp starts
+      // the first pass once time_pos_1period > 11820 ms (141696 samples,
+      // before the 12.64 s tone run ends). display_ms.cpp then waits 1740 ms
+      // (162432 samples) and 1000 ms (172800 samples). Lines are emitted
+      // from inside the pass, not after a 15 s boundary.
+      const Step steps[] = {{1, 11820, 141696}, {2, 13560, 162432}, {3, 14560, 172800}};
       if (d_->stageDone >= 3)
         return;
       const Step& step = steps[d_->stageDone];

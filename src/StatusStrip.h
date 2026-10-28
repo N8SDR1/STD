@@ -16,4 +16,12 @@ public:
   void setDial(const QString& text);
   void setPtt(bool onAir, bool connected);
   void setRadio(bool connected, const QString& line);
+  // samples are float -1..1. A null pointer clears the meter.
+  void setRxLevel(const float* samples, int count);
+
+private:
+  void refreshRxLevel();
+
+  float rxHeld_ = 0.0f;
+  qint64 rxHeardMs_ = 0;
 };

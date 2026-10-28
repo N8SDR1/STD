@@ -14,6 +14,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QFormLayout>
@@ -220,6 +221,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildDocks();
   buildMenus();
   arrangeDefault();
+  const QList<QDockWidget*> docks = {waterfallDock_, receiveDock_, transmitDock_, macroDock_, statusDock_};
+  for (QDockWidget* dock : docks) {
+    connect(dock, &QDockWidget::dockLocationChanged, this, [this](Qt::DockWidgetArea) { saveModeLayout(); });
+    connect(dock, &QDockWidget::topLevelChanged, this, [this](bool) { saveModeLayout(); });
+  }
 
   tci_ = new TciClient(this);
   if (profile_ && waterfall_) {
@@ -259,6 +265,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const int count = mono.size() / int(sizeof(float));
     if (waterfall_)
       waterfall_->pushRealAudio(samples, count, rate);
+    if (statusStrip_)
+      statusStrip_->setRxLevel(samples, count);
     if (ft8_)
       ft8_->pushAudio(samples, count, rate);
   });
@@ -268,8 +276,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
           [this](const QString& time, int db, const QString& dt, const QString& message, int freqHz) {
             if (clearEachPeriod_ && !time.isEmpty() && time != lastPeriod_)
               decodes_.clear();
-            if (!time.isEmpty())
+            if (!time.isEmpty()) {
               lastPeriod_ = time;
+              for (const DecodeRow& row : decodes_) {
+                const int df = row.freqHz - freqHz;
+                if (row.time == time && row.message == message && df > -6 && df < 6)
+                  return;
+              }
+            }
             if (maxSignals_ > 0 && !time.isEmpty()) {
               int count = 0;
               int weakest = -1;
@@ -716,6 +730,16 @@ void MainWindow::buildMenus() {
     modes->addAction(action);
     const QString modeName = QString::fromLatin1(row.label);
     connect(action, &QAction::triggered, this, [this, mshv = row.mshv, modeName] {
+      if (modeName != layoutMode_) {
+        saveModeLayout();
+        layoutMode_ = modeName;
+        if (!restoreModeLayout()) {
+          layoutGuard_ = true;
+          arrangeDefault();
+          resizeToHero();
+          layoutGuard_ = false;
+        }
+      }
       if (profile_) {
         if (mshv)
           profile_->setDigitalMode(modeName);
@@ -745,8 +769,13 @@ void MainWindow::buildMenus() {
   viewMenu->addSeparator();
   auto* reset = viewMenu->addAction("Reset layout");
   connect(reset, &QAction::triggered, this, [this] {
+    QSettings store;
+    store.remove(QStringLiteral("layout/%1/state").arg(layoutMode_));
+    store.remove(QStringLiteral("layout/%1/geometry").arg(layoutMode_));
+    layoutGuard_ = true;
     arrangeDefault();
     resizeToHero();
+    layoutGuard_ = false;
   });
 
   auto* helpMenu = menuBar()->addMenu("Help");
@@ -789,8 +818,9 @@ void MainWindow::showGuide() {
        "sideband with modulation:0,digu. FT8 and FT4 are DIGU on every band. Neither command keys the "
        "radio, and neither is START."},
       {"FT8 decode",
-       "Auto Dec is on by default. The MSHV FT8 decoder starts when the waveform is in, before the "
-       "next 15-second period. The Receive pane has column headers Time, dB, DT, Message, and Freq. "
+       "Auto Dec is on by default. The MSHV FT8 decoder starts on the period that is still running, "
+       "about 11.8 seconds in, before the tones end. Each line is painted as "
+       "soon as the decoder finds it. The Receive pane has column headers Time, dB, DT, Message, and Freq. "
        "Filter keeps lines that contain the text. CLR MSG clears the list. Freq is the audio frequency "
        "in Hz. Dist is not computed. Decoding does not send START and it does not key."},
       {"DX options",
@@ -803,6 +833,10 @@ void MainWindow::showGuide() {
        "A green line is the RX frequency and a red line is the TX frequency. Click the waterfall to "
        "set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them together. RX=TX copies RX "
        "onto TX. None of these key the radio."},
+      {"Layout",
+       "The dock arrangement is saved for the selected mode. FT8 can keep Receive and Transmit side "
+       "by side, and that arrangement comes back the next time FT8 is opened. View → Reset layout "
+       "stacks the current mode again."},
   };
 
   QString html;
@@ -860,8 +894,42 @@ void MainWindow::showEvent(QShowEvent* event) {
   QMainWindow::showEvent(event);
   if (!heroSized_) {
     heroSized_ = true;
-    QTimer::singleShot(0, this, [this] { resizeToHero(); });
+    const bool restored = !qEnvironmentVariableIsSet("STD_SELFTEST") && restoreModeLayout();
+    layoutReady_ = true;
+    if (!restored)
+      QTimer::singleShot(0, this, [this] { resizeToHero(); });
   }
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+  saveModeLayout();
+  QMainWindow::closeEvent(event);
+}
+
+void MainWindow::saveModeLayout() {
+  if (layoutGuard_ || !layoutReady_ || layoutMode_.isEmpty() ||
+      qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return;
+  QSettings settings;
+  settings.setValue(QStringLiteral("layout/%1/state").arg(layoutMode_), saveState(1));
+  settings.setValue(QStringLiteral("layout/%1/geometry").arg(layoutMode_), saveGeometry());
+}
+
+bool MainWindow::restoreModeLayout() {
+  if (layoutMode_.isEmpty() || qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return false;
+  QSettings settings;
+  const QByteArray state = settings.value(QStringLiteral("layout/%1/state").arg(layoutMode_)).toByteArray();
+  if (state.isEmpty())
+    return false;
+  layoutGuard_ = true;
+  const bool restored = restoreState(state, 1);
+  const QByteArray geometry =
+      settings.value(QStringLiteral("layout/%1/geometry").arg(layoutMode_)).toByteArray();
+  if (restored && !geometry.isEmpty())
+    restoreGeometry(geometry);
+  layoutGuard_ = false;
+  return restored;
 }
 
 void MainWindow::openRadioDialog() {
@@ -1095,7 +1163,7 @@ void MainWindow::setReceivePlaceholder(bool connected) {
   if (!receive)
     return;
   receive->setPlaceholderText(
-      connected ? QStringLiteral("Audio is arriving.\nFT8 lines appear here after each period.")
+      connected ? QStringLiteral("Audio is arriving.\nFT8 lines appear here as the decoder finds them.")
                 : QStringLiteral(
                       "Received text will appear here.\nNo radio is connected, so nothing is being decoded."));
 }
@@ -1109,6 +1177,7 @@ void MainWindow::showRadioDown(const QString& error) {
   if (statusStrip_) {
     statusStrip_->setMode(dash);
     statusStrip_->setDial(dash);
+    statusStrip_->setRxLevel(nullptr, 0);
     statusStrip_->setPtt(false, false);
     statusStrip_->setRadio(false, line);
   }

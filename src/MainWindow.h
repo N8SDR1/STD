@@ -8,6 +8,8 @@
 #include <QString>
 #include <QVector>
 
+class QCloseEvent;
+
 class Ft8Decode;
 class ModeProfile;
 class QAction;
@@ -28,6 +30,7 @@ public:
 
 protected:
   void showEvent(QShowEvent* event) override;
+  void closeEvent(QCloseEvent* event) override;
 
 private:
   void buildBrandBar();
@@ -58,6 +61,8 @@ private:
   QWidget* makeReceivePanel();
   QWidget* makeMacroRow();
   void refreshDecodes();
+  void saveModeLayout();
+  bool restoreModeLayout();
 
   struct DecodeRow {
     QString time;
@@ -81,6 +86,9 @@ private:
   bool clearEachPeriod_ = false;
   int maxSignals_ = 0;
   QString lastPeriod_;
+  QString layoutMode_ = QStringLiteral("FT8");
+  bool layoutReady_ = false;
+  bool layoutGuard_ = false;
   QVector<DecodeRow> decodes_;
   QString dialText_ = QString::fromUtf8("—");
   QDockWidget* waterfallDock_ = nullptr;

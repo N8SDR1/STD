@@ -3,6 +3,10 @@
 
 #include "StatusStrip.h"
 
+#include <algorithm>
+#include <cmath>
+
+#include <QDateTime>
 #include <QFont>
 #include <QFontMetrics>
 #include <QFrame>
@@ -11,6 +15,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QTimer>
 
 namespace {
 
@@ -89,6 +94,46 @@ QWidget* readout(const QString& label, const QString& valueName, const QString& 
   return group;
 }
 
+class RxLevelMeter : public QWidget {
+public:
+  explicit RxLevelMeter(QWidget* parent = nullptr) : QWidget(parent) {
+    setObjectName("rxLevelMeter");
+    setFixedSize(72, 14);
+    setToolTip(QStringLiteral("Receive peak. Green is about -1 to 0 dB. This does not key."));
+  }
+
+protected:
+  void paintEvent(QPaintEvent* event) override {
+    Q_UNUSED(event);
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    painter.setPen(QPen(QColor("#3a4a55"), 1));
+    painter.setBrush(QColor("#14120f"));
+    painter.drawRoundedRect(box, 2, 2);
+
+    const int zone = property("zone").toInt();
+    const double fraction = std::clamp(property("fraction").toDouble(), 0.0, 1.0);
+    QColor fill("#5a4030");
+    if (zone == 2)
+      fill = QColor("#3dbe78");
+    else if (zone == 3)
+      fill = QColor("#e05a5a");
+    else if (zone == 1)
+      fill = QColor("#e0b15a");
+    if (zone != 0 && fraction > 0.0) {
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(fill);
+      const QRectF inner = box.adjusted(1, 1, -1, -1);
+      painter.drawRect(QRectF(inner.left(), inner.top(), inner.width() * fraction, inner.height()));
+    }
+    // -1 dB on a -6..0 scale.
+    const double tick = box.left() + box.width() * (5.0 / 6.0);
+    painter.setPen(QPen(QColor("#d5e6ef"), 1));
+    painter.drawLine(QPointF(tick, box.top() + 1), QPointF(tick, box.bottom() - 1));
+  }
+};
+
 QFrame* separator() {
   auto* line = new QFrame;
   line->setObjectName("statusSep");
@@ -118,7 +163,13 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
   layout->addWidget(separator());
   layout->addWidget(readout("DIAL", "dialValue", QString::fromUtf8("—")));
   layout->addWidget(separator());
+  layout->addWidget(readout("RX", "rxLevel", QString::fromUtf8("—")));
+  layout->addWidget(new RxLevelMeter(this));
+  layout->addWidget(separator());
   layout->addWidget(new PttLamp(this));
+  auto* levelTick = new QTimer(this);
+  connect(levelTick, &QTimer::timeout, this, [this] { refreshRxLevel(); });
+  levelTick->start(100);
   layout->addStretch(1);
 
   auto* dot = new QLabel(QString::fromUtf8("●"));
@@ -164,6 +215,67 @@ void StatusStrip::setPtt(bool onAir, bool connected) {
   else
     lamp->setToolTip(QStringLiteral("PTT is off."));
   lamp->update();
+}
+
+void StatusStrip::setRxLevel(const float* samples, int count) {
+  if (!samples || count <= 0) {
+    rxHeld_ = 0.0f;
+    rxHeardMs_ = 0;
+    refreshRxLevel();
+    return;
+  }
+  float peak = 0.0f;
+  for (int i = 0; i < count; ++i)
+    peak = std::max(peak, std::fabs(samples[i]));
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  double shown = 0.0;
+  if (rxHeardMs_ > 0) {
+    const double age = std::max(0.0, (now - rxHeardMs_) / 1000.0);
+    shown = double(rxHeld_) * std::exp(-age / 0.35);
+  }
+  if (peak >= shown) {
+    rxHeld_ = peak;
+    rxHeardMs_ = now;
+  }
+  refreshRxLevel();
+}
+
+void StatusStrip::refreshRxLevel() {
+  auto* meter = findChild<QWidget*>("rxLevelMeter");
+  auto* label = labeled(this, "rxLevel");
+  if (!meter || !label)
+    return;
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  if (rxHeardMs_ <= 0 || now - rxHeardMs_ > 1200) {
+    meter->setProperty("zone", 0);
+    meter->setProperty("fraction", 0.0);
+    label->setText(QString::fromUtf8("—"));
+    label->setStyleSheet(QString());
+    meter->update();
+    return;
+  }
+  const double age = std::max(0.0, (now - rxHeardMs_) / 1000.0);
+  const double held = double(rxHeld_) * std::exp(-age / 0.35);
+  double db = -120.0;
+  if (held > 1e-7)
+    db = 20.0 * std::log10(held);
+  int zone = 1;
+  if (db > 0.05)
+    zone = 3;
+  else if (db >= -1.0)
+    zone = 2;
+  const double fraction = std::clamp((db + 6.0) / 6.0, 0.0, 1.0);
+  meter->setProperty("zone", zone);
+  meter->setProperty("fraction", fraction);
+  label->setText(QString::number(db, 'f', 1) + QStringLiteral(" dB"));
+  const char* color = "#e0b15a";
+  if (zone == 2)
+    color = "#7dffb3";
+  else if (zone == 3)
+    color = "#ff8d8d";
+  label->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(color)));
+  label->setToolTip(QStringLiteral("Receive peak. Green is about -1 to 0 dB. This does not key."));
+  meter->update();
 }
 
 void StatusStrip::setRadio(bool connected, const QString& line) {

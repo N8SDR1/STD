@@ -12,21 +12,29 @@
 #include <QString>
 #include <QStringList>
 
-#include <vector>
-
 struct Ft8Session {
   DecoderFt8* decoder = nullptr;
-  std::vector<QStringList> lines;
+  Ft8LineFn fn = nullptr;
+  void* user = nullptr;
+  int reported = 0;
 };
 
 namespace {
 
 void takeLine(Ft8Session* session, const QStringList& list) {
-  if (list.size() < 5)
+  if (!session || !session->fn || list.size() < 5)
     return;
   if (list.at(4).trimmed().isEmpty())
     return;
-  session->lines.push_back(list);
+  // PrintMsg fires inside ft8_decode. Hand the line up now so Receive
+  // paints while the rest of the pass is still running.
+  const QByteArray time = list.at(0).toUtf8();
+  const QByteArray dt = list.at(2).toUtf8();
+  const QByteArray message = list.at(4).toUtf8();
+  const int db = list.at(1).toInt();
+  const int freqHz = list.size() > 7 ? list.at(7).toInt() : 0;
+  session->fn(time.constData(), db, dt.constData(), message.constData(), freqHz, session->user);
+  session->reported += 1;
 }
 
 }  // namespace
@@ -80,7 +88,9 @@ extern "C" __declspec(dllexport) int ft8_session_decode(Ft8Session* session, dou
   if (!staged)
     id3dec = 100;
 
-  session->lines.clear();
+  session->fn = fn;
+  session->user = user;
+  session->reported = 0;
   const QString stamp = QString::fromLatin1(hhmmss && hhmmss[0] ? hhmmss : "000000");
   session->decoder->SetStDecode(stamp, 0, false);
   session->decoder->SetNewP(true);
@@ -95,20 +105,12 @@ extern "C" __declspec(dllexport) int ft8_session_decode(Ft8Session* session, dou
     // waveform, not a zero-padded 15 seconds.
     session->decoder->ft8_decode(samples, count, lowHz, highHz, rxHz, have, id3dec, lowHz, highHz);
   } catch (...) {
+    session->fn = nullptr;
+    session->user = nullptr;
     return 0;
   }
-
-  int reported = 0;
-  for (const QStringList& list : session->lines) {
-    if (!fn)
-      continue;
-    const QByteArray time = list.at(0).toUtf8();
-    const QByteArray dt = list.at(2).toUtf8();
-    const QByteArray message = list.at(4).toUtf8();
-    const int db = list.at(1).toInt();
-    const int freqHz = list.size() > 7 ? list.at(7).toInt() : 0;
-    fn(time.constData(), db, dt.constData(), message.constData(), freqHz, user);
-    ++reported;
-  }
+  const int reported = session->reported;
+  session->fn = nullptr;
+  session->user = nullptr;
   return reported;
 }
