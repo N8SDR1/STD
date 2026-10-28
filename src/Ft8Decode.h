@@ -6,13 +6,15 @@
 #include <QObject>
 #include <QString>
 
-// Buffers TCI receive audio and decodes one FT8 or FT4 period at a time.
+// Buffers TCI receive audio and decodes one FT8, FT4, or FT2 period.
 // FT8 can run MSHV's three passes. FT4 is one pass at 6.1 seconds.
-// It never opens a socket and never transmits.
+// FT2 is one pass at 3.4 seconds. It never opens a socket and never transmits.
 class Ft8Decode : public QObject {
   Q_OBJECT
 
 public:
+  enum class Period { Ft8, Ft4, Ft2 };
+
   explicit Ft8Decode(QObject* parent = nullptr);
   ~Ft8Decode() override;
 
@@ -21,8 +23,8 @@ public:
   void setSpot(int rxHz, int txHz);
   // depth is 1, 2, or 3. clockOffsetMs shifts the period clock.
   void setOptions(bool threeStage, int depth, bool ap, int clockOffsetMs);
-  // FT4 uses a 7.5 s period and one pass. FT8 keeps the 15 s schedule.
-  void setMode(bool ft4);
+  // FT4 is 7.5 s, one pass. FT2 is 3.75 s, one pass. FT8 keeps 15 s.
+  void setMode(Period mode);
   void clear();
 
 signals:

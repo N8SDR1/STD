@@ -63,7 +63,7 @@ struct Job {
   int depth = 1;
   int ap = 1;
   int id3dec = 100;
-  bool ft4 = false;
+  int kind = 0;
   QString stamp;
 };
 
@@ -113,6 +113,8 @@ public:
         reinterpret_cast<decltype(&ft8_session_decode)>(GetProcAddress(module, "ft8_session_decode"));
     auto decode4 =
         reinterpret_cast<decltype(&ft4_session_decode)>(GetProcAddress(module, "ft4_session_decode"));
+    auto decode2 =
+        reinterpret_cast<decltype(&ft2_session_decode)>(GetProcAddress(module, "ft2_session_decode"));
     if (!open || !close || !decode) {
       emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT8 decoder did not load."), 0});
       FreeLibrary(module);
@@ -135,7 +137,8 @@ public:
         job = std::move(queue_.front());
         queue_.pop_front();
       }
-      if (job.samples.size() < static_cast<size_t>(kMinKeep))
+      const int minimum = job.kind == 2 ? 30000 : kMinKeep;
+      if (job.samples.size() < static_cast<size_t>(minimum))
         continue;
       double sum = 0.0;
       for (double& sample : job.samples) {
@@ -149,39 +152,38 @@ public:
       if (job.samples.size() < static_cast<size_t>(kDecoderCapacity))
         job.samples.resize(static_cast<size_t>(kDecoderCapacity), kDecoderPad);
       const QByteArray stamp = job.stamp.toLatin1();
-      if (job.ft4) {
+      const auto take = [](const char* time, int db, const char* dt, const char* message, int freqHz,
+                           void* user) {
+        auto* worker = static_cast<Worker*>(user);
+        Hit hit;
+        hit.time = QString::fromUtf8(time);
+        hit.db = db;
+        hit.dt = QString::fromUtf8(dt);
+        hit.message = QString::fromUtf8(message);
+        hit.freqHz = freqHz;
+        worker->emitHit(hit);
+      };
+      if (job.kind == 2) {
+        if (!decode2) {
+          emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT2 decoder did not load."), 0});
+          continue;
+        }
+        decode2(session, job.samples.data(), realCount, job.lowHz, job.highHz, job.rxHz, job.txHz,
+                job.depth, job.ap, stamp.constData(), take, this);
+        continue;
+      }
+      if (job.kind == 1) {
         if (!decode4) {
           emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT4 decoder did not load."), 0});
           continue;
         }
         decode4(session, job.samples.data(), realCount, job.lowHz, job.highHz, job.rxHz, job.txHz,
                 job.depth, job.ap, stamp.constData(),
-                [](const char* time, int db, const char* dt, const char* message, int freqHz, void* user) {
-                  auto* worker = static_cast<Worker*>(user);
-                  Hit hit;
-                  hit.time = QString::fromUtf8(time);
-                  hit.db = db;
-                  hit.dt = QString::fromUtf8(dt);
-                  hit.message = QString::fromUtf8(message);
-                  hit.freqHz = freqHz;
-                  worker->emitHit(hit);
-                },
-                this);
+                take, this);
         continue;
       }
-      decode(session, job.samples.data(), realCount, job.lowHz, job.highHz,
-             job.rxHz, job.txHz, job.depth, job.ap, job.id3dec, stamp.constData(),
-             [](const char* time, int db, const char* dt, const char* message, int freqHz, void* user) {
-               auto* worker = static_cast<Worker*>(user);
-               Hit hit;
-               hit.time = QString::fromUtf8(time);
-               hit.db = db;
-               hit.dt = QString::fromUtf8(dt);
-               hit.message = QString::fromUtf8(message);
-               hit.freqHz = freqHz;
-               worker->emitHit(hit);
-             },
-             this);
+      decode(session, job.samples.data(), realCount, job.lowHz, job.highHz, job.rxHz, job.txHz,
+             job.depth, job.ap, job.id3dec, stamp.constData(), take, this);
     }
     close(session);
     FreeLibrary(module);
@@ -220,7 +222,7 @@ struct Ft8Decode::Private {
   double residual = 0;
   int rate = 0;
   bool armed = false;
-  bool ft4 = false;
+  Period mode = Period::Ft8;
   bool threeStage = true;
   int depth = 1;
   bool ap = true;
@@ -265,11 +267,11 @@ void Ft8Decode::setSpot(int rxHz, int txHz) {
   d_->txHz = std::clamp(txHz, 0, 5000);
 }
 
-void Ft8Decode::setMode(bool ft4) {
+void Ft8Decode::setMode(Period mode) {
   QMutexLocker lock(&d_->mutex);
-  if (d_->ft4 == ft4)
+  if (d_->mode == mode)
     return;
-  d_->ft4 = ft4;
+  d_->mode = mode;
   d_->stagePeriod = -1;
   d_->stageDone = 0;
 }
@@ -347,11 +349,15 @@ void Ft8Decode::poll() {
     if (!d_->armed || d_->newestMs <= 0)
       return;
     const qint64 clock = d_->newestMs + d_->clockOffsetMs;
-    const bool ft4 = d_->ft4;
-    // FT4 is 7.5 s. MSHV main_ms.cpp starts one decode once the period
-    // clock passes 6100 ms. display_ms.cpp runs the three-stage timer
-    // only for FT8 (s_mode == 11).
-    const qint64 periodMs = ft4 ? static_cast<qint64>(7500) : kPeriodMs;
+    const Period mode = d_->mode;
+    // FT4 is 7.5 s. MSHV starts one decode once the period clock passes
+    // 6100 ms. FT2 is 3.75 s and starts once the clock passes 3400 ms.
+    // The three-stage timer is FT8 only.
+    qint64 periodMs = kPeriodMs;
+    if (mode == Period::Ft4)
+      periodMs = 7500;
+    else if (mode == Period::Ft2)
+      periodMs = 3750;
     const qint64 periodStart = (clock / periodMs) * periodMs;
     if (periodStart != d_->stagePeriod) {
       d_->stagePeriod = periodStart;
@@ -360,12 +366,12 @@ void Ft8Decode::poll() {
     int id3dec = 100;
     int samples = kDecodeSamples;
     qint64 atMs = kDecodeAtMs;
-    if (ft4) {
+    if (mode == Period::Ft4 || mode == Period::Ft2) {
       if (d_->stageDone >= 1)
         return;
       id3dec = 0;
-      atMs = 6100;
-      samples = 6100 * kAudioRate / 1000;
+      atMs = mode == Period::Ft2 ? 3400 : 6100;
+      samples = static_cast<int>(atMs) * kAudioRate / 1000;
     } else if (d_->threeStage) {
       struct Step {
         int id;
@@ -410,7 +416,7 @@ void Ft8Decode::poll() {
     job.depth = d_->depth;
     job.ap = d_->ap ? 1 : 0;
     job.id3dec = id3dec;
-    job.ft4 = ft4;
+    job.kind = mode == Period::Ft2 ? 2 : mode == Period::Ft4 ? 1 : 0;
     job.stamp = QDateTime::fromMSecsSinceEpoch(periodStart, QTimeZone::utc()).toString(QStringLiteral("hhmmss"));
     d_->stageDone += 1;
     ready = true;

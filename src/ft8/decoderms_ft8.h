@@ -13,6 +13,7 @@
 
 #include "HvMsPlayer/libsound/HvGenFt8/gen_ft8.h"
 #include "HvMsPlayer/libsound/HvGenFt4/gen_ft4.h"
+#include "HvMsPlayer/libsound/HvGenFt2/gen_ft2.h"
 // FT8 only: gen_sfox.h is not part of this decoder.
 #include <QObject> //2.53
 #include <QStringList>
@@ -472,6 +473,131 @@ private:
     void ft4_a7d(double *dd0,bool &newdat,QString call_1,QString call_2,QString grid4,
                  double &xdt,double &f1,double xbase,int &nharderrors,double &,QString &msg37,double &xsnr);
     void PrintMsg(QString,int nsnr,double xdt,double f1,QString message,int iaptype,float,bool &have_dec,bool &f_only_one_color,bool);
+};
+
+
+// FT2 is one pass at 3.4 s of its 3.75 s period.
+class DecoderFt2 : public QObject
+{
+    Q_OBJECT
+public:
+    explicit DecoderFt2(int id);
+    ~DecoderFt2();
+    void AvgDecodeChanged(bool);
+    void SetStTxFreq(double f);
+    void SetStMultiAnswerMod(bool f);
+    void SetStDecoderDeep(int d);
+    void SetStApDecode(bool f);// only in mshv
+    void SetBandChangedStaticAll(uint8_t);
+    void SetStQSOProgress(int i);
+    void SetStDecode(QString time,int mousebutton,bool);
+    void SetStWords(QString,QString,int,int,QString);
+    void SetStHisCall(QString);
+    void SetMAMCalls(QStringList ls);
+    //void SetNewP(bool);
+    //void SetResetPrevT(QString ptime);
+    void ft2_decode(double *dd,double f0a,double f0b,double,double,double fqso,bool &f);
+
+signals:
+    void EmitDecodetTextFt(QStringList);
+    void EmitBackColor();
+
+private:
+    int decid;
+    F2a f2a;
+    PomAll pomAll;
+    PomFt pomFt;
+    GenFt2 *TGenFt2;
+    double DEC_SAMPLE_RATE;
+    double twopi;
+    double pi;
+    uint8_t band2;
+
+    //bool f_new_p;
+    //void dshift1(double *a,int cou_a,int ish);//???
+
+    bool first_ft2_ds;
+    double complex cx_ft2_ds[46000];     //(0:NMAX/2)=36288   31104                 [NMAX] (NMAX=21*3456)=72576
+    double window_ft2_ds[6000]; //ft2=5000   (0:NFFT2-1) (NFFT2=NMAX/18)=4032     (0:NFFT2-1) (NFFT2=NMAX/16)=3888
+    void ft2_downsample(double *dd,bool newdata,double f0,double complex *c);
+
+    //void nuttal_window(double *win,int n);
+    void ft2_baseline(double *s,int nfa,int nfb,double *sbase);
+
+    bool first_ft2detcad;
+    double window_ft2[2314];    //2304;//NFFT1=2048;
+    void getcandidates2(double *dd,double fa,double fb,double,double,double syncmin,double nfqso,
+                        int maxcand,double candidate[2][250],int &ncand,double *);
+
+    bool first_ft2_sync4d;
+    double complex csynca_ft2_sync[70];//(2*NSS) 2*32=64
+    double complex csyncb_ft2_sync[70];
+    double complex csyncc_ft2_sync[70];
+    double complex csyncd_ft2_sync[70];
+    void sync2d(double complex *cd0,int i0,double complex *ctwk,int itwk,double &sync);
+
+    double pulse_ft2_rx[1748];          //576*3=1728    !512*3=1536
+    void gen_ft2cwaveRx(int *i4tone,double f_tx,double complex *cwave);
+
+    bool first_subsft2;
+    double complex cw_subsft2[72800];//72576   =62208
+    void subtractft2(double *dd,int *itone,double f0,double dt);
+
+	void ft2_channel_est(double complex *cd,double complex *cd_eq,double *ch_snr);
+    bool first_ft2bm;
+    bool one_ft2_2[8][256];//(0:255,0:7)
+    void get_ft2_bitmetrics(double complex *cd,double bitmetrics_[5][220],bool &badsync,double s4_[120][4],int);//2*NN=206
+
+    bool first_ft2d;
+    int mrrr_ft2[19];
+    int m73_ft2[19];
+    int mrr73_ft2[19];
+    int mcq_ft2[29];
+    int cont_id0_ft2_2;
+    QString mycall0_ft2;
+    QString hiscall0_ft2;
+    double fac_ft2_sync;
+    double complex ctwk2_ft2_[41+5][70]; //ctwk2(2*NSS,-16:16) 2*32=64
+    int apbits_ft2[174];//174
+    int apmy_ru_ft2[28];
+    int aphis_fd_ft2[28];
+    
+    /*double bm_avg_[3][220];  
+	int navg_ft2;
+	double f_avg;
+	double dt_avg;*/
+	int jseq_a;
+	typedef struct
+    {
+        int navg_ft2;
+        double f_avg;
+	    double dt_avg;
+	    double bm_avg_[3][220];
+    }
+    sft2avg;
+    sft2avg ft2avg[2];
+    void ft2_clravg(int);	
+    int ft2_even_odd(QString s);
+    void sync_dt_df(double complex *cd2,int iseg,int &idfbest,int &ibest,double &smax,double &smax1);
+    //int count_eq_bits(bool *a,int b_a,bool *b,int c);
+    //int sync_qual(double *bitmetrics);
+    double get_xibest(double complex *cd2,int ibest,int idfbest,double smax);
+    //////////AP7//////////////////
+    int jseq_a7;
+	QString nutc0;
+    int c_zerop;
+	QString msg0[2][2][MAXDEC+50];
+    double dt0[2][2][MAXDEC+50];
+    double f0[2][2][MAXDEC+50];
+    int ndec[2][2];
+	void ft2_a7_save(QString,double,double,QString);
+	void ft2_a7d(double *dd0,bool &newdat,QString call_1,QString call_2,QString grid4,
+                 double &xdt,double &f1,double xbase,int &nharderrors,double &,QString &msg37,double &xsnr);	
+	//////////end AP7//////////////////	
+    void PrintMsg(QString,int nsnr,double xdt,double f1,QString message,int iaptype,bool,float,bool &have_dec,bool &f_only_one_color,bool);
+    uint8_t isFalseDecode(QString,int,double,bool,int,int,int);
+	void make_bm_ap(double *,double bitmetrics_[5][220],int,bool,int,int,double,double,double,bool,
+							bool,double,int &,QString *,int,int &,bool &,bool &,bool);					
 };
 
 // moc's generated file includes this header and then Qt's moc helpers.

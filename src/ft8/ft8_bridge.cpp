@@ -15,6 +15,7 @@
 struct Ft8Session {
   DecoderFt8* decoder = nullptr;
   DecoderFt4* ft4 = nullptr;
+  DecoderFt2* ft2 = nullptr;
   Ft8LineFn fn = nullptr;
   void* user = nullptr;
   int reported = 0;
@@ -52,10 +53,17 @@ extern "C" __declspec(dllexport) Ft8Session* ft8_session_open(void) {
   session->ft4->SetStDecoderDeep(1);
   session->ft4->SetStApDecode(true);
   session->ft4->SetStTxFreq(1200.0);
+  session->ft2 = new DecoderFt2(0);
+  session->ft2->SetStDecoderDeep(1);
+  session->ft2->SetStApDecode(true);
+  session->ft2->SetStTxFreq(1200.0);
   QObject::connect(session->decoder, &DecoderFt8::EmitDecodetTextFt, session->decoder,
                    [session](const QStringList& list) { takeLine(session, list); },
                    Qt::DirectConnection);
   QObject::connect(session->ft4, &DecoderFt4::EmitDecodetTextFt, session->ft4,
+                   [session](const QStringList& list) { takeLine(session, list); },
+                   Qt::DirectConnection);
+  QObject::connect(session->ft2, &DecoderFt2::EmitDecodetTextFt, session->ft2,
                    [session](const QStringList& list) { takeLine(session, list); },
                    Qt::DirectConnection);
   return session;
@@ -64,6 +72,7 @@ extern "C" __declspec(dllexport) Ft8Session* ft8_session_open(void) {
 extern "C" __declspec(dllexport) void ft8_session_close(Ft8Session* session) {
   if (!session)
     return;
+  delete session->ft2;
   delete session->ft4;
   delete session->decoder;
   delete session;
@@ -161,6 +170,54 @@ extern "C" __declspec(dllexport) int ft4_session_decode(Ft8Session* session, dou
   try {
     // One pass. The decoder reads 72576 samples from the start of dd.
     session->ft4->ft4_decode(samples, lowHz, highHz, lowHz, highHz, rxHz, have);
+  } catch (...) {
+    session->fn = nullptr;
+    session->user = nullptr;
+    return 0;
+  }
+  const int reported = session->reported;
+  session->fn = nullptr;
+  session->user = nullptr;
+  return reported;
+}
+
+extern "C" __declspec(dllexport) int ft2_session_decode(Ft8Session* session, double* samples,
+                                                        int count, int lowHz, int highHz, int rxHz,
+                                                        int txHz, int depth, int apOn,
+                                                        const char* hhmmss, Ft8LineFn fn,
+                                                        void* user) {
+  if (!session || !session->ft2 || !samples || count < 1024)
+    return 0;
+  if (lowHz < 0)
+    lowHz = 0;
+  if (highHz > 5000)
+    highHz = 5000;
+  if (highHz < lowHz + 50)
+    highHz = lowHz + 50;
+  if (rxHz < lowHz || rxHz > highHz)
+    rxHz = lowHz + (highHz - lowHz) / 2;
+  if (txHz < 0)
+    txHz = 0;
+  if (txHz > 5000)
+    txHz = 5000;
+  if (depth < 1)
+    depth = 1;
+  if (depth > 3)
+    depth = 3;
+
+  session->fn = fn;
+  session->user = user;
+  session->reported = 0;
+  const QString stamp = QString::fromLatin1(hhmmss && hhmmss[0] ? hhmmss : "000000");
+  session->ft2->SetStDecode(stamp, 0, false);
+  session->ft2->SetStTxFreq(txHz);
+  session->ft2->SetStDecoderDeep(depth);
+  session->ft2->SetStApDecode(apOn != 0);
+
+  bool have = false;
+  try {
+    // One pass. The decoder reads the first 45000 samples.
+    session->ft2->ft2_decode(samples, lowHz, highHz, lowHz, highHz, rxHz, have);
   } catch (...) {
     session->fn = nullptr;
     session->user = nullptr;

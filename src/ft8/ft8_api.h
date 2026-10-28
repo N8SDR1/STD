@@ -42,6 +42,13 @@ int ft4_session_decode(Ft8Session* session, double* samples, int count, int lowH
                        int rxHz, int txHz, int depth, int apOn, const char* hhmmss, Ft8LineFn fn,
                        void* user);
 
+/* One FT2 pass. MSHV starts it at 3.4 s of the 3.75 s period.
+   The pointer must address at least 45000 doubles. The decoder reads
+   that many and ignores count. fn is called as each line is found. */
+int ft2_session_decode(Ft8Session* session, double* samples, int count, int lowHz, int highHz,
+                       int rxHz, int txHz, int depth, int apOn, const char* hhmmss, Ft8LineFn fn,
+                       void* user);
+
 #ifdef __cplusplus
 }
 #endif

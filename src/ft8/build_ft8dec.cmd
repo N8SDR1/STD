@@ -54,6 +54,12 @@ if errorlevel 1 exit /b 1
 echo COMPILE decoderft4
 "%GPP%" %FLAGS% -include "%STD%\src\ft8\decoderms_ft8.h" %INC% -o "%OBJ%\decoderft4.o" "%MSHV%\src\HvDecoderMs\decoderft4.cpp"
 if errorlevel 1 exit /b 1
+echo COMPILE gen_ft2
+"%GPP%" %FLAGS% %INC% -o "%OBJ%\gen_ft2.o" "%MSHV%\src\HvMsPlayer\libsound\HvGenFt2\gen_ft2.cpp"
+if errorlevel 1 exit /b 1
+echo COMPILE decoderft2
+"%GPP%" %FLAGS% -include "%STD%\src\ft8\decoderms_ft8.h" %INC% -o "%OBJ%\decoderft2.o" "%MSHV%\src\HvDecoderMs\decoderft2.cpp"
+if errorlevel 1 exit /b 1
 echo COMPILE moc
 "%GPP%" -std=gnu++17 -DQT_CORE_LIB -DQT_NO_DEBUG -D_WIN64_ -DSTD_FT8_MOC -c -O2 -w %INC% -o "%OBJ%\moc_decoderms_ft8.o" "%OBJ%\moc_decoderms_ft8.cpp"
 if errorlevel 1 exit /b 1
@@ -62,7 +68,7 @@ echo COMPILE bridge
 if errorlevel 1 exit /b 1
 
 echo LINK ft8dec.dll
-"%GPP%" -shared -static-libgcc -static-libstdc++ -o "%OUT%\ft8dec.dll" "%OBJ%\decoderpom.o" "%OBJ%\genpom.o" "%OBJ%\pack.o" "%OBJ%\gen_ft8.o" "%OBJ%\gen_ft4.o" "%OBJ%\decoderft8.o" "%OBJ%\decoderft8var.o" "%OBJ%\decoderft4.o" "%OBJ%\moc_decoderms_ft8.o" "%OBJ%\ft8_bridge.o" "%MSHV%\src\Hv_Lib_fftw\win\libfftw3v3310_gcc730_64bit.a" -L"%QTLIB%" -lQt6Core
+"%GPP%" -shared -static-libgcc -static-libstdc++ -o "%OUT%\ft8dec.dll" "%OBJ%\decoderpom.o" "%OBJ%\genpom.o" "%OBJ%\pack.o" "%OBJ%\gen_ft8.o" "%OBJ%\gen_ft4.o" "%OBJ%\decoderft8.o" "%OBJ%\decoderft8var.o" "%OBJ%\decoderft4.o" "%OBJ%\gen_ft2.o" "%OBJ%\decoderft2.o" "%OBJ%\moc_decoderms_ft8.o" "%OBJ%\ft8_bridge.o" "%MSHV%\src\Hv_Lib_fftw\win\libfftw3v3310_gcc730_64bit.a" -L"%QTLIB%" -lQt6Core
 if errorlevel 1 exit /b 1
 
 python "%STD%\src\ft8\patch_qt_import.py" "%OUT%\ft8dec.dll"

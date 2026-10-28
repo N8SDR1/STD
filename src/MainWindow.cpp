@@ -345,10 +345,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       return;
     const QString mode = profile_->digitalMode();
     const bool ft4 = mode == QLatin1String("FT4");
+    const bool ft2 = mode == QLatin1String("FT2");
     const bool armed = autoMonitor_ && profile_->mshvFamily() &&
-                       (ft4 || mode == QLatin1String("FT8")) && profile_->autoDecode();
+                       (ft4 || ft2 || mode == QLatin1String("FT8")) && profile_->autoDecode();
     const int low = profile_->startHz();
-    ft8_->setMode(ft4);
+    ft8_->setMode(ft2 ? Ft8Decode::Period::Ft2 : ft4 ? Ft8Decode::Period::Ft4 : Ft8Decode::Period::Ft8);
     ft8_->setArmed(armed, low, low + profile_->bandwidthHz());
   });
   decodeClock->start(200);
@@ -652,7 +653,7 @@ void MainWindow::buildMenus() {
            true,
            QStringLiteral(
                "Decode at three points in the FT8 period. The first pass is before the next period. "
-               "FT4 stays one pass. Does not key."));
+               "FT4 and FT2 stay one pass. Does not key."));
   auto* depthGroup = new QActionGroup(this);
   depthGroup->setExclusive(true);
   const int savedDepth = dxSettings.value(QStringLiteral("dx/depth"), 1).toInt();
@@ -910,7 +911,8 @@ void MainWindow::showGuide() {
       {"FT8 and FT4 decode",
        "Auto Dec is on by default. The MSHV FT8 decoder starts on the period that is still running, "
        "about 11.8 seconds in, before the tones end, then again at 13.6 and 14.6 seconds when three-stage "
-       "is on. FT4 is one pass at 6.1 seconds of its 7.5 second period. MSHV does not run that three-stage "
+       "is on. FT4 is one pass at 6.1 seconds of its 7.5 second period. FT2 is one pass at 3.4 seconds of "
+       "its 3.75 second period. MSHV does not run that three-stage "
        "timer for FT4. Each line is painted as soon as the decoder finds it. The Receive pane has column "
        "headers Time, dB, DT, Message, and Freq. Filter keeps lines that contain the text. CLR MSG clears "
        "the list. Freq is the audio frequency in Hz. Dist is not computed. The band buttons use the WSJT-X "

@@ -84,9 +84,11 @@ if(WIN32)
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft8var.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft4.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenFt4/gen_ft4.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft2.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenFt2/gen_ft2.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderpom.cpp"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Building the MSHV FT8 and FT4 decoder"
+    COMMENT "Building the MSHV FT8, FT4, and FT2 decoder"
     VERBATIM)
   add_custom_target(ft8dec DEPENDS "${FT8_DLL}")
   add_dependencies(std ft8dec)
