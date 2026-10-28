@@ -97,6 +97,8 @@ private:
   std::vector<float> rxScaled_;
   QString layoutMode_ = QStringLiteral("FT8");
   QByteArray layoutBaseline_;
+  int layoutEpoch_ = 0;
+  bool layoutBaselinePending_ = false;
   bool layoutReady_ = false;
   bool layoutGuard_ = false;
   QVector<DecodeRow> decodes_;

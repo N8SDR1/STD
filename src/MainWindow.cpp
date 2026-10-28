@@ -18,6 +18,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCloseEvent>
+#include <QDataStream>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QFormLayout>
@@ -929,8 +930,9 @@ void MainWindow::showGuide() {
        "onto TX. None of these key the radio."},
       {"Layout",
        "View → Save layout stores the dock arrangement for the mode that is selected. The next time "
-       "that mode opens, including after a restart, those panels come back. View → Reset layout "
-       "stacks the current mode again."},
+       "that mode opens, including after a restart, those panels come back. Leaving a mode, or "
+       "closing STD, asks to save only when the docks differ from that mode's saved layout. "
+       "View → Reset layout stacks the current mode again."},
       {"Gain",
        "RX and TX on the status strip are local gains, from -20 dB to +40 dB. RX gain is applied to "
        "the waterfall and the FT8 decoder so the peak can be brought toward -1 to 0 dB. TX gain is "
@@ -988,6 +990,14 @@ void MainWindow::resizeToHero() {
               {waterfall, receive, transmit, macros, status}, Qt::Vertical);
 }
 
+namespace {
+struct DockSignature {
+  QByteArray bytes;
+  bool parsed = false;
+};
+DockSignature dockSignature(const QByteArray& state);
+}  // namespace
+
 void MainWindow::showEvent(QShowEvent* event) {
   QMainWindow::showEvent(event);
   if (!heroSized_) {
@@ -997,7 +1007,11 @@ void MainWindow::showEvent(QShowEvent* event) {
     QTimer::singleShot(0, this, [this] {
       if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
         resizeToHero();
+        const DockSignature once = dockSignature(saveState(1));
+        const DockSignature twice = dockSignature(saveState(1));
         layoutReady_ = true;
+        if (!once.parsed || once.bytes.isEmpty() || once.bytes != twice.bytes)
+          qFatal("layout signature failed");
         return;
       }
       const bool restored = restoreModeLayout();
@@ -1014,10 +1028,191 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   QMainWindow::closeEvent(event);
 }
 
+namespace {
+
+constexpr quint32 kStateVersionMarker = 0xff;
+constexpr uchar kDockWidgetStateMarker = 0xfd;
+constexpr uchar kFloatingDockWidgetTabMarker = 0xf9;
+constexpr uchar kSequenceMarker = 0xfc;
+constexpr uchar kTabMarker = 0xfa;
+constexpr uchar kWidgetMarker = 0xfb;
+constexpr uchar kToolBarStateMarker = 0xfe;
+constexpr uchar kToolBarStateMarkerEx = 0xfc;
+constexpr uchar kDockFloating = 0x02;
+
+bool writeDockInfo(QDataStream& in, QDataStream& out) {
+  uchar marker = 0;
+  in >> marker;
+  if (in.status() != QDataStream::Ok)
+    return false;
+  out << marker;
+  if (marker == kTabMarker) {
+    qint32 index = 0;
+    in >> index;
+    out << index;
+  } else if (marker != kSequenceMarker) {
+    return false;
+  }
+  uchar orientation = 0;
+  qint32 count = 0;
+  in >> orientation >> count;
+  if (in.status() != QDataStream::Ok || count < 0 || count > 64)
+    return false;
+  out << orientation << count;
+  for (qint32 i = 0; i < count; ++i) {
+    uchar next = 0;
+    in >> next;
+    out << next;
+    if (next == kWidgetMarker) {
+      QString name;
+      uchar flags = 0;
+      in >> name >> flags;
+      qint32 a = 0;
+      qint32 b = 0;
+      qint32 c = 0;
+      qint32 d = 0;
+      in >> a >> b >> c >> d;
+      out << name << flags;
+      if (flags & kDockFloating) {
+        out << a << b << c << d;
+      } else {
+        // pos and size are the split. Minimum and maximum are live widget
+        // constraints and change when a mode panel lays out.
+        out << a << b << qint32(0) << qint32(0);
+      }
+    } else if (next == kSequenceMarker) {
+      qint32 pos = 0;
+      qint32 size = 0;
+      qint32 minimum = 0;
+      qint32 maximum = 0;
+      in >> pos >> size >> minimum >> maximum;
+      out << pos << size << qint32(0) << qint32(0);
+      if (!writeDockInfo(in, out))
+        return false;
+    } else {
+      return false;
+    }
+    if (in.status() != QDataStream::Ok)
+      return false;
+  }
+  return true;
+}
+
+bool writeToolBars(QDataStream& in, QDataStream& out, uchar marker) {
+  qint32 lines = 0;
+  in >> lines;
+  if (in.status() != QDataStream::Ok || lines < 0 || lines > 64)
+    return false;
+  out << lines;
+  for (qint32 line = 0; line < lines; ++line) {
+    qint32 pos = 0;
+    qint32 count = 0;
+    in >> pos >> count;
+    if (count < 0 || count > 64)
+      return false;
+    out << pos << count;
+    for (qint32 item = 0; item < count; ++item) {
+      QString name;
+      uchar shown = 0;
+      qint32 itemPos = 0;
+      qint32 preferred = 0;
+      in >> name >> shown >> itemPos >> preferred;
+      // The brand bar is not a dock. Its placement is rewritten on layout.
+      out << name << shown << qint32(0) << qint32(0);
+      if (marker == kToolBarStateMarkerEx) {
+        quint32 geom0 = 0;
+        quint32 geom1 = 0;
+        in >> geom0 >> geom1;
+        out << quint32(0) << quint32(0);
+      }
+      if (in.status() != QDataStream::Ok)
+        return false;
+    }
+  }
+  return in.status() == QDataStream::Ok;
+}
+
+// saveState() after restoreState() is not the saved blob. Qt rewrites the
+// dock area size, the live minimum and maximum, and the toolbar placement.
+// Compare the dock split after that rewrite, and drop those fields.
+DockSignature dockSignature(const QByteArray& state) {
+  DockSignature signature;
+  if (state.isEmpty())
+    return signature;
+  QByteArray copy = state;
+  QDataStream in(&copy, QIODevice::ReadOnly);
+  in.setVersion(QDataStream::Qt_5_0);
+  QDataStream out(&signature.bytes, QIODevice::WriteOnly);
+  out.setVersion(QDataStream::Qt_5_0);
+
+  quint32 versionMarker = 0;
+  qint32 version = 0;
+  in >> versionMarker >> version;
+  if (versionMarker != kStateVersionMarker || in.status() != QDataStream::Ok)
+    return signature;
+  out << versionMarker << version;
+
+  uchar dockMarker = 0;
+  in >> dockMarker;
+  if (dockMarker != kDockWidgetStateMarker)
+    return signature;
+  out << dockMarker;
+  qint32 areas = 0;
+  in >> areas;
+  if (areas < 0 || areas > 4)
+    return signature;
+  out << areas;
+  for (qint32 area = 0; area < areas; ++area) {
+    qint32 pos = 0;
+    QSize areaSize;
+    in >> pos >> areaSize;
+    out << pos << QSize(0, 0);
+    if (!writeDockInfo(in, out))
+      return {};
+  }
+  QSize central;
+  in >> central;
+  out << QSize(0, 0);
+  for (int corner = 0; corner < 4; ++corner) {
+    qint32 value = 0;
+    in >> value;
+    out << value;
+  }
+  if (in.status() != QDataStream::Ok)
+    return {};
+
+  while (!in.atEnd()) {
+    uchar marker = 0;
+    in >> marker;
+    if (in.status() != QDataStream::Ok)
+      return {};
+    if (marker == kToolBarStateMarker || marker == kToolBarStateMarkerEx) {
+      out << marker;
+      if (!writeToolBars(in, out, marker) || !in.atEnd())
+        return {};
+      signature.parsed = true;
+      return signature;
+    }
+    if (marker != kFloatingDockWidgetTabMarker)
+      return {};
+    QRect geometry;
+    in >> geometry;
+    out << marker << geometry;
+    if (!writeDockInfo(in, out))
+      return {};
+  }
+  return {};
+}
+
+}  // namespace
+
 void MainWindow::offerLayoutSave() {
-  if (layoutMode_.isEmpty() || !layoutReady_ || qEnvironmentVariableIsSet("STD_SELFTEST"))
+  if (layoutMode_.isEmpty() || !layoutReady_ || layoutBaselinePending_ ||
+      qEnvironmentVariableIsSet("STD_SELFTEST"))
     return;
-  if (saveState(1) == layoutBaseline_)
+  const DockSignature now = dockSignature(saveState(1));
+  const QByteArray current = now.parsed ? now.bytes : saveState(1);
+  if (current == layoutBaseline_)
     return;
   const auto answer = QMessageBox::question(this, QStringLiteral("STD"),
                                             QStringLiteral("Save layout for this mode?"),
@@ -1027,7 +1222,17 @@ void MainWindow::offerLayoutSave() {
 }
 
 void MainWindow::captureLayoutBaseline() {
-  layoutBaseline_ = saveState(1);
+  // restoreState() applies dock sizes on the following layout pass. Snapshot
+  // after that pass so an unchanged mode matches its saved arrangement.
+  const int epoch = ++layoutEpoch_;
+  layoutBaselinePending_ = true;
+  QTimer::singleShot(0, this, [this, epoch] {
+    if (epoch != layoutEpoch_)
+      return;
+    const DockSignature saved = dockSignature(saveState(1));
+    layoutBaseline_ = saved.parsed ? saved.bytes : saveState(1);
+    layoutBaselinePending_ = false;
+  });
 }
 
 void MainWindow::saveModeLayout(bool force) {
