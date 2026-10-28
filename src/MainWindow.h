@@ -24,6 +24,7 @@ class QResizeEvent;
 class QShowEvent;
 class QToolBar;
 class StatusStrip;
+class QsoLog;
 class TciClient;
 class WaterfallWidget;
 
@@ -66,6 +67,9 @@ private:
   void openMacrosDialog();
   void openNetworkDialog();
   void openUserDialog();
+  void openLogDialog();
+  void rememberQso(const QString& call, const QString& grid, const QString& theirReport, bool fresh);
+  QString maybeLogQso(const QString& sent);
   void applyStationLock();
   void setReceivePlaceholder(bool connected);
   void showRadioDown(const QString& error);
@@ -210,6 +214,12 @@ private:
     int dist = 0;
   };
 
+  QsoLog* qsoLog_ = nullptr;
+  QString qsoCall_;
+  QString qsoGrid_;
+  QString qsoRstRcvd_;
+  qint64 qsoStartedMs_ = 0;
+  bool qsoLogged_ = false;
   QString txHisCall_;
   QString txReport_;
   QString txQrg_;

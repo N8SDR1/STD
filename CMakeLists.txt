@@ -31,6 +31,13 @@ if(NOT Qt6Widgets_FOUND)
     "directory that contains Qt6Config.cmake.")
 endif()
 
+find_package(Qt6 6.2 QUIET COMPONENTS Network)
+if(NOT Qt6Network_FOUND)
+  message(FATAL_ERROR
+    "Qt 6 Network was not found, so STD cannot reach a logger.\n"
+    "Install the Qt 6 base development package and re-run cmake.")
+endif()
+
 find_package(Qt6 6.2 QUIET COMPONENTS WebSockets)
 if(NOT Qt6WebSockets_FOUND)
   message(FATAL_ERROR
@@ -61,6 +68,8 @@ qt_add_executable(std
   src/TciClient.h
   src/TxWave.cpp
   src/TxWave.h
+  src/QsoLog.cpp
+  src/QsoLog.h
   src/hell/HellEngine.cpp
   src/hell/HellEngine.h
   src/hell/HellRaster.cpp
@@ -73,7 +82,7 @@ qt_add_executable(std
 target_compile_definitions(std PRIVATE STD_VERSION="${PROJECT_VERSION}")
 target_include_directories(std PRIVATE "${CMAKE_SOURCE_DIR}/src/hell/fldigi")
 
-target_link_libraries(std PRIVATE Qt6::Widgets Qt6::WebSockets)
+target_link_libraries(std PRIVATE Qt6::Widgets Qt6::Network Qt6::WebSockets)
 
 if(WIN32)
   set(FT8_DLL "${CMAKE_BINARY_DIR}/ft8dec.dll")

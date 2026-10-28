@@ -3,6 +3,7 @@
 
 #include "MainWindow.h"
 
+#include "QsoLog.h"
 #include "TxWave.h"
 #include "WaterfallWidget.h"
 
@@ -176,7 +177,8 @@ int shellReady(const MainWindow& window) {
                            "decodeDepthDeep",  "timeSync",     "macrosEdit",      "userSettings",
                            "networkConfig",
                            "listShowTime",     "listShowFreq", "listClearPeriod", "logAuto",
-                           "logPrompt",        "aseqMostDistant", "txConfirm73",  "autoResetQso"};
+                           "logPrompt",        "logFileDialog",   "aseqMostDistant", "txConfirm73",
+                           "autoResetQso"};
   for (const char* name : dxNames) {
     if (!window.findChild<QAction*>(QLatin1String(name)))
       return fail("a DX option is missing");
@@ -284,6 +286,13 @@ int shellReady(const MainWindow& window) {
   const auto* queueList = window.findChild<QWidget*>("txQueueList");
   if (!queueEntry || !queueList)
     return fail("queue entry is missing");
+
+  const QByteArray beat = QsoLog::heartbeatDatagram(QStringLiteral("0"));
+  if (beat.size() < 12 || static_cast<unsigned char>(beat[0]) != 0xad ||
+      static_cast<unsigned char>(beat[1]) != 0xbc ||
+      static_cast<unsigned char>(beat[2]) != 0xcb ||
+      static_cast<unsigned char>(beat[3]) != 0xda)
+    return fail("logger datagram is not WSJT-X");
 
   std::vector<float> ft8;
   if (!buildTxWave(QStringLiteral("FT8"), QStringLiteral("CQ N8SDR EM79"), 1500, &ft8) ||

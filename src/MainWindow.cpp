@@ -7,6 +7,7 @@
 #include "hell/HellEngine.h"
 #include "hell/HellRaster.h"
 #include "ModeProfile.h"
+#include "QsoLog.h"
 #include "StatusStrip.h"
 #include "TciClient.h"
 #include "TxWave.h"
@@ -27,6 +28,9 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QIcon>
 #include <QDockWidget>
@@ -53,6 +57,7 @@
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QTextBrowser>
+#include <QTimeZone>
 #include <QPushButton>
 #include <QSettings>
 #include <QShowEvent>
@@ -312,6 +317,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildDocks();
   buildMenus();
   arrangeDefault();
+  qsoLog_ = new QsoLog(this);
 
   tci_ = new TciClient(this);
   if (profile_ && waterfall_) {
@@ -1541,13 +1547,21 @@ void MainWindow::buildMenus() {
            QStringLiteral("Drop the previous period when the next one decodes."));
 
   auto* logMenu = optionsMenu->addMenu(QStringLiteral("Log Options"));
-  const QString logTip = QStringLiteral("Saved. Transmit is off, so nothing is logged and the radio is not keyed.");
+  const QString logTip = QStringLiteral(
+      "Saved. A 73 to another station can be written to the ADIF file. "
+      "Transmit is off. This does not key and does not send START.");
   addCheck(logMenu, "logAuto", QStringLiteral("Log Automatically QSO"), "dx/logAuto", false, logTip);
   addCheck(logMenu, "logPrompt", QStringLiteral("Prompt Me To Log QSO"), "dx/logPrompt", false, logTip);
   addCheck(logMenu, "logWarn", QStringLiteral("Warn Me If QSO Before"), "dx/logWarn", false, logTip);
   addCheck(logMenu, "logStartEqualsEnd", QStringLiteral("Log QSO Start Time = End Time"), "dx/logStartEqualsEnd",
            false, logTip);
   addCheck(logMenu, "logNoComment", QStringLiteral("Turn Auto Comments Off"), "dx/logNoComment", false, logTip);
+  auto* logFile = logMenu->addAction(QStringLiteral("Log file and logger…"));
+  logFile->setObjectName(QStringLiteral("logFileDialog"));
+  logFile->setToolTip(QStringLiteral(
+      "Choose the ADIF file and the WSJT-X UDP or DXKeeper TCP logger. "
+      "The path is saved. This does not key and does not send START."));
+  connect(logFile, &QAction::triggered, this, [this] { openLogDialog(); });
 
   optionsMenu->addSeparator();
   const QString txTip =
@@ -1779,6 +1793,16 @@ void MainWindow::showGuide() {
        "Options → User stores the callsign and the locator. DIST is the distance from that locator to "
        "the grid in a message. Tx1 through Tx5 and the CQ on Tx6 use that locator. TX and Tune stay "
        "locked until a callsign is saved. Opening User does not key and does not send START."},
+      {"Log",
+       "The QSO pane on the transmit dock is only the on-screen copy. It is not the ADIF file. A 73 or "
+       "RR73 sent to another station is appended to the ADIF file when Log Automatically is on, when "
+       "Prompt Me is answered yes, or when a logger UDP or TCP option is on. Options → Log Options → "
+       "Log file and logger sets that file. Until you pick another path it is log\\std.adi under the "
+       "STD AppData folder (N8SDR\\STD). The path is remembered. UDP sends the WSJT-X QSO Logged and "
+       "Logged ADIF datagrams to the saved host and port. The first address is 127.0.0.1 port 2237. "
+       "TCP sends a DXKeeper log command to 127.0.0.1 port 52001 until you change it. UDP and TCP stay "
+       "off until you enable them. A heartbeat goes to the UDP port only while one of those is on. "
+       "None of this keys the radio or sends START."},
       {"Tune",
        "Tune sends a tone at the TX marker so the waterfall can show it and TX gain can be set. It "
        "needs a saved callsign and a connected radio. TRX goes out only while Tune is on. It runs for "
@@ -1822,8 +1846,8 @@ void MainWindow::showGuide() {
        "Synchronization calibrates the period clock. Macros edit eight local texts. Network "
        "Configuration stores a PSK Reporter style address and does not send spots. Decode List Options "
        "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
-       "decode is on by default. Log options, ASeq, TX confirmation, and Auto RESET QSO are saved. "
-       "Those options do not key."},
+       "decode is on by default. Log options, the ADIF path, the logger addresses, ASeq, TX "
+       "confirmation, and Auto RESET QSO are saved. Those options do not key."},
       {"Text",
        "Options → RX / TX Text sets the font and the size of the receive list, its column titles, and "
        "the transmit box. The faces are Consolas, Cascadia Mono, Lucida Console, Courier New, and Segoe "
@@ -1972,6 +1996,8 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   if (txTune_)
     stopTune(false);
   stopUserTx(false);
+  if (qsoLog_)
+    qsoLog_->shutdown();
   offerLayoutSave();
   QMainWindow::closeEvent(event);
 }
@@ -3253,6 +3279,14 @@ void MainWindow::loadReplyFromLine(int line) {
   }
   txHisCall_ = sender;
   txReport_ = reportText(row.db);
+  QString hisGrid;
+  for (const QString& word : words) {
+    if (isGrid(word)) {
+      hisGrid = word.toUpper();
+      break;
+    }
+  }
+  rememberQso(sender, hisGrid, report, true);
   int selected = 0;
   if (!cq && toMe && (seventy || rr73 || rrr))
     selected = 4;
@@ -3630,6 +3664,7 @@ void MainWindow::finishTxPass() {
     tci_->setTransmit(false);
   txKeySent_ = false;
   markWaterfallTx();
+  const QString logNote = (!retargeted && keyed) ? maybeLogQso(sent) : QString();
   txHold_ = 0;
   txLoggedThisPass_ = false;
   txSamples_.clear();
@@ -3648,7 +3683,9 @@ void MainWindow::finishTxPass() {
   const QString mode = profile_ ? profile_->digitalMode() : QString();
   if (!txSequence_ || !sequencedMode(mode) || qEnvironmentVariableIsSet("STD_SELFTEST")) {
     if (keyed)
-      setTxStatus(QStringLiteral("That transmission ended. TRX is off. START was not sent."));
+      setTxStatus(logNote.isEmpty()
+                      ? QStringLiteral("That transmission ended. TRX is off. START was not sent.")
+                      : logNote);
     stopUserTx(true);
     return;
   }
@@ -3688,11 +3725,15 @@ void MainWindow::finishTxPass() {
 
   if (!retargeted && textIs73(sent)) {
     if (!cns) {
-      fail(QStringLiteral("73 sent. Sequence stopped. TRX is off. START was not sent."));
+      fail(logNote.isEmpty()
+               ? QStringLiteral("73 sent. Sequence stopped. TRX is off. START was not sent.")
+               : logNote);
       return;
     }
-    startCq(false, QStringLiteral(
-                       "73 sent. CNS is on, so the next slot is CQ. TRX is off. START was not sent."));
+    startCq(false, logNote.isEmpty()
+                       ? QStringLiteral(
+                             "73 sent. CNS is on, so the next slot is CQ. TRX is off. START was not sent.")
+                       : logNote);
     return;
   }
 
@@ -3719,8 +3760,10 @@ void MainWindow::finishTxPass() {
   const int n = spin ? spin->value() : 2;
   const bool periods = !spin || spin->prefix().startsWith(QLatin1String("Periods"));
   const QString count = periods ? QStringLiteral("%1 of %2").arg(txTries_).arg(n) : QStringLiteral("Max Time");
-  armWait(QStringLiteral("Sent %1. Waiting for the next %2 slot. TRX is off. START was not sent.")
-              .arg(count, txSlotName()));
+  armWait(logNote.isEmpty()
+              ? QStringLiteral("Sent %1. Waiting for the next %2 slot. TRX is off. START was not sent.")
+                    .arg(count, txSlotName())
+              : logNote);
 }
 
 void MainWindow::applyTheirReply(const QString& time, int db, const QString& message) {
@@ -3770,6 +3813,15 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
   const int slot = selectedTxSlot();
   if (!same && slot >= 3)
     return;
+
+  QString hisGrid;
+  for (const QString& word : words) {
+    if (isGrid(word)) {
+      hisGrid = word.toUpper();
+      break;
+    }
+  }
+  rememberQso(sender, hisGrid, report, !same || !(seventy || rr73));
 
   if (!same) {
     txHisCall_ = sender;
@@ -4170,6 +4222,221 @@ void MainWindow::openNetworkDialog() {
   refreshDecodes();
   applyStationLock();
   refreshTxFields();
+}
+
+void MainWindow::rememberQso(const QString& call, const QString& grid, const QString& theirReport,
+                             bool fresh) {
+  const QString his = call.trimmed().toUpper();
+  if (his.isEmpty() || his == stationCall().trimmed().toUpper())
+    return;
+  if (qsoCall_ != his) {
+    qsoCall_ = his;
+    qsoGrid_.clear();
+    qsoRstRcvd_.clear();
+    qsoStartedMs_ = QDateTime::currentMSecsSinceEpoch();
+    qsoLogged_ = false;
+  } else if (fresh)
+    qsoLogged_ = false;
+  const QString locator = grid.trimmed().toUpper();
+  if (!locator.isEmpty())
+    qsoGrid_ = locator.left(4);
+  const QString heard = theirReport.trimmed().toUpper();
+  if (!heard.isEmpty())
+    qsoRstRcvd_ = heard;
+}
+
+QString MainWindow::maybeLogQso(const QString& sent) {
+  if (qEnvironmentVariableIsSet("STD_SELFTEST") || qsoLogged_ || qsoCall_.isEmpty())
+    return {};
+  const QStringList words =
+      sent.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+  if (words.isEmpty() || !sent.contains(qsoCall_, Qt::CaseInsensitive))
+    return {};
+  const QString last = words.last();
+  if (last.compare(QLatin1String("73"), Qt::CaseInsensitive) != 0 &&
+      last.compare(QLatin1String("RR73"), Qt::CaseInsensitive) != 0)
+    return {};
+
+  QSettings settings;
+  const bool automatic = settings.value(QStringLiteral("dx/logAuto"), false).toBool();
+  const bool prompt = settings.value(QStringLiteral("dx/logPrompt"), false).toBool();
+  const bool udp = settings.value(QStringLiteral("log/udpQso"), false).toBool() ||
+                   settings.value(QStringLiteral("log/udpAdif"), false).toBool();
+  const bool tcp = settings.value(QStringLiteral("log/tcp"), false).toBool();
+  if (!automatic && !prompt && !udp && !tcp)
+    return {};
+  if (!automatic && prompt) {
+    const auto answer = QMessageBox::question(
+        this, QStringLiteral("Log QSO"),
+        QStringLiteral("Log %1? This writes the ADIF file and any enabled logger. It does not key and "
+                       "does not send START.")
+            .arg(qsoCall_),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (answer != QMessageBox::Yes)
+      return {};
+  }
+
+  QString comment;
+  if (!settings.value(QStringLiteral("dx/logNoComment"), false).toBool())
+    comment = profile_ ? profile_->digitalMode() : QString();
+  QDateTime timeOff = QDateTime::currentDateTimeUtc();
+  QDateTime timeOn =
+      qsoStartedMs_ > 0 ? QDateTime::fromMSecsSinceEpoch(qsoStartedMs_, QTimeZone::utc()) : timeOff;
+  if (settings.value(QStringLiteral("dx/logStartEqualsEnd"), false).toBool())
+    timeOn = timeOff;
+  qint64 freq = profile_ ? profile_->dialHz() : 0;
+  if (waterfall_)
+    freq += waterfall_->txHz();
+
+  bool again = false;
+  if (settings.value(QStringLiteral("dx/logWarn"), false).toBool()) {
+    QFile existing(qsoLog_ ? qsoLog_->defaultAdifPath() : QsoLog::defaultAdifPath());
+    const QString saved = settings.value(QStringLiteral("log/adifPath")).toString().trimmed();
+    if (!saved.isEmpty())
+      existing.setFileName(saved);
+    if (existing.open(QIODevice::ReadOnly)) {
+      const QString prior = QString::fromUtf8(existing.readAll());
+      const QString token =
+          QStringLiteral("<CALL:%1>%2").arg(qsoCall_.toUtf8().size()).arg(qsoCall_);
+      again = prior.contains(token);
+    }
+  }
+
+  QsoLog::Record record;
+  record.call = qsoCall_;
+  record.grid = qsoGrid_;
+  record.mode = profile_ ? profile_->digitalMode() : QStringLiteral("FT8");
+  record.rstSent = txReport_.trimmed().toUpper();
+  record.rstRcvd = qsoRstRcvd_;
+  record.myCall = stationCall();
+  record.myGrid = stationGrid().left(4);
+  record.comment = comment;
+  record.freqHz = freq;
+  record.timeOn = timeOn;
+  record.timeOff = timeOff;
+  const QsoLog::Result result = qsoLog_ ? qsoLog_->store(record) : QsoLog::Result{};
+  if (!result.wrote)
+    return result.detail.isEmpty()
+               ? QStringLiteral("The QSO was not written. TRX is off. START was not sent.")
+               : result.detail + QStringLiteral(" TRX is off. START was not sent.");
+  qsoLogged_ = true;
+  QStringList where;
+  where << result.path;
+  if (result.udpQso)
+    where << QStringLiteral("UDP QSO");
+  if (result.udpAdif)
+    where << QStringLiteral("UDP ADIF");
+  if (result.tcp)
+    where << QStringLiteral("TCP");
+  const QString dup = again ? QStringLiteral(" This call was already in the file.") : QString();
+  return QStringLiteral("Logged %1 to %2.%3 TRX is off. START was not sent.")
+      .arg(qsoCall_, where.join(QStringLiteral(", ")), dup);
+}
+
+void MainWindow::openLogDialog() {
+  QSettings settings;
+  const QString current =
+      settings.value(QStringLiteral("log/adifPath"), QsoLog::defaultAdifPath()).toString();
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("Log file and logger"));
+  dialog.setObjectName(QStringLiteral("logFileDialogBox"));
+  dialog.setMinimumWidth(520);
+  auto* path = new QLineEdit(current, &dialog);
+  path->setObjectName(QStringLiteral("logAdifPath"));
+  path->setToolTip(QStringLiteral(
+      "ADIF file. A logged QSO is appended here. Editing this does not key and does not send START."));
+  auto* browse = new QPushButton(QStringLiteral("Browse…"), &dialog);
+  browse->setObjectName(QStringLiteral("logAdifBrowse"));
+  browse->setToolTip(QStringLiteral("Pick the ADIF file. This does not key and does not send START."));
+  connect(browse, &QPushButton::clicked, &dialog, [this, path] {
+    const QString picked = QFileDialog::getSaveFileName(
+        this, QStringLiteral("ADIF log"),
+        path->text().isEmpty() ? QsoLog::defaultAdifPath() : path->text(), QStringLiteral("ADIF (*.adi)"),
+        nullptr, QFileDialog::DontConfirmOverwrite);
+    if (!picked.isEmpty())
+      path->setText(picked);
+  });
+  auto* pathRow = new QHBoxLayout;
+  pathRow->addWidget(path, 1);
+  pathRow->addWidget(browse);
+
+  auto* udpQso = new QCheckBox(QStringLiteral("WSJT-X UDP logged QSO"), &dialog);
+  udpQso->setObjectName(QStringLiteral("logUdpQso"));
+  udpQso->setChecked(settings.value(QStringLiteral("log/udpQso"), false).toBool());
+  udpQso->setToolTip(QStringLiteral(
+      "Send a WSJT-X QSO Logged datagram when a contact is logged. This does not key."));
+  auto* udpAdif = new QCheckBox(QStringLiteral("WSJT-X UDP logged ADIF"), &dialog);
+  udpAdif->setObjectName(QStringLiteral("logUdpAdif"));
+  udpAdif->setChecked(settings.value(QStringLiteral("log/udpAdif"), false).toBool());
+  udpAdif->setToolTip(QStringLiteral(
+      "Send a WSJT-X Logged ADIF datagram when a contact is logged. This does not key."));
+  auto* udpHost = new QLineEdit(
+      settings.value(QStringLiteral("log/udpHost"), QStringLiteral("127.0.0.1")).toString(), &dialog);
+  udpHost->setObjectName(QStringLiteral("logUdpHost"));
+  auto* udpPort = new QSpinBox(&dialog);
+  udpPort->setObjectName(QStringLiteral("logUdpPort"));
+  udpPort->setRange(1, 65535);
+  udpPort->setValue(std::clamp(settings.value(QStringLiteral("log/udpPort"), 2237).toInt(), 1, 65535));
+
+  auto* tcp = new QCheckBox(QStringLiteral("DXKeeper TCP logged QSO"), &dialog);
+  tcp->setObjectName(QStringLiteral("logTcp"));
+  tcp->setChecked(settings.value(QStringLiteral("log/tcp"), false).toBool());
+  tcp->setToolTip(QStringLiteral(
+      "Send a DXKeeper log command when a contact is logged. This does not key."));
+  auto* tcpHost = new QLineEdit(
+      settings.value(QStringLiteral("log/tcpHost"), QStringLiteral("127.0.0.1")).toString(), &dialog);
+  tcpHost->setObjectName(QStringLiteral("logTcpHost"));
+  auto* tcpPort = new QSpinBox(&dialog);
+  tcpPort->setObjectName(QStringLiteral("logTcpPort"));
+  tcpPort->setRange(1, 65535);
+  tcpPort->setValue(std::clamp(settings.value(QStringLiteral("log/tcpPort"), 52001).toInt(), 1, 65535));
+
+  auto* form = new QFormLayout;
+  form->addRow(QStringLiteral("ADIF file"), pathRow);
+  form->addRow(udpQso);
+  form->addRow(udpAdif);
+  form->addRow(QStringLiteral("UDP server"), udpHost);
+  form->addRow(QStringLiteral("UDP port"), udpPort);
+  form->addRow(tcp);
+  form->addRow(QStringLiteral("TCP server"), tcpHost);
+  form->addRow(QStringLiteral("TCP port"), tcpPort);
+  auto* note = new QLabel(
+      QStringLiteral("The QSO pane is not this file. A 73 or RR73 to another station is appended when "
+                     "Log Automatically is on, when Prompt Me is answered yes, or when UDP or TCP is "
+                     "on. UDP is the WSJT-X logger datagram, port 2237. TCP is the DXKeeper command, "
+                     "port 52001. Both stay off until enabled. The path and addresses are saved. "
+                     "This does not send START and does not key."),
+      &dialog);
+  note->setWordWrap(true);
+  auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
+  auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
+  auto* buttons = new QHBoxLayout;
+  buttons->addStretch(1);
+  buttons->addWidget(ok);
+  buttons->addWidget(cancel);
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->addLayout(form);
+  layout->addWidget(note);
+  layout->addLayout(buttons);
+  connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+  connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  QString chosen = path->text().trimmed();
+  if (chosen.isEmpty())
+    chosen = QsoLog::defaultAdifPath();
+  QSettings store;
+  store.setValue(QStringLiteral("log/adifPath"), chosen);
+  store.setValue(QStringLiteral("log/udpQso"), udpQso->isChecked());
+  store.setValue(QStringLiteral("log/udpAdif"), udpAdif->isChecked());
+  store.setValue(QStringLiteral("log/udpHost"), udpHost->text().trimmed());
+  store.setValue(QStringLiteral("log/udpPort"), udpPort->value());
+  store.setValue(QStringLiteral("log/tcp"), tcp->isChecked());
+  store.setValue(QStringLiteral("log/tcpHost"), tcpHost->text().trimmed());
+  store.setValue(QStringLiteral("log/tcpPort"), tcpPort->value());
+  if (qsoLog_)
+    qsoLog_->applySettings();
+  setTxStatus(QStringLiteral("Log file saved. Nothing was keyed. START was not sent."));
 }
 
 void MainWindow::openUserDialog() {
