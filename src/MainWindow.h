@@ -19,8 +19,6 @@ class HellEngine;
 class ModeProfile;
 class QAction;
 class QDockWidget;
-class QLineEdit;
-class QVBoxLayout;
 class QResizeEvent;
 class QShowEvent;
 class QToolBar;
@@ -66,6 +64,8 @@ private:
   void openTimeDialog();
   void openMacrosDialog();
   void openNetworkDialog();
+  void openUserDialog();
+  void applyStationLock();
   void setReceivePlaceholder(bool connected);
   void showRadioDown(const QString& error);
   void showRadioUp(const QString& host, quint16 port);
@@ -90,8 +90,6 @@ private:
   QString transmitMessage() const;
   QString stationCall() const;
   QString stationGrid() const;
-  void addStationFields(QWidget* panel, QVBoxLayout* layout, bool transmit);
-  void rememberStation(QLineEdit* source);
   void openDecodeFilters();
   bool keepDecode(const QString& message) const;
   QString distanceText(const QString& message) const;

@@ -609,9 +609,6 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
   layout->setContentsMargins(8, 8, 8, 8);
   layout->setSpacing(6);
 
-  if (editName == QLatin1String("transmitText"))
-    addStationFields(panel, layout, true);
-
   auto* edit = new QPlainTextEdit(panel);
   edit->setObjectName(editName);
   edit->setPlaceholderText(placeholder);
@@ -648,6 +645,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     buttons->addWidget(tx);
     buttons->addStretch(1);
     layout->addLayout(buttons);
+    applyStationLock();
   }
 
   if (!note.isEmpty()) {
@@ -661,88 +659,39 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
   return panel;
 }
 
-void MainWindow::addStationFields(QWidget* panel, QVBoxLayout* layout, bool transmit) {
-  QSettings settings;
-  auto* row = new QHBoxLayout();
-  row->setSpacing(6);
-  auto* callLabel = new QLabel(QStringLiteral("Callsign"), panel);
-  callLabel->setFont(interfaceFont(12));
-  auto* call = new QLineEdit(panel);
-  call->setObjectName(transmit ? QStringLiteral("txStationCall") : QStringLiteral("stationCall"));
-  call->setPlaceholderText(QStringLiteral("N8SDR"));
-  call->setMaxLength(20);
-  call->setClearButtonEnabled(true);
-  call->setFont(interfaceFont(12));
-  call->setToolTip(QStringLiteral(
-      "Your callsign. TX replies use it. A portable suffix such as N8SDR/VE sets the region. "
-      "This does not key."));
-  call->setText(settings.value(QStringLiteral("dx/reportCall")).toString());
-  auto* gridLabel = new QLabel(QStringLiteral("Locator"), panel);
-  gridLabel->setFont(interfaceFont(12));
-  auto* grid = new QLineEdit(panel);
-  grid->setObjectName(transmit ? QStringLiteral("txStationGrid") : QStringLiteral("stationGrid"));
-  grid->setPlaceholderText(QStringLiteral("EM79"));
-  grid->setMaxLength(6);
-  grid->setFixedWidth(76);
-  grid->setClearButtonEnabled(true);
-  grid->setFont(interfaceFont(12));
-  grid->setToolTip(QStringLiteral(
-      "Your grid. DIST is from here to the grid in a decode. TX replies include it. This does not key."));
-  grid->setText(settings.value(QStringLiteral("dx/reportGrid")).toString());
-  row->addWidget(callLabel);
-  row->addWidget(call, 1);
-  row->addWidget(gridLabel);
-  row->addWidget(grid);
-  layout->addLayout(row);
-  connect(call, &QLineEdit::textChanged, this, [this, call] { rememberStation(call); });
-  connect(grid, &QLineEdit::textChanged, this, [this, grid] { rememberStation(grid); });
-}
-
-void MainWindow::rememberStation(QLineEdit* source) {
-  if (!source)
-    return;
-  const int cursor = source->cursorPosition();
-  const QString upper = source->text().toUpper();
-  if (upper != source->text()) {
-    const QSignalBlocker block(source);
-    source->setText(upper);
-    source->setCursorPosition(cursor);
-  }
-  const bool call = source->objectName().contains(QStringLiteral("Call"));
-  const QString text = source->text().trimmed();
-  QSettings store;
-  store.setValue(call ? QStringLiteral("dx/reportCall") : QStringLiteral("dx/reportGrid"), text);
-  const QString name = source->objectName();
-  QString otherName = QStringLiteral("stationGrid");
-  if (name == QLatin1String("stationCall"))
-    otherName = QStringLiteral("txStationCall");
-  else if (name == QLatin1String("txStationCall"))
-    otherName = QStringLiteral("stationCall");
-  else if (name == QLatin1String("stationGrid"))
-    otherName = QStringLiteral("txStationGrid");
-  if (auto* other = findChild<QLineEdit*>(otherName)) {
-    if (other->text() != source->text()) {
-      const QSignalBlocker block(other);
-      other->setText(source->text());
-    }
-  }
-  if (call) {
-    if (profile_)
-      profile_->refreshStation();
-  } else
-    refreshDecodes();
-}
-
 QString MainWindow::stationCall() const {
-  if (auto* edit = findChild<QLineEdit*>(QStringLiteral("stationCall")))
-    return edit->text().trimmed();
   return QSettings().value(QStringLiteral("dx/reportCall")).toString().trimmed();
 }
 
 QString MainWindow::stationGrid() const {
-  if (auto* edit = findChild<QLineEdit*>(QStringLiteral("stationGrid")))
-    return edit->text().trimmed();
   return QSettings().value(QStringLiteral("dx/reportGrid")).toString().trimmed();
+}
+
+void MainWindow::applyStationLock() {
+  const bool haveCall = !stationCall().isEmpty();
+  if (auto* tune = findChild<QPushButton*>(QStringLiteral("txTune"))) {
+    if (!haveCall && tune->isChecked())
+      tune->setChecked(false);
+    tune->setEnabled(haveCall);
+    tune->setToolTip(haveCall
+                         ? QStringLiteral(
+                               "Send a tone at the TX marker so you can set TX gain and hear RF. "
+                               "TRX goes out only while this is pressed. START is never sent.")
+                         : QStringLiteral(
+                               "Set your callsign under Options → User before Tune. This does not key."));
+  }
+  if (auto* tx = findChild<QPushButton*>(QStringLiteral("txSend"))) {
+    if (!haveCall && tx->isChecked())
+      tx->setChecked(false);
+    tx->setEnabled(haveCall);
+    tx->setToolTip(haveCall
+                       ? QStringLiteral(
+                             "Send one FT8, FT4, or Hell transmission of the text in this box. "
+                             "Click a decode to load a reply. TRX goes out only after this is pressed. "
+                             "START is never sent.")
+                       : QStringLiteral(
+                             "Set your callsign under Options → User before TX. This does not key."));
+  }
 }
 
 QWidget* MainWindow::makeReceivePanel() {
@@ -752,8 +701,6 @@ QWidget* MainWindow::makeReceivePanel() {
   auto* layout = new QVBoxLayout(panel);
   layout->setContentsMargins(8, 8, 8, 8);
   layout->setSpacing(4);
-
-  addStationFields(panel, layout, false);
 
   auto* tools = new QHBoxLayout();
   tools->setSpacing(6);
@@ -994,6 +941,12 @@ void MainWindow::buildMenus() {
   macrosEdit->setObjectName(QStringLiteral("macrosEdit"));
   macrosEdit->setToolTip(QStringLiteral("Edit the eight local macros. They do not key."));
   connect(macrosEdit, &QAction::triggered, this, [this] { openMacrosDialog(); });
+
+  auto* userSettings = optionsMenu->addAction(QStringLiteral("User"));
+  userSettings->setObjectName(QStringLiteral("userSettings"));
+  userSettings->setToolTip(QStringLiteral(
+      "Callsign and locator. TX and Tune stay locked until a callsign is saved. Does not key."));
+  connect(userSettings, &QAction::triggered, this, [this] { openUserDialog(); });
 
   auto* networkConfig = optionsMenu->addAction(QStringLiteral("Network Configuration"));
   networkConfig->setObjectName(QStringLiteral("networkConfig"));
@@ -1353,16 +1306,17 @@ void MainWindow::showGuide() {
        "Options show or hide Time, Dist, and Freq, and can clear the list each period. Log options, ASeq, "
        "TX confirmation, and Auto RESET QSO are saved. Those options do not key."},
       {"Callsign and locator",
-       "Callsign and Locator are on the receive list and on the transmit box. They are saved. "
-       "DIST is the distance from your locator to the grid in the message. A click on a decode "
-       "builds the reply from your callsign and locator. Typing them does not key."},
+       "Options → User stores the callsign and locator. DIST is the distance from that locator "
+       "to the grid in the message. A click on a decode builds the reply from both. TX and Tune "
+       "stay locked until a callsign is saved. Opening User does not key."},
       {"Text",
        "Options → RX / TX Text sets the font and the size of the receive list, its column titles, "
        "and the transmit box. The faces are Consolas, Cascadia Mono, Lucida Console, Courier New, "
        "and Segoe UI. The sizes are small, medium, and large. The choice is remembered. It does not key."},
       {"TX",
        "Click or double-click a decode to load an MSHV-style reply and move the TX marker to that "
-       "station. That click does not key. Tune sends a tone at the TX marker and holds TRX until you "
+       "station. That click does not key. TX and Tune stay locked until a callsign is saved under "
+       "Options → User. Tune sends a tone at the TX marker and holds TRX until you "
        "release it, so you can set TX gain. TX sends the text in the box. FT8 and FT4 wait for the "
        "next slot. Hell and Tune start at once. TRX goes out only after Tune or TX is pressed. "
        "START is never sent. An empty box does not key. FT2, RTTY, and PSK31 do not key."},
@@ -2034,7 +1988,7 @@ void MainWindow::loadReplyFromLine(int line) {
     waterfall_->setTxHz(row.freqHz);
   if (mine.trimmed().isEmpty())
     setTxStatus(QStringLiteral(
-        "Loaded their call. Type yours in Callsign, then press TX. Nothing was keyed."));
+        "Loaded their call. Set your callsign under Options → User, then press TX. Nothing was keyed."));
   else
     setTxStatus(QStringLiteral("Loaded %1. Press TX to send it. Nothing was keyed.").arg(reply));
 }
@@ -2055,6 +2009,12 @@ void MainWindow::setTune(bool on) {
   if (qEnvironmentVariableIsSet("STD_SELFTEST") || !tci_ || !tci_->isOpen() || !txTimer_) {
     release();
     setTxStatus(QStringLiteral("Radio is not connected. Tune did not key. START was not sent."));
+    return;
+  }
+  if (stationCall().isEmpty()) {
+    release();
+    setTxStatus(QStringLiteral(
+        "Set your callsign under Options → User. Tune did not key. START was not sent."));
     return;
   }
   stopUserTx(true);
@@ -2108,6 +2068,12 @@ void MainWindow::setUserTx(bool on) {
   };
   if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
     release();
+    return;
+  }
+  if (stationCall().isEmpty()) {
+    release();
+    setTxStatus(QStringLiteral(
+        "Set your callsign under Options → User. TX did not key. START was not sent."));
     return;
   }
   if (txTune_)
@@ -2532,16 +2498,66 @@ void MainWindow::openNetworkDialog() {
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
   store.setValue(QStringLiteral("dx/reportCall"), call->text().trimmed().toUpper());
   store.setValue(QStringLiteral("dx/reportGrid"), grid->text().trimmed().toUpper());
-  if (auto* callEdit = findChild<QLineEdit*>(QStringLiteral("stationCall")))
-    callEdit->setText(call->text().trimmed().toUpper());
-  if (auto* gridEdit = findChild<QLineEdit*>(QStringLiteral("stationGrid")))
-    gridEdit->setText(grid->text().trimmed().toUpper());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
   if (profile_) {
     profile_->setRegionOverride(region->currentData().toString());
     profile_->refreshStation();
   }
+  refreshDecodes();
+  applyStationLock();
+}
+
+void MainWindow::openUserDialog() {
+  QSettings settings;
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("User"));
+  dialog.setMinimumWidth(360);
+  auto* call = new QLineEdit(settings.value(QStringLiteral("dx/reportCall")).toString(), &dialog);
+  call->setObjectName(QStringLiteral("userCall"));
+  call->setPlaceholderText(QStringLiteral("N8SDR"));
+  call->setMaxLength(20);
+  call->setClearButtonEnabled(true);
+  call->setToolTip(QStringLiteral(
+      "Your callsign. TX replies use it. TX and Tune stay locked until this is saved. "
+      "A portable suffix such as N8SDR/VE sets the region. This does not key."));
+  auto* grid = new QLineEdit(settings.value(QStringLiteral("dx/reportGrid")).toString(), &dialog);
+  grid->setObjectName(QStringLiteral("userGrid"));
+  grid->setPlaceholderText(QStringLiteral("EM79"));
+  grid->setMaxLength(6);
+  grid->setClearButtonEnabled(true);
+  grid->setToolTip(QStringLiteral(
+      "Your locator. DIST is from here to the grid in a decode. TX replies include it. This does not key."));
+  auto* form = new QFormLayout;
+  form->addRow(QStringLiteral("Callsign"), call);
+  form->addRow(QStringLiteral("Locator"), grid);
+  auto* note = new QLabel(
+      QStringLiteral("Saved with the station. DIST uses the locator. A decode click builds the reply "
+                     "from the callsign and locator. TX and Tune stay locked until a callsign is saved. "
+                     "This does not send START and does not key."),
+      &dialog);
+  note->setWordWrap(true);
+  auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
+  auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
+  auto* buttons = new QHBoxLayout;
+  buttons->addStretch(1);
+  buttons->addWidget(ok);
+  buttons->addWidget(cancel);
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->addLayout(form);
+  layout->addWidget(note);
+  layout->addLayout(buttons);
+  connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+  connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  QSettings store;
+  store.setValue(QStringLiteral("dx/reportCall"), call->text().trimmed().toUpper());
+  store.setValue(QStringLiteral("dx/reportGrid"), grid->text().trimmed().toUpper());
+  if (profile_)
+    profile_->refreshStation();
+  refreshDecodes();
+  applyStationLock();
 }
 
 void MainWindow::setReceivePlaceholder(bool connected) {
