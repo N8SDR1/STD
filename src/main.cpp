@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QIcon>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPalette>
 #include <QMenu>
 #include <QPlainTextEdit>
@@ -98,10 +99,17 @@ int shellReady(const MainWindow& window) {
       !receive->placeholderText().contains(QLatin1String("Received")))
     return fail("receive pane is not empty");
 
-  const auto* transmit = window.findChild<QPlainTextEdit*>("transmitText");
-  if (!transmit || transmit->isReadOnly() ||
-      !transmit->placeholderText().contains(QLatin1String("Transmit")))
-    return fail("transmit pane is missing");
+  const auto* standard = window.findChild<QLabel*>("txStandard");
+  const auto* txExtra = window.findChild<QLineEdit*>("txExtra");
+  if (!standard || standard->text() != QLatin1String("Standard") || !txExtra)
+    return fail("TX standard or extra field is missing");
+  for (int i = 1; i <= 6; ++i) {
+    if (!window.findChild<QLineEdit*>(QStringLiteral("tx%1").arg(i)))
+      return fail("a standard TX field is missing");
+  }
+  const auto* tune = window.findChild<QPushButton*>("txTune");
+  if (!tune || tune->isChecked())
+    return fail("Tune is not idle");
 
   const auto macros = window.findChildren<QPushButton*>("macro");
   if (macros.size() != 8)

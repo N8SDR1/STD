@@ -18,6 +18,7 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCloseEvent>
@@ -46,6 +47,7 @@
 #include <QProcess>
 #include <QPlainTextEdit>
 #include <QResizeEvent>
+#include <QRadioButton>
 #include <QRegularExpression>
 #include <QTextBrowser>
 #include <QPushButton>
@@ -575,9 +577,9 @@ void MainWindow::buildDocks() {
   transmitDock_->setObjectName("transmitDock");
   transmitDock_->setWidget(makeTextPanel(
       "transmitText",
-      "Transmit text.\nCharacters stay in this window until you press TX or Tune.",
+      "Transmit text.",
       false,
-      "Click a decode to load a reply, or press Tune for a tone. START is never sent."));
+      "Double-click a CQ to fill the reply. Tune stops itself. START is never sent."));
   transmitDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
 
   macroDock_ = new QDockWidget("Macros", this);
@@ -607,18 +609,62 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
   panel->setAttribute(Qt::WA_StyledBackground, true);
   auto* layout = new QVBoxLayout(panel);
   layout->setContentsMargins(8, 8, 8, 8);
-  layout->setSpacing(6);
-
-  auto* edit = new QPlainTextEdit(panel);
-  edit->setObjectName(editName);
-  edit->setPlaceholderText(placeholder);
-  edit->setReadOnly(readOnly);
-  edit->setFont(monoFont(13));
-  edit->setTabChangesFocus(true);
-  edit->setMinimumHeight(72);
-  layout->addWidget(edit);
+  layout->setSpacing(2);
+  Q_UNUSED(placeholder);
+  Q_UNUSED(readOnly);
 
   if (editName == QLatin1String("transmitText")) {
+    auto* picks = new QButtonGroup(panel);
+    picks->setExclusive(true);
+    auto addLine = [&](const QString& name, const QString& pickName, const QString& tag) {
+      auto* row = new QHBoxLayout();
+      row->setSpacing(4);
+      auto* pick = new QRadioButton(tag, panel);
+      pick->setObjectName(pickName);
+      pick->setFont(interfaceFont(11));
+      pick->setFocusPolicy(Qt::NoFocus);
+      pick->setToolTip(QStringLiteral("Choose this line. This does not key."));
+      picks->addButton(pick);
+      auto* field = new QLineEdit(panel);
+      field->setObjectName(name);
+      field->setMaxLength(36);
+      field->setFont(monoFont(13));
+      field->setClearButtonEnabled(true);
+      field->setToolTip(QStringLiteral("TX text. Editing it does not key."));
+      row->addWidget(pick);
+      row->addWidget(field, 1);
+      layout->addLayout(row);
+      return row;
+    };
+    auto* standard = new QLabel(QStringLiteral("Standard"), panel);
+    standard->setObjectName(QStringLiteral("txStandard"));
+    standard->setFont(interfaceFont(12));
+    layout->addWidget(standard);
+    for (int i = 1; i <= 6; ++i)
+      addLine(QStringLiteral("tx%1").arg(i), QStringLiteral("txPick%1").arg(i), QString::number(i));
+    auto* extraLabel = new QLabel(QStringLiteral("Extra"), panel);
+    extraLabel->setObjectName(QStringLiteral("txExtraLabel"));
+    extraLabel->setFont(interfaceFont(12));
+    layout->addWidget(extraLabel);
+    auto* extraRow = addLine(QStringLiteral("txExtra"), QStringLiteral("txPick7"), QString());
+    auto* qrg = new QLineEdit(panel);
+    qrg->setObjectName(QStringLiteral("txQrg"));
+    qrg->setPlaceholderText(QStringLiteral("kHz"));
+    qrg->setMaxLength(3);
+    qrg->setFixedWidth(52);
+    qrg->setFont(monoFont(13));
+    qrg->setToolTip(QStringLiteral(
+        "CQ kHz for the extra line, as in MSHV. CQ 236 N8SDR EM79. This does not key."));
+    txQrg_ = QSettings().value(QStringLiteral("dx/txQrg")).toString();
+    qrg->setText(txQrg_);
+    extraRow->addWidget(qrg);
+    connect(qrg, &QLineEdit::textChanged, this, [this](const QString& text) {
+      txQrg_ = text.trimmed();
+      QSettings().setValue(QStringLiteral("dx/txQrg"), txQrg_);
+      refreshTxFields();
+    });
+    refreshTxFields();
+    selectTxSlot(5);
     auto* buttons = new QHBoxLayout();
     buttons->setSpacing(6);
     auto* tune = new QPushButton(QStringLiteral("Tune"), panel);
@@ -638,8 +684,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     tx->setFont(interfaceFont(12));
     tx->setFocusPolicy(Qt::NoFocus);
     tx->setToolTip(QStringLiteral(
-        "Send one FT8, FT4, or Hell transmission of the text in this box. "
-        "Click a decode to load a reply. TRX goes out only after this is pressed. START is never sent."));
+        "Send the selected standard or extra line once. "
+        "Double-click a CQ to fill the reply. TRX goes out only after this is pressed. START is never sent."));
     connect(tx, &QPushButton::toggled, this, [this](bool on) { setUserTx(on); });
     buttons->addWidget(tune);
     buttons->addWidget(tx);
@@ -675,8 +721,8 @@ void MainWindow::applyStationLock() {
     tune->setEnabled(haveCall);
     tune->setToolTip(haveCall
                          ? QStringLiteral(
-                               "Send a tone at the TX marker so you can set TX gain and hear RF. "
-                               "TRX goes out only while this is pressed. START is never sent.")
+                               "Send a tone at the TX marker for the MSHV tune length, then stop. "
+                               "FT8 is 29 seconds. Uncheck to stop early. START is never sent.")
                          : QStringLiteral(
                                "Set your callsign under Options → User before Tune. This does not key."));
   }
@@ -686,8 +732,8 @@ void MainWindow::applyStationLock() {
     tx->setEnabled(haveCall);
     tx->setToolTip(haveCall
                        ? QStringLiteral(
-                             "Send one FT8, FT4, or Hell transmission of the text in this box. "
-                             "Click a decode to load a reply. TRX goes out only after this is pressed. "
+                             "Send the selected standard or extra line once. "
+                             "Double-click a CQ to fill the reply. TRX goes out only after this is pressed. "
                              "START is never sent.")
                        : QStringLiteral(
                              "Set your callsign under Options → User before TX. This does not key."));
@@ -804,9 +850,13 @@ QWidget* MainWindow::makeMacroRow() {
     connect(button, &QPushButton::clicked, this, [this, i] {
       QSettings settings;
       const QString text = settings.value(QStringLiteral("dx/macro/%1").arg(i)).toString();
-      auto* transmit = findChild<QPlainTextEdit*>("transmitText");
-      if (transmit && !text.trimmed().isEmpty())
-        transmit->setPlainText(text);
+      if (!text.trimmed().isEmpty()) {
+        const int slot = selectedTxSlot();
+        const QString name =
+            slot == 6 ? QStringLiteral("txExtra") : QStringLiteral("tx%1").arg(slot + 1);
+        if (auto* field = findChild<QLineEdit*>(name))
+          field->setText(text.trimmed());
+      }
     });
     layout->addWidget(button);
   }
@@ -1307,19 +1357,20 @@ void MainWindow::showGuide() {
        "TX confirmation, and Auto RESET QSO are saved. Those options do not key."},
       {"Callsign and locator",
        "Options → User stores the callsign and locator. DIST is the distance from that locator "
-       "to the grid in the message. A click on a decode builds the reply from both. TX and Tune "
-       "stay locked until a callsign is saved. Opening User does not key."},
+       "to the grid in the message. A double-click on a CQ fills Tx1 through Tx6 and the extra "
+       "line from both. TX and Tune stay locked until a callsign is saved. Opening User does not key."},
       {"Text",
        "Options → RX / TX Text sets the font and the size of the receive list, its column titles, "
        "and the transmit box. The faces are Consolas, Cascadia Mono, Lucida Console, Courier New, "
        "and Segoe UI. The sizes are small, medium, and large. The choice is remembered. It does not key."},
       {"TX",
-       "Click or double-click a decode to load an MSHV-style reply and move the TX marker to that "
-       "station. That click does not key. TX and Tune stay locked until a callsign is saved under "
-       "Options → User. Tune sends a tone at the TX marker and holds TRX until you "
-       "release it, so you can set TX gain. TX sends the text in the box. FT8 and FT4 wait for the "
+       "Double-click a decode to load the MSHV reply sequence and move the TX marker to that "
+       "station. That double-click does not key. Standard lines are Tx1 through Tx6. Extra is the "
+       "CQ kHz line. TX and Tune stay locked until a callsign is saved under "
+       "Options → User. Tune sends a tone at the TX marker for the MSHV length, 29 seconds on FT8, "
+       "then stops. TX sends the selected line. FT8 and FT4 wait for the "
        "next slot. Hell and Tune start at once. TRX goes out only after Tune or TX is pressed. "
-       "START is never sent. An empty box does not key. FT2, RTTY, and PSK31 do not key."},
+       "START is never sent. An empty line does not key. FT2, RTTY, and PSK31 do not key."},
       {"RX and TX markers",
        "A green band is the RX channel and a red band is the TX channel. Each starts at the marker "
        "and runs up by the protocol width: 50 Hz on FT8, 90 Hz on FT4, 125 Hz on FT2. Super Hound "
@@ -1383,7 +1434,7 @@ void MainWindow::resizeToHero() {
   const int available = std::max(480, height() - chrome);
   const int status = 44;
   const int macros = 80;
-  const int transmit = std::max(108, available * 14 / 100);
+  const int transmit = std::max(220, available * 26 / 100);
   const int receive = std::max(128, available * 18 / 100);
   const int waterfall = std::max(240, available - status - macros - transmit - receive);
   resizeDocks({waterfallDock_, receiveDock_, transmitDock_, macroDock_, statusDock_},
@@ -1843,80 +1894,36 @@ bool isCall(const QString& word) {
   return call.match(word).hasMatch();
 }
 
-QString snrText(int db) {
+QString joinParts(const QStringList& parts) {
+  QStringList kept;
+  for (const QString& part : parts) {
+    const QString trimmed = part.trimmed();
+    if (!trimmed.isEmpty())
+      kept << trimmed;
+  }
+  return kept.join(QLatin1Char(' '));
+}
+
+QString reportText(int db) {
   if (db > 49)
     db = 49;
   if (db < -50)
     db = -50;
-  if (db >= 0)
-    return QStringLiteral("+%1").arg(db, 2, 10, QLatin1Char('0'));
-  return QString::number(db);
+  const QChar sign = db < 0 ? QLatin1Char('-') : QLatin1Char('+');
+  return QStringLiteral("%1%2").arg(sign).arg(std::abs(db), 2, 10, QLatin1Char('0'));
 }
 
-QString replyFor(const QString& message, int db, const QString& mine, const QString& grid) {
-  const QStringList words = message.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-  if (words.isEmpty())
-    return {};
-  QString sender;
-  const bool cq = words.at(0).compare(QLatin1String("CQ"), Qt::CaseInsensitive) == 0;
-  QStringList calls;
-  for (const QString& word : words) {
-    if (isCall(word))
-      calls << word.toUpper();
-  }
-  if (cq) {
-    for (const QString& word : words) {
-      if (isCall(word)) {
-        sender = word.toUpper();
-        break;
-      }
-    }
-  } else if (calls.size() >= 2)
-    sender = calls.at(1);
-  else if (!calls.isEmpty())
-    sender = calls.at(0);
-  if (sender.isEmpty())
-    return {};
-
-  const QString me = mine.trimmed().toUpper();
-  bool toMe = false;
-  QString report;
-  bool roger = false;
-  bool rrr = false;
-  bool rr73 = false;
-  bool seventy = false;
-  for (const QString& word : words) {
-    if (!me.isEmpty() && word.compare(me, Qt::CaseInsensitive) == 0)
-      toMe = true;
-    if (word.compare(QLatin1String("RR73"), Qt::CaseInsensitive) == 0)
-      rr73 = true;
-    else if (word.compare(QLatin1String("RRR"), Qt::CaseInsensitive) == 0)
-      rrr = true;
-    else if (word.compare(QLatin1String("73"), Qt::CaseInsensitive) == 0)
-      seventy = true;
-    else if (word.size() > 1 && word.at(0).toUpper() == QLatin1Char('R') &&
-             (word.at(1) == QLatin1Char('+') || word.at(1) == QLatin1Char('-') || word.at(1).isDigit()))
-      roger = true;
-    else if (word.size() >= 2 && (word.at(0) == QLatin1Char('+') || word.at(0) == QLatin1Char('-')) &&
-             word.at(1).isDigit())
-      report = word;
-  }
-  if (me.isEmpty())
-    return sender;
-  QString tail;
-  if (!cq && toMe && (seventy || rr73 || rrr))
-    tail = QStringLiteral("73");
-  else if (!cq && toMe && roger)
-    tail = QStringLiteral("RRR");
-  else if (!cq && toMe && !report.isEmpty())
-    tail = QStringLiteral("R%1").arg(report);
-  else if (!cq && toMe)
-    tail = snrText(db);
-  else
-    tail = grid.trimmed().left(4).toUpper();
-  if (tail.isEmpty())
-    return QStringLiteral("%1 %2").arg(sender, me);
-  return QStringLiteral("%1 %2 %3").arg(sender, me, tail);
+int tuneLimitMs(const QString& mode) {
+  // MSHV forces a 30 s tune period (the JTDX value) and stops
+  // stop_tx_befor_end (370 ms) plus the mode tail before that period ends.
+  int tail = 0;
+  if (mode == QLatin1String("FT8"))
+    tail = 600;
+  else if (mode == QLatin1String("FT4"))
+    tail = 800;
+  else if (mode == QLatin1String("FT2"))
+    tail = 400;
+  return 30000 - 370 - tail;
 }
 
 }  // namespace
@@ -1927,16 +1934,72 @@ void MainWindow::setTxStatus(const QString& text) {
 }
 
 QString MainWindow::transmitMessage() const {
-  auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("transmitText"));
-  if (!edit)
-    return {};
-  const QStringList lines = edit->toPlainText().split(QLatin1Char('\n'));
-  for (const QString& line : lines) {
-    const QString trimmed = line.trimmed();
-    if (!trimmed.isEmpty())
-      return trimmed;
+  const int slot = selectedTxSlot();
+  const QString name =
+      slot == 6 ? QStringLiteral("txExtra") : QStringLiteral("tx%1").arg(slot + 1);
+  auto* edit = findChild<QLineEdit*>(name);
+  return edit ? edit->text().trimmed() : QString();
+}
+
+void MainWindow::refreshTxFields() {
+  const QString mine = stationCall().trimmed().toUpper();
+  QString grid = stationGrid().trimmed().toUpper();
+  if (grid.size() > 4)
+    grid = grid.left(4);
+  const QString his = txHisCall_.trimmed().toUpper();
+  QString report = txReport_.trimmed().toUpper();
+  if (report.isEmpty() && !his.isEmpty())
+    report = QStringLiteral("+00");
+  const QString roger = report.isEmpty() ? QString() : QStringLiteral("R%1").arg(report);
+  QString qrg = txQrg_.trimmed();
+  bool qrgDigits = !qrg.isEmpty();
+  for (const QChar c : qrg) {
+    if (!c.isDigit())
+      qrgDigits = false;
   }
-  return {};
+  if (qrgDigits && qrg.size() <= 3)
+    qrg = qrg.rightJustified(3, QLatin1Char('0'));
+  const QString lines[7] = {joinParts({his, mine, grid}),
+                             joinParts({his, mine, report}),
+                             joinParts({his, mine, roger}),
+                             joinParts({his, mine, QStringLiteral("RR73")}),
+                             joinParts({his, mine, QStringLiteral("73")}),
+                             joinParts({QStringLiteral("CQ"), mine, grid}),
+                             qrg.isEmpty() ? joinParts({QStringLiteral("CQ"), mine, grid})
+                                           : joinParts({QStringLiteral("CQ"), qrg, mine, grid})};
+  const char* names[7] = {"tx1", "tx2", "tx3", "tx4", "tx5", "tx6", "txExtra"};
+  for (int i = 0; i < 7; ++i) {
+    if (auto* edit = findChild<QLineEdit*>(QLatin1String(names[i]))) {
+      if (edit->text() != lines[i]) {
+        const QSignalBlocker block(edit);
+        edit->setText(lines[i]);
+      }
+    }
+  }
+  if (auto* qrgEdit = findChild<QLineEdit*>(QStringLiteral("txQrg"))) {
+    if (qrgEdit->text() != txQrg_) {
+      const QSignalBlocker block(qrgEdit);
+      qrgEdit->setText(txQrg_);
+    }
+  }
+}
+
+void MainWindow::selectTxSlot(int index) {
+  if (index < 0)
+    index = 0;
+  if (index > 6)
+    index = 6;
+  if (auto* pick = findChild<QRadioButton*>(QStringLiteral("txPick%1").arg(index + 1)))
+    pick->setChecked(true);
+}
+
+int MainWindow::selectedTxSlot() const {
+  for (int i = 1; i <= 7; ++i) {
+    const auto* pick = findChild<QRadioButton*>(QStringLiteral("txPick%1").arg(i));
+    if (pick && pick->isChecked())
+      return i - 1;
+  }
+  return 5;
 }
 
 bool MainWindow::periodReady(const QString& mode) {
@@ -1961,7 +2024,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
   auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
   if (!edit || watched != edit->viewport())
     return QMainWindow::eventFilter(watched, event);
-  if (event->type() != QEvent::MouseButtonRelease && event->type() != QEvent::MouseButtonDblClick)
+  if (event->type() != QEvent::MouseButtonDblClick)
     return QMainWindow::eventFilter(watched, event);
   const auto* mouse = static_cast<const QMouseEvent*>(event);
   if (mouse->button() != Qt::LeftButton)
@@ -1975,22 +2038,89 @@ void MainWindow::loadReplyFromLine(int line) {
   if (line < 0 || line >= shownDecodes_.size())
     return;
   const DecodeRow row = shownDecodes_.at(line);
-  const QString mine = stationCall();
-  const QString grid = stationGrid();
-  const QString reply = replyFor(row.message, row.db, mine, grid);
-  auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("transmitText"));
-  if (!edit || reply.isEmpty()) {
+  const QStringList words =
+      row.message.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+  if (words.isEmpty()) {
     setTxStatus(QStringLiteral("That decode has no call to answer. Nothing was keyed."));
     return;
   }
-  edit->setPlainText(reply);
+  const bool cq = words.at(0).compare(QLatin1String("CQ"), Qt::CaseInsensitive) == 0;
+  QStringList calls;
+  QString report;
+  bool roger = false;
+  bool rrr = false;
+  bool rr73 = false;
+  bool seventy = false;
+  const QString mine = stationCall().trimmed().toUpper();
+  bool toMe = false;
+  for (const QString& word : words) {
+    if (isCall(word))
+      calls << word.toUpper();
+    if (!mine.isEmpty() && word.compare(mine, Qt::CaseInsensitive) == 0)
+      toMe = true;
+    if (word.compare(QLatin1String("RR73"), Qt::CaseInsensitive) == 0)
+      rr73 = true;
+    else if (word.compare(QLatin1String("RRR"), Qt::CaseInsensitive) == 0)
+      rrr = true;
+    else if (word.compare(QLatin1String("73"), Qt::CaseInsensitive) == 0)
+      seventy = true;
+    else if (word.size() > 1 && word.at(0).toUpper() == QLatin1Char('R') &&
+             (word.at(1) == QLatin1Char('+') || word.at(1) == QLatin1Char('-') || word.at(1).isDigit()))
+      roger = true;
+    else if (word.size() >= 2 && (word.at(0) == QLatin1Char('+') || word.at(0) == QLatin1Char('-')) &&
+             word.at(1).isDigit())
+      report = word;
+  }
+  QString sender;
+  if (cq) {
+    for (const QString& word : words) {
+      if (isCall(word)) {
+        sender = word.toUpper();
+        break;
+      }
+    }
+    if (words.size() >= 2) {
+      const QString maybe = words.at(1);
+      bool digits = !maybe.isEmpty();
+      for (const QChar c : maybe) {
+        if (!c.isDigit())
+          digits = false;
+      }
+      if (digits && maybe.size() <= 3) {
+        txQrg_ = maybe.rightJustified(3, QLatin1Char('0'));
+        QSettings().setValue(QStringLiteral("dx/txQrg"), txQrg_);
+      }
+    }
+  } else if (calls.size() >= 2)
+    sender = calls.at(1);
+  else if (!calls.isEmpty())
+    sender = calls.at(0);
+  if (sender.isEmpty()) {
+    setTxStatus(QStringLiteral("That decode has no call to answer. Nothing was keyed."));
+    return;
+  }
+  txHisCall_ = sender;
+  txReport_ = reportText(row.db);
+  int selected = 0;
+  if (!cq && toMe && (seventy || rr73 || rrr))
+    selected = 4;
+  else if (!cq && toMe && roger)
+    selected = 3;
+  else if (!cq && toMe && !report.isEmpty())
+    selected = 2;
+  else if (!cq && toMe)
+    selected = 1;
+  refreshTxFields();
+  selectTxSlot(selected);
   if (waterfall_ && row.freqHz > 0)
     waterfall_->setTxHz(row.freqHz);
-  if (mine.trimmed().isEmpty())
+  const QString shown = transmitMessage();
+  if (mine.isEmpty())
     setTxStatus(QStringLiteral(
-        "Loaded their call. Set your callsign under Options → User, then press TX. Nothing was keyed."));
+        "Loaded their call on Tx%1. Set your callsign under Options → User. Nothing was keyed.")
+                    .arg(selected + 1));
   else
-    setTxStatus(QStringLiteral("Loaded %1. Press TX to send it. Nothing was keyed.").arg(reply));
+    setTxStatus(QStringLiteral("Tx%1 is %2. Nothing was keyed.").arg(selected + 1).arg(shown));
 }
 
 void MainWindow::setTune(bool on) {
@@ -2021,6 +2151,8 @@ void MainWindow::setTune(bool on) {
   txTuneHz_ = std::clamp(waterfall_ ? waterfall_->txHz() : 1500, 200, 3000);
   txTunePhase_ = 0.0;
   txHold_ = 2;
+  txTuneLimitMs_ = tuneLimitMs(profile_ ? profile_->digitalMode() : QStringLiteral("FT8"));
+  txTuneStartMs_ = QDateTime::currentMSecsSinceEpoch();
   txTune_ = true;
   if (!tci_->setTransmit(true)) {
     txTune_ = false;
@@ -2031,8 +2163,10 @@ void MainWindow::setTune(bool on) {
   txKeySent_ = true;
   if (button)
     button->setText(QStringLiteral("TUNE ON"));
-  setTxStatus(QStringLiteral("Tune tone at %1 Hz. TRX is held until Tune is released. START was not sent.")
-                  .arg(txTuneHz_));
+  setTxStatus(QStringLiteral(
+                  "Tune tone at %1 Hz for %2 s. TRX ends on its own. START was not sent.")
+                  .arg(txTuneHz_)
+                  .arg((txTuneLimitMs_ + 500) / 1000));
   txTimer_->start(20);
 }
 
@@ -2088,7 +2222,7 @@ void MainWindow::setUserTx(bool on) {
   if (text.isEmpty()) {
     release();
     setTxStatus(QStringLiteral(
-        "The box is empty. Click a decode to load a reply, or type one. Nothing was keyed."));
+        "The selected line is empty. Double-click a CQ to fill the reply. Nothing was keyed."));
     return;
   }
   const int tone = waterfall_ ? waterfall_->txHz() : 1500;
@@ -2117,6 +2251,13 @@ void MainWindow::pumpUserTx() {
     if (!tci_ || !tci_->isTransmitting()) {
       stopTune(true);
       setTxStatus(QStringLiteral("Tune stopped. TRX is off. START was not sent."));
+      return;
+    }
+    if (txTuneStartMs_ > 0 &&
+        QDateTime::currentMSecsSinceEpoch() - txTuneStartMs_ >= txTuneLimitMs_) {
+      const int seconds = (txTuneLimitMs_ + 500) / 1000;
+      setTxStatus(QStringLiteral("Tune ended after %1 s. TRX is off. START was not sent.").arg(seconds));
+      stopTune(true);
       return;
     }
     if (txHold_ > 0) {
@@ -2291,8 +2432,11 @@ void MainWindow::applyTextStyle() {
   font.setPixelSize(pixelSize);
   if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
     edit->setFont(font);
-  if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("transmitText")))
-    edit->setFont(font);
+  const char* txNames[] = {"tx1", "tx2", "tx3", "tx4", "tx5", "tx6", "txExtra", "txQrg"};
+  for (const char* name : txNames) {
+    if (auto* field = findChild<QLineEdit*>(QLatin1String(name)))
+      field->setFont(font);
+  }
   if (auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader")))
     header->setFont(font);
   alignDecodeHeader();
@@ -2506,6 +2650,7 @@ void MainWindow::openNetworkDialog() {
   }
   refreshDecodes();
   applyStationLock();
+  refreshTxFields();
 }
 
 void MainWindow::openUserDialog() {
@@ -2558,6 +2703,7 @@ void MainWindow::openUserDialog() {
     profile_->refreshStation();
   refreshDecodes();
   applyStationLock();
+  refreshTxFields();
 }
 
 void MainWindow::setReceivePlaceholder(bool connected) {

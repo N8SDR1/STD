@@ -86,6 +86,9 @@ private:
   void stopUserTx(bool uncheck);
   void setTxStatus(const QString& text);
   void loadReplyFromLine(int line);
+  void refreshTxFields();
+  void selectTxSlot(int index);
+  int selectedTxSlot() const;
   bool periodReady(const QString& mode);
   QString transmitMessage() const;
   QString stationCall() const;
@@ -153,6 +156,11 @@ private:
   bool txTune_ = false;
   double txTunePhase_ = 0.0;
   int txTuneHz_ = 1500;
+  qint64 txTuneStartMs_ = 0;
+  int txTuneLimitMs_ = 0;
+  QString txHisCall_;
+  QString txReport_;
+  QString txQrg_;
   int txPeriodMark_ = -1;
   QVector<DecodeRow> shownDecodes_;
 };
