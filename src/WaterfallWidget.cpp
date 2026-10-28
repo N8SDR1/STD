@@ -504,6 +504,16 @@ void WaterfallWidget::setRxHz(int hz) {
   update();
 }
 
+void WaterfallWidget::setTxHz(int hz) {
+  txHz_ = clampTone(hz);
+  if (locked_)
+    rxHz_ = txHz_;
+  clearTxHot();
+  rememberFrequencies();
+  emit frequenciesChanged(rxHz_, txHz_);
+  update();
+}
+
 int WaterfallWidget::clampTone(int hz) const {
   int lo = 0;
   int hi = 5000;

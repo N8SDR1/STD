@@ -12,6 +12,7 @@
 #include <vector>
 
 class QCloseEvent;
+class QEvent;
 
 class Ft8Decode;
 class HellEngine;
@@ -37,6 +38,7 @@ protected:
   void showEvent(QShowEvent* event) override;
   void resizeEvent(QResizeEvent* event) override;
   void closeEvent(QCloseEvent* event) override;
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
   void buildBrandBar();
@@ -75,8 +77,14 @@ private:
   void applyChannelWidth();
   void alignDecodeHeader();
   void setUserTx(bool on);
+  void setTune(bool on);
+  void stopTune(bool uncheck);
   void pumpUserTx();
   void stopUserTx(bool uncheck);
+  void setTxStatus(const QString& text);
+  void loadReplyFromLine(int line);
+  bool periodReady(const QString& mode);
+  QString transmitMessage() const;
   void openDecodeFilters();
   bool keepDecode(const QString& message) const;
   QString distanceText(const QString& message) const;
@@ -137,4 +145,9 @@ private:
   int txCursor_ = 0;
   int txHold_ = 0;
   bool txKeySent_ = false;
+  bool txTune_ = false;
+  double txTunePhase_ = 0.0;
+  int txTuneHz_ = 1500;
+  int txPeriodMark_ = -1;
+  QVector<DecodeRow> shownDecodes_;
 };

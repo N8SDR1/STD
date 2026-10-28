@@ -229,7 +229,7 @@ void TciClient::beginSession() {
   // live Protocol 2 session stays up. START would close that session.
   // AUDIO_SAMPLERATE and AUDIO_STREAM_* are global, so they are not
   // sent. A band button may write VFO and MODULATION later. TRX is
-  // not sent here. The TX button is the only caller of setTransmit.
+  // not sent here. Tune and TX are the only callers of setTransmit.
   sendCommand(QStringLiteral("AUDIO_START:0"));
   audioStarted_ = true;
 }

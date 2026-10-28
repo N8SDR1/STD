@@ -36,6 +36,7 @@
 #include <QLinearGradient>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMouseEvent>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
@@ -334,7 +335,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(tci_, &TciClient::sessionUp, this, [this](const QString& host, quint16 port) {
     showRadioUp(host, port);
   });
-  connect(tci_, &TciClient::sessionDown, this, [this](const QString& error) { showRadioDown(error); });
+  connect(tci_, &TciClient::sessionDown, this, [this](const QString& error) {
+    if (txTune_)
+      stopTune(true);
+    else
+      stopUserTx(true);
+    showRadioDown(error);
+  });
   connect(tci_, &TciClient::dialChanged, this, [this](qint64 hz) { showDial(hz); });
   connect(tci_, &TciClient::modeChanged, this, [this](const QString& mode) {
     if (statusStrip_)
@@ -568,8 +575,9 @@ void MainWindow::buildDocks() {
   transmitDock_->setObjectName("transmitDock");
   transmitDock_->setWidget(makeTextPanel(
       "transmitText",
-      "Transmit text.\nCharacters stay in this window. Nothing is sent to the radio.",
-      false, "Press TX for one FT8, FT4, or Hell transmission. The radio stays on receive until then. START is never sent."));
+      "Transmit text.\nCharacters stay in this window until you press TX or Tune.",
+      false,
+      "Click a decode to load a reply, or press Tune for a tone. START is never sent."));
   transmitDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
 
   macroDock_ = new QDockWidget("Macros", this);
@@ -611,6 +619,18 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
   layout->addWidget(edit);
 
   if (editName == QLatin1String("transmitText")) {
+    auto* buttons = new QHBoxLayout();
+    buttons->setSpacing(6);
+    auto* tune = new QPushButton(QStringLiteral("Tune"), panel);
+    tune->setObjectName(QStringLiteral("txTune"));
+    tune->setCheckable(true);
+    tune->setChecked(false);
+    tune->setFont(interfaceFont(12));
+    tune->setFocusPolicy(Qt::NoFocus);
+    tune->setToolTip(QStringLiteral(
+        "Send a tone at the TX marker so you can set TX gain and hear RF. "
+        "TRX goes out only while this is pressed. START is never sent."));
+    connect(tune, &QPushButton::toggled, this, [this](bool on) { setTune(on); });
     auto* tx = new QPushButton(QStringLiteral("TX"), panel);
     tx->setObjectName(QStringLiteral("txSend"));
     tx->setCheckable(true);
@@ -618,14 +638,19 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     tx->setFont(interfaceFont(12));
     tx->setFocusPolicy(Qt::NoFocus);
     tx->setToolTip(QStringLiteral(
-        "Send one FT8, FT4, or Hell transmission. TRX goes out only after this is pressed. START is never sent."));
+        "Send one FT8, FT4, or Hell transmission of the text in this box. "
+        "Click a decode to load a reply. TRX goes out only after this is pressed. START is never sent."));
     connect(tx, &QPushButton::toggled, this, [this](bool on) { setUserTx(on); });
-    layout->addWidget(tx, 0, Qt::AlignLeft);
+    buttons->addWidget(tune);
+    buttons->addWidget(tx);
+    buttons->addStretch(1);
+    layout->addLayout(buttons);
   }
 
   if (!note.isEmpty()) {
     auto* caption = new QLabel(note, panel);
-    caption->setObjectName("panelNote");
+    caption->setObjectName(editName == QLatin1String("transmitText") ? QStringLiteral("txStatus")
+                                                                      : QStringLiteral("panelNote"));
     caption->setFont(interfaceFont(11));
     caption->setWordWrap(true);
     layout->addWidget(caption);
@@ -683,6 +708,7 @@ QWidget* MainWindow::makeReceivePanel() {
   edit->setLineWrapMode(QPlainTextEdit::NoWrap);
   edit->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   edit->document()->setDocumentMargin(0);
+  edit->viewport()->installEventFilter(this);
   layout->addWidget(edit, 1);
 
   connect(filter, &QLineEdit::textChanged, this, [this](const QString&) { refreshDecodes(); });
@@ -702,6 +728,7 @@ void MainWindow::refreshDecodes() {
     return;
   const QString needle = filter ? filter->text().trimmed() : QString();
   QString text;
+  shownDecodes_.clear();
   for (const DecodeRow& row : decodes_) {
     QString line;
     if (row.time.isEmpty())
@@ -716,6 +743,7 @@ void MainWindow::refreshDecodes() {
     if (!text.isEmpty())
       text += QLatin1Char('\n');
     text += line;
+    shownDecodes_.push_back(row);
   }
   edit->setPlainText(text);
   edit->moveCursor(QTextCursor::End);
@@ -1165,10 +1193,11 @@ void MainWindow::showGuide() {
        "Options show or hide Time, Dist, and Freq, and can clear the list each period. Log options, ASeq, "
        "TX confirmation, and Auto RESET QSO are saved. Those options do not key."},
       {"TX",
-       "Press TX to send one transmission. FT8 waits for the next 15 second boundary and FT4 waits "
-       "for the next 7.5 second boundary. Hell starts at once. TRX goes out when that audio starts, "
-       "and only because TX was pressed. START is never sent. An empty box does not key. FT2, RTTY, "
-       "and PSK31 do not key. The button releases when the audio ends."},
+       "Click or double-click a decode to load an MSHV-style reply and move the TX marker to that "
+       "station. That click does not key. Tune sends a tone at the TX marker and holds TRX until you "
+       "release it, so you can set TX gain. TX sends the text in the box. FT8 and FT4 wait for the "
+       "next slot. Hell and Tune start at once. TRX goes out only after Tune or TX is pressed. "
+       "START is never sent. An empty box does not key. FT2, RTTY, and PSK31 do not key."},
       {"RX and TX markers",
        "A green band is the RX channel and a red band is the TX channel. Each starts at the marker "
        "and runs up by the protocol width: 50 Hz on FT8, 90 Hz on FT4, 125 Hz on FT2. Super Hound "
@@ -1280,6 +1309,8 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+  if (txTune_)
+    stopTune(false);
   stopUserTx(false);
   offerLayoutSave();
   QMainWindow::closeEvent(event);
@@ -1670,17 +1701,231 @@ void MainWindow::alignDecodeHeader() {
 
 namespace {
 
-bool periodBoundary(const QString& mode) {
-  const QTime now = QDateTime::currentDateTimeUtc().time();
-  const int ms = ((now.hour() * 60 + now.minute()) * 60 + now.second()) * 1000 + now.msec();
-  if (mode == QLatin1String("FT8"))
-    return (ms % 15000) < 80;
-  if (mode == QLatin1String("FT4"))
-    return (ms % 7500) < 80;
-  return true;
+bool isGrid(const QString& word) {
+  static const QRegularExpression grid(QStringLiteral("^[A-R]{2}[0-9]{2}$"),
+                                        QRegularExpression::CaseInsensitiveOption);
+  return grid.match(word).hasMatch();
+}
+
+bool isCall(const QString& word) {
+  if (isGrid(word))
+    return false;
+  if (word.compare(QLatin1String("CQ"), Qt::CaseInsensitive) == 0 ||
+      word.compare(QLatin1String("DX"), Qt::CaseInsensitive) == 0 ||
+      word.compare(QLatin1String("RR73"), Qt::CaseInsensitive) == 0 ||
+      word.compare(QLatin1String("RRR"), Qt::CaseInsensitive) == 0 ||
+      word.compare(QLatin1String("73"), Qt::CaseInsensitive) == 0)
+    return false;
+  static const QRegularExpression call(
+      QStringLiteral("^[A-Z0-9]{1,3}[0-9][A-Z0-9]{1,4}(?:/[A-Z0-9]{1,4})?$"),
+      QRegularExpression::CaseInsensitiveOption);
+  return call.match(word).hasMatch();
+}
+
+QString snrText(int db) {
+  if (db > 49)
+    db = 49;
+  if (db < -50)
+    db = -50;
+  if (db >= 0)
+    return QStringLiteral("+%1").arg(db, 2, 10, QLatin1Char('0'));
+  return QString::number(db);
+}
+
+QString replyFor(const QString& message, int db, const QString& mine, const QString& grid) {
+  const QStringList words = message.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+  if (words.isEmpty())
+    return {};
+  QString sender;
+  const bool cq = words.at(0).compare(QLatin1String("CQ"), Qt::CaseInsensitive) == 0;
+  QStringList calls;
+  for (const QString& word : words) {
+    if (isCall(word))
+      calls << word.toUpper();
+  }
+  if (cq) {
+    for (const QString& word : words) {
+      if (isCall(word)) {
+        sender = word.toUpper();
+        break;
+      }
+    }
+  } else if (calls.size() >= 2)
+    sender = calls.at(1);
+  else if (!calls.isEmpty())
+    sender = calls.at(0);
+  if (sender.isEmpty())
+    return {};
+
+  const QString me = mine.trimmed().toUpper();
+  bool toMe = false;
+  QString report;
+  bool roger = false;
+  bool rrr = false;
+  bool rr73 = false;
+  bool seventy = false;
+  for (const QString& word : words) {
+    if (!me.isEmpty() && word.compare(me, Qt::CaseInsensitive) == 0)
+      toMe = true;
+    if (word.compare(QLatin1String("RR73"), Qt::CaseInsensitive) == 0)
+      rr73 = true;
+    else if (word.compare(QLatin1String("RRR"), Qt::CaseInsensitive) == 0)
+      rrr = true;
+    else if (word.compare(QLatin1String("73"), Qt::CaseInsensitive) == 0)
+      seventy = true;
+    else if (word.size() > 1 && word.at(0).toUpper() == QLatin1Char('R') &&
+             (word.at(1) == QLatin1Char('+') || word.at(1) == QLatin1Char('-') || word.at(1).isDigit()))
+      roger = true;
+    else if (word.size() >= 2 && (word.at(0) == QLatin1Char('+') || word.at(0) == QLatin1Char('-')) &&
+             word.at(1).isDigit())
+      report = word;
+  }
+  if (me.isEmpty())
+    return sender;
+  QString tail;
+  if (!cq && toMe && (seventy || rr73 || rrr))
+    tail = QStringLiteral("73");
+  else if (!cq && toMe && roger)
+    tail = QStringLiteral("RRR");
+  else if (!cq && toMe && !report.isEmpty())
+    tail = QStringLiteral("R%1").arg(report);
+  else if (!cq && toMe)
+    tail = snrText(db);
+  else
+    tail = grid.trimmed().left(4).toUpper();
+  if (tail.isEmpty())
+    return QStringLiteral("%1 %2").arg(sender, me);
+  return QStringLiteral("%1 %2 %3").arg(sender, me, tail);
 }
 
 }  // namespace
+
+void MainWindow::setTxStatus(const QString& text) {
+  if (auto* label = findChild<QLabel*>(QStringLiteral("txStatus")))
+    label->setText(text);
+}
+
+QString MainWindow::transmitMessage() const {
+  auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("transmitText"));
+  if (!edit)
+    return {};
+  const QStringList lines = edit->toPlainText().split(QLatin1Char('\n'));
+  for (const QString& line : lines) {
+    const QString trimmed = line.trimmed();
+    if (!trimmed.isEmpty())
+      return trimmed;
+  }
+  return {};
+}
+
+bool MainWindow::periodReady(const QString& mode) {
+  int period = 0;
+  if (mode == QLatin1String("FT8"))
+    period = 15000;
+  else if (mode == QLatin1String("FT4"))
+    period = 7500;
+  else if (mode == QLatin1String("Hell"))
+    return true;
+  else
+    return false;
+  const QTime now = QDateTime::currentDateTimeUtc().time();
+  const int ms = ((now.hour() * 60 + now.minute()) * 60 + now.second()) * 1000 + now.msec();
+  const int into = ms % period;
+  const bool crossed = txPeriodMark_ >= 0 && into < txPeriodMark_;
+  txPeriodMark_ = into;
+  return crossed || into < 300;
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+  auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
+  if (!edit || watched != edit->viewport())
+    return QMainWindow::eventFilter(watched, event);
+  if (event->type() != QEvent::MouseButtonRelease && event->type() != QEvent::MouseButtonDblClick)
+    return QMainWindow::eventFilter(watched, event);
+  const auto* mouse = static_cast<const QMouseEvent*>(event);
+  if (mouse->button() != Qt::LeftButton)
+    return QMainWindow::eventFilter(watched, event);
+  const QTextCursor cursor = edit->cursorForPosition(mouse->position().toPoint());
+  loadReplyFromLine(cursor.blockNumber());
+  return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::loadReplyFromLine(int line) {
+  if (line < 0 || line >= shownDecodes_.size())
+    return;
+  const DecodeRow row = shownDecodes_.at(line);
+  QSettings settings;
+  const QString mine = settings.value(QStringLiteral("dx/reportCall")).toString();
+  const QString grid = settings.value(QStringLiteral("dx/reportGrid")).toString();
+  const QString reply = replyFor(row.message, row.db, mine, grid);
+  auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("transmitText"));
+  if (!edit || reply.isEmpty()) {
+    setTxStatus(QStringLiteral("That decode has no call to answer. Nothing was keyed."));
+    return;
+  }
+  edit->setPlainText(reply);
+  if (waterfall_ && row.freqHz > 0)
+    waterfall_->setTxHz(row.freqHz);
+  if (mine.trimmed().isEmpty())
+    setTxStatus(QStringLiteral(
+        "Loaded their call. Set your call under Options → Network configuration, then press TX. Nothing was keyed."));
+  else
+    setTxStatus(QStringLiteral("Loaded %1. Press TX to send it. Nothing was keyed.").arg(reply));
+}
+
+void MainWindow::setTune(bool on) {
+  if (!on) {
+    stopTune(false);
+    return;
+  }
+  auto* button = findChild<QPushButton*>(QStringLiteral("txTune"));
+  auto release = [button] {
+    if (!button)
+      return;
+    const QSignalBlocker block(button);
+    button->setChecked(false);
+    button->setText(QStringLiteral("Tune"));
+  };
+  if (qEnvironmentVariableIsSet("STD_SELFTEST") || !tci_ || !tci_->isOpen() || !txTimer_) {
+    release();
+    setTxStatus(QStringLiteral("Radio is not connected. Tune did not key. START was not sent."));
+    return;
+  }
+  stopUserTx(true);
+  txTuneHz_ = std::clamp(waterfall_ ? waterfall_->txHz() : 1500, 200, 3000);
+  txTunePhase_ = 0.0;
+  txHold_ = 2;
+  txTune_ = true;
+  if (!tci_->setTransmit(true)) {
+    txTune_ = false;
+    release();
+    setTxStatus(QStringLiteral("Radio is not connected. Tune did not key. START was not sent."));
+    return;
+  }
+  txKeySent_ = true;
+  if (button)
+    button->setText(QStringLiteral("TUNE ON"));
+  setTxStatus(QStringLiteral("Tune tone at %1 Hz. TRX is held until Tune is released. START was not sent.")
+                  .arg(txTuneHz_));
+  txTimer_->start(20);
+}
+
+void MainWindow::stopTune(bool uncheck) {
+  const bool keyed = txKeySent_;
+  txTune_ = false;
+  if (txTimer_)
+    txTimer_->stop();
+  if (keyed && tci_)
+    tci_->setTransmit(false);
+  txKeySent_ = false;
+  if (auto* button = findChild<QPushButton*>(QStringLiteral("txTune"))) {
+    if (uncheck) {
+      const QSignalBlocker block(button);
+      button->setChecked(false);
+    }
+    button->setText(QStringLiteral("Tune"));
+  }
+}
 
 void MainWindow::setUserTx(bool on) {
   if (!on) {
@@ -1695,36 +1940,79 @@ void MainWindow::setUserTx(bool on) {
     button->setChecked(false);
     button->setText(QStringLiteral("TX"));
   };
-  if (qEnvironmentVariableIsSet("STD_SELFTEST") || !tci_ || !tci_->isOpen() || !profile_ || !txTimer_) {
+  if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
     release();
     return;
   }
+  if (txTune_)
+    stopTune(true);
+  if (!tci_ || !tci_->isOpen() || !profile_ || !txTimer_) {
+    release();
+    setTxStatus(QStringLiteral("Radio is not connected. TX did not key. START was not sent."));
+    return;
+  }
   const QString mode = profile_->digitalMode();
-  auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("transmitText"));
-  const QString text = edit ? edit->toPlainText() : QString();
+  const QString text = transmitMessage();
+  if (text.isEmpty()) {
+    release();
+    setTxStatus(QStringLiteral(
+        "The box is empty. Click a decode to load a reply, or type one. Nothing was keyed."));
+    return;
+  }
   const int tone = waterfall_ ? waterfall_->txHz() : 1500;
   if (!buildTxWave(mode, text, tone, &txSamples_) || txSamples_.empty()) {
     release();
+    setTxStatus(QStringLiteral(
+        "%1 did not build a transmission. FT2, RTTY, and PSK31 do not key. START was not sent.")
+                    .arg(mode));
     return;
   }
   txCursor_ = 0;
   txHold_ = 0;
   txKeySent_ = false;
+  txPeriodMark_ = -1;
   if (button)
     button->setText(mode == QLatin1String("Hell") ? QStringLiteral("TX") : QStringLiteral("WAIT"));
+  if (mode == QLatin1String("Hell"))
+    setTxStatus(QStringLiteral("Sending Hell. TRX goes out with the audio. START was not sent."));
+  else
+    setTxStatus(QStringLiteral("Waiting for the next %1 slot. TRX has not been sent.").arg(mode));
   txTimer_->start(20);
 }
 
 void MainWindow::pumpUserTx() {
+  if (txTune_) {
+    if (!tci_ || !tci_->isTransmitting()) {
+      stopTune(true);
+      setTxStatus(QStringLiteral("Tune stopped. TRX is off. START was not sent."));
+      return;
+    }
+    if (txHold_ > 0) {
+      --txHold_;
+      return;
+    }
+    constexpr int kChunk = 2400;
+    std::vector<float> chunk(kChunk);
+    const double step = 2.0 * 3.141592653589793 * double(txTuneHz_) / 48000.0;
+    for (int i = 0; i < kChunk; ++i) {
+      chunk[static_cast<size_t>(i)] = float(0.7 * std::sin(txTunePhase_));
+      txTunePhase_ += step;
+      if (txTunePhase_ > 6.283185307179586)
+        txTunePhase_ -= 6.283185307179586;
+    }
+    tci_->pushTxAudio(chunk.data(), kChunk, 48000);
+    return;
+  }
   if (!tci_ || !profile_ || txSamples_.empty()) {
     stopUserTx(true);
     return;
   }
   const QString mode = profile_->digitalMode();
   if (!txKeySent_) {
-    if (!periodBoundary(mode))
+    if (!periodReady(mode))
       return;
     if (!tci_->setTransmit(true)) {
+      setTxStatus(QStringLiteral("Radio is not connected. TX did not key. START was not sent."));
       stopUserTx(true);
       return;
     }
@@ -1732,6 +2020,7 @@ void MainWindow::pumpUserTx() {
     txHold_ = 2;
     if (auto* button = findChild<QPushButton*>(QStringLiteral("txSend")))
       button->setText(QStringLiteral("ON AIR"));
+    setTxStatus(QStringLiteral("On the air. TRX is held until this transmission ends. START was not sent."));
     return;
   }
   if (txHold_ > 0) {
@@ -1740,6 +2029,7 @@ void MainWindow::pumpUserTx() {
   }
   constexpr int kChunk = 2400;
   if (txCursor_ >= int(txSamples_.size())) {
+    setTxStatus(QStringLiteral("That transmission ended. TRX is off. START was not sent."));
     stopUserTx(true);
     return;
   }
@@ -1749,6 +2039,8 @@ void MainWindow::pumpUserTx() {
 }
 
 void MainWindow::stopUserTx(bool uncheck) {
+  if (txTune_)
+    return;
   if (txTimer_)
     txTimer_->stop();
   if (txKeySent_ && tci_)
@@ -1757,6 +2049,7 @@ void MainWindow::stopUserTx(bool uncheck) {
   txHold_ = 0;
   txSamples_.clear();
   txCursor_ = 0;
+  txPeriodMark_ = -1;
   if (auto* button = findChild<QPushButton*>(QStringLiteral("txSend"))) {
     if (uncheck) {
       const QSignalBlocker block(button);

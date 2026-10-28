@@ -31,7 +31,8 @@ GenerateFn generator(const char* name) {
   const QString path = QCoreApplication::applicationDirPath() + QStringLiteral("/ft8dec.dll");
   HMODULE module = GetModuleHandleW(reinterpret_cast<const wchar_t*>(path.utf16()));
   if (!module)
-    module = LoadLibraryW(reinterpret_cast<const wchar_t*>(path.utf16()));
+    module = LoadLibraryExW(reinterpret_cast<const wchar_t*>(path.utf16()), nullptr,
+                            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
   if (!module)
     return nullptr;
   return reinterpret_cast<GenerateFn>(GetProcAddress(module, name));
