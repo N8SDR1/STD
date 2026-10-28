@@ -351,6 +351,12 @@ void TciClient::onBinary(const QByteArray& frame) {
   emit rxAudio(sampleRate_, mono);
 }
 
+void TciClient::setTxGain(float linear) {
+  if (!(linear > 0.0f))
+    linear = 1.0f;
+  txGain_ = linear;
+}
+
 void TciClient::sendTxAudio(const float* samples, int count) {
   if (!socket_ || !open_ || count <= 0 || !samples)
     return;
@@ -363,8 +369,9 @@ void TciClient::sendTxAudio(const float* samples, int count) {
          << quint32(count) << kTxAudio << quint32(1);
   for (int i = 0; i < 8; ++i)
     stream << quint32(0);
+  const float gain = txGain_;
   for (int i = 0; i < count; ++i)
-    stream << samples[i];
+    stream << samples[i] * gain;
   if (frame.size() != kHeaderBytes + count * kSampleBytes)
     return;
   socket_->sendBinaryMessage(frame);

@@ -143,6 +143,14 @@ int shellReady(const MainWindow& window) {
   const auto* rxMeter = window.findChild<QWidget*>("rxLevelMeter");
   if (!rxLevel || rxLevel->text() != QString::fromUtf8("—") || !rxMeter)
     return fail("RX level meter is missing");
+  const auto* rxGain = window.findChild<QSpinBox*>("rxGain");
+  const auto* txGain = window.findChild<QSpinBox*>("txGain");
+  if (!rxGain || !txGain || rxGain->minimum() > -20 || rxGain->maximum() < 40 ||
+      txGain->minimum() > -20 || txGain->maximum() < 40)
+    return fail("RX or TX gain is missing");
+  if (!rxGain->toolTip().contains(QLatin1String("does not key")) ||
+      !txGain->toolTip().contains(QLatin1String("does not key")))
+    return fail("a gain control can key");
 
   if (!window.findChild<QWidget*>("radioConnect"))
     return fail("connect control is missing");

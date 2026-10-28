@@ -15,6 +15,8 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QSettings>
+#include <QSpinBox>
 #include <QTimer>
 
 namespace {
@@ -134,6 +136,26 @@ protected:
   }
 };
 
+QSpinBox* gainSpin(QWidget* parent, const char* name, const QString& prefix, const char* key,
+                   const QString& tip) {
+  QSettings settings;
+  const int saved = std::clamp(settings.value(QLatin1String(key), 0).toInt(), -20, 40);
+  auto* spin = new QSpinBox(parent);
+  spin->setObjectName(QLatin1String(name));
+  spin->setRange(-20, 40);
+  spin->setSingleStep(1);
+  spin->setPrefix(prefix);
+  spin->setSuffix(QStringLiteral(" dB"));
+  spin->setValue(saved);
+  spin->setFixedSize(96, 22);
+  spin->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+  spin->setButtonSymbols(QAbstractSpinBox::PlusMinus);
+  spin->setFont(monoFont(11));
+  spin->setToolTip(tip);
+  spin->setFocusPolicy(Qt::ClickFocus);
+  return spin;
+}
+
 QFrame* separator() {
   auto* line = new QFrame;
   line->setObjectName("statusSep");
@@ -165,6 +187,11 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
   layout->addWidget(separator());
   layout->addWidget(readout("RX", "rxLevel", QString::fromUtf8("—")));
   layout->addWidget(new RxLevelMeter(this));
+  layout->addWidget(gainSpin(this, "rxGain", QStringLiteral("RX "), "audio/rxGainDb",
+                              QStringLiteral("Local receive gain for the waterfall and the decoder. "
+                                             "It does not change the radio and it does not key.")));
+  layout->addWidget(gainSpin(this, "txGain", QStringLiteral("TX "), "audio/txGainDb",
+                              QStringLiteral("Local transmit gain. This build does not transmit and does not key.")));
   layout->addWidget(separator());
   layout->addWidget(new PttLamp(this));
   auto* levelTick = new QTimer(this);

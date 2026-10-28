@@ -31,6 +31,9 @@ public:
   // Kept off. TRX true would key, and TRX false would unkey.
   void setTransmit(bool on);
 
+  // Local multiplier for a future TX audio frame. Does not send a command.
+  void setTxGain(float linear);
+
   // FT8 dial on receiver 0, VFO A. No-op unless the socket is open.
   // Does not send START and does not key.
   void setDialHz(qint64 hz);
@@ -71,6 +74,7 @@ private:
   bool userClose_ = false;
   bool transmit_ = false;
   bool audioStarted_ = false;
+  float txGain_ = 1.0f;
 };
 
 void openTciConnectDialog(QWidget* parent, TciClient* client);

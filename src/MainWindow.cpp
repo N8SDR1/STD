@@ -10,6 +10,8 @@
 #include "WaterfallWidget.h"
 
 #include <algorithm>
+#include <cmath>
+#include <vector>
 
 #include <QAction>
 #include <QActionGroup>
@@ -258,17 +260,43 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     if (statusStrip_)
       statusStrip_->setPtt(on, tci_->isOpen());
   });
+  auto rememberGain = [this](const char* name, const char* key, bool transmit) {
+    auto* spin = statusStrip_ ? statusStrip_->findChild<QSpinBox*>(QLatin1String(name)) : nullptr;
+    if (!spin)
+      return;
+    auto apply = [this, key, transmit](int db) {
+      const float linear = std::pow(10.0f, db / 20.0f);
+      if (transmit) {
+        if (tci_)
+          tci_->setTxGain(linear);
+      } else {
+        rxGain_ = linear;
+      }
+      QSettings settings;
+      settings.setValue(QLatin1String(key), db);
+    };
+    connect(spin, qOverload<int>(&QSpinBox::valueChanged), this, apply);
+    apply(spin->value());
+  };
+  rememberGain("rxGain", "audio/rxGainDb", false);
+  rememberGain("txGain", "audio/txGainDb", true);
+
   connect(tci_, &TciClient::rxAudio, this, [this](int rate, const QByteArray& mono) {
     if (mono.size() < int(sizeof(float)))
       return;
     const auto* samples = reinterpret_cast<const float*>(mono.constData());
     const int count = mono.size() / int(sizeof(float));
+    rxScaled_.resize(static_cast<size_t>(count));
+    const float gain = rxGain_;
+    for (int i = 0; i < count; ++i)
+      rxScaled_[static_cast<size_t>(i)] = samples[i] * gain;
+    const float* gained = rxScaled_.data();
     if (waterfall_)
-      waterfall_->pushRealAudio(samples, count, rate);
+      waterfall_->pushRealAudio(gained, count, rate);
     if (statusStrip_)
-      statusStrip_->setRxLevel(samples, count);
+      statusStrip_->setRxLevel(gained, count);
     if (ft8_)
-      ft8_->pushAudio(samples, count, rate);
+      ft8_->pushAudio(gained, count, rate);
   });
 
   ft8_ = new Ft8Decode(this);
@@ -838,6 +866,10 @@ void MainWindow::showGuide() {
        "The dock arrangement is saved for the selected mode. FT8 can keep Receive and Transmit side "
        "by side, and that arrangement comes back the next time FT8 is opened. View → Reset layout "
        "stacks the current mode again."},
+      {"Gain",
+       "RX and TX on the status strip are local gains, from -20 dB to +40 dB. RX gain is applied to "
+       "the waterfall and the FT8 decoder so the peak can be brought toward -1 to 0 dB. TX gain is "
+       "kept for a later transmit path. Neither value is sent to the radio, and neither keys."},
   };
 
   QString html;

@@ -8,6 +8,8 @@
 #include <QString>
 #include <QVector>
 
+#include <vector>
+
 class QCloseEvent;
 
 class Ft8Decode;
@@ -86,6 +88,8 @@ private:
   bool clearEachPeriod_ = false;
   int maxSignals_ = 0;
   QString lastPeriod_;
+  float rxGain_ = 1.0f;
+  std::vector<float> rxScaled_;
   QString layoutMode_ = QStringLiteral("FT8");
   bool layoutReady_ = false;
   bool layoutGuard_ = false;
