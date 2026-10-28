@@ -33,7 +33,7 @@ constexpr int kRingBits = 22;
 constexpr int kRingSize = 1 << kRingBits;
 constexpr int kRulerHeight = 32;
 constexpr int kToneBarHeight = 40;
-constexpr int kMaxDisplayFft = 8192;
+constexpr int kMaxDisplayFft = 131072;
 constexpr float kMinSpanFloor = 40.0f;
 constexpr QRgb kField = qRgb(0, 2, 12);
 
@@ -253,6 +253,7 @@ void WaterfallWidget::clearAudio() {
   rowCount_ = 0;
   rateHz_ = 0;
   dragging_ = false;
+  clearTxHot();
   if (rebuildTimer_)
     rebuildTimer_->stop();
   resetView();
@@ -446,13 +447,85 @@ void WaterfallWidget::setTraceSpeed(int speed) {
 void WaterfallWidget::setChannelWidth(int rxHz, int txHz) {
   rxWidthHz_ = std::clamp(rxHz, 6, 4000);
   txWidthHz_ = std::clamp(txHz, 6, 4000);
+  clearTxHot();
   update();
+}
+
+void WaterfallWidget::clearTxHot() {
+  txHotStreak_ = 0;
+  txCoolStreak_ = 0;
+  if (!txHot_)
+    return;
+  txHot_ = false;
+  emit txHotChanged(false);
+}
+
+void WaterfallWidget::noteTxSpill(bool spilling) {
+  if (spilling) {
+    txCoolStreak_ = 0;
+    if (txHotStreak_ < 8)
+      ++txHotStreak_;
+    if (!txHot_ && txHotStreak_ >= 6) {
+      txHot_ = true;
+      emit txHotChanged(true);
+    }
+    return;
+  }
+  txHotStreak_ = 0;
+  if (txCoolStreak_ < 16)
+    ++txCoolStreak_;
+  if (txHot_ && txCoolStreak_ >= 10) {
+    txHot_ = false;
+    emit txHotChanged(false);
+  }
+}
+
+bool WaterfallWidget::txSpectrumSpills(double df, int nfft, float noiseDb) const {
+  if (df <= 0.0 || nfft < 16 || txWidthHz_ < 6 || rateHz_ <= 0)
+    return false;
+  const double nyquist = 0.5 * double(rateHz_);
+  const double lo = double(txHz_);
+  const double hi = lo + double(txWidthHz_);
+  if (hi <= 0.0 || lo >= nyquist)
+    return false;
+
+  const auto peak = [&](double a, double b) {
+    float best = -200.0f;
+    if (b <= a)
+      return best;
+    const int first = std::max(1, int(std::floor(a / df)));
+    const int last = std::min(nfft / 2 - 1, int(std::ceil(b / df)));
+    for (int bin = first; bin <= last; ++bin) {
+      const double freq = double(bin) * df;
+      if (freq < a || freq >= b)
+        continue;
+      const float re = fftRe_[bin];
+      const float im = fftIm_[bin];
+      const float mag = std::sqrt(re * re + im * im) / float(nfft);
+      const float db = 20.0f * std::log10(mag + 1.0e-12f);
+      if (db > best)
+        best = db;
+    }
+    return best;
+  };
+
+  const float inside = peak(std::max(0.0, lo), std::min(hi, nyquist));
+  if (inside < noiseDb + 18.0f)
+    return false;
+  const double skirt = std::max(12.0, df * 2.0);
+  const float left = lo > skirt ? peak(lo - skirt, lo) : -200.0f;
+  const float right = hi < nyquist ? peak(hi, std::min(nyquist, hi + skirt)) : -200.0f;
+  const float outside = std::max(left, right);
+  if (outside < noiseDb + 12.0f)
+    return false;
+  return outside + 12.0f >= inside;
 }
 
 void WaterfallWidget::setRxHz(int hz) {
   rxHz_ = clampTone(hz);
   if (locked_)
     txHz_ = rxHz_;
+  clearTxHot();
   rememberFrequencies();
   emit frequenciesChanged(rxHz_, txHz_);
   update();
@@ -490,6 +563,7 @@ void WaterfallWidget::applyFrequencyClick(int x, Qt::KeyboardModifiers mods) {
   } else {
     rxHz_ = hz;
   }
+  clearTxHot();
   rememberFrequencies();
   update();
   emit frequenciesChanged(rxHz_, txHz_);
@@ -583,7 +657,12 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
 
   const double span = std::max(1.0, double(viewHiHz_ - viewLoHz_));
   const double pixelHz = span / double(width);
-  const int nfft = kMaxDisplayFft;
+  int nfft = 8192;
+  const int need = pixelHz > 0.0 ? int(std::ceil(double(rateHz_) / pixelHz)) : nfft;
+  while (nfft < need && nfft < kMaxDisplayFft)
+    nfft <<= 1;
+  while (nfft > 2048 && endSample < nfft)
+    nfft >>= 1;
   if (endSample < nfft)
     return;
 
@@ -620,6 +699,18 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
     if (value > db[column])
       db[column] = value;
   }
+  int left = -1;
+  for (int c = 0; c < width; ++c) {
+    if (db[c] <= -159.0f)
+      continue;
+    if (left >= 0 && c - left > 1 && c - left <= 3) {
+      for (int i = left + 1; i < c; ++i) {
+        const float t = float(i - left) / float(c - left);
+        db[i] = db[left] + (db[c] - db[left]) * t;
+      }
+    }
+    left = c;
+  }
   float noise = -80.0f;
   if (!heard.isEmpty()) {
     const int rank = std::clamp(int(heard.size() * 40 / 100), 0, int(heard.size()) - 1);
@@ -628,6 +719,7 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
   }
   for (int c = 0; c < width; ++c)
     row->level[c] = db[c] - noise;
+  noteTxSpill(txSpectrumSpills(df, nfft, noise));
 }
 
 void WaterfallWidget::buildToneBar() {
@@ -709,6 +801,7 @@ void WaterfallWidget::buildToneBar() {
     if (locked_)
       txHz_ = rxHz_;
     lock->setText(on ? QStringLiteral("Unlock") : QStringLiteral("Lock"));
+    clearTxHot();
     rememberFrequencies();
     update();
     emit frequenciesChanged(rxHz_, txHz_);
@@ -720,6 +813,7 @@ void WaterfallWidget::buildToneBar() {
   equal->setToolTip(QStringLiteral("Set TX to the RX frequency. This does not key."));
   connect(equal, &QPushButton::clicked, this, [this] {
     txHz_ = rxHz_;
+    clearTxHot();
     rememberFrequencies();
     update();
     emit frequenciesChanged(rxHz_, txHz_);
@@ -1046,6 +1140,7 @@ void WaterfallWidget::paintAudio(QPainter& painter) const {
   }
   painter.drawImage(plot.topLeft(), frame);
   paintMarkers(painter);
+  paintTxHot(painter);
   paintRuler(painter);
   painter.fillRect(QRect(8, plot.top() + 4, 248, 18), QColor(0, 2, 12, 210));
   paintDial(painter, plot.top() + 5);
@@ -1089,6 +1184,22 @@ void WaterfallWidget::paintMarkers(QPainter& painter) const {
   const bool stack = std::abs(rxHz_ - txHz_) < rxWidthHz_ + txWidthHz_;
   draw(rxHz_, rxWidthHz_, QColor(0, 240, 0), QStringLiteral("RX"), labelY);
   draw(txHz_, txWidthHz_, QColor(250, 60, 60), QStringLiteral("TX"), stack ? labelY + 18 : labelY);
+}
+
+void WaterfallWidget::paintTxHot(QPainter& painter) const {
+  if (!txHot_)
+    return;
+  const QRect plot = plotRect();
+  const QString notice = QStringLiteral("TX gain is too hot");
+  QFont face("Inter");
+  face.setPixelSize(13);
+  face.setBold(true);
+  painter.setFont(face);
+  const int textWidth = painter.fontMetrics().horizontalAdvance(notice) + 16;
+  const QRect box(plot.right() - textWidth - 8, plot.top() + 6, textWidth, 22);
+  painter.fillRect(box, QColor("#e08a3d"));
+  painter.setPen(QColor("#2a1404"));
+  painter.drawText(box, Qt::AlignCenter, notice);
 }
 
 void WaterfallWidget::wheelEvent(QWheelEvent* event) {

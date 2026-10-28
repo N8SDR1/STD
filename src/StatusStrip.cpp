@@ -236,6 +236,13 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
                                              "It does not change the radio and it does not key.")));
   layout->addWidget(gainSpin(this, "txGain", QStringLiteral("TX "), "audio/txGainDb",
                               QStringLiteral("Local transmit gain. This build does not transmit and does not key.")));
+  auto* txHot = new QLabel(QStringLiteral("TX gain is too hot"), this);
+  txHot->setObjectName(QStringLiteral("txGainHot"));
+  txHot->setFont(monoFont(12));
+  txHot->setToolTip(QStringLiteral(
+      "The TX spectrum is wider than the red protocol channel. The gain is not changed. This does not key."));
+  txHot->hide();
+  layout->addWidget(txHot);
   layout->addWidget(separator());
   layout->addWidget(new PttLamp(this));
   auto* levelTick = new QTimer(this);
@@ -352,6 +359,11 @@ void StatusStrip::refreshRxLevel() {
   label->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(color)));
   label->setToolTip(QStringLiteral("Averaged receive level. Green is about -1 to 0 dB. This does not key."));
   meter->update();
+}
+
+void StatusStrip::setTxHot(bool hot) {
+  if (QLabel* label = labeled(this, "txGainHot"))
+    label->setVisible(hot);
 }
 
 void StatusStrip::setRadio(bool connected, const QString& line) {

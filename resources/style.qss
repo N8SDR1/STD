@@ -204,6 +204,13 @@ QLabel#radioState, QLabel#radioDot {
   color: #e08a3d;
 }
 
+QLabel#txGainHot {
+  color: #2a1404;
+  background: #e08a3d;
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+
 QFrame#statusSep {
   background: #274150;
   max-width: 1px;

@@ -20,9 +20,10 @@ class QWindow;
 // Time runs downward, one pixel per spectrum. Frequency runs across the
 // top. The outer span is the receive band reported by TCI
 // (rx_filter_band). The wheel, a drag, and the mode window can narrow
-// inside that span and cannot cross its edges. Each pixel of the
-// visible span is its own FFT bin. Contrast, brightness, and a palette
-// menu sit on the bottom of this widget and recolor the trace only. A
+// inside that span and cannot cross its edges. The FFT grows until each
+// pixel has its own bin, and a bin is not painted across a run of pixels.
+// Contrast, brightness, speed, start, bandwidth, ticks, and palette sit
+// on the top of this widget and recolor the trace only. A
 // later renderer
 // can pass a QWindow
 // — including a QVulkanWindow — to setRenderSurface(). Vulkan is not
@@ -71,6 +72,9 @@ public:
 signals:
   void frequenciesChanged(int rxHz, int txHz);
   void toneChanged(int contrast, int brightness);
+  // True while energy sits outside the red protocol-width channel.
+  // Display only. This does not change the gain and it does not key.
+  void txHotChanged(bool hot);
 
 protected:
   void paintEvent(QPaintEvent* event) override;
@@ -97,6 +101,10 @@ private:
   void paintDial(QPainter& painter, int y) const;
   void pushTrace(qint64 endSample);
   void analyze(qint64 endSample, TraceRow* row);
+  bool txSpectrumSpills(double df, int nfft, float noiseDb) const;
+  void noteTxSpill(bool spilling);
+  void clearTxHot();
+  void paintTxHot(QPainter& painter) const;
   void scheduleRebuild();
   void rebuildSome();
   void buildToneBar();
@@ -159,4 +167,7 @@ private:
   int rxWidthHz_ = 50;
   int txWidthHz_ = 50;
   bool locked_ = false;
+  bool txHot_ = false;
+  int txHotStreak_ = 0;
+  int txCoolStreak_ = 0;
 };

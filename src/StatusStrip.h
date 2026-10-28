@@ -17,6 +17,8 @@ public:
   void setDial(const QString& text);
   void setPtt(bool onAir, bool connected);
   void setRadio(bool connected, const QString& line);
+  // Shows "TX gain is too hot" beside the TX gain. Does not change it and does not key.
+  void setTxHot(bool hot);
   // samples are float -1..1. A null pointer clears the meter.
   void setRxLevel(const float* samples, int count);
 

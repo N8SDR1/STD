@@ -304,6 +304,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(profile_, &ModeProfile::displayChanged, waterfall_, &WaterfallWidget::setFrequencyWindow);
     connect(profile_, &ModeProfile::speedChanged, waterfall_, &WaterfallWidget::setTraceSpeed);
     connect(waterfall_, &WaterfallWidget::toneChanged, this, [this] { rememberModeTone(); });
+    connect(waterfall_, &WaterfallWidget::txHotChanged, this, [this](bool hot) {
+      if (statusStrip_)
+        statusStrip_->setTxHot(hot);
+    });
     applyModeTone();
     connect(profile_, &ModeProfile::tuneRequested, this,
             [this](qint64 hz, const QString&) {
@@ -514,8 +518,8 @@ void MainWindow::buildDocks() {
   auto* columnLayout = new QVBoxLayout(column);
   columnLayout->setContentsMargins(0, 0, 0, 0);
   columnLayout->setSpacing(0);
-  columnLayout->addWidget(profile_);
   columnLayout->addWidget(waterfall_, 1);
+  columnLayout->addWidget(profile_);
   if (auto* tone = waterfall_->findChild<QWidget*>(QStringLiteral("waterfallTone"))) {
     if (auto* row = qobject_cast<QHBoxLayout*>(tone->layout())) {
       auto* lock = waterfall_->findChild<QPushButton*>(QStringLiteral("freqLock"));
@@ -1132,9 +1136,10 @@ void MainWindow::showGuide() {
       {"RX and TX markers",
        "A green band is the RX channel and a red band is the TX channel. Each starts at the marker "
        "and runs up by the protocol width: 50 Hz on FT8, 90 Hz on FT4, 125 Hz on FT2. Super Hound "
-       "widens the green band to the fox waveform, and Super Fox widens the red band. Click the "
-       "waterfall to set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them together. "
-       "RX=TX copies RX onto TX. None of these key the radio."},
+       "widens the green band to the fox waveform, and Super Fox widens the red band. If the TX "
+       "spectrum runs outside that red band, STD says TX gain is too hot. The gain is not changed. "
+       "Click the waterfall to set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them "
+       "together. RX=TX copies RX onto TX. None of these key the radio."},
       {"Layout",
        "View → Save layout stores the dock arrangement for the mode that is selected. The next time "
        "that mode opens, including after a restart, those panels come back. Leaving a mode, or "
