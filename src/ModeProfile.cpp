@@ -35,20 +35,21 @@ QFont barFont() {
 // WSJT-X FrequencyList.cpp working frequencies. 40 m FT4 is
 // 7.0475 MHz (7047500 Hz) in every region, marked provisional.
 // 80 m FT4 is 3.575 MHz, and 3.568 MHz in Region 3. FT8 and FT4
-// send DIGU on every band. MSHV stays the decoder.
+// send DIGU on every band. FT2 dials are the MSHV table. MSHV stays the decoder.
 struct Ft8Band {
   const char* label;
   qint64 ft8Hz;
   qint64 ft4Hz;
   qint64 ft4Region3Hz;
+  qint64 ft2Hz;
 };
 
 constexpr Ft8Band kBands[] = {
-    {"1.8", 1840000, 1840000, 0},       {"3.5", 3573000, 3575000, 3568000},
-    {"7", 7074000, 7047500, 0},         {"10", 10136000, 10140000, 0},
-    {"14", 14074000, 14080000, 0},      {"18", 18100000, 18104000, 0},
-    {"21", 21074000, 21140000, 0},      {"24", 24915000, 24919000, 0},
-    {"28", 28074000, 28180000, 0},      {"50", 50313000, 50318000, 0},
+    {"1.8", 1840000, 1840000, 0, 1843000},    {"3.5", 3573000, 3575000, 3568000, 3578000},
+    {"7", 7074000, 7047500, 0, 7052000},      {"10", 10136000, 10140000, 0, 10144000},
+    {"14", 14074000, 14080000, 0, 14084000},  {"18", 18100000, 18104000, 0, 18108000},
+    {"21", 21074000, 21140000, 0, 21144000},  {"24", 24915000, 24919000, 0, 24923000},
+    {"28", 28074000, 28180000, 0, 28184000},  {"50", 50313000, 50318000, 0, 50320000},
 };
 
 constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
@@ -333,7 +334,11 @@ void ModeProfile::setMshvFamily(bool mshv) {
 }
 
 void ModeProfile::setDigitalMode(const QString& mode) {
-  const QString next = (mode == QLatin1String("FT4")) ? QStringLiteral("FT4") : QStringLiteral("FT8");
+  QString next = QStringLiteral("FT8");
+  if (mode == QLatin1String("FT4"))
+    next = QStringLiteral("FT4");
+  else if (mode == QLatin1String("FT2"))
+    next = QStringLiteral("FT2");
   const bool same = next == mode_;
   mode_ = next;
   if (same)
@@ -444,6 +449,8 @@ bool ModeProfile::autoDecode() const {
 
 qint64 ModeProfile::tableHz(int index) const {
   const Ft8Band& band = kBands[index];
+  if (mode_ == QLatin1String("FT2"))
+    return band.ft2Hz;
   if (mode_ == QLatin1String("FT4")) {
     if (effectiveRegion() == 3 && band.ft4Region3Hz > 0)
       return band.ft4Region3Hz;

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <QByteArray>
 #include <QIcon>
 #include <QMainWindow>
 #include <QString>
@@ -45,6 +46,8 @@ private:
   void tuneActiveBand();
   void activateDigitalMode(const QString& modeName);
   void cycleDigitalMode();
+  void offerLayoutSave();
+  void captureLayoutBaseline();
   void openRadioDialog();
   void syncConnectOptions();
   void maybeAutoConnect();
@@ -93,6 +96,7 @@ private:
   float rxGain_ = 1.0f;
   std::vector<float> rxScaled_;
   QString layoutMode_ = QStringLiteral("FT8");
+  QByteArray layoutBaseline_;
   bool layoutReady_ = false;
   bool layoutGuard_ = false;
   QVector<DecodeRow> decodes_;

@@ -751,16 +751,20 @@ void MainWindow::buildMenus() {
   modes->setExclusionPolicy(QActionGroup::ExclusionPolicy::None);
   const struct {
     const char* label;
+    const char* objectName;
     bool mshv;
     bool checked;
-  } modeRows[] = {{"FT8", true, true}, {"FT4", true, false}, {"RTTY", false, false},
-                  {"PSK31", false, false}};
+  } modeRows[] = {{"FT8", "modeFt8", true, true},
+                  {"FT4", "modeFt4", true, false},
+                  {"FT2", "modeFt2", true, false},
+                  {"RTTY", nullptr, false, false},
+                  {"PSK31", nullptr, false, false}};
   for (const auto& row : modeRows) {
     auto* action = modeMenu->addAction(row.label);
     action->setCheckable(true);
     action->setChecked(row.checked);
-    if (row.mshv)
-      action->setObjectName(row.checked ? QStringLiteral("modeFt8") : QStringLiteral("modeFt4"));
+    if (row.objectName)
+      action->setObjectName(QString::fromLatin1(row.objectName));
     modes->addAction(action);
     const QString modeName = QString::fromLatin1(row.label);
     connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
@@ -801,6 +805,7 @@ void MainWindow::buildMenus() {
     arrangeDefault();
     resizeToHero();
     layoutGuard_ = false;
+    captureLayoutBaseline();
   });
 
   auto* helpMenu = menuBar()->addMenu("Help");
@@ -823,9 +828,10 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
       action->setChecked(on);
     }
   }
-  const bool mshv = modeName == QLatin1String("FT8") || modeName == QLatin1String("FT4");
+  const bool mshv = modeName == QLatin1String("FT8") || modeName == QLatin1String("FT4") ||
+                    modeName == QLatin1String("FT2");
   if (modeName != layoutMode_) {
-    saveModeLayout();
+    offerLayoutSave();
     layoutMode_ = modeName;
     if (!restoreModeLayout()) {
       layoutGuard_ = true;
@@ -833,6 +839,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
       resizeToHero();
       layoutGuard_ = false;
     }
+    captureLayoutBaseline();
   }
   if (profile_) {
     if (mshv)
@@ -891,10 +898,10 @@ void MainWindow::showGuide() {
        "Palette on that same bar lists Classic, Inferno, Viridis, Plasma, Rainbow, Ocean, Night, "
        "Grayscale, and Amber."},
       {"Mode profile",
-       "Mode → FT8 or FT4 shows Speed, Start, BW, Auto Dec, Region, and the band buttons. RTTY and PSK31 "
+       "Mode → FT8, FT4, or FT2 shows Speed, Start, BW, Auto Dec, Region, and the band buttons. RTTY and PSK31 "
        "hide that bar. Region Auto reads the callsign. N8SDR/VE uses VE, and the call is left as typed. "
        "Region 1, 2, or 3 overrides that. The dials are the WSJT-X list. 40 m FT4 is 7.0475 MHz in every "
-       "region. 80 m FT4 is 3.568 MHz in Region 3 and 3.575 MHz otherwise. Type a dial in Extra and press "
+       "region. 80 m FT4 is 3.568 MHz in Region 3 and 3.575 MHz otherwise. FT2 uses the MSHV dials. Type a dial in Extra and press "
        "Enter to insert it for this mode and band. Right-click Extra clears that list. Clicking the mode "
        "again, or the same band button, cycles the WSJT-X default and those extras. Choosing FT8, FT4, or a band "
        "button sends vfo:0,0,<Hz> and modulation:0,digu. "
@@ -995,13 +1002,30 @@ void MainWindow::showEvent(QShowEvent* event) {
       layoutReady_ = true;
       if (!restored)
         resizeToHero();
+      captureLayoutBaseline();
     });
   }
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-  saveModeLayout();
+  offerLayoutSave();
   QMainWindow::closeEvent(event);
+}
+
+void MainWindow::offerLayoutSave() {
+  if (layoutMode_.isEmpty() || !layoutReady_ || qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return;
+  if (saveState(1) == layoutBaseline_)
+    return;
+  const auto answer = QMessageBox::question(this, QStringLiteral("STD"),
+                                            QStringLiteral("Save layout for this mode?"),
+                                            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+  if (answer == QMessageBox::Yes)
+    saveModeLayout(true);
+}
+
+void MainWindow::captureLayoutBaseline() {
+  layoutBaseline_ = saveState(1);
 }
 
 void MainWindow::saveModeLayout(bool force) {
@@ -1013,6 +1037,7 @@ void MainWindow::saveModeLayout(bool force) {
   settings.setValue(QStringLiteral("layout/%1/state").arg(layoutMode_), saveState(1));
   settings.setValue(QStringLiteral("layout/%1/geometry").arg(layoutMode_), saveGeometry());
   settings.sync();
+  captureLayoutBaseline();
 }
 
 bool MainWindow::restoreModeLayout() {
