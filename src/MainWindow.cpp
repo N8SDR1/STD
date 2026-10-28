@@ -635,18 +635,30 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       auto* field = new QLineEdit(panel);
       field->setObjectName(name);
       field->setMaxLength(36);
-      field->setFont(monoFont(13));
+      field->setFont(monoFont(12));
       field->setClearButtonEnabled(true);
+      field->setMinimumWidth(0);
       field->setToolTip(QStringLiteral("TX text. Editing it does not key."));
       row->addWidget(pick);
       row->addWidget(field, 1);
-      layout->addLayout(row);
       return row;
     };
+    auto addPair = [&](QHBoxLayout* left, QHBoxLayout* right) {
+      auto* pair = new QHBoxLayout();
+      pair->setSpacing(8);
+      pair->addLayout(left, 1);
+      if (right)
+        pair->addLayout(right, 1);
+      else
+        pair->addStretch(1);
+      layout->addLayout(pair);
+    };
+    auto* heading = new QHBoxLayout();
+    heading->setSpacing(8);
     auto* standard = new QLabel(QStringLiteral("Standard"), panel);
     standard->setObjectName(QStringLiteral("txStandard"));
     standard->setFont(interfaceFont(12));
-    layout->addWidget(standard);
+    heading->addWidget(standard);
     auto* activity = new QComboBox(panel);
     activity->setObjectName(QStringLiteral("txActivity"));
     activity->setFont(interfaceFont(12));
@@ -684,7 +696,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       const QSignalBlocker block(activity);
       activity->setCurrentIndex(index < 0 ? 0 : index);
     }
-    layout->addWidget(activity);
+    heading->addWidget(activity, 1);
+    layout->addLayout(heading);
     auto* exchange = new QHBoxLayout();
     exchange->setSpacing(6);
     auto* fdExch = new QLineEdit(panel);
@@ -731,13 +744,14 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       refreshTxFields();
     });
 
+    QHBoxLayout* txRows[6] = {};
     for (int i = 1; i <= 6; ++i)
-      addLine(QStringLiteral("tx%1").arg(i), QStringLiteral("txPick%1").arg(i), QString::number(i));
-    auto* extraLabel = new QLabel(QStringLiteral("Extra"), panel);
-    extraLabel->setObjectName(QStringLiteral("txExtraLabel"));
-    extraLabel->setFont(interfaceFont(12));
-    layout->addWidget(extraLabel);
-    auto* extraRow = addLine(QStringLiteral("txExtra"), QStringLiteral("txPick7"), QString());
+      txRows[i - 1] =
+          addLine(QStringLiteral("tx%1").arg(i), QStringLiteral("txPick%1").arg(i), QString::number(i));
+    addPair(txRows[0], txRows[1]);
+    addPair(txRows[2], txRows[3]);
+    addPair(txRows[4], txRows[5]);
+    auto* extraRow = addLine(QStringLiteral("txExtra"), QStringLiteral("txPick7"), QStringLiteral("Extra"));
     auto* qrg = new QLineEdit(panel);
     qrg->setObjectName(QStringLiteral("txQrg"));
     qrg->setPlaceholderText(QStringLiteral("kHz"));
@@ -749,6 +763,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     txQrg_ = QSettings().value(QStringLiteral("dx/txQrg")).toString();
     qrg->setText(txQrg_);
     extraRow->addWidget(qrg);
+    addPair(extraRow, nullptr);
     connect(qrg, &QLineEdit::textChanged, this, [this](const QString& text) {
       txQrg_ = text.trimmed();
       QSettings().setValue(QStringLiteral("dx/txQrg"), txQrg_);
@@ -784,22 +799,18 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     auto* settingsLayout = new QVBoxLayout(settings);
     settingsLayout->setContentsMargins(4, 4, 4, 4);
     settingsLayout->setSpacing(4);
-    auto* limits = new QHBoxLayout();
-    limits->setSpacing(6);
-    auto* limitCol = new QVBoxLayout();
-    limitCol->setSpacing(2);
     auto* queueLimit = new QSpinBox(settings);
     queueLimit->setObjectName(QStringLiteral("txQueueLimit"));
     queueLimit->setFont(interfaceFont(12));
     queueLimit->setRange(0, 50);
-    queueLimit->setPrefix(QStringLiteral("Queue Limit:  "));
+    queueLimit->setPrefix(QStringLiteral("Queue "));
     queueLimit->setValue(std::clamp(QSettings().value(QStringLiteral("tx/queueLimit"), 5).toInt(), 0, 50));
     queueLimit->setToolTip(QStringLiteral("How many callers can wait. This does not key."));
     auto* slotCount = new QSpinBox(settings);
     slotCount->setObjectName(QStringLiteral("txSlots"));
     slotCount->setFont(interfaceFont(12));
     slotCount->setRange(1, 5);
-    slotCount->setPrefix(QStringLiteral("TX Slots:  "));
+    slotCount->setPrefix(QStringLiteral("Slots "));
     slotCount->setValue(std::clamp(QSettings().value(QStringLiteral("tx/txSlots"), 1).toInt(), 1, 5));
     slotCount->setToolTip(QStringLiteral(
         "How many answers can go out in one pass. Super Fox hides this. This does not key."));
@@ -810,8 +821,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     maxPeriods->setValue(std::clamp(QSettings().value(QStringLiteral("tx/maxPeriods"), 2).toInt(), 1, 30));
     {
       const bool asPeriods = QSettings().value(QStringLiteral("tx/maxIsPeriods"), true).toBool();
-      maxPeriods->setPrefix(asPeriods ? QStringLiteral("Max Periods:  ") : QStringLiteral("Max Time:  "));
-      maxPeriods->setSuffix(asPeriods ? QString() : QStringLiteral("  min"));
+      maxPeriods->setPrefix(asPeriods ? QStringLiteral("Periods ") : QStringLiteral("Time "));
+      maxPeriods->setSuffix(asPeriods ? QString() : QStringLiteral(" min"));
     }
     maxPeriods->setToolTip(QStringLiteral(
         "Double-click to switch Max Periods and Max Time. This does not key."));
@@ -820,11 +831,15 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       inner->setObjectName(QStringLiteral("txMaxPeriodsEdit"));
       inner->installEventFilter(this);
     }
-    limitCol->addWidget(queueLimit);
-    limitCol->addWidget(slotCount);
-    limitCol->addWidget(maxPeriods);
-    auto* optionCol = new QVBoxLayout();
-    optionCol->setSpacing(2);
+    queueLimit->setMinimumWidth(0);
+    slotCount->setMinimumWidth(0);
+    maxPeriods->setMinimumWidth(0);
+    auto* limitRow = new QHBoxLayout();
+    limitRow->setSpacing(6);
+    limitRow->addWidget(queueLimit, 1);
+    limitRow->addWidget(slotCount, 1);
+    limitRow->addWidget(maxPeriods, 1);
+    settingsLayout->addLayout(limitRow);
     auto* dupes = new QComboBox(settings);
     dupes->setObjectName(QStringLiteral("txDupes"));
     dupes->setFont(interfaceFont(12));
@@ -832,27 +847,23 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
                      QStringLiteral("3 QSOs")});
     dupes->setCurrentIndex(std::clamp(QSettings().value(QStringLiteral("tx/dupe"), 0).toInt(), 0, 3));
     dupes->setToolTip(QStringLiteral("Maximum QSOs per call. This does not key."));
-    auto* flagRow = new QHBoxLayout();
-    flagRow->setSpacing(8);
     auto* cns = new QCheckBox(QStringLiteral("CNS"), settings);
     cns->setObjectName(QStringLiteral("txCns"));
     cns->setFont(interfaceFont(12));
     cns->setChecked(QSettings().value(QStringLiteral("tx/cns"), false).toBool());
     cns->setToolTip(QStringLiteral("Continue non-stop. Checking it does not key."));
-    flagRow->addWidget(cns);
-    flagRow->addStretch(1);
     auto* sort = new QComboBox(settings);
     sort->setObjectName(QStringLiteral("txSort"));
     sort->setFont(interfaceFont(12));
     sort->addItems({QStringLiteral("Sort Off"), QStringLiteral("Distance"), QStringLiteral("S/N (dB)")});
     sort->setCurrentIndex(std::clamp(QSettings().value(QStringLiteral("tx/sort"), 0).toInt(), 0, 2));
     sort->setToolTip(QStringLiteral("Sort the queue. This does not key."));
-    optionCol->addWidget(dupes);
-    optionCol->addLayout(flagRow);
-    optionCol->addWidget(sort);
-    limits->addLayout(limitCol, 1);
-    limits->addLayout(optionCol, 1);
-    settingsLayout->addLayout(limits);
+    auto* optionRow = new QHBoxLayout();
+    optionRow->setSpacing(6);
+    optionRow->addWidget(dupes, 1);
+    optionRow->addWidget(cns);
+    optionRow->addWidget(sort, 1);
+    settingsLayout->addLayout(optionRow);
     auto* cqRow = new QHBoxLayout();
     cqRow->setSpacing(6);
     auto* cqType = new QComboBox(settings);
@@ -923,7 +934,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     tabs->addTab(nowPage, QStringLiteral("Now 0"));
     tabs->addTab(settings, QStringLiteral("Settings"));
     tabs->setCurrentIndex(2);
-    tabs->setMinimumHeight(168);
+    queuePage->setFixedHeight(52);
+    nowPage->setFixedHeight(52);
     layout->addWidget(tabs);
     connect(queueLimit, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
       QSettings().setValue(QStringLiteral("tx/queueLimit"), value);
@@ -1008,8 +1020,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     qso->setObjectName(QStringLiteral("txQso"));
     qso->setReadOnly(true);
     qso->setFont(monoFont(12));
-    qso->setMinimumHeight(64);
-    qso->setMaximumHeight(96);
+    qso->setMinimumHeight(36);
+    qso->setMaximumHeight(52);
     qso->setPlaceholderText(QStringLiteral("Sent TX and their reply."));
     qso->setToolTip(QStringLiteral("What you sent and what they sent back. This does not key."));
     layout->addWidget(qso);
@@ -2343,9 +2355,9 @@ void MainWindow::flipMaxPeriods() {
   auto* spin = findChild<QSpinBox*>(QStringLiteral("txMaxPeriods"));
   if (!spin)
     return;
-  const bool periods = !spin->prefix().startsWith(QLatin1String("Max Periods"));
-  spin->setPrefix(periods ? QStringLiteral("Max Periods:  ") : QStringLiteral("Max Time:  "));
-  spin->setSuffix(periods ? QString() : QStringLiteral("  min"));
+  const bool periods = !spin->prefix().startsWith(QLatin1String("Periods"));
+  spin->setPrefix(periods ? QStringLiteral("Periods ") : QStringLiteral("Time "));
+  spin->setSuffix(periods ? QString() : QStringLiteral(" min"));
   QSettings().setValue(QStringLiteral("tx/maxIsPeriods"), periods);
 }
 
