@@ -157,7 +157,7 @@ int shellReady(const MainWindow& window) {
       !txGain->toolTip().contains(QLatin1String("does not key")))
     return fail("a gain control can key");
 
-  if (!window.findChild<QWidget*>("radioConnect"))
+  if (!window.findChild<QAction*>("radioConnect"))
     return fail("connect control is missing");
 
   const auto* autoConnect = window.findChild<QAction*>("tciAutoConnect");

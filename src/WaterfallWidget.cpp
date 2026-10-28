@@ -201,14 +201,14 @@ QRgb samplePalette(const Palette& palette, float u) {
 }
 
 QRgb traceColor(float dbAboveNoise, int contrast, int brightness, int palette) {
-  const float threshold = 18.0f * (1.0f - float(brightness) / 100.0f);
-  const float span = 22.0f - 16.0f * (float(contrast) / 100.0f);
-  const float rise = (dbAboveNoise - threshold) / span;
+  const float threshold = 10.0f * (1.0f - float(brightness) / 100.0f);
+  const float span = 12.0f - 8.0f * (float(contrast) / 100.0f);
+  const float rise = (dbAboveNoise - threshold) / std::max(1.0f, span);
   if (!(rise > 0.0f))
     return kField;
-  const float u = rise > 1.0f ? 1.0f : rise;
+  const float shaped = std::pow(rise > 1.0f ? 1.0f : rise, 1.8f);
   const int index = std::clamp(palette, 0, kPaletteCount - 1);
-  return samplePalette(kPalettes[index], u);
+  return samplePalette(kPalettes[index], shaped);
 }
 
 }  // namespace
@@ -296,11 +296,12 @@ float WaterfallWidget::minSpanHz(int width) const {
 }
 
 QRect WaterfallWidget::rulerRect() const {
-  return QRect(0, 0, width(), kRulerHeight);
+  return QRect(0, kToneBarHeight, width(), kRulerHeight);
 }
 
 QRect WaterfallWidget::plotRect() const {
-  return QRect(0, kRulerHeight, width(), qMax(1, height() - kRulerHeight - kToneBarHeight));
+  const int top = kToneBarHeight + kRulerHeight;
+  return QRect(0, top, width(), qMax(1, height() - top));
 }
 
 float WaterfallWidget::hzAtX(int x) const {
@@ -442,6 +443,12 @@ void WaterfallWidget::setTraceSpeed(int speed) {
   traceSpeed_ = qBound(1, speed, 9);
 }
 
+void WaterfallWidget::setChannelWidth(int rxHz, int txHz) {
+  rxWidthHz_ = std::clamp(rxHz, 6, 4000);
+  txWidthHz_ = std::clamp(txHz, 6, 4000);
+  update();
+}
+
 void WaterfallWidget::setRxHz(int hz) {
   rxHz_ = clampTone(hz);
   if (locked_)
@@ -576,74 +583,49 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
 
   const double span = std::max(1.0, double(viewHiHz_ - viewLoHz_));
   const double pixelHz = span / double(width);
-  const int nfft = nextPow2(std::max(width, 64));
-  int groups = int(std::ceil(double(rateHz_) / (pixelHz * double(nfft))));
-  if (groups < 1)
-    groups = 1;
-  int aperture = groups * nfft;
-  if (aperture > kRingSize / 2) {
-    groups = std::max(1, (kRingSize / 2) / nfft);
-    aperture = groups * nfft;
-  }
-  // Samples before the stream started are gone. Keep this row dark for
-  // the current span so the rebuild timer does not spin on it.
-  if (endSample < aperture)
+  const int nfft = kMaxDisplayFft;
+  if (endSample < nfft)
     return;
 
   if (fftRe_.size() < nfft) {
     fftRe_.resize(nfft);
     fftIm_.resize(nfft);
   }
-  std::fill(fftRe_.begin(), fftRe_.begin() + nfft, 0.0f);
-  std::fill(fftIm_.begin(), fftIm_.begin() + nfft, 0.0f);
-
-  const double rotate = -6.283185307179586 * double(viewLoHz_) / double(rateHz_);
-  double cs = 1.0;
-  double sn = 0.0;
-  const double dcs = std::cos(rotate);
-  const double dsn = std::sin(rotate);
-  const qint64 start = endSample - aperture;
-  int n = 0;
+  const qint64 start = endSample - nfft;
   for (int i = 0; i < nfft; ++i) {
-    double accRe = 0.0;
-    double accIm = 0.0;
-    for (int g = 0; g < groups; ++g, ++n) {
-      const double hann = 0.5 - 0.5 * std::cos(6.283185307179586 * double(n) / double(aperture - 1));
-      const double x = double(sampleAt(start + n)) * hann;
-      accRe += x * cs;
-      accIm += x * sn;
-      const double nextCs = cs * dcs - sn * dsn;
-      sn = cs * dsn + sn * dcs;
-      cs = nextCs;
-      if ((n & 1023) == 0) {
-        const double gain = 1.0 / std::max(1.0e-12, std::hypot(cs, sn));
-        cs *= gain;
-        sn *= gain;
-      }
-    }
-    fftRe_[i] = float(accRe);
-    fftIm_[i] = float(accIm);
+    const double t = double(i) / double(nfft - 1);
+    const double window = 0.35875 - 0.48829 * std::cos(6.283185307179586 * t) +
+                          0.14128 * std::cos(12.566370614359172 * t) -
+                          0.01168 * std::cos(18.84955592153876 * t);
+    fftRe_[i] = float(double(sampleAt(start + i)) * window);
+    fftIm_[i] = 0.0f;
   }
   fft(fftRe_.data(), fftIm_.data(), nfft);
 
-  const double df = double(rateHz_) / (double(groups) * double(nfft));
+  const double df = double(rateHz_) / double(nfft);
   QVector<float> db(width, -160.0f);
-  int lastBin = -1;
-  for (int c = 0; c < width; ++c) {
-    const double freq = (double(c) + 0.5) * pixelHz;
-    int bin = int(std::lround(freq / df));
-    if (bin <= lastBin)
-      bin = lastBin + 1;
-    if (bin >= nfft)
-      bin = nfft - 1;
-    lastBin = bin;
-    const float mag = std::sqrt(fftRe_[bin] * fftRe_[bin] + fftIm_[bin] * fftIm_[bin]) / float(nfft);
-    db[c] = 20.0f * std::log10(mag + 1.0e-12f);
+  QVector<float> heard;
+  heard.reserve(nfft / 2);
+  for (int bin = 1; bin < nfft / 2; ++bin) {
+    const double freq = bin * df;
+    if (freq < viewLoHz_ || freq >= viewHiHz_)
+      continue;
+    const int column = int((freq - viewLoHz_) / pixelHz);
+    if (column < 0 || column >= width)
+      continue;
+    const float mag =
+        std::sqrt(fftRe_[bin] * fftRe_[bin] + fftIm_[bin] * fftIm_[bin]) / float(nfft);
+    const float value = 20.0f * std::log10(mag + 1.0e-12f);
+    heard.push_back(value);
+    if (value > db[column])
+      db[column] = value;
   }
-  const int rank = std::clamp(width * 40 / 100, 0, width - 1);
-  QVector<float> order = db;
-  std::nth_element(order.begin(), order.begin() + rank, order.end());
-  const float noise = order[rank];
+  float noise = -80.0f;
+  if (!heard.isEmpty()) {
+    const int rank = std::clamp(int(heard.size() * 40 / 100), 0, int(heard.size()) - 1);
+    std::nth_element(heard.begin(), heard.begin() + rank, heard.end());
+    noise = heard[rank];
+  }
   for (int c = 0; c < width; ++c)
     row->level[c] = db[c] - noise;
 }
@@ -851,7 +833,7 @@ void WaterfallWidget::setTone(int contrast, int brightness) {
 void WaterfallWidget::placeToneBar() {
   if (!toneBar_)
     return;
-  toneBar_->setGeometry(0, std::max(0, height() - kToneBarHeight), std::max(1, width()), kToneBarHeight);
+  toneBar_->setGeometry(0, 0, std::max(1, width()), kToneBarHeight);
   toneBar_->raise();
 }
 
@@ -896,7 +878,7 @@ void WaterfallWidget::setRenderSurface(QWindow* surface) {
 
   surfaceContainer_ = QWidget::createWindowContainer(surface, this);
   surfaceContainer_->setFocusPolicy(Qt::NoFocus);
-  surfaceContainer_->setGeometry(0, 0, width(), qMax(1, height() - kToneBarHeight));
+  surfaceContainer_->setGeometry(0, kToneBarHeight, width(), qMax(1, height() - kToneBarHeight));
   surfaceContainer_->show();
   placeToneBar();
 }
@@ -924,7 +906,7 @@ void WaterfallWidget::paintEvent(QPaintEvent* event) {
 void WaterfallWidget::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
   if (surfaceContainer_)
-    surfaceContainer_->setGeometry(0, 0, width(), qMax(1, height() - kToneBarHeight));
+    surfaceContainer_->setGeometry(0, kToneBarHeight, width(), qMax(1, height() - kToneBarHeight));
   placeToneBar();
   if (rowCount_ > 0)
     scheduleRebuild();
@@ -1073,34 +1055,40 @@ void WaterfallWidget::paintMarkers(QPainter& painter) const {
   const QRect plot = plotRect();
   if (plot.width() < 8)
     return;
-  const int xRx = xAtHz(float(rxHz_));
-  const int xTx = xAtHz(float(txHz_));
-  const bool rxIn = rxHz_ >= viewLoHz_ - 0.5f && rxHz_ <= viewHiHz_ + 0.5f;
-  const bool txIn = txHz_ >= viewLoHz_ - 0.5f && txHz_ <= viewHiHz_ + 0.5f;
   const int labelY = plot.top() + 26;
-  const bool stack = rxIn && txIn && std::abs(xRx - xTx) < 56;
 
-  auto draw = [&](int x, int hz, const QColor& color, const QString& name, int y) {
+  auto draw = [&](int hz, int widthHz, const QColor& color, const QString& name, int y) {
+    const float lo = float(hz);
+    const float hi = float(hz + std::max(1, widthHz));
+    if (hi < viewLoHz_ || lo > viewHiHz_)
+      return;
+    const int x0 = xAtHz(std::max(lo, viewLoHz_));
+    const int x1 = xAtHz(std::min(hi, viewHiHz_));
+    const int left = std::min(x0, x1);
+    const int right = std::max(x0, x1);
+    QColor fill = color;
+    fill.setAlpha(56);
+    painter.fillRect(QRect(left, plot.top(), std::max(2, right - left), plot.height()), fill);
     painter.setPen(QPen(color, 1));
-    painter.drawLine(x, plot.top(), x, plot.bottom());
+    painter.drawLine(xAtHz(lo), plot.top(), xAtHz(lo), plot.bottom());
+    painter.drawLine(xAtHz(hi), plot.top(), xAtHz(hi), plot.bottom());
     QFont mono("JetBrains Mono");
     mono.setStyleHint(QFont::Monospace);
     mono.setPixelSize(11);
     painter.setFont(mono);
     const QString label = QStringLiteral("%1 %2").arg(name).arg(hz);
-    const int width = painter.fontMetrics().horizontalAdvance(label) + 8;
-    int left = x + 4;
-    if (left + width > plot.right())
-      left = std::max(plot.left(), x - width - 2);
-    painter.fillRect(QRect(left, y, width, 16), QColor(0, 2, 12, 210));
+    const int textWidth = painter.fontMetrics().horizontalAdvance(label) + 8;
+    int textLeft = left + 4;
+    if (textLeft + textWidth > plot.right())
+      textLeft = std::max(plot.left(), left - textWidth - 2);
+    painter.fillRect(QRect(textLeft, y, textWidth, 16), QColor(0, 2, 12, 210));
     painter.setPen(color);
-    painter.drawText(left + 4, y + 12, label);
+    painter.drawText(textLeft + 4, y + 12, label);
   };
 
-  if (rxIn)
-    draw(xRx, rxHz_, QColor(0, 240, 0), QStringLiteral("RX"), labelY);
-  if (txIn)
-    draw(xTx, txHz_, QColor(250, 60, 60), QStringLiteral("TX"), stack ? labelY + 18 : labelY);
+  const bool stack = std::abs(rxHz_ - txHz_) < rxWidthHz_ + txWidthHz_;
+  draw(rxHz_, rxWidthHz_, QColor(0, 240, 0), QStringLiteral("RX"), labelY);
+  draw(txHz_, txWidthHz_, QColor(250, 60, 60), QStringLiteral("TX"), stack ? labelY + 18 : labelY);
 }
 
 void WaterfallWidget::wheelEvent(QWheelEvent* event) {

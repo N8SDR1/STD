@@ -42,6 +42,7 @@
 #include <QPixmap>
 #include <QProcess>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QTextBrowser>
 #include <QPushButton>
 #include <QSettings>
@@ -73,18 +74,125 @@ QFont monoFont(int pixelSize) {
   return font;
 }
 
-QString decodeColumns(const QString& time, const QString& db, const QString& dt,
-                      const QString& message, const QString& freq, bool showTime, bool showFreq) {
-  const QString msg = message.size() < 28 ? message.leftJustified(28) : message;
+bool gridCenter(const QString& token, double* lat, double* lon) {
+  const QString grid = token.toUpper();
+  if (grid.size() != 4 && grid.size() != 6)
+    return false;
+  if (grid.at(0) < QLatin1Char('A') || grid.at(0) > QLatin1Char('R'))
+    return false;
+  if (grid.at(1) < QLatin1Char('A') || grid.at(1) > QLatin1Char('R'))
+    return false;
+  if (!grid.at(2).isDigit() || !grid.at(3).isDigit())
+    return false;
+  if (grid.size() == 6 && (grid.at(4) < QLatin1Char('A') || grid.at(4) > QLatin1Char('X') ||
+                           grid.at(5) < QLatin1Char('A') || grid.at(5) > QLatin1Char('X')))
+    return false;
+  double lonv = (grid.at(0).unicode() - u'A') * 20.0 - 180.0;
+  double latv = (grid.at(1).unicode() - u'A') * 10.0 - 90.0;
+  lonv += (grid.at(2).unicode() - u'0') * 2.0;
+  latv += (grid.at(3).unicode() - u'0') * 1.0;
+  if (grid.size() == 6) {
+    lonv += (grid.at(4).unicode() - u'A') * (5.0 / 60.0);
+    latv += (grid.at(5).unicode() - u'A') * (2.5 / 60.0);
+    lonv += 2.5 / 60.0;
+    latv += 1.25 / 60.0;
+  } else {
+    lonv += 1.0;
+    latv += 0.5;
+  }
+  *lat = latv;
+  *lon = lonv;
+  return true;
+}
+
+QString gridInMessage(const QString& message) {
+  const QStringList tokens = message.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+  for (int i = tokens.size() - 1; i >= 0; --i) {
+    double lat = 0.0;
+    double lon = 0.0;
+    QString token = tokens.at(i);
+    token.remove(QRegularExpression(QStringLiteral("[^A-Za-z0-9]")));
+    if (gridCenter(token, &lat, &lon))
+      return token.toUpper();
+  }
+  return {};
+}
+
+double kilometers(double lat1, double lon1, double lat2, double lon2) {
+  constexpr double kRadius = 6371.0;
+  constexpr double kDeg = 0.017453292519943295;
+  const double dLat = (lat2 - lat1) * kDeg;
+  const double dLon = (lon2 - lon1) * kDeg;
+  const double a = std::sin(dLat / 2) * std::sin(dLat / 2) +
+                   std::cos(lat1 * kDeg) * std::cos(lat2 * kDeg) * std::sin(dLon / 2) * std::sin(dLon / 2);
+  return kRadius * 2 * std::atan2(std::sqrt(a), std::sqrt(std::max(0.0, 1.0 - a)));
+}
+
+int continentOf(const QString& call) {
+  const QString token = call.toUpper().section(QLatin1Char('/'), 0, 0);
+  const struct {
+    const char* prefix;
+    int continent;
+  } rows[] = {
+      {"KH6", 4}, {"KL", 5},  {"VE", 5},  {"VO", 5},  {"VY", 5},  {"XE", 5},  {"CM", 5},  {"CO", 5},
+      {"TG", 5},  {"TI", 5},  {"HP", 5},  {"HR", 5},  {"YN", 5},  {"YS", 5},  {"HI", 5},  {"HH", 5},
+      {"HK", 6},  {"HC", 6},  {"CP", 6},  {"PY", 6},  {"LU", 6},  {"CE", 6},  {"CX", 6},  {"ZP", 6},
+      {"OA", 6},  {"YV", 6},  {"VK", 4},  {"ZL", 4},  {"JA", 2},  {"BY", 2},  {"BV", 2},  {"HL", 2},
+      {"HS", 2},  {"VU", 2},  {"9M", 2},  {"YB", 2},  {"4X", 2},  {"HZ", 2},  {"TA", 2},  {"ZS", 0},
+      {"5Z", 0},  {"5N", 0},  {"CN", 0},  {"SU", 0},  {"G", 3},   {"M", 3},   {"EI", 3},  {"F", 3},
+      {"EA", 3},  {"CT", 3},  {"DL", 3},  {"PA", 3},  {"ON", 3},  {"HB", 3},  {"I", 3},   {"LA", 3},
+      {"SM", 3},  {"OH", 3},  {"OZ", 3},  {"SP", 3},  {"OK", 3},  {"HA", 3},  {"YO", 3},  {"LZ", 3},
+      {"SV", 3},  {"K", 5},   {"N", 5},   {"W", 5},   {"A", 5},
+  };
+  int best = -1;
+  int length = 0;
+  for (const auto& row : rows) {
+    const QString prefix = QString::fromLatin1(row.prefix);
+    if (token.startsWith(prefix) && prefix.size() > length) {
+      best = row.continent;
+      length = prefix.size();
+    }
+  }
+  return best;
+}
+
+QString otherCall(const QString& message, const QString& mine) {
+  const QStringList tokens = message.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+  for (const QString& token : tokens) {
+    if (token.compare(QLatin1String("CQ"), Qt::CaseInsensitive) == 0)
+      continue;
+    if (token.compare(QLatin1String("DE"), Qt::CaseInsensitive) == 0)
+      continue;
+    bool digit = false;
+    bool letter = false;
+    for (const QChar ch : token) {
+      digit = digit || ch.isDigit();
+      letter = letter || ch.isLetter();
+    }
+    if (!digit || !letter || token.size() < 3)
+      continue;
+    if (!mine.isEmpty() && token.compare(mine, Qt::CaseInsensitive) == 0)
+      continue;
+    return token.toUpper();
+  }
+  return {};
+}
+
+QString decodeColumns(const QString& time, const QString& db, const QString& dt, const QString& dist,
+                      const QString& message, const QString& freq, bool showTime, bool showFreq,
+                      bool showDist) {
+  const QString msg = message.size() < 22 ? message.leftJustified(22) : message;
   QStringList fields;
   if (showTime)
     fields << QStringLiteral("%1").arg(time, -6);
-  fields << QStringLiteral("%1").arg(db, 4);
+  fields << QStringLiteral("%1").arg(db, 3);
   fields << QStringLiteral("%1").arg(dt, 5);
+  if (showDist)
+    fields << QStringLiteral("%1").arg(dist, 5);
   fields << msg;
   if (showFreq)
     fields << QStringLiteral("%1").arg(freq, 5);
-  return fields.join(QStringLiteral("  "));
+  return fields.join(QStringLiteral(" | "));
 }
 
 // Raised capsule lettering: bruise-purple face, amber tube glow.
@@ -151,45 +259,6 @@ protected:
     painter.drawPath(letters.translated(-0.7, -0.85));
     painter.setPen(QPen(QColor(255, 176, 62, 220), 1.15, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     painter.drawPath(letters.translated(0.65, 0.8));
-  }
-};
-
-class GearButton : public QToolButton {
-public:
-  explicit GearButton(QWidget* parent = nullptr) : QToolButton(parent) {
-    setObjectName("radioConnect");
-    setFixedSize(40, 40);
-    setCursor(Qt::PointingHandCursor);
-    setFocusPolicy(Qt::NoFocus);
-    setToolTip("Connect to a TCI radio");
-    setAccessibleName("Connect radio");
-  }
-
-protected:
-  void paintEvent(QPaintEvent*) override {
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-    painter.setPen(QPen(underMouse() ? QColor("#00e5ff") : QColor("#274150"), 1));
-    painter.setBrush(underMouse() ? QColor(0, 229, 255, 28) : QColor("#101820"));
-    painter.drawRoundedRect(box, 8, 8);
-
-    painter.save();
-    painter.translate(rect().center());
-    painter.setPen(QPen(QColor("#00e5ff"), 1.4));
-    painter.setBrush(Qt::NoBrush);
-    painter.drawEllipse(QPointF(0, 0), 5.2, 5.2);
-    painter.setBrush(QColor("#0b1218"));
-    painter.drawEllipse(QPointF(0, 0), 2.1, 2.1);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor("#00e5ff"));
-    for (int tooth = 0; tooth < 8; ++tooth) {
-      painter.save();
-      painter.rotate(tooth * 45.0);
-      painter.drawRoundedRect(QRectF(-1.25, -9.0, 2.5, 3.2), 0.6, 0.6);
-      painter.restore();
-    }
-    painter.restore();
   }
 };
 
@@ -357,7 +426,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(profile_, &ModeProfile::houndChanged, this, [this](bool on) {
       if (on && waterfall_)
         waterfall_->setRxHz(750);
+      applyChannelWidth();
     });
+    connect(profile_, &ModeProfile::filtersChanged, this, [this](bool on) {
+      filtersOn_ = on;
+      refreshDecodes();
+    });
+    connect(profile_, &ModeProfile::filterEditRequested, this, [this] { openDecodeFilters(); });
+    filtersOn_ = profile_->findChild<QPushButton*>(QStringLiteral("decodeFilters")) &&
+                 profile_->findChild<QPushButton*>(QStringLiteral("decodeFilters"))->isChecked();
   }
   auto* decodeClock = new QTimer(this);
   connect(decodeClock, &QTimer::timeout, this, [this] {
@@ -374,9 +451,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       if (hell && waterfall_)
         hell_->setToneHz(waterfall_->rxHz());
     }
-    const int low = profile_->startHz();
+    int low = profile_->startHz();
+    int high = low + profile_->bandwidthHz();
+    if (!ft4 && !ft2 && !hell && profile_->superHound()) {
+      low = 750;
+      high = 750 + 1488;
+    }
     ft8_->setMode(ft2 ? Ft8Decode::Period::Ft2 : ft4 ? Ft8Decode::Period::Ft4 : Ft8Decode::Period::Ft8);
-    ft8_->setArmed(armed, low, low + profile_->bandwidthHz());
+    ft8_->setArmed(armed, low, high);
   });
   decodeClock->start(200);
 
@@ -421,10 +503,6 @@ void MainWindow::buildBrandBar() {
   layout->addWidget(words);
   layout->addStretch(1);
 
-  auto* gear = new GearButton(host);
-  connect(gear, &QToolButton::clicked, this, [this] { openRadioDialog(); });
-  layout->addWidget(gear);
-
   brandBar_->addWidget(host);
 }
 
@@ -436,8 +514,23 @@ void MainWindow::buildDocks() {
   auto* columnLayout = new QVBoxLayout(column);
   columnLayout->setContentsMargins(0, 0, 0, 0);
   columnLayout->setSpacing(0);
-  columnLayout->addWidget(waterfall_, 1);
   columnLayout->addWidget(profile_);
+  columnLayout->addWidget(waterfall_, 1);
+  if (auto* tone = waterfall_->findChild<QWidget*>(QStringLiteral("waterfallTone"))) {
+    if (auto* row = qobject_cast<QHBoxLayout*>(tone->layout())) {
+      auto* lock = waterfall_->findChild<QPushButton*>(QStringLiteral("freqLock"));
+      int at = row->indexOf(lock);
+      if (at < 0)
+        at = row->count();
+      profile_->speedBox()->setParent(tone);
+      profile_->startBox()->setParent(tone);
+      profile_->bandwidthBox()->setParent(tone);
+      row->insertWidget(at, profile_->speedBox());
+      row->insertWidget(at + 1, profile_->startBox());
+      row->insertWidget(at + 2, profile_->bandwidthBox());
+    }
+  }
+  applyChannelWidth();
 
   waterfallDock_ = new QDockWidget("Waterfall", this);
   waterfallDock_->setObjectName("waterfallDock");
@@ -533,8 +626,9 @@ QWidget* MainWindow::makeReceivePanel() {
   layout->addLayout(tools);
 
   auto* header = new QLabel(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"),
-                                           QStringLiteral("DT"), QStringLiteral("Message"),
-                                           QStringLiteral("Freq"), true, true),
+                                           QStringLiteral("DT"), QStringLiteral("Dist"),
+                                           QStringLiteral("Message"), QStringLiteral("Freq"), true, true,
+                                           true),
                              panel);
   header->setObjectName("decodeHeader");
   header->setFont(monoFont(13));
@@ -578,9 +672,11 @@ void MainWindow::refreshDecodes() {
     if (row.time.isEmpty())
       line = row.message;
     else
-      line = decodeColumns(row.time, QString::number(row.db), row.dt, row.message,
-                           QString::number(row.freqHz), showTime_, showFreq_);
+      line = decodeColumns(row.time, QString::number(row.db), row.dt, distanceText(row.message),
+                           row.message, QString::number(row.freqHz), showTime_, showFreq_, showDist_);
     if (!needle.isEmpty() && !line.contains(needle, Qt::CaseInsensitive))
+      continue;
+    if (!keepDecode(row.message))
       continue;
     if (!text.isEmpty())
       text += QLatin1Char('\n');
@@ -633,6 +729,9 @@ void MainWindow::buildMenus() {
 
   auto* radioMenu = menuBar()->addMenu("Radio");
   auto* connectRadio = radioMenu->addAction("Connect…");
+  connectRadio->setObjectName(QStringLiteral("radioConnect"));
+  connectRadio->setToolTip(QStringLiteral(
+      "Open the TCI host and port. Connect sends AUDIO_START only. Does not send START and does not key."));
   connect(connectRadio, &QAction::triggered, this, [this] { openRadioDialog(); });
   radioMenu->addSeparator();
 
@@ -752,6 +851,40 @@ void MainWindow::buildMenus() {
   auto* listMenu = optionsMenu->addMenu(QStringLiteral("Decode List Options"));
   addCheck(listMenu, "listShowTime", QStringLiteral("Show Time Column"), "dx/showTime", true,
            QStringLiteral("Show or hide the Time column."));
+  addCheck(listMenu, "listShowDist", QStringLiteral("Show Distance Column"), "dx/showDist", true,
+           QStringLiteral("Distance from your grid to the grid in the message. This does not key."));
+  auto* miles = listMenu->addAction(QStringLiteral("Distance in miles"));
+  miles->setObjectName(QStringLiteral("distUnitMiles"));
+  miles->setCheckable(true);
+  auto* km = listMenu->addAction(QStringLiteral("Distance in kilometers"));
+  km->setObjectName(QStringLiteral("distUnitKm"));
+  km->setCheckable(true);
+  auto* units = new QActionGroup(this);
+  units->addAction(miles);
+  units->addAction(km);
+  const bool savedMiles = dxSettings.value(QStringLiteral("dx/distMiles"), true).toBool();
+  miles->setChecked(savedMiles);
+  km->setChecked(!savedMiles);
+  miles->setToolTip(QStringLiteral("DIST is miles. This does not key."));
+  km->setToolTip(QStringLiteral("DIST is kilometers. This does not key."));
+  connect(miles, &QAction::toggled, this, [this](bool on) {
+    if (!on)
+      return;
+    QSettings store;
+    store.setValue(QStringLiteral("dx/distMiles"), true);
+    applyDxOptions();
+  });
+  connect(km, &QAction::toggled, this, [this](bool on) {
+    if (!on)
+      return;
+    QSettings store;
+    store.setValue(QStringLiteral("dx/distMiles"), false);
+    applyDxOptions();
+  });
+  auto* filters = optionsMenu->addAction(QStringLiteral("Decode List Filters…"));
+  filters->setObjectName(QStringLiteral("decodeFilterDialog"));
+  filters->setToolTip(QStringLiteral("Choose which decode lines stay on the list. This does not key."));
+  connect(filters, &QAction::triggered, this, [this] { openDecodeFilters(); });
   addCheck(listMenu, "listShowFreq", QStringLiteral("Show Frequency Column"), "dx/showFreq", true,
            QStringLiteral("Show or hide the Freq column."));
   addCheck(listMenu, "listClearPeriod", QStringLiteral("New period clears the message list"),
@@ -890,6 +1023,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     waterfall_->setRxHz(1500);
   if (hell_)
     hell_->setArmed(autoMonitor_ && hell);
+  applyChannelWidth();
   if (mshv)
     tuneActiveBand();
 }
@@ -995,9 +1129,11 @@ void MainWindow::showGuide() {
        "Options show or hide Time and Freq, and can clear the list each period. Log options, ASeq, "
        "TX confirmation, and Auto RESET QSO are saved. Transmit is off, so they do not key."},
       {"RX and TX markers",
-       "A green line is the RX frequency and a red line is the TX frequency. Click the waterfall to "
-       "set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them together. RX=TX copies RX "
-       "onto TX. None of these key the radio."},
+       "A green band is the RX channel and a red band is the TX channel. Each starts at the marker "
+       "and runs up by the protocol width: 50 Hz on FT8, 90 Hz on FT4, 125 Hz on FT2. Super Hound "
+       "widens the green band to the fox waveform, and Super Fox widens the red band. Click the "
+       "waterfall to set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them together. "
+       "RX=TX copies RX onto TX. None of these key the radio."},
       {"Layout",
        "View → Save layout stores the dock arrangement for the mode that is selected. The next time "
        "that mode opens, including after a restart, those panels come back. Leaving a mode, or "
@@ -1408,6 +1544,123 @@ void MainWindow::applyMonitorLabel() {
   statusStrip_->setRadio(true, line);
 }
 
+void MainWindow::applyChannelWidth() {
+  if (!waterfall_ || !profile_)
+    return;
+  const QString mode = profile_->digitalMode();
+  int width = 50;
+  if (mode == QLatin1String("FT4"))
+    width = 90;
+  else if (mode == QLatin1String("FT2"))
+    width = 125;
+  else if (mode == QLatin1String("Hell"))
+    width = 245;
+  int rx = width;
+  int tx = width;
+  if (profile_->superHound())
+    rx = 1488;
+  if (profile_->superFox())
+    tx = 1488;
+  waterfall_->setChannelWidth(rx, tx);
+}
+
+QString MainWindow::distanceText(const QString& message) const {
+  QSettings settings;
+  const QString home = settings.value(QStringLiteral("dx/reportGrid")).toString().trimmed();
+  const QString theirs = gridInMessage(message);
+  double lat1 = 0.0;
+  double lon1 = 0.0;
+  double lat2 = 0.0;
+  double lon2 = 0.0;
+  if (!gridCenter(home, &lat1, &lon1) || !gridCenter(theirs, &lat2, &lon2))
+    return QString::fromUtf8("—");
+  const double km = kilometers(lat1, lon1, lat2, lon2);
+  const double shown = distMiles_ ? km * 0.621371 : km;
+  return QString::number(int(std::lround(shown)));
+}
+
+bool MainWindow::keepDecode(const QString& message) const {
+  if (!filtersOn_)
+    return true;
+  QSettings settings;
+  const QString mine = settings.value(QStringLiteral("dx/reportCall")).toString().trimmed();
+  if (!mine.isEmpty() && message.contains(mine, Qt::CaseInsensitive))
+    return true;
+  const auto token = [&](const char* word) {
+    return message.contains(QRegularExpression(QStringLiteral("\\b%1\\b").arg(QLatin1String(word)),
+                                               QRegularExpression::CaseInsensitiveOption));
+  };
+  if (filterCq_ && !token("CQ"))
+    return false;
+  if (filterCq73_ && !(token("CQ") || token("73") || token("RR73") || token("RRR")))
+    return false;
+  if (!filterText_.trimmed().isEmpty() && !message.contains(filterText_.trimmed(), Qt::CaseInsensitive))
+    return false;
+  bool hiding = false;
+  for (bool on : hideContinent_)
+    hiding = hiding || on;
+  if (hiding) {
+    const int continent = continentOf(otherCall(message, mine));
+    if (continent >= 0 && continent < 7 && hideContinent_[continent])
+      return false;
+  }
+  return true;
+}
+
+void MainWindow::openDecodeFilters() {
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("Decode filters"));
+  dialog.setObjectName(QStringLiteral("decodeFilterDialogBox"));
+  auto* form = new QVBoxLayout(&dialog);
+  auto* note = new QLabel(QStringLiteral(
+      "Lines for your own call stay. Nothing here transmits. This does not key."),
+                           &dialog);
+  note->setWordWrap(true);
+  form->addWidget(note);
+  auto* cq = new QCheckBox(QStringLiteral("Show CQ only"), &dialog);
+  auto* cq73 = new QCheckBox(QStringLiteral("Show CQ, RR73, 73, and RRR only"), &dialog);
+  auto* text = new QLineEdit(filterText_, &dialog);
+  text->setPlaceholderText(QStringLiteral("Show lines containing"));
+  cq->setChecked(filterCq_);
+  cq73->setChecked(filterCq73_);
+  form->addWidget(cq);
+  form->addWidget(cq73);
+  form->addWidget(text);
+  const char* names[] = {"Africa", "Antarctica", "Asia", "Europe", "Oceania", "North America", "South America"};
+  QCheckBox* boxes[7];
+  for (int i = 0; i < 7; ++i) {
+    boxes[i] = new QCheckBox(QStringLiteral("Hide %1").arg(QLatin1String(names[i])), &dialog);
+    boxes[i]->setChecked(hideContinent_[i]);
+    form->addWidget(boxes[i]);
+  }
+  auto* buttons = new QHBoxLayout;
+  auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
+  auto* save = new QPushButton(QStringLiteral("Apply"), &dialog);
+  save->setDefault(true);
+  buttons->addStretch(1);
+  buttons->addWidget(cancel);
+  buttons->addWidget(save);
+  form->addLayout(buttons);
+  connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+  connect(save, &QPushButton::clicked, &dialog, &QDialog::accept);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  filterCq_ = cq->isChecked();
+  filterCq73_ = cq73->isChecked();
+  filterText_ = text->text();
+  QString hide;
+  for (int i = 0; i < 7; ++i) {
+    hideContinent_[i] = boxes[i]->isChecked();
+    hide += hideContinent_[i] ? QLatin1Char('1') : QLatin1Char('0');
+  }
+  QSettings settings;
+  settings.setValue(QStringLiteral("dx/filterCq"), filterCq_);
+  settings.setValue(QStringLiteral("dx/filterCq73"), filterCq73_);
+  settings.setValue(QStringLiteral("dx/filterText"), filterText_);
+  settings.setValue(QStringLiteral("dx/hideContinent"), hide);
+  refreshDecodes();
+}
+
 void MainWindow::applyDxOptions() {
   QSettings settings;
   const bool threeStage = settings.value(QStringLiteral("dx/threeStage"), true).toBool();
@@ -1418,6 +1671,16 @@ void MainWindow::applyDxOptions() {
   const int offset = std::clamp(settings.value(QStringLiteral("dx/clockOffsetMs"), 0).toInt(), -5000, 5000);
   showTime_ = settings.value(QStringLiteral("dx/showTime"), true).toBool();
   showFreq_ = settings.value(QStringLiteral("dx/showFreq"), true).toBool();
+  showDist_ = settings.value(QStringLiteral("dx/showDist"), true).toBool();
+  distMiles_ = settings.value(QStringLiteral("dx/distMiles"), true).toBool();
+  filterCq_ = settings.value(QStringLiteral("dx/filterCq"), false).toBool();
+  filterCq73_ = settings.value(QStringLiteral("dx/filterCq73"), false).toBool();
+  filterText_ = settings.value(QStringLiteral("dx/filterText")).toString();
+  const QString hide = settings.value(QStringLiteral("dx/hideContinent")).toString();
+  for (int i = 0; i < 7; ++i)
+    hideContinent_[i] = hide.size() > i && hide.at(i) == QLatin1Char('1');
+  if (auto* button = findChild<QPushButton*>(QStringLiteral("decodeFilters")))
+    filtersOn_ = button->isChecked();
   clearEachPeriod_ = settings.value(QStringLiteral("dx/clearEachPeriod"), false).toBool();
   maxSignals_ = settings.value(QStringLiteral("dx/maxSignals"), 0).toInt();
   if (maxSignals_ < 0)
@@ -1433,7 +1696,8 @@ void MainWindow::refreshDecodeHeader() {
   if (!header)
     return;
   header->setText(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"), QStringLiteral("DT"),
-                                 QStringLiteral("Message"), QStringLiteral("Freq"), showTime_, showFreq_));
+                                 QStringLiteral("Dist"), QStringLiteral("Message"), QStringLiteral("Freq"),
+                                 showTime_, showFreq_, showDist_));
 }
 
 void MainWindow::reloadMacros() {

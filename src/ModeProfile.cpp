@@ -8,6 +8,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QFont>
 #include <QFontMetrics>
 #include <QHBoxLayout>
@@ -15,8 +16,10 @@
 #include <QMetaType>
 #include <QPushButton>
 #include <QVariant>
+#include <QRadioButton>
 #include <QSettings>
 #include <QStringList>
+#include <QTimer>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -240,14 +243,61 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   autoDec->setToolTip(QStringLiteral(
       "When on, each FT8 period is written to the Receive pane. This does not key."));
 
-  auto* hound = new QCheckBox(QStringLiteral("Hound"), bar_);
-  hound->setObjectName(QStringLiteral("profileHound"));
+  auto* hound = new QCheckBox(QStringLiteral("Super Hound"), bar_);
+  hound->setObjectName(QStringLiteral("profileSuperHound"));
   hound->setFont(barFont());
-  hound->setChecked(settings.value(QStringLiteral("profile/hound"), false).toBool());
+  hound->setChecked(settings.value(QStringLiteral("profile/superHound"),
+                                   settings.value(QStringLiteral("profile/hound"), false)).toBool());
   hound->setToolTip(QStringLiteral(
-      "Fox/Hound on 40 m uses 7.056 MHz DIGU. The RX marker goes to 750 Hz, where the fox is. "
+      "Super Hound. 40 m is 7.056 MHz DIGU. The green RX band is the fox channel at 750 Hz. "
       "This is still 15 second FT8. This does not key."));
   hound_ = hound->isChecked();
+
+  auto* fox = new QCheckBox(QStringLiteral("Super Fox"), bar_);
+  fox->setObjectName(QStringLiteral("profileSuperFox"));
+  fox->setFont(barFont());
+  fox->setChecked(settings.value(QStringLiteral("profile/superFox"), false).toBool());
+  fox->setToolTip(QStringLiteral(
+      "Super Fox. The red TX band shows the fox channel. Transmit stays off. This does not key."));
+  fox_ = fox->isChecked();
+  if (hound_ && fox_) {
+    fox->setChecked(false);
+    fox_ = false;
+  }
+
+  auto* half = new QLabel(QStringLiteral("1st"), bar_);
+  half->setObjectName(QStringLiteral("periodHalf"));
+  half->setFont(barFont());
+  half->setToolTip(QStringLiteral(
+      "The FT8 half that is on the air. 1st is seconds 0–14. 2nd is 15–29. This does not key."));
+
+  txFirst_ = settings.value(QStringLiteral("profile/txFirst"), false).toBool();
+  auto* txFirst = new QRadioButton(QStringLiteral("TX FIRST"), bar_);
+  txFirst->setObjectName(QStringLiteral("txFirst"));
+  txFirst->setFont(barFont());
+  txFirst->setToolTip(QStringLiteral(
+      "Remember the first 15 second slot. Nothing is transmitted. This does not key."));
+  auto* txSecond = new QRadioButton(QStringLiteral("TX SECOND"), bar_);
+  txSecond->setObjectName(QStringLiteral("txSecond"));
+  txSecond->setFont(barFont());
+  txSecond->setToolTip(QStringLiteral(
+      "Remember the second 15 second slot. Nothing is transmitted. This does not key."));
+  txFirst->setChecked(txFirst_);
+  txSecond->setChecked(!txFirst_);
+  auto* txSlots = new QButtonGroup(bar_);
+  txSlots->addButton(txFirst);
+  txSlots->addButton(txSecond);
+
+  auto* filters = new QPushButton(QStringLiteral("FILTERS OFF"), bar_);
+  filters->setObjectName(QStringLiteral("decodeFilters"));
+  filters->setFont(barFont());
+  filters->setCheckable(true);
+  filters->setFocusPolicy(Qt::NoFocus);
+  filters->setChecked(settings.value(QStringLiteral("profile/filters"), false).toBool());
+  filters->setToolTip(QStringLiteral(
+      "Filter the receive list. Right-click edits the rules. This does not key."));
+  filters->setText(filters->isChecked() ? QStringLiteral("FILTERS ON") : QStringLiteral("FILTERS OFF"));
+  filters->setContextMenuPolicy(Qt::CustomContextMenu);
 
   auto* multi = new QCheckBox(QStringLiteral("Multi"), bar_);
   multi->setObjectName(QStringLiteral("profileMultiAnswer"));
@@ -272,18 +322,14 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   }
   region_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
 
-  row->addWidget(speed_);
-  row->addWidget(start_);
-  row->addWidget(bandwidth_);
   extra_ = new QSpinBox(bar_);
   extra_->setObjectName(QStringLiteral("profileExtra"));
   extra_->setFont(barFont());
   extra_->setRange(0, 250000000);
   extra_->setSingleStep(500);
   extra_->setSpecialValueText(QStringLiteral("default"));
-  extra_->setPrefix(QStringLiteral("Extra "));
   extra_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-  extra_->setFixedWidth(150);
+  extra_->setFixedWidth(96);
   extra_->setToolTip(QStringLiteral(
       "Type a dial in Hz and press Enter to insert it for this mode and band. "
       "Click the mode or the band button to cycle the WSJT-X default and those extras. "
@@ -292,7 +338,12 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
 
   row->addWidget(autoDec);
   row->addWidget(hound);
+  row->addWidget(fox);
   row->addWidget(multi);
+  row->addWidget(half);
+  row->addWidget(txFirst);
+  row->addWidget(txSecond);
+  row->addWidget(filters);
   row->addWidget(region_);
   row->addWidget(extra_);
 
@@ -340,13 +391,51 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   connect(start_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { applySpan(); });
   connect(bandwidth_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { applySpan(); });
   connect(autoDec, &QCheckBox::toggled, this, [this](bool) { remember(); });
-  connect(hound, &QCheckBox::toggled, this, [this](bool on) {
+  connect(hound, &QCheckBox::toggled, this, [this, fox](bool on) {
     hound_ = on;
+    if (on && fox_) {
+      const QSignalBlocker block(fox);
+      fox->setChecked(false);
+      fox_ = false;
+    }
     remember();
     refreshBands();
-    emit houndChanged(on);
+    emit houndChanged(hound_ || fox_);
     emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
   });
+  connect(fox, &QCheckBox::toggled, this, [this, hound](bool on) {
+    fox_ = on;
+    if (on && hound_) {
+      const QSignalBlocker block(hound);
+      hound->setChecked(false);
+      hound_ = false;
+    }
+    remember();
+    refreshBands();
+    emit houndChanged(hound_ || fox_);
+    emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
+  });
+  connect(txFirst, &QRadioButton::toggled, this, [this](bool on) {
+    txFirst_ = on;
+    remember();
+  });
+  connect(filters, &QPushButton::toggled, this, [filters](bool on) {
+    filters->setText(on ? QStringLiteral("FILTERS ON") : QStringLiteral("FILTERS OFF"));
+  });
+  connect(filters, &QPushButton::toggled, this, [this](bool on) {
+    QSettings settings;
+    settings.setValue(QStringLiteral("profile/filters"), on);
+    emit filtersChanged(on);
+  });
+  connect(filters, &QWidget::customContextMenuRequested, this, [this] { emit filterEditRequested(); });
+  auto* halfClock = new QTimer(this);
+  connect(halfClock, &QTimer::timeout, this, [half] {
+    const int second = QDateTime::currentDateTimeUtc().time().second();
+    half->setText((second % 30) < 15 ? QStringLiteral("1st") : QStringLiteral("2nd"));
+  });
+  halfClock->start(250);
+  half->setText((QDateTime::currentDateTimeUtc().time().second() % 30) < 15 ? QStringLiteral("1st")
+                                                                              : QStringLiteral("2nd"));
   connect(multi, &QCheckBox::toggled, this, [this](bool on) {
     multiAnswer_ = on;
     remember();
@@ -393,8 +482,6 @@ void ModeProfile::setDigitalMode(const QString& mode) {
   }
   refreshBands();
   const bool hell = mode_ == QLatin1String("Hell");
-  if (speed_)
-    speed_->setVisible(!hell);
   if (start_)
     start_->setVisible(!hell);
   if (bandwidth_)
@@ -403,8 +490,18 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     box->setVisible(!hell);
   const bool ft8 = mode_ == QLatin1String("FT8");
   const bool sequenced = ft8 || mode_ == QLatin1String("FT4") || mode_ == QLatin1String("FT2");
-  if (auto* hound = findChild<QCheckBox*>(QStringLiteral("profileHound")))
+  if (auto* hound = findChild<QCheckBox*>(QStringLiteral("profileSuperHound")))
     hound->setVisible(ft8);
+  if (auto* fox = findChild<QCheckBox*>(QStringLiteral("profileSuperFox")))
+    fox->setVisible(ft8);
+  if (auto* half = findChild<QLabel*>(QStringLiteral("periodHalf")))
+    half->setVisible(sequenced);
+  if (auto* first = findChild<QRadioButton*>(QStringLiteral("txFirst")))
+    first->setVisible(sequenced);
+  if (auto* second = findChild<QRadioButton*>(QStringLiteral("txSecond")))
+    second->setVisible(sequenced);
+  if (auto* filters = findChild<QPushButton*>(QStringLiteral("decodeFilters")))
+    filters->setVisible(sequenced);
   if (auto* multi = findChild<QCheckBox*>(QStringLiteral("profileMultiAnswer")))
     multi->setVisible(sequenced);
 }
@@ -516,7 +613,7 @@ bool ModeProfile::multiAnswer() const {
 
 qint64 ModeProfile::tableHz(int index) const {
   const Ft8Band& band = kBands[index];
-  if (mode_ == QLatin1String("FT8") && hound_ && QLatin1String(band.label) == QLatin1String("7"))
+  if (mode_ == QLatin1String("FT8") && (hound_ || fox_) && QLatin1String(band.label) == QLatin1String("7"))
     return 7056000;
   if (mode_ == QLatin1String("Hell")) {
     if (effectiveRegion() == 1 && band.hellRegion1Hz > 0)
@@ -626,7 +723,9 @@ void ModeProfile::remember() const {
   settings.setValue(QStringLiteral("profile/startHz"), start_->value());
   settings.setValue(QStringLiteral("profile/bandwidthHz"), bandwidth_->value());
   settings.setValue(QStringLiteral("profile/autoDec"), autoDecode());
-  settings.setValue(QStringLiteral("profile/hound"), hound_);
+  settings.setValue(QStringLiteral("profile/superHound"), hound_);
+  settings.setValue(QStringLiteral("profile/superFox"), fox_);
+  settings.setValue(QStringLiteral("profile/txFirst"), txFirst_);
   settings.setValue(QStringLiteral("profile/multiAnswer"), multiAnswer_);
   settings.setValue(QStringLiteral("profile/band"), band_);
   settings.setValue(QStringLiteral("profile/region"), regionChoice_);

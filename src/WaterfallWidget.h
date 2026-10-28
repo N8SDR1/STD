@@ -53,6 +53,9 @@ public:
 
   // 1 is slow, 9 is the FT8 default and matches the earlier hop.
   void setTraceSpeed(int speed);
+  // Width of the green RX band and the red TX band, in Hz.
+  // FT8 is 50. The band starts at the marker and runs upward.
+  void setChannelWidth(int rxHz, int txHz);
 
   int rxHz() const { return rxHz_; }
   int txHz() const { return txHz_; }
@@ -153,5 +156,7 @@ private:
   int tickHz_ = 500;
   int rxHz_ = 1200;
   int txHz_ = 1500;
+  int rxWidthHz_ = 50;
+  int txWidthHz_ = 50;
   bool locked_ = false;
 };

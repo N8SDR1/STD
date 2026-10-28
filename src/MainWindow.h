@@ -70,6 +70,10 @@ private:
   void showHellReceive(bool on);
   QWidget* makeMacroRow();
   void refreshDecodes();
+  void applyChannelWidth();
+  void openDecodeFilters();
+  bool keepDecode(const QString& message) const;
+  QString distanceText(const QString& message) const;
   void saveModeLayout(bool force = false);
   bool restoreModeLayout();
   void rememberModeTone();
@@ -95,6 +99,13 @@ private:
   bool autoMonitor_ = true;
   bool showTime_ = true;
   bool showFreq_ = true;
+  bool showDist_ = true;
+  bool distMiles_ = true;
+  bool filtersOn_ = false;
+  bool filterCq_ = false;
+  bool filterCq73_ = false;
+  QString filterText_;
+  bool hideContinent_[7] = {};
   bool clearEachPeriod_ = false;
   int maxSignals_ = 0;
   QString lastPeriod_;
