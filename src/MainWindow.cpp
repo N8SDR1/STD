@@ -1786,7 +1786,7 @@ void MainWindow::showGuide() {
        "once. START is never sent."},
       {"Waterfall transmit",
        "While Tune or TX is on the air, the audio STD is sending is mixed onto the waterfall. The trace "
-       "is drawn near the recent receive level, a little hotter, with the markers split or locked. It "
+       "is drawn at about the same height as the other stations, with the markers split or locked. It "
        "is not drawn at full scale. The notice TX gain is too hot means that audio, before this display "
        "scale, is past full scale. Receive audio does not raise the notice. The mix does not key and "
        "does not send START."},

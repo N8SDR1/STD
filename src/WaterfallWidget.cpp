@@ -712,9 +712,11 @@ float WaterfallWidget::txMixGain(float txPeak) const {
     ref = 0.012f;
   if (!(txPeak > 1.0e-8f))
     return 0.0f;
-  // About +3 dB over the recent receive peak. Attenuate a full-scale
-  // monitor down to that. Do not turn a quiet transmission up.
-  return std::min(1.0f, ref * 1.41f / txPeak);
+  // Well under the broadband peak. A full-scale monitor at that peak
+  // paints a wide smear; one FT8 trace is much smaller. The spectral
+  // trim then matches the other traces. Do not turn a quiet
+  // transmission up to full scale.
+  return std::min(1.0f, ref * 0.22f / txPeak);
 }
 
 void WaterfallWidget::writeAudio(const float* samples, int count, int sampleRateHz, bool blendTx) {
@@ -785,43 +787,65 @@ void WaterfallWidget::noteTxOverlay(const TraceRow& row) {
   auto hzOf = [&](int column) {
     return float(double(row.lo) + (double(column) + 0.5) * pixel);
   };
-  int peakAt = 0;
-  float peak = -160.0f;
-  for (int column = 0; column < row.level.size(); ++column) {
-    if (row.level.at(column) > peak) {
-      peak = row.level.at(column);
-      peakAt = column;
-    }
-  }
+  // The red marker is the tone we added, split or locked. Measure that
+  // channel, then walk out through the smear so it is not counted as
+  // another station.
   const float txCenter = float(txHz_) + float(txWidthHz_) * 0.5f;
-  const bool peakIsOurs = std::fabs(hzOf(peakAt) - txCenter) < 500.0f;
-  const float txLo = float(txHz_) - 20.0f;
-  const float txHi = float(txHz_ + txWidthHz_) + 20.0f;
+  int txAt = 0;
+  float nearest = 1.0e9f;
   float txMax = -160.0f;
-  float rxMax = -160.0f;
+  const float txLo = float(txHz_) - 40.0f;
+  const float txHi = float(txHz_ + txWidthHz_) + 40.0f;
   for (int column = 0; column < row.level.size(); ++column) {
     const float hz = hzOf(column);
-    const float level = row.level.at(column);
-    if (hz >= txLo && hz <= txHi) {
-      txMax = std::max(txMax, level);
-      continue;
+    const float away = std::fabs(hz - txCenter);
+    if (away < nearest) {
+      nearest = away;
+      txAt = column;
     }
-    if (peakIsOurs && std::fabs(hz - hzOf(peakAt)) < 500.0f)
-      continue;
-    rxMax = std::max(rxMax, level);
+    if (hz >= txLo && hz <= txHi)
+      txMax = std::max(txMax, row.level.at(column));
   }
-  // An empty TX channel is the noise floor. Leave the trim alone.
   if (!(txMax > 4.0f))
     return;
-  const float reference = rxMax > 8.0f ? rxMax : 18.0f;
-  const float error = txMax - (reference + 3.0f);
+  const float skirt = std::max(10.0f, txMax - 18.0f);
+  int left = txAt;
+  int right = txAt;
+  while (left > 0) {
+    const bool close = std::fabs(hzOf(left) - txCenter) < 150.0f;
+    if (!close && row.level.at(left) < skirt)
+      break;
+    --left;
+  }
+  while (right + 1 < row.level.size()) {
+    const bool close = std::fabs(hzOf(right) - txCenter) < 150.0f;
+    if (!close && row.level.at(right) < skirt)
+      break;
+    ++right;
+  }
+  QVector<float> traces;
+  for (int column = 1; column + 1 < row.level.size(); ++column) {
+    if (column >= left && column <= right)
+      continue;
+    const float level = row.level.at(column);
+    if (level < 8.0f)
+      continue;
+    if (level < row.level.at(column - 1) || level < row.level.at(column + 1))
+      continue;
+    traces.push_back(level);
+  }
+  // Median receive trace. No extra heat: a hotter tone is the smear.
+  float reference = 14.0f;
+  if (!traces.isEmpty()) {
+    std::sort(traces.begin(), traces.end());
+    reference = traces.at(traces.size() / 2);
+  }
+  const float error = txMax - reference;
   if (std::fabs(error) < 1.5f)
     return;
-  // One hot row is enough to pull a full-scale tone down. A quiet mix
-  // creeps up, and txMixGain still refuses to pass full scale.
-  const float stepDb = error > 0.0f ? std::min(error, 60.0f) : std::max(error, -18.0f);
+  const float stepDb = error > 0.0f ? std::min(error, 60.0f) : std::max(error, -12.0f);
   const float step = std::pow(10.0f, -stepDb / 20.0f);
-  txTrim_ = std::clamp(txTrim_ * step, 1.0e-4f, 64.0f);
+  txTrim_ = std::clamp(txTrim_ * step, 1.0e-5f, 32.0f);
 }
 
 void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {

@@ -43,8 +43,8 @@ public:
   // Real mono samples, already one channel. sampleRateHz is the frame rate.
   void pushRealAudio(const float* samples, int count, int sampleRateHz);
   // Loopback of the TCI TX frame, after TX gain. Mixed onto the trace
-  // only while setTransmitting(true), near the recent RX level, for a
-  // split pair and for locked markers. Does not decode and does not key.
+  // only while setTransmitting(true), at about the height of the other
+  // traces, split or locked. Does not decode and does not key.
   void mixTxAudio(const float* samples, int count, int sampleRateHz, bool overFullScale);
   void clearAudio();
 
