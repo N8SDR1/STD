@@ -21,10 +21,11 @@ void ft8_session_close(Ft8Session* session);
 
 /* samples are mutable: the decoder subtracts tones in place.
    lowHz/highHz are the audio window (Start and Start+BW).
+   rxHz is the RX marker (nfqso). txHz is the TX marker (SetStTxFreq).
    hhmmss is the UTC start of the 15-second period.
    Returns the number of lines handed to fn. */
 int ft8_session_decode(Ft8Session* session, double* samples, int count, int lowHz, int highHz,
-                       const char* hhmmss, Ft8LineFn fn, void* user);
+                       int rxHz, int txHz, const char* hhmmss, Ft8LineFn fn, void* user);
 
 #ifdef __cplusplus
 }

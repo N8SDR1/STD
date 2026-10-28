@@ -13,6 +13,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QSettings>
 #include <QSlider>
@@ -231,6 +232,8 @@ WaterfallWidget::WaterfallWidget(QWidget* parent) : QWidget(parent) {
   setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   setAccessibleName("Waterfall");
   setAccessibleDescription("No signal. Radio not connected.");
+  setToolTip(QStringLiteral(
+      "Click sets RX. Shift+click sets TX. Ctrl+click sets both. Drag pans. This does not key."));
   rebuildTimer_ = new QTimer(this);
   rebuildTimer_->setInterval(0);
   connect(rebuildTimer_, &QTimer::timeout, this, [this] { rebuildSome(); });
@@ -419,6 +422,14 @@ void WaterfallWidget::setReceiveBand(int lowHz, int highHz) {
   haveBand_ = true;
   bandLoHz_ = left;
   bandHiHz_ = right;
+  const int rx = clampTone(rxHz_);
+  const int tx = locked_ ? rx : clampTone(txHz_);
+  if (rx != rxHz_ || tx != txHz_) {
+    rxHz_ = rx;
+    txHz_ = tx;
+    rememberFrequencies();
+    emit frequenciesChanged(rxHz_, txHz_);
+  }
   if (keep)
     setView(viewLo, viewHi);
   else
@@ -439,6 +450,43 @@ void WaterfallWidget::clearReceiveBand() {
 
 void WaterfallWidget::setTraceSpeed(int speed) {
   traceSpeed_ = qBound(1, speed, 9);
+}
+
+int WaterfallWidget::clampTone(int hz) const {
+  int lo = 0;
+  int hi = 5000;
+  if (hasLimit()) {
+    lo = int(limitLoHz());
+    hi = int(limitHiHz());
+  }
+  if (hi < lo)
+    std::swap(lo, hi);
+  return std::clamp(hz, lo, hi);
+}
+
+void WaterfallWidget::rememberFrequencies() {
+  QSettings settings;
+  settings.setValue(QStringLiteral("waterfall/rxHz"), rxHz_);
+  settings.setValue(QStringLiteral("waterfall/txHz"), txHz_);
+  settings.setValue(QStringLiteral("waterfall/lock"), locked_);
+}
+
+void WaterfallWidget::applyFrequencyClick(int x, Qt::KeyboardModifiers mods) {
+  if (!plotRect().contains(x, plotRect().center().y()) && x < 0)
+    return;
+  const int hz = clampTone(int(std::lround(hzAtX(x))));
+  const bool both = locked_ || (mods & Qt::ControlModifier);
+  if (both) {
+    rxHz_ = hz;
+    txHz_ = hz;
+  } else if (mods & Qt::ShiftModifier) {
+    txHz_ = hz;
+  } else {
+    rxHz_ = hz;
+  }
+  rememberFrequencies();
+  update();
+  emit frequenciesChanged(rxHz_, txHz_);
 }
 
 WaterfallWidget::TraceRow& WaterfallWidget::rowAt(int age) {
@@ -605,6 +653,11 @@ void WaterfallWidget::buildToneBar() {
   QSettings settings;
   contrast_ = std::clamp(settings.value(QStringLiteral("waterfall/contrast"), 50).toInt(), 0, 100);
   brightness_ = std::clamp(settings.value(QStringLiteral("waterfall/brightness"), 50).toInt(), 0, 100);
+  rxHz_ = std::clamp(settings.value(QStringLiteral("waterfall/rxHz"), rxHz_).toInt(), 0, 5000);
+  txHz_ = std::clamp(settings.value(QStringLiteral("waterfall/txHz"), txHz_).toInt(), 0, 5000);
+  locked_ = settings.value(QStringLiteral("waterfall/lock"), false).toBool();
+  if (locked_)
+    txHz_ = rxHz_;
   palette_ = 0;
   const QString savedPalette =
       settings.value(QStringLiteral("waterfall/palette"), QStringLiteral("Classic")).toString();
@@ -661,6 +714,38 @@ void WaterfallWidget::buildToneBar() {
   layout->addSpacing(18);
   addSlider(QStringLiteral("Brightness"), QStringLiteral("waterfallBrightness"), brightness_,
             &brightness_);
+  layout->addSpacing(12);
+
+  auto* lock = new QPushButton(toneBar_);
+  lock->setObjectName("freqLock");
+  lock->setCheckable(true);
+  lock->setChecked(locked_);
+  lock->setText(locked_ ? QStringLiteral("Unlock") : QStringLiteral("Lock"));
+  lock->setFixedHeight(22);
+  lock->setFocusPolicy(Qt::NoFocus);
+  lock->setToolTip(QStringLiteral("Lock TX to RX. A click moves both markers. This does not key."));
+  connect(lock, &QPushButton::toggled, this, [this, lock](bool on) {
+    locked_ = on;
+    if (locked_)
+      txHz_ = rxHz_;
+    lock->setText(on ? QStringLiteral("Unlock") : QStringLiteral("Lock"));
+    rememberFrequencies();
+    update();
+    emit frequenciesChanged(rxHz_, txHz_);
+  });
+  auto* equal = new QPushButton(QStringLiteral("RX=TX"), toneBar_);
+  equal->setObjectName("freqRxTx");
+  equal->setFixedHeight(22);
+  equal->setFocusPolicy(Qt::NoFocus);
+  equal->setToolTip(QStringLiteral("Set TX to the RX frequency. This does not key."));
+  connect(equal, &QPushButton::clicked, this, [this] {
+    txHz_ = rxHz_;
+    rememberFrequencies();
+    update();
+    emit frequenciesChanged(rxHz_, txHz_);
+  });
+  layout->addWidget(lock);
+  layout->addWidget(equal);
   layout->addStretch(1);
 
   auto* paletteLabel = new QLabel(QStringLiteral("Palette"), toneBar_);
@@ -917,9 +1002,44 @@ void WaterfallWidget::paintAudio(QPainter& painter) const {
       dst[c] = traceColor(row.level[c], contrast_, brightness_, palette_);
   }
   painter.drawImage(plot.topLeft(), frame);
+  paintMarkers(painter);
   paintRuler(painter);
   painter.fillRect(QRect(8, plot.top() + 4, 248, 18), QColor(0, 2, 12, 210));
   paintDial(painter, plot.top() + 5);
+}
+
+void WaterfallWidget::paintMarkers(QPainter& painter) const {
+  const QRect plot = plotRect();
+  if (plot.width() < 8)
+    return;
+  const int xRx = xAtHz(float(rxHz_));
+  const int xTx = xAtHz(float(txHz_));
+  const bool rxIn = rxHz_ >= viewLoHz_ - 0.5f && rxHz_ <= viewHiHz_ + 0.5f;
+  const bool txIn = txHz_ >= viewLoHz_ - 0.5f && txHz_ <= viewHiHz_ + 0.5f;
+  const int labelY = plot.top() + 26;
+  const bool stack = rxIn && txIn && std::abs(xRx - xTx) < 56;
+
+  auto draw = [&](int x, int hz, const QColor& color, const QString& name, int y) {
+    painter.setPen(QPen(color, 1));
+    painter.drawLine(x, plot.top(), x, plot.bottom());
+    QFont mono("JetBrains Mono");
+    mono.setStyleHint(QFont::Monospace);
+    mono.setPixelSize(11);
+    painter.setFont(mono);
+    const QString label = QStringLiteral("%1 %2").arg(name).arg(hz);
+    const int width = painter.fontMetrics().horizontalAdvance(label) + 8;
+    int left = x + 4;
+    if (left + width > plot.right())
+      left = std::max(plot.left(), x - width - 2);
+    painter.fillRect(QRect(left, y, width, 16), QColor(0, 2, 12, 210));
+    painter.setPen(color);
+    painter.drawText(left + 4, y + 12, label);
+  };
+
+  if (rxIn)
+    draw(xRx, rxHz_, QColor(0, 240, 0), QStringLiteral("RX"), labelY);
+  if (txIn)
+    draw(xTx, txHz_, QColor(250, 60, 60), QStringLiteral("TX"), stack ? labelY + 18 : labelY);
 }
 
 void WaterfallWidget::wheelEvent(QWheelEvent* event) {
@@ -965,40 +1085,65 @@ void WaterfallWidget::mousePressEvent(QMouseEvent* event) {
     QWidget::mousePressEvent(event);
     return;
   }
-  dragging_ = true;
+  pressPending_ = true;
+  dragging_ = false;
   dragX0_ = int(event->position().x());
   dragLo_ = viewLoHz_;
   dragHi_ = viewHiHz_;
-  setCursor(Qt::ClosedHandCursor);
   event->accept();
 }
 
 void WaterfallWidget::mouseMoveEvent(QMouseEvent* event) {
-  if (!dragging_) {
+  if (!pressPending_ && !dragging_) {
     setCursor(Qt::ArrowCursor);
     QWidget::mouseMoveEvent(event);
     return;
   }
+  const int x = int(event->position().x());
+  if (pressPending_ && !dragging_ && std::abs(x - dragX0_) >= 5) {
+    dragging_ = true;
+    setCursor(Qt::ClosedHandCursor);
+  }
+  if (!dragging_) {
+    event->accept();
+    return;
+  }
   const int width = std::max(1, plotRect().width());
   const float span = dragHi_ - dragLo_;
-  const float shift = -float(int(event->position().x()) - dragX0_) * span / float(width);
+  const float shift = -float(x - dragX0_) * span / float(width);
   setView(dragLo_ + shift, dragHi_ + shift);
   scheduleRebuild();
   event->accept();
 }
 
 void WaterfallWidget::mouseReleaseEvent(QMouseEvent* event) {
-  if (!dragging_ || event->button() != Qt::LeftButton) {
+  if (event->button() != Qt::LeftButton || (!pressPending_ && !dragging_)) {
     QWidget::mouseReleaseEvent(event);
     return;
   }
+  const bool wasDrag = dragging_;
+  const int x = int(event->position().x());
+  const auto mods = event->modifiers();
+  pressPending_ = false;
   dragging_ = false;
   setCursor(Qt::ArrowCursor);
+  if (!wasDrag && plotRect().contains(event->position().toPoint())) {
+    pendingClickX_ = x;
+    pendingMods_ = mods;
+    QTimer::singleShot(180, this, [this, x, mods] {
+      if (pendingClickX_ != x || pendingMods_ != mods)
+        return;
+      pendingClickX_ = -1;
+      applyFrequencyClick(x, mods);
+    });
+  }
   event->accept();
 }
 
 void WaterfallWidget::mouseDoubleClickEvent(QMouseEvent* event) {
   if (event->button() == Qt::LeftButton) {
+    pendingClickX_ = -1;
+    pressPending_ = false;
     dragging_ = false;
     setCursor(Qt::ArrowCursor);
     if (hasLimit())

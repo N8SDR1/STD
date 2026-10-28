@@ -54,8 +54,14 @@ public:
   // 1 is slow, 9 is the FT8 default and matches the earlier hop.
   void setTraceSpeed(int speed);
 
+  int rxHz() const { return rxHz_; }
+  int txHz() const { return txHz_; }
+
   QSize sizeHint() const override;
   QSize minimumSizeHint() const override;
+
+signals:
+  void frequenciesChanged(int rxHz, int txHz);
 
 protected:
   void paintEvent(QPaintEvent* event) override;
@@ -77,6 +83,7 @@ private:
 
   void paintPlaceholder(QPainter& painter) const;
   void paintAudio(QPainter& painter) const;
+  void paintMarkers(QPainter& painter) const;
   void paintRuler(QPainter& painter) const;
   void paintDial(QPainter& painter, int y) const;
   void pushTrace(qint64 endSample);
@@ -87,6 +94,9 @@ private:
   void placeToneBar();
   void setView(float loHz, float hiHz);
   void resetView();
+  void applyFrequencyClick(int x, Qt::KeyboardModifiers mods);
+  void rememberFrequencies();
+  int clampTone(int hz) const;
   float limitLoHz() const;
   float limitHiHz() const;
   bool hasLimit() const;
@@ -123,6 +133,9 @@ private:
   float bandHiHz_ = 0.0f;
   bool zoomed_ = false;
   bool dragging_ = false;
+  bool pressPending_ = false;
+  int pendingClickX_ = 0;
+  Qt::KeyboardModifiers pendingMods_ = Qt::NoModifier;
   int dragX0_ = 0;
   float dragLo_ = 0.0f;
   float dragHi_ = 0.0f;
@@ -131,4 +144,7 @@ private:
   int brightness_ = 50;
   int palette_ = 0;
   int traceSpeed_ = 9;
+  int rxHz_ = 1200;
+  int txHz_ = 1500;
+  bool locked_ = false;
 };

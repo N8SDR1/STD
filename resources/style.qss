@@ -183,6 +183,11 @@ QLabel#panelNote, QLabel#macroEmpty {
   color: #6d8496;
 }
 
+QLabel#decodeHeader {
+  color: #9fb4c4;
+  padding-left: 5px;
+}
+
 QLabel#readoutLabel {
   color: #6d8496;
 }

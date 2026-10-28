@@ -34,7 +34,9 @@ void takeLine(Ft8Session* session, const QStringList& list) {
 extern "C" __declspec(dllexport) Ft8Session* ft8_session_open(void) {
   auto* session = new Ft8Session;
   session->decoder = new DecoderFt8(0);
-  session->decoder->SetStDecoderDeep(3);
+  // Depth 1 is the fast pass. Depth 3 was still running after the
+  // next 15-second period had started.
+  session->decoder->SetStDecoderDeep(1);
   session->decoder->SetStApDecode(true);
   session->decoder->SetStTxFreq(1200.0);
   QObject::connect(session->decoder, &DecoderFt8::EmitDecodetTextFt, session->decoder,
@@ -51,8 +53,8 @@ extern "C" __declspec(dllexport) void ft8_session_close(Ft8Session* session) {
 }
 
 extern "C" __declspec(dllexport) int ft8_session_decode(Ft8Session* session, double* samples,
-                                                        int count, int lowHz, int highHz,
-                                                        const char* hhmmss, Ft8LineFn fn,
+                                                        int count, int lowHz, int highHz, int rxHz,
+                                                        int txHz, const char* hhmmss, Ft8LineFn fn,
                                                         void* user) {
   if (!session || !session->decoder || !samples || count < 1024)
     return 0;
@@ -62,21 +64,24 @@ extern "C" __declspec(dllexport) int ft8_session_decode(Ft8Session* session, dou
     highHz = 5000;
   if (highHz < lowHz + 50)
     highHz = lowHz + 50;
+  if (rxHz < lowHz || rxHz > highHz)
+    rxHz = lowHz + (highHz - lowHz) / 2;
+  if (txHz < 0)
+    txHz = 0;
+  if (txHz > 5000)
+    txHz = 5000;
 
   session->lines.clear();
   const QString stamp = QString::fromLatin1(hhmmss && hhmmss[0] ? hhmmss : "000000");
   session->decoder->SetStDecode(stamp, 0, false);
   session->decoder->SetNewP(true);
-
-  int txHz = 1200;
-  if (txHz < lowHz || txHz > highHz)
-    txHz = lowHz + (highHz - lowHz) / 2;
   session->decoder->SetStTxFreq(txHz);
 
   bool have = false;
   try {
-    // id3dec 100 is MSHV's full-period pass (not the early 3-stage passes).
-    session->decoder->ft8_decode(samples, count, lowHz, highHz, txHz, have, 100, lowHz, highHz);
+    // id3dec 100 is MSHV's normal timed pass. The buffer is the waveform,
+    // not a zero-padded 15 seconds.
+    session->decoder->ft8_decode(samples, count, lowHz, highHz, rxHz, have, 100, lowHz, highHz);
   } catch (...) {
     return 0;
   }

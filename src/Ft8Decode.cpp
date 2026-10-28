@@ -13,6 +13,7 @@
 #include <QTimer>
 #include <QWaitCondition>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <deque>
@@ -29,18 +30,29 @@
 namespace {
 
 constexpr int kAudioRate = 12000;
-constexpr int kPeriodSamples = 15 * kAudioRate;
-constexpr int kMinSamples = 14 * kAudioRate;
+// 79 FT8 symbols at 160 ms. The waveform is in before the 15 s boundary.
+constexpr int kDecodeSamples = 12640 * kAudioRate / 1000;
+constexpr int kMinReal = kDecodeSamples - 1200;
 constexpr int kRing = 20 * kAudioRate;
 constexpr qint64 kPeriodMs = 15000;
-constexpr qint64 kGraceMs = 400;
+constexpr qint64 kDecodeAtMs = 12640;
 // MSHV scales int16 audio by 1/2560, which is 12.8 at full scale.
 constexpr double kMshvScale = 32768.0 * 0.000390625;
+
+struct Hit {
+  QString time;
+  int db = 0;
+  QString dt;
+  QString message;
+  int freqHz = 0;
+};
 
 struct Job {
   std::vector<double> samples;
   int lowHz = 100;
   int highHz = 3500;
+  int rxHz = 1200;
+  int txHz = 1500;
   QString stamp;
 };
 
@@ -79,7 +91,8 @@ public:
                                           LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
                                               LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (!module) {
-      emitLine(QStringLiteral("FT8 decoder did not load (%1).").arg(GetLastError()));
+      emitHit(Hit{QString(), 0, QString(),
+                  QStringLiteral("FT8 decoder did not load (%1).").arg(GetLastError()), 0});
       return;
     }
     auto open = reinterpret_cast<decltype(&ft8_session_open)>(GetProcAddress(module, "ft8_session_open"));
@@ -88,13 +101,13 @@ public:
     auto decode =
         reinterpret_cast<decltype(&ft8_session_decode)>(GetProcAddress(module, "ft8_session_decode"));
     if (!open || !close || !decode) {
-      emitLine(QStringLiteral("FT8 decoder did not load."));
+      emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT8 decoder did not load."), 0});
       FreeLibrary(module);
       return;
     }
     Ft8Session* session = open();
     if (!session) {
-      emitLine(QStringLiteral("FT8 decoder did not load."));
+      emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT8 decoder did not load."), 0});
       FreeLibrary(module);
       return;
     }
@@ -109,7 +122,7 @@ public:
         job = std::move(queue_.front());
         queue_.pop_front();
       }
-      if (job.samples.size() < static_cast<size_t>(kMinSamples))
+      if (job.samples.size() < static_cast<size_t>(kMinReal))
         continue;
       double sum = 0.0;
       for (double& sample : job.samples) {
@@ -120,35 +133,36 @@ public:
       for (double& sample : job.samples)
         sample -= average;
       const QByteArray stamp = job.stamp.toLatin1();
-      std::vector<QString> lines;
+      std::vector<Hit> lines;
       decode(session, job.samples.data(), static_cast<int>(job.samples.size()), job.lowHz, job.highHz,
-             stamp.constData(),
+             job.rxHz, job.txHz, stamp.constData(),
              [](const char* time, int db, const char* dt, const char* message, int freqHz, void* user) {
-               auto* out = static_cast<std::vector<QString>*>(user);
-               out->push_back(QStringLiteral("%1   %2 dB   %3   %4   %5 Hz")
-                                  .arg(QString::fromUtf8(time))
-                                  .arg(db)
-                                  .arg(QString::fromUtf8(dt))
-                                  .arg(QString::fromUtf8(message))
-                                  .arg(freqHz));
+               auto* out = static_cast<std::vector<Hit>*>(user);
+               Hit hit;
+               hit.time = QString::fromUtf8(time);
+               hit.db = db;
+               hit.dt = QString::fromUtf8(dt);
+               hit.message = QString::fromUtf8(message);
+               hit.freqHz = freqHz;
+               out->push_back(hit);
              },
              &lines);
-      for (const QString& line : lines)
-        emitLine(line);
+      for (const Hit& hit : lines)
+        emitHit(hit);
     }
     close(session);
     FreeLibrary(module);
 #else
-    emitLine(QStringLiteral("FT8 decoder did not load."));
+    emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT8 decoder did not load."), 0});
 #endif
   }
 
-  void emitLine(const QString& line) {
-    if (onLine)
-      onLine(line);
+  void emitHit(const Hit& hit) {
+    if (onHit)
+      onHit(hit);
   }
 
-  std::function<void(const QString&)> onLine;
+  std::function<void(const Hit&)> onHit;
 
 private:
 
@@ -174,11 +188,15 @@ struct Ft8Decode::Private {
   bool armed = false;
   int lowHz = 100;
   int highHz = 3500;
+  int rxHz = 1200;
+  int txHz = 1500;
   bool workerStarted = false;
 };
 
 Ft8Decode::Ft8Decode(QObject* parent) : QObject(parent), d_(new Private) {
-  d_->worker.onLine = [this](const QString& line) { emit decodedLine(line); };
+  d_->worker.onHit = [this](const Hit& hit) {
+    emit decoded(hit.time, hit.db, hit.dt, hit.message, hit.freqHz);
+  };
   connect(&d_->timer, &QTimer::timeout, this, [this] { poll(); });
   d_->timer.start(200);
 }
@@ -200,6 +218,12 @@ void Ft8Decode::setArmed(bool armed, int lowHz, int highHz) {
     highHz = lowHz + 50;
   d_->lowHz = lowHz;
   d_->highHz = highHz;
+}
+
+void Ft8Decode::setSpot(int rxHz, int txHz) {
+  QMutexLocker lock(&d_->mutex);
+  d_->rxHz = std::clamp(rxHz, 0, 5000);
+  d_->txHz = std::clamp(txHz, 0, 5000);
 }
 
 void Ft8Decode::clear() {
@@ -263,29 +287,31 @@ void Ft8Decode::poll() {
   bool ready = false;
   {
     QMutexLocker lock(&d_->mutex);
-    if (!d_->armed || d_->total < kMinSamples || d_->newestMs <= 0)
+    if (!d_->armed || d_->newestMs <= 0)
       return;
-    const qint64 closed = QDateTime::currentMSecsSinceEpoch() - kGraceMs;
-    const qint64 periodEnd = (closed / kPeriodMs) * kPeriodMs;
-    const qint64 periodStart = periodEnd - kPeriodMs;
+    const qint64 periodStart = (d_->newestMs / kPeriodMs) * kPeriodMs;
+    if (d_->newestMs < periodStart + kDecodeAtMs)
+      return;
     if (periodStart == d_->lastSubmitted)
       return;
     const double samplesBack = static_cast<double>(d_->newestMs - periodStart) * 12.0;
     const qint64 startIdx = (d_->total - 1) - static_cast<qint64>(std::llround(samplesBack));
     const qint64 oldest = d_->total > kRing ? d_->total - kRing : 0;
-    job.samples.assign(kPeriodSamples, 0.0);
+    job.samples.assign(static_cast<size_t>(kDecodeSamples), 0.0);
     int real = 0;
-    for (int n = 0; n < kPeriodSamples; ++n) {
+    for (int n = 0; n < kDecodeSamples; ++n) {
       const qint64 index = startIdx + n;
       if (index < oldest || index >= d_->total)
         continue;
       job.samples[static_cast<size_t>(n)] = d_->ring[static_cast<size_t>(index % kRing)];
       ++real;
     }
-    if (real < kMinSamples)
+    if (real < kMinReal)
       return;
     job.lowHz = d_->lowHz;
     job.highHz = d_->highHz;
+    job.rxHz = d_->rxHz;
+    job.txHz = d_->txHz;
     job.stamp = QDateTime::fromMSecsSinceEpoch(periodStart, QTimeZone::utc()).toString(QStringLiteral("hhmmss"));
     d_->lastSubmitted = periodStart;
     ready = true;

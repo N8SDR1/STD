@@ -20,6 +20,7 @@
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QLinearGradient>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -32,6 +33,7 @@
 #include <QTextBrowser>
 #include <QPushButton>
 #include <QShowEvent>
+#include <QTextCursor>
 #include <QSizePolicy>
 #include <QTimer>
 #include <QToolBar>
@@ -52,6 +54,17 @@ QFont monoFont(int pixelSize) {
   font.setStyleHint(QFont::Monospace);
   font.setPixelSize(pixelSize);
   return font;
+}
+
+QString decodeColumns(const QString& time, const QString& db, const QString& dt,
+                      const QString& message, const QString& freq) {
+  const QString msg = message.size() < 28 ? message.leftJustified(28) : message;
+  return QStringLiteral("%1  %2  %3  %4  %5")
+      .arg(time, -6)
+      .arg(db, 4)
+      .arg(dt, 5)
+      .arg(msg)
+      .arg(freq, 5);
 }
 
 // Raised capsule lettering: bruise-purple face, amber tube glow.
@@ -239,11 +252,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   });
 
   ft8_ = new Ft8Decode(this);
-  connect(ft8_, &Ft8Decode::decodedLine, this, [this](const QString& line) {
-    auto* receive = findChild<QPlainTextEdit*>("receiveText");
-    if (receive && !line.isEmpty())
-      receive->appendPlainText(line);
-  });
+  connect(ft8_, &Ft8Decode::decoded, this,
+          [this](const QString& time, int db, const QString& dt, const QString& message, int freqHz) {
+            if (decodes_.size() >= 500)
+              decodes_.remove(0, decodes_.size() - 499);
+            decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
+            refreshDecodes();
+          });
+  if (waterfall_) {
+    ft8_->setSpot(waterfall_->rxHz(), waterfall_->txHz());
+    connect(waterfall_, &WaterfallWidget::frequenciesChanged, ft8_, &Ft8Decode::setSpot);
+  }
   auto* decodeClock = new QTimer(this);
   connect(decodeClock, &QTimer::timeout, this, [this] {
     if (!ft8_ || !profile_)
@@ -320,10 +339,7 @@ void MainWindow::buildDocks() {
 
   receiveDock_ = new QDockWidget("Receive", this);
   receiveDock_->setObjectName("receiveDock");
-  receiveDock_->setWidget(makeTextPanel(
-      "receiveText",
-      "Received text will appear here.\nNo radio is connected, so nothing is being decoded.",
-      true, QString()));
+  receiveDock_->setWidget(makeReceivePanel());
   receiveDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
 
   transmitDock_ = new QDockWidget("Transmit", this);
@@ -380,6 +396,83 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     layout->addWidget(caption);
   }
   return panel;
+}
+
+QWidget* MainWindow::makeReceivePanel() {
+  auto* panel = new QWidget(this);
+  panel->setObjectName("textPanel");
+  panel->setAttribute(Qt::WA_StyledBackground, true);
+  auto* layout = new QVBoxLayout(panel);
+  layout->setContentsMargins(8, 8, 8, 8);
+  layout->setSpacing(4);
+
+  auto* tools = new QHBoxLayout();
+  tools->setSpacing(6);
+  auto* filter = new QLineEdit(panel);
+  filter->setObjectName("decodeFilter");
+  filter->setPlaceholderText(QStringLiteral("Filter"));
+  filter->setClearButtonEnabled(true);
+  filter->setFont(interfaceFont(12));
+  filter->setToolTip(QStringLiteral("Show decode lines that contain this text."));
+  auto* clear = new QPushButton(QStringLiteral("CLR MSG"), panel);
+  clear->setObjectName("decodeClear");
+  clear->setFont(interfaceFont(12));
+  clear->setFocusPolicy(Qt::NoFocus);
+  clear->setToolTip(QStringLiteral("Clear the decode list. This does not key."));
+  tools->addWidget(filter, 1);
+  tools->addWidget(clear);
+  layout->addLayout(tools);
+
+  auto* header = new QLabel(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"),
+                                           QStringLiteral("DT"), QStringLiteral("Message"),
+                                           QStringLiteral("Freq")),
+                             panel);
+  header->setObjectName("decodeHeader");
+  header->setFont(monoFont(13));
+  header->setTextInteractionFlags(Qt::NoTextInteraction);
+  layout->addWidget(header);
+
+  auto* edit = new QPlainTextEdit(panel);
+  edit->setObjectName("receiveText");
+  edit->setPlaceholderText(
+      QStringLiteral("Received text will appear here.\nNo radio is connected, so nothing is being decoded."));
+  edit->setReadOnly(true);
+  edit->setFont(monoFont(13));
+  edit->setTabChangesFocus(true);
+  edit->setMinimumHeight(72);
+  edit->document()->setDocumentMargin(0);
+  layout->addWidget(edit, 1);
+
+  connect(filter, &QLineEdit::textChanged, this, [this](const QString&) { refreshDecodes(); });
+  connect(clear, &QPushButton::clicked, this, [this] {
+    decodes_.clear();
+    refreshDecodes();
+  });
+  return panel;
+}
+
+void MainWindow::refreshDecodes() {
+  auto* edit = findChild<QPlainTextEdit*>("receiveText");
+  auto* filter = findChild<QLineEdit*>("decodeFilter");
+  if (!edit)
+    return;
+  const QString needle = filter ? filter->text().trimmed() : QString();
+  QString text;
+  for (const DecodeRow& row : decodes_) {
+    QString line;
+    if (row.time.isEmpty())
+      line = row.message;
+    else
+      line = decodeColumns(row.time, QString::number(row.db), row.dt, row.message,
+                           QString::number(row.freqHz));
+    if (!needle.isEmpty() && !line.contains(needle, Qt::CaseInsensitive))
+      continue;
+    if (!text.isEmpty())
+      text += QLatin1Char('\n');
+    text += line;
+  }
+  edit->setPlainText(text);
+  edit->moveCursor(QTextCursor::End);
 }
 
 QWidget* MainWindow::makeMacroRow() {
@@ -508,9 +601,14 @@ void MainWindow::showGuide() {
        "sideband with modulation:0,digu. FT8 and FT4 are DIGU on every band. Neither command keys the "
        "radio, and neither is START."},
       {"FT8 decode",
-       "Auto Dec is on by default. With FT8 audio arriving, each finished 15-second period is decoded "
-       "by the MSHV FT8 decoder. A Receive line is Time, dB, DT, Message, and Freq. Freq is the audio "
-       "frequency in Hz. Dist is not computed. Decoding does not send START and it does not key."},
+       "Auto Dec is on by default. The MSHV FT8 decoder starts when the waveform is in, before the "
+       "next 15-second period. The Receive pane has column headers Time, dB, DT, Message, and Freq. "
+       "Filter keeps lines that contain the text. CLR MSG clears the list. Freq is the audio frequency "
+       "in Hz. Dist is not computed. Decoding does not send START and it does not key."},
+      {"RX and TX markers",
+       "A green line is the RX frequency and a red line is the TX frequency. Click the waterfall to "
+       "set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them together. RX=TX copies RX "
+       "onto TX. None of these key the radio."},
   };
 
   QString html;

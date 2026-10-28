@@ -6,6 +6,7 @@
 #include <QIcon>
 #include <QMainWindow>
 #include <QString>
+#include <QVector>
 
 class Ft8Decode;
 class ModeProfile;
@@ -44,7 +45,17 @@ private:
 
   QWidget* makeTextPanel(const QString& editName, const QString& placeholder,
                          bool readOnly, const QString& note);
+  QWidget* makeReceivePanel();
   QWidget* makeMacroRow();
+  void refreshDecodes();
+
+  struct DecodeRow {
+    QString time;
+    int db = 0;
+    QString dt;
+    QString message;
+    int freqHz = 0;
+  };
 
   QToolBar* brandBar_ = nullptr;
   WaterfallWidget* waterfall_ = nullptr;
@@ -52,6 +63,7 @@ private:
   StatusStrip* statusStrip_ = nullptr;
   TciClient* tci_ = nullptr;
   Ft8Decode* ft8_ = nullptr;
+  QVector<DecodeRow> decodes_;
   QString dialText_ = QString::fromUtf8("—");
   QDockWidget* waterfallDock_ = nullptr;
   QDockWidget* receiveDock_ = nullptr;
