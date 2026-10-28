@@ -70,6 +70,8 @@ private:
   void refreshDecodes();
   void saveModeLayout(bool force = false);
   bool restoreModeLayout();
+  void rememberModeTone();
+  void applyModeTone();
 
   struct DecodeRow {
     QString time;

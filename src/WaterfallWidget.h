@@ -56,12 +56,17 @@ public:
 
   int rxHz() const { return rxHz_; }
   int txHz() const { return txHz_; }
+  int contrast() const { return contrast_; }
+  int brightness() const { return brightness_; }
+  // Puts the sliders back without writing settings.
+  void setTone(int contrast, int brightness);
 
   QSize sizeHint() const override;
   QSize minimumSizeHint() const override;
 
 signals:
   void frequenciesChanged(int rxHz, int txHz);
+  void toneChanged(int contrast, int brightness);
 
 protected:
   void paintEvent(QPaintEvent* event) override;

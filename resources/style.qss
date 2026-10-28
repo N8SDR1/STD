@@ -69,7 +69,9 @@ QLabel#waterfallToneLabel {
   background: transparent;
 }
 
-QLabel#waterfallToneValue {
+QLabel#waterfallToneValue,
+QLabel#waterfallContrastValue,
+QLabel#waterfallBrightnessValue {
   color: #00e5ff;
   background: transparent;
 }

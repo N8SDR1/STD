@@ -16,6 +16,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QTimer>
 #include <QToolButton>
@@ -684,7 +685,7 @@ void WaterfallWidget::buildToneBar() {
                             ? QStringLiteral("Contrast. Display only. Does not change the span.")
                             : QStringLiteral("Brightness. Display only. Does not change the span."));
     auto* readout = new QLabel(QString::number(value), toneBar_);
-    readout->setObjectName("waterfallToneValue");
+    readout->setObjectName(objectName + QStringLiteral("Value"));
     readout->setFont(face);
     readout->setMinimumWidth(24);
     layout->addWidget(label);
@@ -693,11 +694,8 @@ void WaterfallWidget::buildToneBar() {
     connect(slider, &QSlider::valueChanged, this, [this, slot, readout](int next) {
       *slot = std::clamp(next, 0, 100);
       readout->setText(QString::number(*slot));
-      QSettings saved;
-      saved.setValue(slot == &contrast_ ? QStringLiteral("waterfall/contrast")
-                                         : QStringLiteral("waterfall/brightness"),
-                     *slot);
       update();
+      emit toneChanged(contrast_, brightness_);
     });
   };
 
@@ -819,6 +817,26 @@ void WaterfallWidget::buildToneBar() {
   paletteButton->setMenu(menu);
   layout->addWidget(paletteLabel);
   layout->addWidget(paletteButton);
+}
+
+void WaterfallWidget::setTone(int contrast, int brightness) {
+  contrast_ = std::clamp(contrast, 0, 100);
+  brightness_ = std::clamp(brightness, 0, 100);
+  const struct {
+    const char* slider;
+    const char* readout;
+    int value;
+  } rows[] = {{"waterfallContrast", "waterfallContrastValue", contrast_},
+              {"waterfallBrightness", "waterfallBrightnessValue", brightness_}};
+  for (const auto& row : rows) {
+    if (auto* slider = findChild<QSlider*>(QLatin1String(row.slider))) {
+      const QSignalBlocker block(slider);
+      slider->setValue(row.value);
+    }
+    if (auto* readout = findChild<QLabel*>(QLatin1String(row.readout)))
+      readout->setText(QString::number(row.value));
+  }
+  update();
 }
 
 void WaterfallWidget::placeToneBar() {

@@ -232,6 +232,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     waterfall_->setTraceSpeed(profile_->speed());
     connect(profile_, &ModeProfile::displayChanged, waterfall_, &WaterfallWidget::setFrequencyWindow);
     connect(profile_, &ModeProfile::speedChanged, waterfall_, &WaterfallWidget::setTraceSpeed);
+    connect(waterfall_, &WaterfallWidget::toneChanged, this, [this] { rememberModeTone(); });
+    applyModeTone();
     connect(profile_, &ModeProfile::tuneRequested, this,
             [this](qint64 hz, const QString&) {
               if (!tci_ || !profile_->mshvFamily())
@@ -796,7 +798,8 @@ void MainWindow::buildMenus() {
   auto* saveLayout = viewMenu->addAction(QStringLiteral("Save layout"));
   saveLayout->setObjectName(QStringLiteral("saveLayout"));
   saveLayout->setToolTip(QStringLiteral(
-      "Save this dock arrangement for the current mode. It is restored the next time that mode opens. Does not key."));
+      "Save this dock arrangement, contrast, and brightness for the current mode. "
+      "They are restored the next time that mode opens. Does not key."));
   connect(saveLayout, &QAction::triggered, this, [this] { saveModeLayout(true); });
   auto* reset = viewMenu->addAction("Reset layout");
   connect(reset, &QAction::triggered, this, [this] {
@@ -841,6 +844,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
       resizeToHero();
       layoutGuard_ = false;
     }
+    applyModeTone();
     captureLayoutBaseline();
   }
   if (profile_) {
@@ -895,7 +899,9 @@ void MainWindow::showGuide() {
        "the same way, and they cannot cross the reported edges. Ticks on the bottom bar sets the "
        "ruler marks to 100, 250, or 500 Hz."},
       {"Contrast and brightness",
-       "The two sliders on the bottom bar recolor the trace. They do not change the frequency span."},
+       "The two sliders on the bottom bar recolor the trace. Each mode keeps its own contrast and "
+       "brightness with that mode's layout. Switching back to the mode restores them. They do not "
+       "change the frequency span."},
       {"Palettes",
        "Palette on that same bar lists Classic, Inferno, Viridis, Plasma, Rainbow, Ocean, Night, "
        "Grayscale, and Amber."},
@@ -1235,6 +1241,32 @@ void MainWindow::captureLayoutBaseline() {
   });
 }
 
+void MainWindow::rememberModeTone() {
+  if (!waterfall_ || layoutMode_.isEmpty() || qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return;
+  QSettings settings;
+  settings.setValue(QStringLiteral("layout/%1/contrast").arg(layoutMode_), waterfall_->contrast());
+  settings.setValue(QStringLiteral("layout/%1/brightness").arg(layoutMode_), waterfall_->brightness());
+}
+
+void MainWindow::applyModeTone() {
+  if (!waterfall_ || layoutMode_.isEmpty())
+    return;
+  QSettings settings;
+  const QString mode = layoutMode_;
+  const int contrast = std::clamp(
+      settings.value(QStringLiteral("layout/%1/contrast").arg(mode),
+                     settings.value(QStringLiteral("waterfall/contrast"), 50))
+          .toInt(),
+      0, 100);
+  const int brightness = std::clamp(
+      settings.value(QStringLiteral("layout/%1/brightness").arg(mode),
+                     settings.value(QStringLiteral("waterfall/brightness"), 50))
+          .toInt(),
+      0, 100);
+  waterfall_->setTone(contrast, brightness);
+}
+
 void MainWindow::saveModeLayout(bool force) {
   if (layoutMode_.isEmpty() || qEnvironmentVariableIsSet("STD_SELFTEST"))
     return;
@@ -1243,6 +1275,7 @@ void MainWindow::saveModeLayout(bool force) {
   QSettings settings;
   settings.setValue(QStringLiteral("layout/%1/state").arg(layoutMode_), saveState(1));
   settings.setValue(QStringLiteral("layout/%1/geometry").arg(layoutMode_), saveGeometry());
+  rememberModeTone();
   settings.sync();
   captureLayoutBaseline();
 }
