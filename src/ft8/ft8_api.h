@@ -49,6 +49,9 @@ int ft2_session_decode(Ft8Session* session, double* samples, int count, int lowH
                        int rxHz, int txHz, int depth, int apOn, const char* hhmmss, Ft8LineFn fn,
                        void* user);
 
+/* MSHV multi-answer a-priori state. on is 0 or 1. This does not transmit. */
+void ft8_session_set_multi_answer(Ft8Session* session, int on);
+
 #ifdef __cplusplus
 }
 #endif

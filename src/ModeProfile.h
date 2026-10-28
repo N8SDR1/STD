@@ -27,6 +27,8 @@ public:
   int startHz() const;
   int bandwidthHz() const;
   bool autoDecode() const;
+  bool hound() const;
+  bool multiAnswer() const;
   qint64 dialHz() const;
   QString sideband() const;
   // "auto", "1", "2", or "3". Auto reads the callsign. A portable
@@ -38,6 +40,8 @@ signals:
   void tuneRequested(qint64 dialHz, const QString& sideband);
   void displayChanged(int startHz, int bandwidthHz);
   void speedChanged(int speed);
+  void houndChanged(bool on);
+  void multiAnswerChanged(bool on);
 
 private:
   void applySpan();
@@ -62,6 +66,8 @@ private:
   int band_ = 0;
   bool family_ = true;
   QString mode_ = QStringLiteral("FT8");
+  bool hound_ = false;
+  bool multiAnswer_ = false;
   QList<qint64> extras_;
   int cycle_ = 0;
 };

@@ -64,6 +64,7 @@ struct Job {
   int ap = 1;
   int id3dec = 100;
   int kind = 0;
+  int multi = 0;
   QString stamp;
 };
 
@@ -115,6 +116,8 @@ public:
         reinterpret_cast<decltype(&ft4_session_decode)>(GetProcAddress(module, "ft4_session_decode"));
     auto decode2 =
         reinterpret_cast<decltype(&ft2_session_decode)>(GetProcAddress(module, "ft2_session_decode"));
+    auto setMulti = reinterpret_cast<decltype(&ft8_session_set_multi_answer)>(
+        GetProcAddress(module, "ft8_session_set_multi_answer"));
     if (!open || !close || !decode) {
       emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT8 decoder did not load."), 0});
       FreeLibrary(module);
@@ -163,6 +166,8 @@ public:
         hit.freqHz = freqHz;
         worker->emitHit(hit);
       };
+      if (setMulti)
+        setMulti(session, job.multi);
       if (job.kind == 2) {
         if (!decode2) {
           emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT2 decoder did not load."), 0});
@@ -226,6 +231,7 @@ struct Ft8Decode::Private {
   bool threeStage = true;
   int depth = 1;
   bool ap = true;
+  bool multiAnswer = false;
   int clockOffsetMs = 0;
   int lowHz = 100;
   int highHz = 3500;
@@ -274,6 +280,11 @@ void Ft8Decode::setMode(Period mode) {
   d_->mode = mode;
   d_->stagePeriod = -1;
   d_->stageDone = 0;
+}
+
+void Ft8Decode::setMultiAnswer(bool on) {
+  QMutexLocker lock(&d_->mutex);
+  d_->multiAnswer = on;
 }
 
 void Ft8Decode::setOptions(bool threeStage, int depth, bool ap, int clockOffsetMs) {
@@ -415,6 +426,7 @@ void Ft8Decode::poll() {
     job.txHz = d_->txHz;
     job.depth = d_->depth;
     job.ap = d_->ap ? 1 : 0;
+    job.multi = d_->multiAnswer ? 1 : 0;
     job.id3dec = id3dec;
     job.kind = mode == Period::Ft2 ? 2 : mode == Period::Ft4 ? 1 : 0;
     job.stamp = QDateTime::fromMSecsSinceEpoch(periodStart, QTimeZone::utc()).toString(QStringLiteral("hhmmss"));

@@ -351,6 +351,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     ft8_->setSpot(waterfall_->rxHz(), waterfall_->txHz());
     connect(waterfall_, &WaterfallWidget::frequenciesChanged, ft8_, &Ft8Decode::setSpot);
   }
+  if (profile_) {
+    ft8_->setMultiAnswer(profile_->multiAnswer());
+    connect(profile_, &ModeProfile::multiAnswerChanged, ft8_, &Ft8Decode::setMultiAnswer);
+    connect(profile_, &ModeProfile::houndChanged, this, [this](bool on) {
+      if (on && waterfall_)
+        waterfall_->setRxHz(750);
+    });
+  }
   auto* decodeClock = new QTimer(this);
   connect(decodeClock, &QTimer::timeout, this, [this] {
     if (!ft8_ || !profile_)
@@ -966,6 +974,11 @@ void MainWindow::showGuide() {
        "minus 1500 Hz, so 20 m is 14.0615 MHz for the 14.063 MHz calling frequency. 30 m Region 1 "
        "uses 10.144 MHz. The band button sends vfo:0,0,<Hz> and modulation:0,digu. That is not START "
        "and it does not key."},
+      {"Fox/Hound",
+       "Hound, on the FT8 bar, sets 40 m to 7.056 MHz DIGU and moves the RX marker to 750 Hz. "
+       "That is the fox. It is still 15 second FT8. Multi turns on MSHV multi-answer so the decoder "
+       "keeps a-priori state for more than one caller. Transmit stays off. Neither control keys the radio, "
+       "and neither sends START."},
       {"FT8 and FT4 decode",
        "Auto Dec is on by default. The MSHV FT8 decoder starts on the period that is still running, "
        "about 11.8 seconds in, before the tones end, then again at 13.6 and 14.6 seconds when three-stage "

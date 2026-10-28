@@ -19,6 +19,7 @@ struct Ft8Session {
   Ft8LineFn fn = nullptr;
   void* user = nullptr;
   int reported = 0;
+  bool multiAnswer = false;
 };
 
 namespace {
@@ -69,6 +70,18 @@ extern "C" __declspec(dllexport) Ft8Session* ft8_session_open(void) {
   return session;
 }
 
+extern "C" __declspec(dllexport) void ft8_session_set_multi_answer(Ft8Session* session, int on) {
+  if (!session)
+    return;
+  session->multiAnswer = on != 0;
+  if (session->decoder)
+    session->decoder->SetStMultiAnswerMod(session->multiAnswer);
+  if (session->ft4)
+    session->ft4->SetStMultiAnswerMod(session->multiAnswer);
+  if (session->ft2)
+    session->ft2->SetStMultiAnswerMod(session->multiAnswer);
+}
+
 extern "C" __declspec(dllexport) void ft8_session_close(Ft8Session* session) {
   if (!session)
     return;
@@ -115,6 +128,7 @@ extern "C" __declspec(dllexport) int ft8_session_decode(Ft8Session* session, dou
   session->decoder->SetStTxFreq(txHz);
   session->decoder->SetStDecoderDeep(depth);
   session->decoder->SetStApDecode(apOn != 0);
+  session->decoder->SetStMultiAnswerMod(session->multiAnswer);
   session->decoder->Decode3intFt(staged);
 
   bool have = false;
@@ -165,6 +179,7 @@ extern "C" __declspec(dllexport) int ft4_session_decode(Ft8Session* session, dou
   session->ft4->SetStTxFreq(txHz);
   session->ft4->SetStDecoderDeep(depth);
   session->ft4->SetStApDecode(apOn != 0);
+  session->ft4->SetStMultiAnswerMod(session->multiAnswer);
 
   bool have = false;
   try {
@@ -213,6 +228,7 @@ extern "C" __declspec(dllexport) int ft2_session_decode(Ft8Session* session, dou
   session->ft2->SetStTxFreq(txHz);
   session->ft2->SetStDecoderDeep(depth);
   session->ft2->SetStApDecode(apOn != 0);
+  session->ft2->SetStMultiAnswerMod(session->multiAnswer);
 
   bool have = false;
   try {

@@ -25,6 +25,8 @@ public:
   void setOptions(bool threeStage, int depth, bool ap, int clockOffsetMs);
   // FT4 is 7.5 s, one pass. FT2 is 3.75 s, one pass. FT8 keeps 15 s.
   void setMode(Period mode);
+  // MSHV multi-answer a-priori state. This does not transmit.
+  void setMultiAnswer(bool on);
   void clear();
 
 signals:

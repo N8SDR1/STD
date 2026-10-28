@@ -240,6 +240,24 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   autoDec->setToolTip(QStringLiteral(
       "When on, each FT8 period is written to the Receive pane. This does not key."));
 
+  auto* hound = new QCheckBox(QStringLiteral("Hound"), bar_);
+  hound->setObjectName(QStringLiteral("profileHound"));
+  hound->setFont(barFont());
+  hound->setChecked(settings.value(QStringLiteral("profile/hound"), false).toBool());
+  hound->setToolTip(QStringLiteral(
+      "Fox/Hound on 40 m uses 7.056 MHz DIGU. The RX marker goes to 750 Hz, where the fox is. "
+      "This is still 15 second FT8. This does not key."));
+  hound_ = hound->isChecked();
+
+  auto* multi = new QCheckBox(QStringLiteral("Multi"), bar_);
+  multi->setObjectName(QStringLiteral("profileMultiAnswer"));
+  multi->setFont(barFont());
+  multi->setChecked(settings.value(QStringLiteral("profile/multiAnswer"), false).toBool());
+  multi->setToolTip(QStringLiteral(
+      "MSHV multi-answer. The decoder keeps a-priori state for more than one caller. "
+      "Transmit stays off. This does not key."));
+  multiAnswer_ = multi->isChecked();
+
   region_ = new QComboBox(bar_);
   region_->setObjectName(QStringLiteral("profileRegion"));
   region_->setFont(barFont());
@@ -273,6 +291,8 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   extra_->setContextMenuPolicy(Qt::CustomContextMenu);
 
   row->addWidget(autoDec);
+  row->addWidget(hound);
+  row->addWidget(multi);
   row->addWidget(region_);
   row->addWidget(extra_);
 
@@ -320,6 +340,18 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   connect(start_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { applySpan(); });
   connect(bandwidth_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { applySpan(); });
   connect(autoDec, &QCheckBox::toggled, this, [this](bool) { remember(); });
+  connect(hound, &QCheckBox::toggled, this, [this](bool on) {
+    hound_ = on;
+    remember();
+    refreshBands();
+    emit houndChanged(on);
+    emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
+  });
+  connect(multi, &QCheckBox::toggled, this, [this](bool on) {
+    multiAnswer_ = on;
+    remember();
+    emit multiAnswerChanged(on);
+  });
   connect(region_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
     regionChoice_ = region_->currentData().toString();
     remember();
@@ -369,6 +401,12 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     bandwidth_->setVisible(!hell);
   if (auto* box = findChild<QCheckBox*>(QStringLiteral("profileAutoDec")))
     box->setVisible(!hell);
+  const bool ft8 = mode_ == QLatin1String("FT8");
+  const bool sequenced = ft8 || mode_ == QLatin1String("FT4") || mode_ == QLatin1String("FT2");
+  if (auto* hound = findChild<QCheckBox*>(QStringLiteral("profileHound")))
+    hound->setVisible(ft8);
+  if (auto* multi = findChild<QCheckBox*>(QStringLiteral("profileMultiAnswer")))
+    multi->setVisible(sequenced);
 }
 
 int ModeProfile::effectiveRegion() const {
@@ -468,8 +506,18 @@ bool ModeProfile::autoDecode() const {
   return box && box->isChecked();
 }
 
+bool ModeProfile::hound() const {
+  return hound_;
+}
+
+bool ModeProfile::multiAnswer() const {
+  return multiAnswer_;
+}
+
 qint64 ModeProfile::tableHz(int index) const {
   const Ft8Band& band = kBands[index];
+  if (mode_ == QLatin1String("FT8") && hound_ && QLatin1String(band.label) == QLatin1String("7"))
+    return 7056000;
   if (mode_ == QLatin1String("Hell")) {
     if (effectiveRegion() == 1 && band.hellRegion1Hz > 0)
       return band.hellRegion1Hz;
@@ -578,6 +626,8 @@ void ModeProfile::remember() const {
   settings.setValue(QStringLiteral("profile/startHz"), start_->value());
   settings.setValue(QStringLiteral("profile/bandwidthHz"), bandwidth_->value());
   settings.setValue(QStringLiteral("profile/autoDec"), autoDecode());
+  settings.setValue(QStringLiteral("profile/hound"), hound_);
+  settings.setValue(QStringLiteral("profile/multiAnswer"), multiAnswer_);
   settings.setValue(QStringLiteral("profile/band"), band_);
   settings.setValue(QStringLiteral("profile/region"), regionChoice_);
 }
