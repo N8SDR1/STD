@@ -13,6 +13,7 @@ public:
   explicit StatusStrip(QWidget* parent = nullptr);
 
   void setMode(const QString& text);
+  void setDigitalMode(const QString& mode);
   void setDial(const QString& text);
   void setPtt(bool onAir, bool connected);
   void setRadio(bool connected, const QString& line);

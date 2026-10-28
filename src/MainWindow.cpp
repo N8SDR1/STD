@@ -784,6 +784,8 @@ void MainWindow::buildMenus() {
           profile_->setDigitalMode(modeName);
         profile_->setMshvFamily(mshv);
       }
+      if (statusStrip_)
+        statusStrip_->setDigitalMode(modeName);
       if (mshv)
         tuneActiveBand();
     });

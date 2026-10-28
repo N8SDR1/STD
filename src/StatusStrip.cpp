@@ -74,6 +74,40 @@ protected:
   }
 };
 
+void showDigitalMode(QLabel* chip, const QString& mode) {
+  const QString text = mode.isEmpty() ? QStringLiteral("FT8") : mode;
+  chip->setText(text);
+  const int width = chip->fontMetrics().horizontalAdvance(text) + 20;
+  chip->setFixedWidth(std::max(52, width));
+  QString fill = QStringLiteral("#245068");
+  QString ink = QStringLiteral("#f4fdff");
+  if (text == QLatin1String("FT8"))
+    fill = QStringLiteral("#0b8f9e");
+  else if (text == QLatin1String("FT4")) {
+    fill = QStringLiteral("#e08a3d");
+    ink = QStringLiteral("#2a1404");
+  } else {
+    ink = QStringLiteral("#d5e6ef");
+  }
+  chip->setStyleSheet(QStringLiteral(
+                          "QLabel#digitalModeChip { background: %1; color: %2; border-radius: 11px; padding: 0 8px; }")
+                          .arg(fill, ink));
+  chip->setAccessibleName(QStringLiteral("Digital mode %1").arg(text));
+}
+
+QLabel* digitalModeChip(QWidget* parent) {
+  auto* chip = new QLabel(parent);
+  chip->setObjectName("digitalModeChip");
+  chip->setAlignment(Qt::AlignCenter);
+  QFont font = monoFont(12);
+  font.setBold(true);
+  chip->setFont(font);
+  chip->setFixedHeight(22);
+  chip->setToolTip(QStringLiteral("Active digital mode. This does not key."));
+  showDigitalMode(chip, QStringLiteral("FT8"));
+  return chip;
+}
+
 QWidget* readout(const QString& label, const QString& valueName, const QString& value) {
   auto* group = new QWidget;
   auto* layout = new QHBoxLayout(group);
@@ -177,7 +211,9 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
   layout->setContentsMargins(12, 0, 12, 0);
   layout->setSpacing(12);
 
-  layout->addWidget(readout("MODE", "modeValue", QString::fromUtf8("—")));
+  auto* modeGroup = readout("MODE", "modeValue", QString::fromUtf8("—"));
+  modeGroup->layout()->addWidget(digitalModeChip(modeGroup));
+  layout->addWidget(modeGroup);
   layout->addWidget(separator());
   layout->addWidget(readout("AFC", "afcValue", "Off"));
   layout->addWidget(separator());
@@ -222,6 +258,11 @@ QLabel* labeled(StatusStrip* strip, const char* name) {
 void StatusStrip::setMode(const QString& text) {
   if (QLabel* label = labeled(this, "modeValue"))
     label->setText(text);
+}
+
+void StatusStrip::setDigitalMode(const QString& mode) {
+  if (auto* chip = findChild<QLabel*>(QStringLiteral("digitalModeChip")))
+    showDigitalMode(chip, mode);
 }
 
 void StatusStrip::setDial(const QString& text) {
