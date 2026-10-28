@@ -119,6 +119,28 @@ QMainWindow::separator:hover {
   background: rgba(0, 229, 255, 110);
 }
 
+QWidget#dockTitle {
+  background: #0b1219;
+  border: 1px solid #1e3344;
+  border-bottom: 1px solid rgba(0, 229, 255, 70);
+}
+
+QWidget#dockTitle QLabel {
+  color: #8ea6b8;
+  background: transparent;
+  border: none;
+}
+
+QPushButton#decodeClear, QPushButton#txClrQueue, QPushButton#txClrNow, QPushButton#txUseFree {
+  padding: 1px 8px;
+  border-radius: 4px;
+}
+
+QSpinBox#txQueueLimit, QSpinBox#txSlots, QSpinBox#txMaxPeriods {
+  padding: 0 2px;
+  min-height: 18px;
+}
+
 QDockWidget::title {
   background: #0b1219;
   border: 1px solid #1e3344;

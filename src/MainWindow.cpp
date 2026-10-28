@@ -576,6 +576,7 @@ void MainWindow::buildDocks() {
   receiveDock_->setObjectName("receiveDock");
   receiveDock_->setWidget(makeReceivePanel());
   receiveDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
+  placeDockTitle(receiveDock_, QStringLiteral("Receive"), {"decodeClear"});
 
   transmitDock_ = new QDockWidget("Transmit", this);
   transmitDock_->setObjectName("transmitDock");
@@ -585,6 +586,7 @@ void MainWindow::buildDocks() {
       false,
       "Double-click a decode to arm the other slot. Tune stops itself. START is never sent."));
   transmitDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
+  placeDockTitle(transmitDock_, QStringLiteral("Transmit"), {"txClrQueue", "txClrNow"});
 
   macroDock_ = new QDockWidget("Macros", this);
   macroDock_->setObjectName("macroDock");
@@ -834,38 +836,38 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     queueLimit->setMinimumWidth(0);
     slotCount->setMinimumWidth(0);
     maxPeriods->setMinimumWidth(0);
-    auto* limitRow = new QHBoxLayout();
-    limitRow->setSpacing(6);
-    limitRow->addWidget(queueLimit, 1);
-    limitRow->addWidget(slotCount, 1);
-    limitRow->addWidget(maxPeriods, 1);
-    settingsLayout->addLayout(limitRow);
     auto* dupes = new QComboBox(settings);
     dupes->setObjectName(QStringLiteral("txDupes"));
     dupes->setFont(interfaceFont(12));
     dupes->addItems({QStringLiteral("No Limit"), QStringLiteral("1 QSO"), QStringLiteral("2 QSOs"),
                      QStringLiteral("3 QSOs")});
     dupes->setCurrentIndex(std::clamp(QSettings().value(QStringLiteral("tx/dupe"), 0).toInt(), 0, 3));
-    dupes->setToolTip(QStringLiteral("Maximum QSOs per call. This does not key."));
+    dupes->setToolTip(QStringLiteral("Limit. Maximum QSOs per call. This does not key."));
+    dupes->setMinimumContentsLength(6);
+    dupes->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     auto* cns = new QCheckBox(QStringLiteral("CNS"), settings);
     cns->setObjectName(QStringLiteral("txCns"));
-    cns->setFont(interfaceFont(12));
+    cns->setFont(interfaceFont(11));
     cns->setChecked(QSettings().value(QStringLiteral("tx/cns"), false).toBool());
     cns->setToolTip(QStringLiteral("Continue non-stop. Checking it does not key."));
+    auto* limitRow = new QHBoxLayout();
+    limitRow->setSpacing(4);
+    limitRow->addWidget(queueLimit, 1);
+    limitRow->addWidget(slotCount, 1);
+    limitRow->addWidget(maxPeriods, 1);
+    limitRow->addWidget(dupes, 1);
+    limitRow->addWidget(cns);
+    settingsLayout->addLayout(limitRow);
     auto* sort = new QComboBox(settings);
     sort->setObjectName(QStringLiteral("txSort"));
-    sort->setFont(interfaceFont(12));
+    sort->setFont(interfaceFont(11));
     sort->addItems({QStringLiteral("Sort Off"), QStringLiteral("Distance"), QStringLiteral("S/N (dB)")});
     sort->setCurrentIndex(std::clamp(QSettings().value(QStringLiteral("tx/sort"), 0).toInt(), 0, 2));
     sort->setToolTip(QStringLiteral("Sort the queue. This does not key."));
-    auto* optionRow = new QHBoxLayout();
-    optionRow->setSpacing(6);
-    optionRow->addWidget(dupes, 1);
-    optionRow->addWidget(cns);
-    optionRow->addWidget(sort, 1);
-    settingsLayout->addLayout(optionRow);
+    sort->setMinimumContentsLength(6);
+    sort->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     auto* cqRow = new QHBoxLayout();
-    cqRow->setSpacing(6);
+    cqRow->setSpacing(4);
     auto* cqType = new QComboBox(settings);
     cqType->setObjectName(QStringLiteral("txCqType"));
     cqType->setFont(interfaceFont(12));
@@ -878,6 +880,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
                       QStringLiteral("CQ END"), QStringLiteral("TIME"), QStringLiteral("Free Msg")});
     cqType->setCurrentIndex(
         std::clamp(QSettings().value(QStringLiteral("tx/cqType"), 0).toInt(), 0, cqType->count() - 1));
+    cqType->setMinimumContentsLength(6);
+    cqType->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     cqType->setToolTip(QStringLiteral(
         "CQ type. CQ MDX is the MSHV DXpedition tag. Changing it does not key."));
     auto* foxCq = new QComboBox(settings);
@@ -888,55 +892,54 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
                      QStringLiteral("Free Msg")});
     foxCq->setCurrentIndex(
         std::clamp(QSettings().value(QStringLiteral("tx/foxCq"), 0).toInt(), 0, foxCq->count() - 1));
+    foxCq->setMinimumContentsLength(6);
+    foxCq->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     foxCq->setToolTip(QStringLiteral(
         "Super Fox CQ. This does not run a fox generator and does not key."));
-    auto* cqFree = new QCheckBox(QStringLiteral("CQ on free slot"), settings);
+    auto* cqFree = new QCheckBox(QStringLiteral("CQ free"), settings);
     cqFree->setObjectName(QStringLiteral("txCqOnFree"));
     cqFree->setFont(interfaceFont(12));
     cqFree->setChecked(QSettings().value(QStringLiteral("tx/cqOnFree"), false).toBool());
     cqFree->setToolTip(QStringLiteral("TX CQ on a free slot. Checking it does not key."));
-    cqRow->addWidget(cqType, 1);
-    cqRow->addWidget(foxCq, 1);
-    cqRow->addWidget(cqFree);
-    settingsLayout->addLayout(cqRow);
-    auto* freeRow = new QHBoxLayout();
-    freeRow->setSpacing(4);
     auto* freeCq = new QLineEdit(settings);
     freeCq->setObjectName(QStringLiteral("txFreeCq"));
     freeCq->setFont(monoFont(12));
     freeCq->setMaxLength(26);
+    freeCq->setMaximumWidth(160);
+    freeCq->setPlaceholderText(QStringLiteral("Free"));
     freeCq->setText(QSettings().value(QStringLiteral("tx/freeCq")).toString());
     freeCq->setToolTip(QStringLiteral("Free CQ text. USE copies it to Tx6. This does not key."));
     auto* useFree = new QPushButton(QStringLiteral("USE"), settings);
     useFree->setObjectName(QStringLiteral("txUseFree"));
-    useFree->setFont(interfaceFont(12));
+    useFree->setFont(interfaceFont(11));
     useFree->setFocusPolicy(Qt::NoFocus);
     useFree->setToolTip(QStringLiteral("Put the free message on Tx6. This does not key."));
-    freeRow->addWidget(freeCq, 1);
-    freeRow->addWidget(useFree);
-    settingsLayout->addLayout(freeRow);
-    auto* clearRow = new QHBoxLayout();
-    clearRow->setSpacing(4);
-    auto* clrQueue = new QPushButton(QStringLiteral("CLR QUEUE"), settings);
+    cqRow->addWidget(cqType, 1);
+    cqRow->addWidget(foxCq, 1);
+    cqRow->addWidget(cqFree);
+    cqRow->addWidget(freeCq, 1);
+    cqRow->addWidget(useFree);
+    cqRow->addWidget(sort);
+    settingsLayout->addLayout(cqRow);
+    auto* clrQueue = new QPushButton(QStringLiteral("CLR Queue"), panel);
     clrQueue->setObjectName(QStringLiteral("txClrQueue"));
-    clrQueue->setFont(interfaceFont(12));
+    clrQueue->setFont(interfaceFont(11));
     clrQueue->setFocusPolicy(Qt::NoFocus);
     clrQueue->setToolTip(QStringLiteral("Clear the queue. This does not unkey and does not send START."));
-    auto* clrNow = new QPushButton(QStringLiteral("CLR NOW"), settings);
+    auto* clrNow = new QPushButton(QStringLiteral("CLR Now"), panel);
     clrNow->setObjectName(QStringLiteral("txClrNow"));
-    clrNow->setFont(interfaceFont(12));
+    clrNow->setFont(interfaceFont(11));
     clrNow->setFocusPolicy(Qt::NoFocus);
     clrNow->setToolTip(QStringLiteral("Clear the now list. This does not unkey and does not send START."));
-    clearRow->addWidget(clrQueue);
-    clearRow->addWidget(clrNow);
-    settingsLayout->addLayout(clearRow);
     tabs->addTab(queuePage, QStringLiteral("Queue 0"));
     tabs->addTab(nowPage, QStringLiteral("Now 0"));
     tabs->addTab(settings, QStringLiteral("Settings"));
     tabs->setCurrentIndex(2);
-    queuePage->setFixedHeight(52);
-    nowPage->setFixedHeight(52);
-    layout->addWidget(tabs);
+    queuePage->setFixedHeight(48);
+    nowPage->setFixedHeight(48);
+    tabs->setMaximumHeight(112);
+    tabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    layout->addWidget(tabs, 0);
     connect(queueLimit, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
       QSettings().setValue(QStringLiteral("tx/queueLimit"), value);
     });
@@ -1020,11 +1023,14 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     qso->setObjectName(QStringLiteral("txQso"));
     qso->setReadOnly(true);
     qso->setFont(monoFont(12));
-    qso->setMinimumHeight(36);
-    qso->setMaximumHeight(52);
+    qso->setMinimumHeight(120);
     qso->setPlaceholderText(QStringLiteral("Sent TX and their reply."));
-    qso->setToolTip(QStringLiteral("What you sent and what they sent back. This does not key."));
-    layout->addWidget(qso);
+    qso->setToolTip(QStringLiteral("What you sent and what they sent back. Scroll for older lines. This does not key."));
+    qso->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    qso->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    qso->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    qso->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    layout->addWidget(qso, 1);
     applyStationLock();
     refreshTxChrome();
   }
@@ -1093,11 +1099,10 @@ QWidget* MainWindow::makeReceivePanel() {
   filter->setToolTip(QStringLiteral("Show decode lines that contain this text."));
   auto* clear = new QPushButton(QStringLiteral("CLR MSG"), panel);
   clear->setObjectName("decodeClear");
-  clear->setFont(interfaceFont(12));
+  clear->setFont(interfaceFont(11));
   clear->setFocusPolicy(Qt::NoFocus);
   clear->setToolTip(QStringLiteral("Clear the decode list. This does not key."));
   tools->addWidget(filter, 1);
-  tools->addWidget(clear);
   layout->addLayout(tools);
 
   auto* header = new QLabel(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"),
@@ -1124,6 +1129,8 @@ QWidget* MainWindow::makeReceivePanel() {
   edit->setMinimumHeight(72);
   edit->setLineWrapMode(QPlainTextEdit::NoWrap);
   edit->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  edit->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  edit->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   edit->document()->setDocumentMargin(0);
   edit->viewport()->installEventFilter(this);
   layout->addWidget(edit, 1);
@@ -1586,6 +1593,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     hell_->setArmed(autoMonitor_ && hell);
   applyChannelWidth();
   refreshTxChrome();
+  applyMacroBar();
   if (mshv)
     tuneActiveBand();
 }
@@ -1750,6 +1758,41 @@ void MainWindow::showGuide() {
   dialog.exec();
 }
 
+void MainWindow::placeDockTitle(QDockWidget* dock, const QString& title,
+                                 std::initializer_list<const char*> buttons) {
+  if (!dock)
+    return;
+  auto* bar = new QWidget(dock);
+  bar->setObjectName(QStringLiteral("dockTitle"));
+  bar->setAttribute(Qt::WA_StyledBackground, true);
+  auto* row = new QHBoxLayout(bar);
+  row->setContentsMargins(8, 2, 4, 2);
+  row->setSpacing(6);
+  auto* label = new QLabel(title, bar);
+  label->setFont(interfaceFont(12));
+  row->addWidget(label);
+  row->addStretch(1);
+  for (const char* name : buttons) {
+    if (auto* button = dock->findChild<QPushButton*>(QLatin1String(name)))
+      row->addWidget(button);
+  }
+  auto* close = new QToolButton(bar);
+  close->setText(QStringLiteral("×"));
+  close->setAutoRaise(true);
+  close->setFocusPolicy(Qt::NoFocus);
+  close->setToolTip(QStringLiteral("Close this pane. This does not key."));
+  connect(close, &QToolButton::clicked, dock, &QDockWidget::close);
+  row->addWidget(close);
+  dock->setTitleBarWidget(bar);
+}
+
+void MainWindow::applyMacroBar() {
+  if (!macroDock_)
+    return;
+  const bool mshv = profile_ && profile_->mshvFamily();
+  macroDock_->setVisible(!mshv);
+}
+
 void MainWindow::arrangeDefault() {
   const QList<QDockWidget*> docks = {waterfallDock_, receiveDock_, transmitDock_, macroDock_,
                                      statusDock_};
@@ -1763,14 +1806,17 @@ void MainWindow::arrangeDefault() {
   splitDockWidget(receiveDock_, transmitDock_, Qt::Vertical);
   splitDockWidget(transmitDock_, macroDock_, Qt::Vertical);
   splitDockWidget(macroDock_, statusDock_, Qt::Vertical);
+  applyMacroBar();
 }
 
 void MainWindow::resizeToHero() {
+  applyMacroBar();
   const int chrome = menuBar()->height() + (brandBar_ ? brandBar_->height() : 0);
   const int available = std::max(480, height() - chrome);
   const int status = 44;
-  const int macros = 80;
-  const int transmit = std::max(220, available * 26 / 100);
+  const bool macrosOn = macroDock_ && macroDock_->isVisible();
+  const int macros = macrosOn ? 80 : 0;
+  const int transmit = std::max(macrosOn ? 220 : 320, available * (macrosOn ? 26 : 38) / 100);
   const int receive = std::max(128, available * 18 / 100);
   const int waterfall = std::max(240, available - status - macros - transmit - receive);
   resizeDocks({waterfallDock_, receiveDock_, transmitDock_, macroDock_, statusDock_},
@@ -1804,6 +1850,7 @@ void MainWindow::showEvent(QShowEvent* event) {
       }
       const bool restored = restoreModeLayout();
       layoutReady_ = true;
+      applyMacroBar();
       if (!restored)
         resizeToHero();
       captureLayoutBaseline();

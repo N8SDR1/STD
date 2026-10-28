@@ -9,6 +9,7 @@
 #include <QString>
 #include <QVector>
 
+#include <initializer_list>
 #include <vector>
 
 class QCloseEvent;
@@ -74,6 +75,8 @@ private:
   QWidget* makeTextPanel(const QString& editName, const QString& placeholder,
                          bool readOnly, const QString& note);
   QWidget* makeReceivePanel();
+  void placeDockTitle(QDockWidget* dock, const QString& title, std::initializer_list<const char*> buttons);
+  void applyMacroBar();
   void showHellReceive(bool on);
   QWidget* makeMacroRow();
   void refreshDecodes();
