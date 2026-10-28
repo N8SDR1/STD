@@ -42,6 +42,12 @@ private:
   void syncConnectOptions();
   void maybeAutoConnect();
   void applyMonitorLabel();
+  void applyDxOptions();
+  void refreshDecodeHeader();
+  void reloadMacros();
+  void openTimeDialog();
+  void openMacrosDialog();
+  void openNetworkDialog();
   void setReceivePlaceholder(bool connected);
   void showRadioDown(const QString& error);
   void showRadioUp(const QString& host, quint16 port);
@@ -70,6 +76,11 @@ private:
   QAction* autoConnectAction_ = nullptr;
   QAction* autoMonitorAction_ = nullptr;
   bool autoMonitor_ = true;
+  bool showTime_ = true;
+  bool showFreq_ = true;
+  bool clearEachPeriod_ = false;
+  int maxSignals_ = 0;
+  QString lastPeriod_;
   QVector<DecodeRow> decodes_;
   QString dialText_ = QString::fromUtf8("—");
   QDockWidget* waterfallDock_ = nullptr;

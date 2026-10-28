@@ -19,6 +19,8 @@ public:
   void pushAudio(const float* samples, int count, int sampleRateHz);
   void setArmed(bool armed, int lowHz, int highHz);
   void setSpot(int rxHz, int txHz);
+  // depth is 1, 2, or 3. clockOffsetMs shifts the period clock.
+  void setOptions(bool threeStage, int depth, bool ap, int clockOffsetMs);
   void clear();
 
 signals:

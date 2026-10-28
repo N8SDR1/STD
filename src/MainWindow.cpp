@@ -13,7 +13,10 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QCheckBox>
+#include <QDesktopServices>
 #include <QDialog>
+#include <QFormLayout>
 #include <QIcon>
 #include <QDockWidget>
 #include <QFont>
@@ -29,13 +32,17 @@
 #include <QPaintEvent>
 #include <QPen>
 #include <QPixmap>
+#include <QProcess>
 #include <QPlainTextEdit>
 #include <QTextBrowser>
 #include <QPushButton>
 #include <QSettings>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSpinBox>
+#include <QStringList>
 #include <QTextCursor>
+#include <QUrl>
 #include <QSizePolicy>
 #include <QTimer>
 #include <QToolBar>
@@ -59,14 +66,17 @@ QFont monoFont(int pixelSize) {
 }
 
 QString decodeColumns(const QString& time, const QString& db, const QString& dt,
-                      const QString& message, const QString& freq) {
+                      const QString& message, const QString& freq, bool showTime, bool showFreq) {
   const QString msg = message.size() < 28 ? message.leftJustified(28) : message;
-  return QStringLiteral("%1  %2  %3  %4  %5")
-      .arg(time, -6)
-      .arg(db, 4)
-      .arg(dt, 5)
-      .arg(msg)
-      .arg(freq, 5);
+  QStringList fields;
+  if (showTime)
+    fields << QStringLiteral("%1").arg(time, -6);
+  fields << QStringLiteral("%1").arg(db, 4);
+  fields << QStringLiteral("%1").arg(dt, 5);
+  fields << msg;
+  if (showFreq)
+    fields << QStringLiteral("%1").arg(freq, 5);
+  return fields.join(QStringLiteral("  "));
 }
 
 // Raised capsule lettering: bruise-purple face, amber tube glow.
@@ -256,6 +266,29 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   ft8_ = new Ft8Decode(this);
   connect(ft8_, &Ft8Decode::decoded, this,
           [this](const QString& time, int db, const QString& dt, const QString& message, int freqHz) {
+            if (clearEachPeriod_ && !time.isEmpty() && time != lastPeriod_)
+              decodes_.clear();
+            if (!time.isEmpty())
+              lastPeriod_ = time;
+            if (maxSignals_ > 0 && !time.isEmpty()) {
+              int count = 0;
+              int weakest = -1;
+              int weakestDb = 999;
+              for (int i = 0; i < decodes_.size(); ++i) {
+                if (decodes_.at(i).time != time)
+                  continue;
+                ++count;
+                if (decodes_.at(i).db < weakestDb) {
+                  weakestDb = decodes_.at(i).db;
+                  weakest = i;
+                }
+              }
+              if (count >= maxSignals_) {
+                if (weakest < 0 || db <= weakestDb)
+                  return;
+                decodes_.removeAt(weakest);
+              }
+            }
             if (decodes_.size() >= 500)
               decodes_.remove(0, decodes_.size() - 499);
             decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
@@ -276,6 +309,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   });
   decodeClock->start(200);
 
+  applyDxOptions();
   QTimer::singleShot(0, this, [this] { maybeAutoConnect(); });
 }
 
@@ -429,7 +463,7 @@ QWidget* MainWindow::makeReceivePanel() {
 
   auto* header = new QLabel(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"),
                                            QStringLiteral("DT"), QStringLiteral("Message"),
-                                           QStringLiteral("Freq")),
+                                           QStringLiteral("Freq"), true, true),
                              panel);
   header->setObjectName("decodeHeader");
   header->setFont(monoFont(13));
@@ -468,7 +502,7 @@ void MainWindow::refreshDecodes() {
       line = row.message;
     else
       line = decodeColumns(row.time, QString::number(row.db), row.dt, row.message,
-                           QString::number(row.freqHz));
+                           QString::number(row.freqHz), showTime_, showFreq_);
     if (!needle.isEmpty() && !line.contains(needle, Qt::CaseInsensitive))
       continue;
     if (!text.isEmpty())
@@ -491,9 +525,17 @@ QWidget* MainWindow::makeMacroRow() {
     auto* button = new QPushButton(QStringLiteral("M%1").arg(i), row);
     button->setObjectName("macro");
     button->setFont(monoFont(12));
+    button->setProperty("slot", i);
     button->setEnabled(false);
-    button->setToolTip("Empty macro slot");
+    button->setToolTip("Empty macro slot. Does not key.");
     button->setAccessibleName(QStringLiteral("Macro %1, empty").arg(i));
+    connect(button, &QPushButton::clicked, this, [this, i] {
+      QSettings settings;
+      const QString text = settings.value(QStringLiteral("dx/macro/%1").arg(i)).toString();
+      auto* transmit = findChild<QPlainTextEdit*>("transmitText");
+      if (transmit && !text.trimmed().isEmpty())
+        transmit->setPlainText(text);
+    });
     layout->addWidget(button);
   }
 
@@ -502,6 +544,7 @@ QWidget* MainWindow::makeMacroRow() {
   empty->setFont(interfaceFont(12));
   layout->addWidget(empty);
   layout->addStretch(1);
+  reloadMacros();
   return row;
 }
 
@@ -541,6 +584,118 @@ void MainWindow::buildMenus() {
     store.setValue(QStringLiteral("tci/autoMonitor"), on);
     applyMonitorLabel();
   });
+
+  QSettings dxSettings;
+  auto* optionsMenu = menuBar()->addMenu("Options");
+  auto* decodeMenu = optionsMenu->addMenu("Decode");
+  auto saveBool = [this](const char* key, bool on) {
+    QSettings store;
+    store.setValue(QLatin1String(key), on);
+    applyDxOptions();
+  };
+  auto addCheck = [&](QMenu* menu, const char* name, const QString& label, const char* key, bool fallback,
+                      const QString& tip) {
+    auto* action = menu->addAction(label);
+    action->setObjectName(QLatin1String(name));
+    action->setCheckable(true);
+    action->setChecked(dxSettings.value(QLatin1String(key), fallback).toBool());
+    action->setToolTip(tip);
+    connect(action, &QAction::toggled, this, [saveBool, key](bool on) { saveBool(key, on); });
+    return action;
+  };
+
+  addCheck(decodeMenu, "decodeThreeStage", QStringLiteral("Use Three-stage Decoding FT8"), "dx/threeStage",
+           true,
+           QStringLiteral("Decode at three points in the FT8 period. The first pass is before the next period."));
+  auto* depthGroup = new QActionGroup(this);
+  depthGroup->setExclusive(true);
+  const int savedDepth = dxSettings.value(QStringLiteral("dx/depth"), 1).toInt();
+  const struct {
+    const char* name;
+    const char* label;
+    int depth;
+  } depths[] = {{"decodeDepthFast", "Fast", 1},
+                {"decodeDepthNormal", "Normal", 2},
+                {"decodeDepthDeep", "Deep", 3}};
+  for (const auto& row : depths) {
+    auto* action = decodeMenu->addAction(QString::fromLatin1(row.label));
+    action->setObjectName(QLatin1String(row.name));
+    action->setCheckable(true);
+    action->setChecked(savedDepth == row.depth);
+    action->setData(row.depth);
+    action->setToolTip(QStringLiteral("FT8 decoder depth. Deep is slower. Does not key."));
+    depthGroup->addAction(action);
+    connect(action, &QAction::triggered, this, [this, depth = row.depth] {
+      QSettings store;
+      store.setValue(QStringLiteral("dx/depth"), depth);
+      applyDxOptions();
+    });
+  }
+  addCheck(decodeMenu, "decodeAp", QStringLiteral("Enable AP"), "dx/ap", true,
+           QStringLiteral("A-priori FT8 decode. Does not key."));
+  auto* maxMenu = decodeMenu->addMenu(QStringLiteral("Max decoded signals"));
+  auto* maxGroup = new QActionGroup(this);
+  maxGroup->setExclusive(true);
+  const int savedMax = dxSettings.value(QStringLiteral("dx/maxSignals"), 0).toInt();
+  const struct {
+    const char* label;
+    int count;
+  } maxima[] = {{"Unlimited", 0}, {"4", 4}, {"8", 8}, {"16", 16}, {"32", 32}};
+  for (const auto& row : maxima) {
+    auto* action = maxMenu->addAction(QString::fromLatin1(row.label));
+    action->setCheckable(true);
+    action->setChecked(savedMax == row.count);
+    action->setData(row.count);
+    action->setToolTip(QStringLiteral("Keep the strongest lines in a period. Does not key."));
+    maxGroup->addAction(action);
+    connect(action, &QAction::triggered, this, [this, count = row.count] {
+      QSettings store;
+      store.setValue(QStringLiteral("dx/maxSignals"), count);
+      applyDxOptions();
+    });
+  }
+
+  auto* timeSync = optionsMenu->addAction(QStringLiteral("Time Synchronization"));
+  timeSync->setObjectName(QStringLiteral("timeSync"));
+  timeSync->setToolTip(QStringLiteral("Calibrate the period clock. Does not key."));
+  connect(timeSync, &QAction::triggered, this, [this] { openTimeDialog(); });
+
+  auto* macrosEdit = optionsMenu->addAction(QStringLiteral("Macros"));
+  macrosEdit->setObjectName(QStringLiteral("macrosEdit"));
+  macrosEdit->setToolTip(QStringLiteral("Edit the eight local macros. They do not key."));
+  connect(macrosEdit, &QAction::triggered, this, [this] { openMacrosDialog(); });
+
+  auto* networkConfig = optionsMenu->addAction(QStringLiteral("Network Configuration"));
+  networkConfig->setObjectName(QStringLiteral("networkConfig"));
+  networkConfig->setToolTip(QStringLiteral("PSK Reporter style settings. Spots are not sent. Does not key."));
+  connect(networkConfig, &QAction::triggered, this, [this] { openNetworkDialog(); });
+
+  auto* listMenu = optionsMenu->addMenu(QStringLiteral("Decode List Options"));
+  addCheck(listMenu, "listShowTime", QStringLiteral("Show Time Column"), "dx/showTime", true,
+           QStringLiteral("Show or hide the Time column."));
+  addCheck(listMenu, "listShowFreq", QStringLiteral("Show Frequency Column"), "dx/showFreq", true,
+           QStringLiteral("Show or hide the Freq column."));
+  addCheck(listMenu, "listClearPeriod", QStringLiteral("New period clears the message list"),
+           "dx/clearEachPeriod", false,
+           QStringLiteral("Drop the previous period when the next one decodes."));
+
+  auto* logMenu = optionsMenu->addMenu(QStringLiteral("Log Options"));
+  const QString logTip = QStringLiteral("Saved. Transmit is off, so nothing is logged and the radio is not keyed.");
+  addCheck(logMenu, "logAuto", QStringLiteral("Log Automatically QSO"), "dx/logAuto", false, logTip);
+  addCheck(logMenu, "logPrompt", QStringLiteral("Prompt Me To Log QSO"), "dx/logPrompt", false, logTip);
+  addCheck(logMenu, "logWarn", QStringLiteral("Warn Me If QSO Before"), "dx/logWarn", false, logTip);
+  addCheck(logMenu, "logStartEqualsEnd", QStringLiteral("Log QSO Start Time = End Time"), "dx/logStartEqualsEnd",
+           false, logTip);
+  addCheck(logMenu, "logNoComment", QStringLiteral("Turn Auto Comments Off"), "dx/logNoComment", false, logTip);
+
+  optionsMenu->addSeparator();
+  const QString txTip =
+      QStringLiteral("Saved. Transmit is off, so this does not reply and does not key.");
+  addCheck(optionsMenu, "aseqMostDistant", QStringLiteral("ASeq: Reply to the Most Distant"), "dx/aseq", false,
+           txTip);
+  addCheck(optionsMenu, "txConfirm73", QStringLiteral("TX Confirmation If 73 Or RR73"), "dx/txConfirm73", true,
+           txTip);
+  addCheck(optionsMenu, "autoResetQso", QStringLiteral("Auto RESET QSO at end"), "dx/autoReset", true, txTip);
 
   auto* modeMenu = menuBar()->addMenu("Mode");
   modeMenu->setObjectName("modeMenu");
@@ -638,6 +793,12 @@ void MainWindow::showGuide() {
        "next 15-second period. The Receive pane has column headers Time, dB, DT, Message, and Freq. "
        "Filter keeps lines that contain the text. CLR MSG clears the list. Freq is the audio frequency "
        "in Hz. Dist is not computed. Decoding does not send START and it does not key."},
+      {"DX options",
+       "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Time "
+       "Synchronization calibrates the period clock. Macros edit eight local texts. Network "
+       "Configuration stores a PSK Reporter style address and does not send spots. Decode List "
+       "Options show or hide Time and Freq, and can clear the list each period. Log options, ASeq, "
+       "TX confirmation, and Auto RESET QSO are saved. Transmit is off, so they do not key."},
       {"RX and TX markers",
        "A green line is the RX frequency and a red line is the TX frequency. Click the waterfall to "
        "set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them together. RX=TX copies RX "
@@ -748,6 +909,185 @@ void MainWindow::applyMonitorLabel() {
                            ? QStringLiteral("Monitor %1:%2").arg(tci_->host()).arg(tci_->port())
                            : QStringLiteral("Connected %1:%2").arg(tci_->host()).arg(tci_->port());
   statusStrip_->setRadio(true, line);
+}
+
+void MainWindow::applyDxOptions() {
+  QSettings settings;
+  const bool threeStage = settings.value(QStringLiteral("dx/threeStage"), true).toBool();
+  int depth = settings.value(QStringLiteral("dx/depth"), 1).toInt();
+  if (depth < 1 || depth > 3)
+    depth = 1;
+  const bool ap = settings.value(QStringLiteral("dx/ap"), true).toBool();
+  const int offset = std::clamp(settings.value(QStringLiteral("dx/clockOffsetMs"), 0).toInt(), -5000, 5000);
+  showTime_ = settings.value(QStringLiteral("dx/showTime"), true).toBool();
+  showFreq_ = settings.value(QStringLiteral("dx/showFreq"), true).toBool();
+  clearEachPeriod_ = settings.value(QStringLiteral("dx/clearEachPeriod"), false).toBool();
+  maxSignals_ = settings.value(QStringLiteral("dx/maxSignals"), 0).toInt();
+  if (maxSignals_ < 0)
+    maxSignals_ = 0;
+  if (ft8_)
+    ft8_->setOptions(threeStage, depth, ap, offset);
+  refreshDecodeHeader();
+  refreshDecodes();
+}
+
+void MainWindow::refreshDecodeHeader() {
+  auto* header = findChild<QLabel*>("decodeHeader");
+  if (!header)
+    return;
+  header->setText(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"), QStringLiteral("DT"),
+                                 QStringLiteral("Message"), QStringLiteral("Freq"), showTime_, showFreq_));
+}
+
+void MainWindow::reloadMacros() {
+  bool any = false;
+  const auto buttons = findChildren<QPushButton*>("macro");
+  for (QPushButton* button : buttons) {
+    const int slot = button->property("slot").toInt();
+    QSettings settings;
+    const QString text = settings.value(QStringLiteral("dx/macro/%1").arg(slot)).toString();
+    const bool filled = !text.trimmed().isEmpty();
+    any = any || filled;
+    button->setEnabled(filled);
+    button->setToolTip(filled ? text + QStringLiteral("\nInserts into the transmit box. Does not key.")
+                              : QStringLiteral("Empty macro slot. Does not key."));
+  }
+  if (auto* empty = findChild<QLabel*>("macroEmpty")) {
+    empty->setText(any ? QStringLiteral("Macros stay in this window. They do not key.")
+                       : QStringLiteral("No macros loaded"));
+  }
+}
+
+void MainWindow::openTimeDialog() {
+  QSettings settings;
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("Time synchronization"));
+  dialog.setMinimumWidth(420);
+  auto* offset = new QSpinBox(&dialog);
+  offset->setObjectName(QStringLiteral("clockOffset"));
+  offset->setRange(-2000, 2000);
+  offset->setSingleStep(10);
+  offset->setSuffix(QStringLiteral(" ms"));
+  offset->setValue(std::clamp(settings.value(QStringLiteral("dx/clockOffsetMs"), 0).toInt(), -2000, 2000));
+  offset->setToolTip(QStringLiteral("Added to the FT8 period clock. Does not key."));
+  auto* form = new QFormLayout;
+  form->addRow(QStringLiteral("Clock offset"), offset);
+  auto* note = new QLabel(
+      QStringLiteral("The offset moves the decode period. Opening the Windows clock or time.is does not key."),
+      &dialog);
+  note->setWordWrap(true);
+  auto* windows = new QPushButton(QStringLiteral("Open Windows time settings"), &dialog);
+  auto* online = new QPushButton(QStringLiteral("Check time online"), &dialog);
+  connect(windows, &QPushButton::clicked, &dialog, [] {
+    QProcess::startDetached(QStringLiteral("control.exe"), {QStringLiteral("timedate.cpl,,0")});
+  });
+  connect(online, &QPushButton::clicked, &dialog, [] {
+    QDesktopServices::openUrl(QUrl(QStringLiteral("https://time.is/")));
+  });
+  auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
+  auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
+  auto* buttons = new QHBoxLayout;
+  buttons->addWidget(windows);
+  buttons->addWidget(online);
+  buttons->addStretch(1);
+  buttons->addWidget(ok);
+  buttons->addWidget(cancel);
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->addLayout(form);
+  layout->addWidget(note);
+  layout->addLayout(buttons);
+  connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+  connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  QSettings store;
+  store.setValue(QStringLiteral("dx/clockOffsetMs"), offset->value());
+  applyDxOptions();
+}
+
+void MainWindow::openMacrosDialog() {
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("Macros"));
+  dialog.setMinimumWidth(480);
+  QLineEdit* edits[8] = {};
+  auto* form = new QFormLayout;
+  QSettings settings;
+  for (int i = 0; i < 8; ++i) {
+    edits[i] = new QLineEdit(settings.value(QStringLiteral("dx/macro/%1").arg(i + 1)).toString(), &dialog);
+    edits[i]->setPlaceholderText(QStringLiteral("Local text. Not transmitted."));
+    form->addRow(QStringLiteral("M%1").arg(i + 1), edits[i]);
+  }
+  auto* note = new QLabel(
+      QStringLiteral("A filled button copies its text into the transmit box. Nothing is sent, and the radio is not keyed."),
+      &dialog);
+  note->setWordWrap(true);
+  auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
+  auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
+  auto* buttons = new QHBoxLayout;
+  buttons->addStretch(1);
+  buttons->addWidget(ok);
+  buttons->addWidget(cancel);
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->addLayout(form);
+  layout->addWidget(note);
+  layout->addLayout(buttons);
+  connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+  connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  QSettings store;
+  for (int i = 0; i < 8; ++i)
+    store.setValue(QStringLiteral("dx/macro/%1").arg(i + 1), edits[i]->text());
+  reloadMacros();
+}
+
+void MainWindow::openNetworkDialog() {
+  QSettings settings;
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("Network configuration"));
+  dialog.setMinimumWidth(460);
+  auto* enable = new QCheckBox(QStringLiteral("Enable PSK Reporter style spots"), &dialog);
+  enable->setChecked(settings.value(QStringLiteral("dx/reportEnabled"), false).toBool());
+  auto* call = new QLineEdit(settings.value(QStringLiteral("dx/reportCall")).toString(), &dialog);
+  call->setPlaceholderText(QStringLiteral("Callsign"));
+  auto* grid = new QLineEdit(settings.value(QStringLiteral("dx/reportGrid")).toString(), &dialog);
+  grid->setPlaceholderText(QStringLiteral("Grid"));
+  auto* host = new QLineEdit(
+      settings.value(QStringLiteral("dx/reportHost"), QStringLiteral("report.pskreporter.info")).toString(),
+      &dialog);
+  auto* port = new QSpinBox(&dialog);
+  port->setRange(1, 65535);
+  port->setValue(settings.value(QStringLiteral("dx/reportPort"), 4739).toInt());
+  auto* form = new QFormLayout;
+  form->addRow(QStringLiteral("Call"), call);
+  form->addRow(QStringLiteral("Grid"), grid);
+  form->addRow(QStringLiteral("Server"), host);
+  form->addRow(QStringLiteral("UDP port"), port);
+  auto* note = new QLabel(
+      QStringLiteral("The address is saved. This build does not send spots, and it does not key."),
+      &dialog);
+  note->setWordWrap(true);
+  auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
+  auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
+  auto* buttons = new QHBoxLayout;
+  buttons->addStretch(1);
+  buttons->addWidget(ok);
+  buttons->addWidget(cancel);
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->addWidget(enable);
+  layout->addLayout(form);
+  layout->addWidget(note);
+  layout->addLayout(buttons);
+  connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+  connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  QSettings store;
+  store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
+  store.setValue(QStringLiteral("dx/reportCall"), call->text().trimmed());
+  store.setValue(QStringLiteral("dx/reportGrid"), grid->text().trimmed());
+  store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
+  store.setValue(QStringLiteral("dx/reportPort"), port->value());
 }
 
 void MainWindow::setReceivePlaceholder(bool connected) {

@@ -22,10 +22,13 @@ void ft8_session_close(Ft8Session* session);
 /* samples are mutable: the decoder subtracts tones in place.
    lowHz/highHz are the audio window (Start and Start+BW).
    rxHz is the RX marker (nfqso). txHz is the TX marker (SetStTxFreq).
+   depth is 1 fast, 2 normal, 3 deep. apOn enables a-priori decode.
+   id3dec is 1, 2, or 3 for three-stage FT8, or 100 for one pass.
    hhmmss is the UTC start of the 15-second period.
    Returns the number of lines handed to fn. */
 int ft8_session_decode(Ft8Session* session, double* samples, int count, int lowHz, int highHz,
-                       int rxHz, int txHz, const char* hhmmss, Ft8LineFn fn, void* user);
+                       int rxHz, int txHz, int depth, int apOn, int id3dec, const char* hhmmss,
+                       Ft8LineFn fn, void* user);
 
 #ifdef __cplusplus
 }

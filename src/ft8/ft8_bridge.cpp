@@ -54,7 +54,8 @@ extern "C" __declspec(dllexport) void ft8_session_close(Ft8Session* session) {
 
 extern "C" __declspec(dllexport) int ft8_session_decode(Ft8Session* session, double* samples,
                                                         int count, int lowHz, int highHz, int rxHz,
-                                                        int txHz, const char* hhmmss, Ft8LineFn fn,
+                                                        int txHz, int depth, int apOn, int id3dec,
+                                                        const char* hhmmss, Ft8LineFn fn,
                                                         void* user) {
   if (!session || !session->decoder || !samples || count < 1024)
     return 0;
@@ -71,17 +72,28 @@ extern "C" __declspec(dllexport) int ft8_session_decode(Ft8Session* session, dou
   if (txHz > 5000)
     txHz = 5000;
 
+  if (depth < 1)
+    depth = 1;
+  if (depth > 3)
+    depth = 3;
+  const bool staged = id3dec >= 1 && id3dec <= 3;
+  if (!staged)
+    id3dec = 100;
+
   session->lines.clear();
   const QString stamp = QString::fromLatin1(hhmmss && hhmmss[0] ? hhmmss : "000000");
   session->decoder->SetStDecode(stamp, 0, false);
   session->decoder->SetNewP(true);
   session->decoder->SetStTxFreq(txHz);
+  session->decoder->SetStDecoderDeep(depth);
+  session->decoder->SetStApDecode(apOn != 0);
+  session->decoder->Decode3intFt(staged);
 
   bool have = false;
   try {
-    // id3dec 100 is MSHV's normal timed pass. The buffer is the waveform,
-    // not a zero-padded 15 seconds.
-    session->decoder->ft8_decode(samples, count, lowHz, highHz, rxHz, have, 100, lowHz, highHz);
+    // id3dec 1/2/3 are MSHV's three-stage passes. 100 is one pass on the
+    // waveform, not a zero-padded 15 seconds.
+    session->decoder->ft8_decode(samples, count, lowHz, highHz, rxHz, have, id3dec, lowHz, highHz);
   } catch (...) {
     return 0;
   }

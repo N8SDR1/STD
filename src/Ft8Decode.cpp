@@ -30,9 +30,9 @@
 namespace {
 
 constexpr int kAudioRate = 12000;
-// 79 FT8 symbols at 160 ms. The waveform is in before the 15 s boundary.
+// 79 FT8 symbols at 160 ms. The single pass starts once that waveform is in.
 constexpr int kDecodeSamples = 12640 * kAudioRate / 1000;
-constexpr int kMinReal = kDecodeSamples - 1200;
+constexpr int kMinKeep = 6 * kAudioRate;
 constexpr int kRing = 20 * kAudioRate;
 constexpr qint64 kPeriodMs = 15000;
 constexpr qint64 kDecodeAtMs = 12640;
@@ -53,6 +53,9 @@ struct Job {
   int highHz = 3500;
   int rxHz = 1200;
   int txHz = 1500;
+  int depth = 1;
+  int ap = 1;
+  int id3dec = 100;
   QString stamp;
 };
 
@@ -122,7 +125,7 @@ public:
         job = std::move(queue_.front());
         queue_.pop_front();
       }
-      if (job.samples.size() < static_cast<size_t>(kMinReal))
+      if (job.samples.size() < static_cast<size_t>(kMinKeep))
         continue;
       double sum = 0.0;
       for (double& sample : job.samples) {
@@ -135,7 +138,7 @@ public:
       const QByteArray stamp = job.stamp.toLatin1();
       std::vector<Hit> lines;
       decode(session, job.samples.data(), static_cast<int>(job.samples.size()), job.lowHz, job.highHz,
-             job.rxHz, job.txHz, stamp.constData(),
+             job.rxHz, job.txHz, job.depth, job.ap, job.id3dec, stamp.constData(),
              [](const char* time, int db, const char* dt, const char* message, int freqHz, void* user) {
                auto* out = static_cast<std::vector<Hit>*>(user);
                Hit hit;
@@ -181,11 +184,16 @@ struct Ft8Decode::Private {
   std::vector<double> ring = std::vector<double>(kRing, 0.0);
   qint64 total = 0;
   qint64 newestMs = 0;
-  qint64 lastSubmitted = -1;
+  qint64 stagePeriod = -1;
+  int stageDone = 0;
   int decim = 0;
   double residual = 0;
   int rate = 0;
   bool armed = false;
+  bool threeStage = true;
+  int depth = 1;
+  bool ap = true;
+  int clockOffsetMs = 0;
   int lowHz = 100;
   int highHz = 3500;
   int rxHz = 1200;
@@ -226,11 +234,20 @@ void Ft8Decode::setSpot(int rxHz, int txHz) {
   d_->txHz = std::clamp(txHz, 0, 5000);
 }
 
+void Ft8Decode::setOptions(bool threeStage, int depth, bool ap, int clockOffsetMs) {
+  QMutexLocker lock(&d_->mutex);
+  d_->threeStage = threeStage;
+  d_->depth = std::clamp(depth, 1, 3);
+  d_->ap = ap;
+  d_->clockOffsetMs = std::clamp(clockOffsetMs, -5000, 5000);
+}
+
 void Ft8Decode::clear() {
   QMutexLocker lock(&d_->mutex);
   d_->total = 0;
   d_->newestMs = 0;
-  d_->lastSubmitted = -1;
+  d_->stagePeriod = -1;
+  d_->stageDone = 0;
   d_->decim = 0;
   d_->residual = 0;
   d_->rate = 0;
@@ -289,31 +306,57 @@ void Ft8Decode::poll() {
     QMutexLocker lock(&d_->mutex);
     if (!d_->armed || d_->newestMs <= 0)
       return;
-    const qint64 periodStart = (d_->newestMs / kPeriodMs) * kPeriodMs;
-    if (d_->newestMs < periodStart + kDecodeAtMs)
+    const qint64 clock = d_->newestMs + d_->clockOffsetMs;
+    const qint64 periodStart = (clock / kPeriodMs) * kPeriodMs;
+    if (periodStart != d_->stagePeriod) {
+      d_->stagePeriod = periodStart;
+      d_->stageDone = 0;
+    }
+    int id3dec = 100;
+    int samples = kDecodeSamples;
+    qint64 atMs = kDecodeAtMs;
+    if (d_->threeStage) {
+      struct Step {
+        int id;
+        qint64 at;
+        int count;
+      };
+      // MSHV's three FT8 intervals: 141696, 162432, and 172800 samples.
+      const Step steps[] = {{1, 11820, 141696}, {2, 13536, 162432}, {3, 14400, 172800}};
+      if (d_->stageDone >= 3)
+        return;
+      const Step& step = steps[d_->stageDone];
+      id3dec = step.id;
+      atMs = step.at;
+      samples = step.count;
+    } else if (d_->stageDone >= 1) {
       return;
-    if (periodStart == d_->lastSubmitted)
+    }
+    if (clock < periodStart + atMs)
       return;
-    const double samplesBack = static_cast<double>(d_->newestMs - periodStart) * 12.0;
+    const double samplesBack = static_cast<double>(clock - periodStart) * 12.0;
     const qint64 startIdx = (d_->total - 1) - static_cast<qint64>(std::llround(samplesBack));
     const qint64 oldest = d_->total > kRing ? d_->total - kRing : 0;
-    job.samples.assign(static_cast<size_t>(kDecodeSamples), 0.0);
+    job.samples.assign(static_cast<size_t>(samples), 0.0);
     int real = 0;
-    for (int n = 0; n < kDecodeSamples; ++n) {
+    for (int n = 0; n < samples; ++n) {
       const qint64 index = startIdx + n;
       if (index < oldest || index >= d_->total)
         continue;
       job.samples[static_cast<size_t>(n)] = d_->ring[static_cast<size_t>(index % kRing)];
       ++real;
     }
-    if (real < kMinReal)
+    if (real < samples - 1200)
       return;
     job.lowHz = d_->lowHz;
     job.highHz = d_->highHz;
     job.rxHz = d_->rxHz;
     job.txHz = d_->txHz;
+    job.depth = d_->depth;
+    job.ap = d_->ap ? 1 : 0;
+    job.id3dec = id3dec;
     job.stamp = QDateTime::fromMSecsSinceEpoch(periodStart, QTimeZone::utc()).toString(QStringLiteral("hhmmss"));
-    d_->lastSubmitted = periodStart;
+    d_->stageDone += 1;
     ready = true;
   }
   if (!ready)
@@ -321,6 +364,7 @@ void Ft8Decode::poll() {
   ensureWorker();
   if (!d_->worker.submit(std::move(job))) {
     QMutexLocker lock(&d_->mutex);
-    d_->lastSubmitted = -1;
+    if (d_->stageDone > 0)
+      d_->stageDone -= 1;
   }
 }

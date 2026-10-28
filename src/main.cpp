@@ -106,8 +106,17 @@ int shellReady(const MainWindow& window) {
   if (macros.size() != 8)
     return fail("macro row does not have 8 slots");
   for (const QPushButton* button : macros) {
-    if (button->isEnabled())
-      return fail("a macro slot is enabled");
+    if (button->isEnabled() && !button->toolTip().contains(QLatin1String("Does not key")))
+      return fail("a macro slot can key");
+  }
+
+  const char* dxNames[] = {"decodeThreeStage", "decodeAp",     "decodeDepthFast", "decodeDepthNormal",
+                           "decodeDepthDeep",  "timeSync",     "macrosEdit",      "networkConfig",
+                           "listShowTime",     "listShowFreq", "listClearPeriod", "logAuto",
+                           "logPrompt",        "aseqMostDistant", "txConfirm73",  "autoResetQso"};
+  for (const char* name : dxNames) {
+    if (!window.findChild<QAction*>(QLatin1String(name)))
+      return fail("a DX option is missing");
   }
 
   const auto* mode = window.findChild<QLabel*>("modeValue");
