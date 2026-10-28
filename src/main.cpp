@@ -133,6 +133,11 @@ int shellReady(const MainWindow& window) {
   if (!window.findChild<QWidget*>("radioConnect"))
     return fail("connect control is missing");
 
+  const auto* autoConnect = window.findChild<QAction*>("tciAutoConnect");
+  const auto* autoMonitor = window.findChild<QAction*>("tciAutoMonitor");
+  if (!autoConnect || !autoConnect->isCheckable() || !autoMonitor || !autoMonitor->isCheckable())
+    return fail("auto-connect or auto monitor is missing");
+
   const auto* profile = window.findChild<QWidget*>("mshvProfile");
   if (!profile || profile->isHidden())
     return fail("FT8 profile is hidden");

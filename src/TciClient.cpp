@@ -6,6 +6,7 @@
 #include <QtEndian>
 
 #include <QAbstractSocket>
+#include <QCheckBox>
 #include <QDataStream>
 #include <QDialog>
 #include <QFormLayout>
@@ -417,10 +418,25 @@ void openTciConnectDialog(QWidget* parent, TciClient* client) {
   form->addRow(QStringLiteral("Host"), hostEdit);
   form->addRow(QStringLiteral("Port"), portEdit);
 
+  const bool savedConnect = settings.value(QStringLiteral("tci/autoConnect"), true).toBool();
+  const bool savedMonitor = settings.value(QStringLiteral("tci/autoMonitor"), true).toBool();
+  auto* autoConnect = new QCheckBox(QStringLiteral("Auto-connect"), &dialog);
+  autoConnect->setObjectName(QStringLiteral("tciAutoConnectBox"));
+  autoConnect->setChecked(savedConnect);
+  autoConnect->setToolTip(QStringLiteral(
+      "On launch, open the saved host and port. Sends AUDIO_START only. Does not send START and does not key."));
+  auto* autoMonitor = new QCheckBox(QStringLiteral("Auto monitor"), &dialog);
+  autoMonitor->setObjectName(QStringLiteral("tciAutoMonitorBox"));
+  autoMonitor->setChecked(savedMonitor);
+  autoMonitor->setToolTip(QStringLiteral(
+      "Stay on receive and decode. Does not transmit."));
+
   auto* note = new QLabel(
       QStringLiteral(
           "Connect shares the radio and subscribes to receive audio. "
           "It does not send START, and it does not key. "
+          "Auto-connect uses this host and port the next time STD opens. "
+          "Auto monitor stays on receive and decode and does not transmit. "
           "A band button sets the FT8 dial and the sideband."),
       &dialog);
   note->setWordWrap(true);
@@ -439,8 +455,19 @@ void openTciConnectDialog(QWidget* parent, TciClient* client) {
   layout->setContentsMargins(16, 16, 16, 16);
   layout->setSpacing(12);
   layout->addLayout(form);
+  layout->addWidget(autoConnect);
+  layout->addWidget(autoMonitor);
   layout->addWidget(note);
   layout->addLayout(buttons);
+
+  QObject::connect(autoConnect, &QCheckBox::toggled, &dialog, [](bool on) {
+    QSettings store;
+    store.setValue(QStringLiteral("tci/autoConnect"), on);
+  });
+  QObject::connect(autoMonitor, &QCheckBox::toggled, &dialog, [](bool on) {
+    QSettings store;
+    store.setValue(QStringLiteral("tci/autoMonitor"), on);
+  });
 
   QObject::connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
   QObject::connect(connectButton, &QPushButton::clicked, &dialog, [client, hostEdit, portEdit, connectButton] {

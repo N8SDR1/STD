@@ -32,7 +32,9 @@
 #include <QPlainTextEdit>
 #include <QTextBrowser>
 #include <QPushButton>
+#include <QSettings>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QTextCursor>
 #include <QSizePolicy>
 #include <QTimer>
@@ -267,12 +269,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(decodeClock, &QTimer::timeout, this, [this] {
     if (!ft8_ || !profile_)
       return;
-    const bool armed = profile_->mshvFamily() &&
+    const bool armed = autoMonitor_ && profile_->mshvFamily() &&
                        profile_->digitalMode() == QLatin1String("FT8") && profile_->autoDecode();
     const int low = profile_->startHz();
     ft8_->setArmed(armed, low, low + profile_->bandwidthHz());
   });
   decodeClock->start(200);
+
+  QTimer::singleShot(0, this, [this] { maybeAutoConnect(); });
 }
 
 void MainWindow::buildBrandBar() {
@@ -510,6 +514,33 @@ void MainWindow::buildMenus() {
   auto* radioMenu = menuBar()->addMenu("Radio");
   auto* connectRadio = radioMenu->addAction("Connect…");
   connect(connectRadio, &QAction::triggered, this, [this] { openRadioDialog(); });
+  radioMenu->addSeparator();
+
+  QSettings settings;
+  autoMonitor_ = settings.value(QStringLiteral("tci/autoMonitor"), true).toBool();
+  autoConnectAction_ = radioMenu->addAction(QStringLiteral("Auto-connect"));
+  autoConnectAction_->setObjectName(QStringLiteral("tciAutoConnect"));
+  autoConnectAction_->setCheckable(true);
+  autoConnectAction_->setChecked(settings.value(QStringLiteral("tci/autoConnect"), true).toBool());
+  autoConnectAction_->setToolTip(QStringLiteral(
+      "On launch, open the last TCI host and port. Sends AUDIO_START only. Does not send START and does not key."));
+  connect(autoConnectAction_, &QAction::toggled, this, [](bool on) {
+    QSettings store;
+    store.setValue(QStringLiteral("tci/autoConnect"), on);
+  });
+
+  autoMonitorAction_ = radioMenu->addAction(QStringLiteral("Auto monitor"));
+  autoMonitorAction_->setObjectName(QStringLiteral("tciAutoMonitor"));
+  autoMonitorAction_->setCheckable(true);
+  autoMonitorAction_->setChecked(autoMonitor_);
+  autoMonitorAction_->setToolTip(QStringLiteral(
+      "Stay on receive and decode. Does not transmit."));
+  connect(autoMonitorAction_, &QAction::toggled, this, [this](bool on) {
+    autoMonitor_ = on;
+    QSettings store;
+    store.setValue(QStringLiteral("tci/autoMonitor"), on);
+    applyMonitorLabel();
+  });
 
   auto* modeMenu = menuBar()->addMenu("Mode");
   modeMenu->setObjectName("modeMenu");
@@ -585,7 +616,8 @@ void MainWindow::showGuide() {
   } sections[] = {
       {"Connect",
        "Radio → Connect opens one TCI socket. It sends AUDIO_START for receiver 0 and nothing else. "
-       "It does not send START, and it does not key."},
+       "It does not send START, and it does not key. Auto-connect opens the last host and port when "
+       "STD starts. Auto monitor stays on receive and decode and does not transmit."},
       {"Waterfall zoom",
        "The wheel zooms around the cursor. Drag pans. Both stay inside the receive band the radio "
        "reports. A double-click or a right-click opens that whole band again. Start and BW narrow "
@@ -674,6 +706,48 @@ void MainWindow::showEvent(QShowEvent* event) {
 void MainWindow::openRadioDialog() {
   if (tci_)
     openTciConnectDialog(this, tci_);
+  syncConnectOptions();
+}
+
+void MainWindow::syncConnectOptions() {
+  QSettings settings;
+  autoMonitor_ = settings.value(QStringLiteral("tci/autoMonitor"), true).toBool();
+  const bool connectOn = settings.value(QStringLiteral("tci/autoConnect"), true).toBool();
+  if (autoConnectAction_) {
+    const QSignalBlocker block(autoConnectAction_);
+    autoConnectAction_->setChecked(connectOn);
+  }
+  if (autoMonitorAction_) {
+    const QSignalBlocker block(autoMonitorAction_);
+    autoMonitorAction_->setChecked(autoMonitor_);
+  }
+  applyMonitorLabel();
+}
+
+void MainWindow::maybeAutoConnect() {
+  if (qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return;
+  if (!tci_ || tci_->isOpen())
+    return;
+  QSettings settings;
+  if (!settings.value(QStringLiteral("tci/autoConnect"), true).toBool())
+    return;
+  if (!settings.contains(QStringLiteral("tci/host")))
+    return;
+  const QString host = settings.value(QStringLiteral("tci/host")).toString().trimmed();
+  const int port = settings.value(QStringLiteral("tci/port"), TciClient::kDefaultPort).toInt();
+  if (host.isEmpty() || port < 1 || port > 65535)
+    return;
+  tci_->connectToHost(host, static_cast<quint16>(port));
+}
+
+void MainWindow::applyMonitorLabel() {
+  if (!tci_ || !tci_->isOpen() || !statusStrip_)
+    return;
+  const QString line = autoMonitor_
+                           ? QStringLiteral("Monitor %1:%2").arg(tci_->host()).arg(tci_->port())
+                           : QStringLiteral("Connected %1:%2").arg(tci_->host()).arg(tci_->port());
+  statusStrip_->setRadio(true, line);
 }
 
 void MainWindow::setReceivePlaceholder(bool connected) {
@@ -711,7 +785,8 @@ void MainWindow::showRadioUp(const QString& host, quint16 port) {
   dialText_ = QString::fromUtf8("—");
   setReceivePlaceholder(true);
   if (statusStrip_) {
-    statusStrip_->setRadio(true, QStringLiteral("Connected %1:%2").arg(host).arg(port));
+    statusStrip_->setRadio(true, autoMonitor_ ? QStringLiteral("Monitor %1:%2").arg(host).arg(port)
+                                               : QStringLiteral("Connected %1:%2").arg(host).arg(port));
     statusStrip_->setDial(dialText_);
     statusStrip_->setPtt(false, true);
   }

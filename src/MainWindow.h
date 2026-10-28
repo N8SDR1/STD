@@ -10,6 +10,7 @@
 
 class Ft8Decode;
 class ModeProfile;
+class QAction;
 class QDockWidget;
 class QShowEvent;
 class QToolBar;
@@ -38,6 +39,9 @@ private:
   void showGuide();
   void tuneActiveBand();
   void openRadioDialog();
+  void syncConnectOptions();
+  void maybeAutoConnect();
+  void applyMonitorLabel();
   void setReceivePlaceholder(bool connected);
   void showRadioDown(const QString& error);
   void showRadioUp(const QString& host, quint16 port);
@@ -63,6 +67,9 @@ private:
   StatusStrip* statusStrip_ = nullptr;
   TciClient* tci_ = nullptr;
   Ft8Decode* ft8_ = nullptr;
+  QAction* autoConnectAction_ = nullptr;
+  QAction* autoMonitorAction_ = nullptr;
+  bool autoMonitor_ = true;
   QVector<DecodeRow> decodes_;
   QString dialText_ = QString::fromUtf8("—");
   QDockWidget* waterfallDock_ = nullptr;
