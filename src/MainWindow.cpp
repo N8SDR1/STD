@@ -1109,24 +1109,25 @@ void MainWindow::showGuide() {
        "uses 10.144 MHz. The band button sends vfo:0,0,<Hz> and modulation:0,digu. That is not START "
        "and it does not key."},
       {"Fox/Hound",
-       "Hound, on the FT8 bar, sets 40 m to 7.056 MHz DIGU and moves the RX marker to 750 Hz. "
-       "That is the fox. It is still 15 second FT8. Multi turns on MSHV multi-answer so the decoder "
-       "keeps a-priori state for more than one caller. Transmit stays off. Neither control keys the radio, "
-       "and neither sends START."},
+       "Super Hound or Super Fox, on the mode bar, sets 40 m to 7.056 MHz DIGU and moves the RX marker "
+       "to 750 Hz. That is the fox. It is still 15 second FT8. TX FIRST and TX SECOND only remember a "
+       "slot. Multi turns on MSHV multi-answer so the decoder keeps a-priori state for more than one "
+       "caller. Transmit stays off. None of these key the radio, and none send START."},
       {"FT8 and FT4 decode",
        "Auto Dec is on by default. The MSHV FT8 decoder starts on the period that is still running, "
        "about 11.8 seconds in, before the tones end, then again at 13.6 and 14.6 seconds when three-stage "
        "is on. FT4 is one pass at 6.1 seconds of its 7.5 second period. FT2 is one pass at 3.4 seconds of "
        "its 3.75 second period. MSHV does not run that three-stage "
        "timer for FT4. Each line is painted as soon as the decoder finds it. The Receive pane has column "
-       "headers Time, dB, DT, Message, and Freq. Filter keeps lines that contain the text. CLR MSG clears "
-       "the list. Freq is the audio frequency in Hz. Dist is not computed. The band buttons use the WSJT-X "
+       "headers Time, dB, DT, Dist, Message, and Freq. Dist is miles or kilometers from your grid. "
+       "Filter keeps lines that contain the text. CLR MSG clears "
+       "the list. Freq is the audio frequency in Hz. The band buttons use the WSJT-X "
        "dials and send modulation:0,digu on every band. Decoding does not send START and it does not key."},
       {"DX options",
        "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Time "
        "Synchronization calibrates the period clock. Macros edit eight local texts. Network "
        "Configuration stores a PSK Reporter style address and does not send spots. Decode List "
-       "Options show or hide Time and Freq, and can clear the list each period. Log options, ASeq, "
+       "Options show or hide Time, Dist, and Freq, and can clear the list each period. Log options, ASeq, "
        "TX confirmation, and Auto RESET QSO are saved. Transmit is off, so they do not key."},
       {"RX and TX markers",
        "A green band is the RX channel and a red band is the TX channel. Each starts at the marker "
