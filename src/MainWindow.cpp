@@ -911,6 +911,76 @@ void MainWindow::buildMenus() {
   networkConfig->setToolTip(QStringLiteral("PSK Reporter style settings. Spots are not sent. Does not key."));
   connect(networkConfig, &QAction::triggered, this, [this] { openNetworkDialog(); });
 
+  auto* textMenu = optionsMenu->addMenu(QStringLiteral("RX / TX Text"));
+  textMenu->setObjectName(QStringLiteral("textStyleMenu"));
+  auto* fontMenu = textMenu->addMenu(QStringLiteral("Font"));
+  auto* sizeMenu = textMenu->addMenu(QStringLiteral("Size"));
+  auto* fontGroup = new QActionGroup(this);
+  fontGroup->setExclusive(true);
+  auto* sizeGroup = new QActionGroup(this);
+  sizeGroup->setExclusive(true);
+  const QString savedFont =
+      dxSettings.value(QStringLiteral("ui/textFont"), QStringLiteral("Consolas")).toString();
+  const QString savedSize =
+      dxSettings.value(QStringLiteral("ui/textSize"), QStringLiteral("medium")).toString();
+  const struct {
+    const char* name;
+    const char* label;
+  } fonts[] = {{"textFontConsolas", "Consolas"},
+               {"textFontCascadiaMono", "Cascadia Mono"},
+               {"textFontLucidaConsole", "Lucida Console"},
+               {"textFontCourierNew", "Courier New"},
+               {"textFontSegoeUI", "Segoe UI"}};
+  bool fontChecked = false;
+  for (const auto& row : fonts) {
+    auto* action = fontMenu->addAction(QString::fromLatin1(row.label));
+    action->setObjectName(QLatin1String(row.name));
+    action->setCheckable(true);
+    const bool on = savedFont == QLatin1String(row.label);
+    action->setChecked(on);
+    fontChecked = fontChecked || on;
+    action->setToolTip(QStringLiteral(
+        "Font for the receive list, its titles, and the transmit box. This does not key."));
+    fontGroup->addAction(action);
+    connect(action, &QAction::triggered, this, [this, family = QString::fromLatin1(row.label)] {
+      QSettings store;
+      store.setValue(QStringLiteral("ui/textFont"), family);
+      applyTextStyle();
+    });
+  }
+  if (!fontChecked && !fontMenu->actions().isEmpty())
+    fontMenu->actions().at(0)->setChecked(true);
+  const struct {
+    const char* name;
+    const char* label;
+    const char* key;
+  } textSizes[] = {{"textSizeSmall", "Small", "small"},
+                   {"textSizeMedium", "Medium", "medium"},
+                   {"textSizeLarge", "Large", "large"}};
+  bool sizeChecked = false;
+  for (const auto& row : textSizes) {
+    auto* action = sizeMenu->addAction(QString::fromLatin1(row.label));
+    action->setObjectName(QLatin1String(row.name));
+    action->setCheckable(true);
+    const bool on = savedSize == QLatin1String(row.key);
+    action->setChecked(on);
+    sizeChecked = sizeChecked || on;
+    action->setToolTip(QStringLiteral(
+        "Size for the receive list, its titles, and the transmit box. This does not key."));
+    sizeGroup->addAction(action);
+    connect(action, &QAction::triggered, this, [this, key = QString::fromLatin1(row.key)] {
+      QSettings store;
+      store.setValue(QStringLiteral("ui/textSize"), key);
+      applyTextStyle();
+    });
+  }
+  if (!sizeChecked) {
+    for (QAction* action : sizeMenu->actions()) {
+      if (action->objectName() == QLatin1String("textSizeMedium"))
+        action->setChecked(true);
+    }
+  }
+
   auto* listMenu = optionsMenu->addMenu(QStringLiteral("Decode List Options"));
   addCheck(listMenu, "listShowTime", QStringLiteral("Show Time Column"), "dx/showTime", true,
            QStringLiteral("Show or hide the Time column."));
@@ -1045,6 +1115,7 @@ void MainWindow::buildMenus() {
   connect(guide, &QAction::triggered, this, [this] { showGuide(); });
   auto* about = helpMenu->addAction("About STD");
   connect(about, &QAction::triggered, this, [this] { showAbout(); });
+  applyTextStyle();
 }
 
 void MainWindow::activateDigitalMode(const QString& modeName) {
@@ -1192,6 +1263,10 @@ void MainWindow::showGuide() {
        "Configuration stores a PSK Reporter style address and does not send spots. Decode List "
        "Options show or hide Time, Dist, and Freq, and can clear the list each period. Log options, ASeq, "
        "TX confirmation, and Auto RESET QSO are saved. Those options do not key."},
+      {"Text",
+       "Options → RX / TX Text sets the font and the size of the receive list, its column titles, "
+       "and the transmit box. The faces are Consolas, Cascadia Mono, Lucida Console, Courier New, "
+       "and Segoe UI. The sizes are small, medium, and large. The choice is remembered. It does not key."},
       {"TX",
        "Click or double-click a decode to load an MSHV-style reply and move the TX marker to that "
        "station. That click does not key. Tune sends a tone at the TX marker and holds TRX until you "
@@ -2139,6 +2214,32 @@ void MainWindow::openDecodeFilters() {
   settings.setValue(QStringLiteral("dx/filterText"), filterText_);
   settings.setValue(QStringLiteral("dx/hideContinent"), hide);
   refreshDecodes();
+}
+
+void MainWindow::applyTextStyle() {
+  QSettings settings;
+  QString family = settings.value(QStringLiteral("ui/textFont"), QStringLiteral("Consolas")).toString();
+  const QString sizeName = settings.value(QStringLiteral("ui/textSize"), QStringLiteral("medium")).toString();
+  const QStringList faces = {QStringLiteral("Consolas"), QStringLiteral("Cascadia Mono"),
+                             QStringLiteral("Lucida Console"), QStringLiteral("Courier New"),
+                             QStringLiteral("Segoe UI")};
+  if (!faces.contains(family))
+    family = QStringLiteral("Consolas");
+  int pixelSize = 13;
+  if (sizeName == QLatin1String("small"))
+    pixelSize = 11;
+  else if (sizeName == QLatin1String("large"))
+    pixelSize = 16;
+  QFont font(family);
+  font.setStyleHint(family == QLatin1String("Segoe UI") ? QFont::SansSerif : QFont::Monospace);
+  font.setPixelSize(pixelSize);
+  if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
+    edit->setFont(font);
+  if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("transmitText")))
+    edit->setFont(font);
+  if (auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader")))
+    header->setFont(font);
+  alignDecodeHeader();
 }
 
 void MainWindow::applyDxOptions() {

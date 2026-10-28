@@ -58,6 +58,7 @@ private:
   void maybeAutoConnect();
   void applyMonitorLabel();
   void applyDxOptions();
+  void applyTextStyle();
   void refreshDecodeHeader();
   void reloadMacros();
   void openTimeDialog();
