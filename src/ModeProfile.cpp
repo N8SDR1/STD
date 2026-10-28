@@ -607,6 +607,30 @@ bool ModeProfile::hound() const {
   return hound_;
 }
 
+void ModeProfile::setTxFirst(bool first) {
+  if (auto* button = findChild<QRadioButton*>(QStringLiteral("txFirst"))) {
+    if (!button->isEnabled())
+      first = false;
+    const QSignalBlocker block(button);
+    button->setChecked(first);
+  }
+  if (auto* button = findChild<QRadioButton*>(QStringLiteral("txSecond"))) {
+    const QSignalBlocker block(button);
+    button->setChecked(!first);
+  }
+  txFirst_ = first;
+  remember();
+}
+
+void ModeProfile::setTxFirstLocked(bool locked) {
+  auto* first = findChild<QRadioButton*>(QStringLiteral("txFirst"));
+  if (!first)
+    return;
+  first->setEnabled(!locked);
+  if (locked)
+    setTxFirst(false);
+}
+
 bool ModeProfile::multiAnswer() const {
   return multiAnswer_;
 }

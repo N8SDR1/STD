@@ -56,6 +56,7 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStringList>
+#include <QTabWidget>
 #include <QTextCursor>
 #include <QTextFrame>
 #include <QUrl>
@@ -438,6 +439,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             if (decodes_.size() >= 500)
               decodes_.remove(0, decodes_.size() - 499);
             decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
+            noteTheirReply(message);
             refreshDecodes();
           },
           Qt::QueuedConnection);
@@ -452,7 +454,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       if (on && waterfall_)
         waterfall_->setRxHz(750);
       applyChannelWidth();
+      refreshTxChrome();
     });
+    connect(profile_, &ModeProfile::multiAnswerChanged, this, [this](bool) { refreshTxChrome(); });
     connect(profile_, &ModeProfile::filtersChanged, this, [this](bool on) {
       filtersOn_ = on;
       refreshDecodes();
@@ -579,7 +583,7 @@ void MainWindow::buildDocks() {
       "transmitText",
       "Transmit text.",
       false,
-      "Double-click a CQ to fill the reply. Tune stops itself. START is never sent."));
+      "Double-click a decode to arm the other slot. Tune stops itself. START is never sent."));
   transmitDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
 
   macroDock_ = new QDockWidget("Macros", this);
@@ -623,8 +627,11 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       pick->setObjectName(pickName);
       pick->setFont(interfaceFont(11));
       pick->setFocusPolicy(Qt::NoFocus);
-      pick->setToolTip(QStringLiteral("Choose this line. This does not key."));
+      pick->setToolTip(QStringLiteral(
+          "Choose this line and arm it for the TX FIRST or TX SECOND slot. "
+          "TRX waits for that slot. START is never sent."));
       picks->addButton(pick);
+      connect(pick, &QRadioButton::clicked, this, [this] { armUserTx(); });
       auto* field = new QLineEdit(panel);
       field->setObjectName(name);
       field->setMaxLength(36);
@@ -640,6 +647,90 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     standard->setObjectName(QStringLiteral("txStandard"));
     standard->setFont(interfaceFont(12));
     layout->addWidget(standard);
+    auto* activity = new QComboBox(panel);
+    activity->setObjectName(QStringLiteral("txActivity"));
+    activity->setFont(interfaceFont(12));
+    activity->setFocusPolicy(Qt::NoFocus);
+    activity->setToolTip(QStringLiteral(
+        "Standard or contest messages, as in MSHV. Changing this does not key. START is never sent."));
+    const struct {
+      int id;
+      const char* name;
+    } activities[] = {
+        {0, "Standard"},
+        {1, "EU RSQ And Serial Number"},
+        {2, "NA VHF Contest"},
+        {3, "EU VHF Contest"},
+        {4, "ARRL Field Day"},
+        {5, "ARRL Inter. Digital Contest"},
+        {6, "WW Digi DX Contest"},
+        {7, "FT4 DX Contest"},
+        {8, "FT8 DX Contest"},
+        {9, "FT Roundup Contest"},
+        {10, "Bucuresti Digital Contest"},
+        {11, "FT4 SPRINT Fast Training"},
+        {12, "PRO DIGI Contest"},
+        {13, "CQ WW VHF Contest"},
+        {14, "Pileup"},
+        {15, "NCCC Sprint"},
+        {16, "ARRL Inter. EME Contest"},
+        {17, "FT Challenge Contest"},
+    };
+    for (const auto& item : activities)
+      activity->addItem(QString::fromLatin1(item.name), item.id);
+    {
+      const int saved = QSettings().value(QStringLiteral("tx/activity"), 0).toInt();
+      const int index = activity->findData(saved);
+      const QSignalBlocker block(activity);
+      activity->setCurrentIndex(index < 0 ? 0 : index);
+    }
+    layout->addWidget(activity);
+    auto* exchange = new QHBoxLayout();
+    exchange->setSpacing(6);
+    auto* fdExch = new QLineEdit(panel);
+    fdExch->setObjectName(QStringLiteral("txFdExch"));
+    fdExch->setFont(monoFont(13));
+    fdExch->setMaxLength(12);
+    fdExch->setPlaceholderText(QStringLiteral("1A EMA"));
+    fdExch->setText(QSettings().value(QStringLiteral("tx/fdExch")).toString());
+    fdExch->setToolTip(QStringLiteral(
+        "Field Day exchange. Tx1 through Tx3 use it. Editing it does not key."));
+    auto* ruExch = new QLineEdit(panel);
+    ruExch->setObjectName(QStringLiteral("txRuExch"));
+    ruExch->setFont(monoFont(13));
+    ruExch->setMaxLength(8);
+    ruExch->setPlaceholderText(QStringLiteral("DX"));
+    ruExch->setText(QSettings().value(QStringLiteral("tx/ruExch"), QStringLiteral("DX")).toString());
+    ruExch->setToolTip(QStringLiteral(
+        "Roundup exchange. DX uses a serial. A number is sent as four digits. This does not key."));
+    auto* serial = new QSpinBox(panel);
+    serial->setObjectName(QStringLiteral("txSerial"));
+    serial->setFont(interfaceFont(12));
+    serial->setRange(1, 9999);
+    serial->setPrefix(QStringLiteral("SN "));
+    serial->setValue(std::clamp(QSettings().value(QStringLiteral("tx/serial"), 1).toInt(), 1, 9999));
+    serial->setToolTip(QStringLiteral("Contest serial. Changing it does not key."));
+    exchange->addWidget(fdExch, 1);
+    exchange->addWidget(ruExch);
+    exchange->addWidget(serial);
+    layout->addLayout(exchange);
+    connect(activity, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+      QSettings().setValue(QStringLiteral("tx/activity"), txActivityId());
+      refreshTxChrome();
+    });
+    connect(fdExch, &QLineEdit::textChanged, this, [this](const QString& text) {
+      QSettings().setValue(QStringLiteral("tx/fdExch"), text.trimmed());
+      refreshTxFields();
+    });
+    connect(ruExch, &QLineEdit::textChanged, this, [this](const QString& text) {
+      QSettings().setValue(QStringLiteral("tx/ruExch"), text.trimmed());
+      refreshTxFields();
+    });
+    connect(serial, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+      QSettings().setValue(QStringLiteral("tx/serial"), value);
+      refreshTxFields();
+    });
+
     for (int i = 1; i <= 6; ++i)
       addLine(QStringLiteral("tx%1").arg(i), QStringLiteral("txPick%1").arg(i), QString::number(i));
     auto* extraLabel = new QLabel(QStringLiteral("Extra"), panel);
@@ -663,8 +754,230 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       QSettings().setValue(QStringLiteral("dx/txQrg"), txQrg_);
       refreshTxFields();
     });
-    refreshTxFields();
     selectTxSlot(5);
+
+    auto* houndNote = new QLabel(
+        QStringLiteral("Super Hound answers on TX SECOND. Tx2 stays off. This does not key."), panel);
+    houndNote->setObjectName(QStringLiteral("txHoundNote"));
+    houndNote->setFont(interfaceFont(11));
+    houndNote->setWordWrap(true);
+    layout->addWidget(houndNote);
+
+    auto* tabs = new QTabWidget(panel);
+    tabs->setObjectName(QStringLiteral("txMultiOptions"));
+    tabs->setFont(interfaceFont(11));
+    tabs->setDocumentMode(true);
+    auto* queuePage = new QPlainTextEdit(tabs);
+    queuePage->setObjectName(QStringLiteral("txQueueList"));
+    queuePage->setReadOnly(true);
+    queuePage->setFont(monoFont(12));
+    queuePage->setPlaceholderText(QStringLiteral("Queue"));
+    queuePage->setToolTip(QStringLiteral("Callers waiting. This does not key."));
+    auto* nowPage = new QPlainTextEdit(tabs);
+    nowPage->setObjectName(QStringLiteral("txNowList"));
+    nowPage->setReadOnly(true);
+    nowPage->setFont(monoFont(12));
+    nowPage->setPlaceholderText(QStringLiteral("Now"));
+    nowPage->setToolTip(QStringLiteral("Callers in this pass. This does not key."));
+    auto* settings = new QWidget(tabs);
+    settings->setObjectName(QStringLiteral("txMultiSettings"));
+    auto* settingsLayout = new QVBoxLayout(settings);
+    settingsLayout->setContentsMargins(4, 4, 4, 4);
+    settingsLayout->setSpacing(4);
+    auto* limits = new QHBoxLayout();
+    limits->setSpacing(6);
+    auto* limitCol = new QVBoxLayout();
+    limitCol->setSpacing(2);
+    auto* queueLimit = new QSpinBox(settings);
+    queueLimit->setObjectName(QStringLiteral("txQueueLimit"));
+    queueLimit->setFont(interfaceFont(12));
+    queueLimit->setRange(0, 50);
+    queueLimit->setPrefix(QStringLiteral("Queue Limit:  "));
+    queueLimit->setValue(std::clamp(QSettings().value(QStringLiteral("tx/queueLimit"), 5).toInt(), 0, 50));
+    queueLimit->setToolTip(QStringLiteral("How many callers can wait. This does not key."));
+    auto* slotCount = new QSpinBox(settings);
+    slotCount->setObjectName(QStringLiteral("txSlots"));
+    slotCount->setFont(interfaceFont(12));
+    slotCount->setRange(1, 5);
+    slotCount->setPrefix(QStringLiteral("TX Slots:  "));
+    slotCount->setValue(std::clamp(QSettings().value(QStringLiteral("tx/txSlots"), 1).toInt(), 1, 5));
+    slotCount->setToolTip(QStringLiteral(
+        "How many answers can go out in one pass. Super Fox hides this. This does not key."));
+    auto* maxPeriods = new QSpinBox(settings);
+    maxPeriods->setObjectName(QStringLiteral("txMaxPeriods"));
+    maxPeriods->setFont(interfaceFont(12));
+    maxPeriods->setRange(1, 30);
+    maxPeriods->setValue(std::clamp(QSettings().value(QStringLiteral("tx/maxPeriods"), 2).toInt(), 1, 30));
+    {
+      const bool asPeriods = QSettings().value(QStringLiteral("tx/maxIsPeriods"), true).toBool();
+      maxPeriods->setPrefix(asPeriods ? QStringLiteral("Max Periods:  ") : QStringLiteral("Max Time:  "));
+      maxPeriods->setSuffix(asPeriods ? QString() : QStringLiteral("  min"));
+    }
+    maxPeriods->setToolTip(QStringLiteral(
+        "Double-click to switch Max Periods and Max Time. This does not key."));
+    maxPeriods->installEventFilter(this);
+    if (auto* inner = maxPeriods->findChild<QLineEdit*>()) {
+      inner->setObjectName(QStringLiteral("txMaxPeriodsEdit"));
+      inner->installEventFilter(this);
+    }
+    limitCol->addWidget(queueLimit);
+    limitCol->addWidget(slotCount);
+    limitCol->addWidget(maxPeriods);
+    auto* optionCol = new QVBoxLayout();
+    optionCol->setSpacing(2);
+    auto* dupes = new QComboBox(settings);
+    dupes->setObjectName(QStringLiteral("txDupes"));
+    dupes->setFont(interfaceFont(12));
+    dupes->addItems({QStringLiteral("No Limit"), QStringLiteral("1 QSO"), QStringLiteral("2 QSOs"),
+                     QStringLiteral("3 QSOs")});
+    dupes->setCurrentIndex(std::clamp(QSettings().value(QStringLiteral("tx/dupe"), 0).toInt(), 0, 3));
+    dupes->setToolTip(QStringLiteral("Maximum QSOs per call. This does not key."));
+    auto* flagRow = new QHBoxLayout();
+    flagRow->setSpacing(8);
+    auto* cns = new QCheckBox(QStringLiteral("CNS"), settings);
+    cns->setObjectName(QStringLiteral("txCns"));
+    cns->setFont(interfaceFont(12));
+    cns->setChecked(QSettings().value(QStringLiteral("tx/cns"), false).toBool());
+    cns->setToolTip(QStringLiteral("Continue non-stop. Checking it does not key."));
+    flagRow->addWidget(cns);
+    flagRow->addStretch(1);
+    auto* sort = new QComboBox(settings);
+    sort->setObjectName(QStringLiteral("txSort"));
+    sort->setFont(interfaceFont(12));
+    sort->addItems({QStringLiteral("Sort Off"), QStringLiteral("Distance"), QStringLiteral("S/N (dB)")});
+    sort->setCurrentIndex(std::clamp(QSettings().value(QStringLiteral("tx/sort"), 0).toInt(), 0, 2));
+    sort->setToolTip(QStringLiteral("Sort the queue. This does not key."));
+    optionCol->addWidget(dupes);
+    optionCol->addLayout(flagRow);
+    optionCol->addWidget(sort);
+    limits->addLayout(limitCol, 1);
+    limits->addLayout(optionCol, 1);
+    settingsLayout->addLayout(limits);
+    auto* cqRow = new QHBoxLayout();
+    cqRow->setSpacing(6);
+    auto* cqType = new QComboBox(settings);
+    cqType->setObjectName(QStringLiteral("txCqType"));
+    cqType->setFont(interfaceFont(12));
+    cqType->addItems({QStringLiteral("CQ"), QStringLiteral("CQ MDX"), QStringLiteral("CQ DX"),
+                      QStringLiteral("CQ UP"), QStringLiteral("CQ IOTA"), QStringLiteral("CQ POTA"),
+                      QStringLiteral("CQ SOTA"), QStringLiteral("CQ BOTA"), QStringLiteral("CQ WWFF"),
+                      QStringLiteral("CQ AF"), QStringLiteral("CQ AN"), QStringLiteral("CQ AS"),
+                      QStringLiteral("CQ EU"), QStringLiteral("CQ NA"), QStringLiteral("CQ OC"),
+                      QStringLiteral("CQ SA"), QStringLiteral("CQ JA"), QStringLiteral("CQ QRG"),
+                      QStringLiteral("CQ END"), QStringLiteral("TIME"), QStringLiteral("Free Msg")});
+    cqType->setCurrentIndex(
+        std::clamp(QSettings().value(QStringLiteral("tx/cqType"), 0).toInt(), 0, cqType->count() - 1));
+    cqType->setToolTip(QStringLiteral(
+        "CQ type. CQ MDX is the MSHV DXpedition tag. Changing it does not key."));
+    auto* foxCq = new QComboBox(settings);
+    foxCq->setObjectName(QStringLiteral("txFoxCq"));
+    foxCq->setFont(interfaceFont(12));
+    foxCq->addItems({QStringLiteral("CQ"), QStringLiteral("QSY To"), QStringLiteral("QRM QSY To"),
+                     QStringLiteral("Call From To"), QStringLiteral("QRX"), QStringLiteral("QRT"),
+                     QStringLiteral("Free Msg")});
+    foxCq->setCurrentIndex(
+        std::clamp(QSettings().value(QStringLiteral("tx/foxCq"), 0).toInt(), 0, foxCq->count() - 1));
+    foxCq->setToolTip(QStringLiteral(
+        "Super Fox CQ. This does not run a fox generator and does not key."));
+    auto* cqFree = new QCheckBox(QStringLiteral("CQ on free slot"), settings);
+    cqFree->setObjectName(QStringLiteral("txCqOnFree"));
+    cqFree->setFont(interfaceFont(12));
+    cqFree->setChecked(QSettings().value(QStringLiteral("tx/cqOnFree"), false).toBool());
+    cqFree->setToolTip(QStringLiteral("TX CQ on a free slot. Checking it does not key."));
+    cqRow->addWidget(cqType, 1);
+    cqRow->addWidget(foxCq, 1);
+    cqRow->addWidget(cqFree);
+    settingsLayout->addLayout(cqRow);
+    auto* freeRow = new QHBoxLayout();
+    freeRow->setSpacing(4);
+    auto* freeCq = new QLineEdit(settings);
+    freeCq->setObjectName(QStringLiteral("txFreeCq"));
+    freeCq->setFont(monoFont(12));
+    freeCq->setMaxLength(26);
+    freeCq->setText(QSettings().value(QStringLiteral("tx/freeCq")).toString());
+    freeCq->setToolTip(QStringLiteral("Free CQ text. USE copies it to Tx6. This does not key."));
+    auto* useFree = new QPushButton(QStringLiteral("USE"), settings);
+    useFree->setObjectName(QStringLiteral("txUseFree"));
+    useFree->setFont(interfaceFont(12));
+    useFree->setFocusPolicy(Qt::NoFocus);
+    useFree->setToolTip(QStringLiteral("Put the free message on Tx6. This does not key."));
+    freeRow->addWidget(freeCq, 1);
+    freeRow->addWidget(useFree);
+    settingsLayout->addLayout(freeRow);
+    auto* clearRow = new QHBoxLayout();
+    clearRow->setSpacing(4);
+    auto* clrQueue = new QPushButton(QStringLiteral("CLR QUEUE"), settings);
+    clrQueue->setObjectName(QStringLiteral("txClrQueue"));
+    clrQueue->setFont(interfaceFont(12));
+    clrQueue->setFocusPolicy(Qt::NoFocus);
+    clrQueue->setToolTip(QStringLiteral("Clear the queue. This does not unkey and does not send START."));
+    auto* clrNow = new QPushButton(QStringLiteral("CLR NOW"), settings);
+    clrNow->setObjectName(QStringLiteral("txClrNow"));
+    clrNow->setFont(interfaceFont(12));
+    clrNow->setFocusPolicy(Qt::NoFocus);
+    clrNow->setToolTip(QStringLiteral("Clear the now list. This does not unkey and does not send START."));
+    clearRow->addWidget(clrQueue);
+    clearRow->addWidget(clrNow);
+    settingsLayout->addLayout(clearRow);
+    tabs->addTab(queuePage, QStringLiteral("Queue 0"));
+    tabs->addTab(nowPage, QStringLiteral("Now 0"));
+    tabs->addTab(settings, QStringLiteral("Settings"));
+    tabs->setCurrentIndex(2);
+    tabs->setMinimumHeight(168);
+    layout->addWidget(tabs);
+    connect(queueLimit, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+      QSettings().setValue(QStringLiteral("tx/queueLimit"), value);
+    });
+    connect(slotCount, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+      QSettings().setValue(QStringLiteral("tx/txSlots"), value);
+    });
+    connect(maxPeriods, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+      QSettings().setValue(QStringLiteral("tx/maxPeriods"), value);
+    });
+    connect(dupes, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+      QSettings().setValue(QStringLiteral("tx/dupe"), index);
+    });
+    connect(cns, &QCheckBox::toggled, this, [this](bool on) {
+      QSettings().setValue(QStringLiteral("tx/cns"), on);
+    });
+    connect(sort, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+      QSettings().setValue(QStringLiteral("tx/sort"), index);
+      sortQueue();
+    });
+    connect(cqType, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+      QSettings().setValue(QStringLiteral("tx/cqType"), index);
+      syncCqEditor(true);
+      refreshTxFields();
+    });
+    connect(foxCq, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+      QSettings().setValue(QStringLiteral("tx/foxCq"), index);
+      syncCqEditor(true);
+      refreshTxFields();
+    });
+    connect(cqFree, &QCheckBox::toggled, this, [this](bool on) {
+      QSettings().setValue(QStringLiteral("tx/cqOnFree"), on);
+    });
+    connect(freeCq, &QLineEdit::textChanged, this, [this](const QString& text) {
+      QSettings().setValue(QStringLiteral("tx/freeCq"), text);
+      if (txFreeArmed_)
+        refreshTxFields();
+    });
+    connect(useFree, &QPushButton::clicked, this, [this] {
+      txFreeArmed_ = true;
+      refreshTxFields();
+      setTxStatus(QStringLiteral("That free message is on Tx6. Nothing was keyed. START was not sent."));
+    });
+    connect(clrQueue, &QPushButton::clicked, this, [this] {
+      txQueue_.clear();
+      paintMultiLists();
+      setTxStatus(QStringLiteral("Queue cleared. Nothing was unkeyed. START was not sent."));
+    });
+    connect(clrNow, &QPushButton::clicked, this, [this] {
+      txNow_.clear();
+      paintMultiLists();
+      setTxStatus(QStringLiteral("Now list cleared. Nothing was unkeyed. START was not sent."));
+    });
+
     auto* buttons = new QHBoxLayout();
     buttons->setSpacing(6);
     auto* tune = new QPushButton(QStringLiteral("Tune"), panel);
@@ -691,7 +1004,17 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     buttons->addWidget(tx);
     buttons->addStretch(1);
     layout->addLayout(buttons);
+    auto* qso = new QPlainTextEdit(panel);
+    qso->setObjectName(QStringLiteral("txQso"));
+    qso->setReadOnly(true);
+    qso->setFont(monoFont(12));
+    qso->setMinimumHeight(64);
+    qso->setMaximumHeight(96);
+    qso->setPlaceholderText(QStringLiteral("Sent TX and their reply."));
+    qso->setToolTip(QStringLiteral("What you sent and what they sent back. This does not key."));
+    layout->addWidget(qso);
     applyStationLock();
+    refreshTxChrome();
   }
 
   if (!note.isEmpty()) {
@@ -1250,6 +1573,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   if (hell_)
     hell_->setArmed(autoMonitor_ && hell);
   applyChannelWidth();
+  refreshTxChrome();
   if (mshv)
     tuneActiveBand();
 }
@@ -1941,11 +2265,297 @@ QString MainWindow::transmitMessage() const {
   return edit ? edit->text().trimmed() : QString();
 }
 
+int MainWindow::txActivityId() const {
+  const auto* box = findChild<QComboBox*>(QStringLiteral("txActivity"));
+  return box ? box->currentData().toInt() : 0;
+}
+
+QString MainWindow::serialText() const {
+  int n = 1;
+  if (const auto* spin = findChild<QSpinBox*>(QStringLiteral("txSerial")))
+    n = spin->value();
+  return QStringLiteral("%1").arg(n, 3, 10, QLatin1Char('0'));
+}
+
+QString MainWindow::composedCq(const QString& kind) const {
+  const QString mine = stationCall().trimmed().toUpper();
+  QString grid = stationGrid().trimmed().toUpper();
+  if (grid.size() > 4)
+    grid = grid.left(4);
+  if (kind == QLatin1String("TIME"))
+    return QStringLiteral("PSE SYNC TIME");
+  QString words = kind.isEmpty() ? QStringLiteral("CQ") : kind;
+  if (words == QLatin1String("CQ QRG")) {
+    QString qrg = txQrg_.trimmed();
+    bool digits = !qrg.isEmpty();
+    for (const QChar c : qrg) {
+      if (!c.isDigit())
+        digits = false;
+    }
+    if (!digits)
+      qrg = QStringLiteral("000");
+    else if (qrg.size() <= 3)
+      qrg = qrg.rightJustified(3, QLatin1Char('0'));
+    words = QStringLiteral("CQ %1").arg(qrg);
+  }
+  return joinParts({words, mine, grid});
+}
+
+void MainWindow::syncCqEditor(bool stock) {
+  const bool fox = profile_ && profile_->digitalMode() == QLatin1String("FT8") && profile_->superFox();
+  auto* cq = findChild<QComboBox*>(fox ? QStringLiteral("txFoxCq") : QStringLiteral("txCqType"));
+  auto* free = findChild<QLineEdit*>(QStringLiteral("txFreeCq"));
+  auto* use = findChild<QPushButton*>(QStringLiteral("txUseFree"));
+  if (!cq || !free)
+    return;
+  const QString kind = cq->currentText();
+  const bool typed = fox ? cq->currentIndex() > 0 : kind == QLatin1String("Free Msg");
+  free->setEnabled(typed);
+  if (use)
+    use->setEnabled(typed);
+  if (!typed) {
+    txFreeArmed_ = false;
+    const QSignalBlocker block(free);
+    free->setText(composedCq(kind));
+    return;
+  }
+  if (!stock)
+    return;
+  txFreeArmed_ = false;
+  QString seeded = composedCq(QStringLiteral("CQ"));
+  if (kind == QLatin1String("QSY To"))
+    seeded = QStringLiteral("QSY TO 14092 KHZ");
+  else if (kind == QLatin1String("QRM QSY To"))
+    seeded = QStringLiteral("QRM QSY TO 14092 KHZ");
+  else if (kind == QLatin1String("Call From To"))
+    seeded = QStringLiteral("CALL FROM 200 TO 3200 HZ");
+  else if (kind == QLatin1String("QRX"))
+    seeded = QStringLiteral("QRX 10 MIN");
+  else if (kind == QLatin1String("QRT"))
+    seeded = QStringLiteral("QRT 73 TO ALL");
+  else if (fox && kind == QLatin1String("Free Msg"))
+    seeded = QStringLiteral("TYPE MESSAGE");
+  const QSignalBlocker block(free);
+  free->setText(seeded);
+}
+
+void MainWindow::flipMaxPeriods() {
+  auto* spin = findChild<QSpinBox*>(QStringLiteral("txMaxPeriods"));
+  if (!spin)
+    return;
+  const bool periods = !spin->prefix().startsWith(QLatin1String("Max Periods"));
+  spin->setPrefix(periods ? QStringLiteral("Max Periods:  ") : QStringLiteral("Max Time:  "));
+  spin->setSuffix(periods ? QString() : QStringLiteral("  min"));
+  QSettings().setValue(QStringLiteral("tx/maxIsPeriods"), periods);
+}
+
+void MainWindow::paintMultiLists() {
+  auto* tabs = findChild<QTabWidget*>(QStringLiteral("txMultiOptions"));
+  auto* queue = findChild<QPlainTextEdit*>(QStringLiteral("txQueueList"));
+  auto* now = findChild<QPlainTextEdit*>(QStringLiteral("txNowList"));
+  auto paint = [](QPlainTextEdit* edit, const QVector<QueuedCall>& rows) {
+    if (!edit)
+      return;
+    QStringList lines;
+    for (const QueuedCall& row : rows)
+      lines << QStringLiteral("%1  %2 dB  %3").arg(row.call).arg(row.db).arg(row.dist);
+    const QString text = lines.join(QLatin1Char('\n'));
+    if (edit->toPlainText() != text)
+      edit->setPlainText(text);
+  };
+  paint(queue, txQueue_);
+  paint(now, txNow_);
+  if (!tabs)
+    return;
+  tabs->setTabText(0, QStringLiteral("Queue %1").arg(txQueue_.size()));
+  tabs->setTabText(1, QStringLiteral("Now %1").arg(txNow_.size()));
+}
+
+void MainWindow::sortQueue() {
+  int mode = 0;
+  if (const auto* box = findChild<QComboBox*>(QStringLiteral("txSort")))
+    mode = box->currentIndex();
+  if (mode == 1) {
+    std::stable_sort(txQueue_.begin(), txQueue_.end(),
+                     [](const QueuedCall& a, const QueuedCall& b) { return a.dist > b.dist; });
+  } else if (mode == 2) {
+    std::stable_sort(txQueue_.begin(), txQueue_.end(),
+                     [](const QueuedCall& a, const QueuedCall& b) { return a.db > b.db; });
+  }
+  paintMultiLists();
+}
+
+void MainWindow::enqueueCaller(const QString& call, int db, int dist) {
+  if (!profile_ || !profile_->multiAnswer())
+    return;
+  const QString mode = profile_->digitalMode();
+  if (mode != QLatin1String("FT8") && mode != QLatin1String("FT4") && mode != QLatin1String("FT2"))
+    return;
+  const QString his = call.trimmed().toUpper();
+  if (his.isEmpty())
+    return;
+  int limit = 5;
+  if (const auto* spin = findChild<QSpinBox*>(QStringLiteral("txQueueLimit")))
+    limit = spin->value();
+  for (QueuedCall& row : txQueue_) {
+    if (row.call != his)
+      continue;
+    row.db = db;
+    row.dist = dist;
+    sortQueue();
+    return;
+  }
+  for (const QueuedCall& row : txNow_) {
+    if (row.call == his)
+      return;
+  }
+  if (txQueue_.size() >= limit)
+    return;
+  txQueue_.push_back(QueuedCall{his, db, dist});
+  sortQueue();
+}
+
+void MainWindow::promoteNow() {
+  if (!profile_ || !profile_->multiAnswer())
+    return;
+  const QString call = txHisCall_.trimmed().toUpper();
+  if (call.isEmpty())
+    return;
+  int db = 0;
+  int dist = 0;
+  for (int i = 0; i < txQueue_.size(); ++i) {
+    if (txQueue_.at(i).call != call)
+      continue;
+    db = txQueue_.at(i).db;
+    dist = txQueue_.at(i).dist;
+    txQueue_.removeAt(i);
+    break;
+  }
+  for (const QueuedCall& row : txNow_) {
+    if (row.call == call) {
+      paintMultiLists();
+      return;
+    }
+  }
+  txNow_.push_back(QueuedCall{call, db, dist});
+  paintMultiLists();
+}
+
+void MainWindow::appendQso(const QString& side, const QString& text) {
+  auto* log = findChild<QPlainTextEdit*>(QStringLiteral("txQso"));
+  if (!log)
+    return;
+  const QString line = side + QStringLiteral("  ") + text.trimmed();
+  const QString have = log->toPlainText();
+  if (have.endsWith(line))
+    return;
+  if (have.isEmpty())
+    log->setPlainText(line);
+  else
+    log->appendPlainText(line);
+}
+
+void MainWindow::noteTheirReply(const QString& message) {
+  const QString mine = stationCall();
+  if (mine.isEmpty() || !message.contains(mine, Qt::CaseInsensitive))
+    return;
+  if (message.startsWith(QLatin1String("CQ"), Qt::CaseInsensitive))
+    return;
+  appendQso(QStringLiteral("RX"), message);
+}
+
+bool MainWindow::halfIsFirst(const QString& mode) const {
+  const QTime now = QDateTime::currentDateTimeUtc().time();
+  if (mode == QLatin1String("FT4")) {
+    const int ms = ((now.hour() * 60 + now.minute()) * 60 + now.second()) * 1000 + now.msec();
+    return (ms % 15000) < 7500;
+  }
+  return (now.second() % 30) < 15;
+}
+
+bool MainWindow::txHalfOpen(const QString& mode) const {
+  if (!profile_)
+    return true;
+  const bool first = halfIsFirst(mode);
+  if (mode == QLatin1String("FT8") && profile_->superHound())
+    return !first;
+  return profile_->txFirst() ? first : !first;
+}
+
+void MainWindow::armAnswerSlot() {
+  if (!profile_)
+    return;
+  const QString mode = profile_->digitalMode();
+  if (mode != QLatin1String("FT8") && mode != QLatin1String("FT4"))
+    return;
+  if (mode == QLatin1String("FT8") && profile_->superHound()) {
+    profile_->setTxFirst(false);
+    return;
+  }
+  profile_->setTxFirst(!halfIsFirst(mode));
+}
+
+void MainWindow::armUserTx() {
+  auto* tx = findChild<QPushButton*>(QStringLiteral("txSend"));
+  if (!tx || !tx->isEnabled()) {
+    setTxStatus(QStringLiteral(
+        "Set your callsign under Options → User. TX was not armed and did not key. START was not sent."));
+    return;
+  }
+  if (qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return;
+  if (tx->isChecked())
+    return;
+  tx->setChecked(true);
+}
+
+void MainWindow::refreshTxChrome() {
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  const bool ft8 = mode == QLatin1String("FT8");
+  const bool sequenced = ft8 || mode == QLatin1String("FT4") || mode == QLatin1String("FT2");
+  const bool multi = sequenced && profile_ && profile_->multiAnswer();
+  const bool fox = ft8 && profile_ && profile_->superFox();
+  const bool hound = ft8 && profile_ && profile_->superHound();
+  if (auto* panel = findChild<QWidget*>(QStringLiteral("txMultiOptions")))
+    panel->setVisible(multi || fox);
+  if (auto* slotCount = findChild<QSpinBox*>(QStringLiteral("txSlots")))
+    slotCount->setVisible(!fox);
+  if (auto* cq = findChild<QComboBox*>(QStringLiteral("txCqType")))
+    cq->setVisible(!fox);
+  if (auto* foxCq = findChild<QComboBox*>(QStringLiteral("txFoxCq")))
+    foxCq->setVisible(fox);
+  if (auto* note = findChild<QLabel*>(QStringLiteral("txHoundNote")))
+    note->setVisible(hound);
+  if (profile_)
+    profile_->setTxFirstLocked(hound);
+  if (auto* pick = findChild<QRadioButton*>(QStringLiteral("txPick2")))
+    pick->setEnabled(!hound);
+  if (auto* edit = findChild<QLineEdit*>(QStringLiteral("tx2")))
+    edit->setEnabled(!hound);
+  if (hound && selectedTxSlot() == 1)
+    selectTxSlot(0);
+  const int activity = txActivityId();
+  const bool roundup = activity == 9 || activity == 10 || activity == 11 || activity == 12;
+  if (auto* fd = findChild<QLineEdit*>(QStringLiteral("txFdExch")))
+    fd->setVisible(activity == 4);
+  if (auto* ru = findChild<QLineEdit*>(QStringLiteral("txRuExch")))
+    ru->setVisible(roundup);
+  if (auto* sn = findChild<QSpinBox*>(QStringLiteral("txSerial")))
+    sn->setVisible(activity == 3 || roundup);
+  if (auto* qrg = findChild<QLineEdit*>(QStringLiteral("txQrg")))
+    qrg->setVisible(activity == 0 || activity == 1);
+  syncCqEditor(false);
+  refreshTxFields();
+}
+
 void MainWindow::refreshTxFields() {
   const QString mine = stationCall().trimmed().toUpper();
   QString grid = stationGrid().trimmed().toUpper();
   if (grid.size() > 4)
     grid = grid.left(4);
+  QString grid6 = stationGrid().trimmed().toUpper();
+  if (grid6.size() > 6)
+    grid6 = grid6.left(6);
   const QString his = txHisCall_.trimmed().toUpper();
   QString report = txReport_.trimmed().toUpper();
   if (report.isEmpty() && !his.isEmpty())
@@ -1959,14 +2569,109 @@ void MainWindow::refreshTxFields() {
   }
   if (qrgDigits && qrg.size() <= 3)
     qrg = qrg.rightJustified(3, QLatin1Char('0'));
-  const QString lines[7] = {joinParts({his, mine, grid}),
-                             joinParts({his, mine, report}),
-                             joinParts({his, mine, roger}),
-                             joinParts({his, mine, QStringLiteral("RR73")}),
-                             joinParts({his, mine, QStringLiteral("73")}),
-                             joinParts({QStringLiteral("CQ"), mine, grid}),
-                             qrg.isEmpty() ? joinParts({QStringLiteral("CQ"), mine, grid})
-                                           : joinParts({QStringLiteral("CQ"), qrg, mine, grid})};
+  const QString rr73 = QStringLiteral("RR73");
+  const QString bye = QStringLiteral("73");
+  const QString qsob4 = joinParts({mine, QStringLiteral("QSOB4")});
+  QString lines[7] = {joinParts({his, mine, grid}),
+                      joinParts({his, mine, report}),
+                      joinParts({his, mine, roger}),
+                      joinParts({his, mine, rr73}),
+                      joinParts({his, mine, bye}),
+                      joinParts({QStringLiteral("CQ"), mine, grid}),
+                      qrg.isEmpty() ? joinParts({QStringLiteral("CQ"), mine, grid})
+                                    : joinParts({QStringLiteral("CQ"), qrg, mine, grid})};
+  const int activity = txActivityId();
+  auto gridContest = [&](const QString& cq) {
+    lines[0] = joinParts({his, mine, grid});
+    lines[1] = lines[0];
+    lines[2] = joinParts({his, mine, QStringLiteral("R"), grid});
+    lines[3] = joinParts({his, mine, rr73});
+    lines[4] = joinParts({his, mine, bye});
+    lines[5] = joinParts({cq, mine, grid});
+    lines[6] = qsob4;
+  };
+  if (activity == 2 || activity == 5 || activity == 13)
+    gridContest(QStringLiteral("CQ TEST"));
+  else if (activity == 6 || activity == 7 || activity == 8)
+    gridContest(QStringLiteral("CQ WW"));
+  else if (activity == 14)
+    gridContest(QStringLiteral("CQ"));
+  else if (activity == 15)
+    gridContest(QStringLiteral("CQ NCCC"));
+  else if (activity == 3) {
+    const QString token = report + serialText();
+    lines[0] = joinParts({his, mine, grid});
+    lines[1] = joinParts({his, mine, token, grid6});
+    lines[2] = joinParts({his, mine, QStringLiteral("R"), token, grid6});
+    lines[3] = joinParts({his, mine, rr73});
+    lines[4] = joinParts({his, mine, bye});
+    lines[5] = joinParts({QStringLiteral("CQ TEST"), mine, grid});
+    lines[6] = qsob4;
+  } else if (activity == 4) {
+    QString exch;
+    if (const auto* edit = findChild<QLineEdit*>(QStringLiteral("txFdExch")))
+      exch = edit->text().trimmed().toUpper();
+    if (exch.isEmpty())
+      exch = QStringLiteral("EXCH");
+    lines[0] = joinParts({his, mine, exch});
+    lines[1] = lines[0];
+    lines[2] = joinParts({his, mine, QStringLiteral("R"), exch});
+    lines[3] = joinParts({his, mine, rr73});
+    lines[4] = joinParts({his, mine, bye});
+    lines[5] = joinParts({QStringLiteral("CQ FD"), mine, grid});
+    lines[6] = qsob4;
+  } else if (activity == 9 || activity == 10 || activity == 11 || activity == 12) {
+    QString tag = QStringLiteral("RU");
+    if (activity == 10)
+      tag = QStringLiteral("BU");
+    else if (activity == 11)
+      tag = QStringLiteral("FT");
+    else if (activity == 12)
+      tag = QStringLiteral("PDC");
+    QString ru = QStringLiteral("DX");
+    if (const auto* edit = findChild<QLineEdit*>(QStringLiteral("txRuExch")))
+      ru = edit->text().trimmed().toUpper();
+    bool digits = !ru.isEmpty();
+    for (const QChar c : ru) {
+      if (!c.isDigit())
+        digits = false;
+    }
+    const QString exch =
+        (ru.isEmpty() || ru == QLatin1String("DX")) ? serialText()
+                                                     : (digits ? ru.rightJustified(4, QLatin1Char('0')) : ru);
+    lines[0] = joinParts({his, mine, report, exch});
+    lines[1] = lines[0];
+    lines[2] = joinParts({his, mine, QStringLiteral("R"), report, exch});
+    lines[3] = joinParts({his, mine, rr73});
+    lines[4] = joinParts({his, mine, bye});
+    lines[5] = joinParts({QStringLiteral("CQ %1").arg(tag), mine, grid});
+    lines[6] = qsob4;
+  } else if (activity == 16 || activity == 17) {
+    const QString cq = activity == 17 ? QStringLiteral("CQ FTC") : QStringLiteral("CQ");
+    lines[5] = joinParts({cq, mine, grid});
+    lines[6] = qsob4;
+  }
+  const bool ft8 = profile_ && profile_->digitalMode() == QLatin1String("FT8");
+  const bool fox = ft8 && profile_->superFox();
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  const bool multi = profile_ && profile_->multiAnswer() &&
+                     (mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
+                      mode == QLatin1String("FT2"));
+  if (fox || multi) {
+    auto* cq = findChild<QComboBox*>(fox ? QStringLiteral("txFoxCq") : QStringLiteral("txCqType"));
+    if (cq && cq->currentIndex() > 0) {
+      const QString kind = cq->currentText();
+      const bool typed = fox || kind == QLatin1String("Free Msg");
+      if (typed && txFreeArmed_) {
+        if (const auto* free = findChild<QLineEdit*>(QStringLiteral("txFreeCq"))) {
+          const QString text = free->text().trimmed();
+          if (!text.isEmpty())
+            lines[5] = text;
+        }
+      } else if (!typed)
+        lines[5] = composedCq(kind);
+    }
+  }
   const char* names[7] = {"tx1", "tx2", "tx3", "tx4", "tx5", "tx6", "txExtra"};
   for (int i = 0; i < 7; ++i) {
     if (auto* edit = findChild<QLineEdit*>(QLatin1String(names[i]))) {
@@ -2017,10 +2722,18 @@ bool MainWindow::periodReady(const QString& mode) {
   const int into = ms % period;
   const bool crossed = txPeriodMark_ >= 0 && into < txPeriodMark_;
   txPeriodMark_ = into;
-  return crossed || into < 300;
+  if (!(crossed || into < 300))
+    return false;
+  return txHalfOpen(mode);
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (event->type() == QEvent::MouseButtonDblClick &&
+      (watched->objectName() == QLatin1String("txMaxPeriods") ||
+       watched->objectName() == QLatin1String("txMaxPeriodsEdit"))) {
+    flipMaxPeriods();
+    return true;
+  }
   auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
   if (!edit || watched != edit->viewport())
     return QMainWindow::eventFilter(watched, event);
@@ -2114,13 +2827,9 @@ void MainWindow::loadReplyFromLine(int line) {
   selectTxSlot(selected);
   if (waterfall_ && row.freqHz > 0)
     waterfall_->setTxHz(row.freqHz);
-  const QString shown = transmitMessage();
-  if (mine.isEmpty())
-    setTxStatus(QStringLiteral(
-        "Loaded their call on Tx%1. Set your callsign under Options → User. Nothing was keyed.")
-                    .arg(selected + 1));
-  else
-    setTxStatus(QStringLiteral("Tx%1 is %2. Nothing was keyed.").arg(selected + 1).arg(shown));
+  enqueueCaller(sender, row.db, distanceText(row.message).toInt());
+  armAnswerSlot();
+  armUserTx();
 }
 
 void MainWindow::setTune(bool on) {
@@ -2236,13 +2945,18 @@ void MainWindow::setUserTx(bool on) {
   txCursor_ = 0;
   txHold_ = 0;
   txKeySent_ = false;
+  txLoggedThisPass_ = false;
   txPeriodMark_ = -1;
   if (button)
     button->setText(mode == QLatin1String("Hell") ? QStringLiteral("TX") : QStringLiteral("WAIT"));
   if (mode == QLatin1String("Hell"))
     setTxStatus(QStringLiteral("Sending Hell. TRX goes out with the audio. START was not sent."));
-  else
-    setTxStatus(QStringLiteral("Waiting for the next %1 slot. TRX has not been sent.").arg(mode));
+  else {
+    const QString slotName =
+        profile_->txFirst() ? QStringLiteral("TX FIRST") : QStringLiteral("TX SECOND");
+    setTxStatus(QStringLiteral("Armed for %1. Waiting for that %2 slot. TRX has not been sent.")
+                    .arg(slotName, mode));
+  }
   txTimer_->start(20);
 }
 
@@ -2291,6 +3005,11 @@ void MainWindow::pumpUserTx() {
     }
     txKeySent_ = true;
     txHold_ = 2;
+    if (!txLoggedThisPass_) {
+      appendQso(QStringLiteral("TX"), transmitMessage());
+      promoteNow();
+      txLoggedThisPass_ = true;
+    }
     if (auto* button = findChild<QPushButton*>(QStringLiteral("txSend")))
       button->setText(QStringLiteral("ON AIR"));
     setTxStatus(QStringLiteral("On the air. TRX is held until this transmission ends. START was not sent."));
@@ -2320,6 +3039,7 @@ void MainWindow::stopUserTx(bool uncheck) {
     tci_->setTransmit(false);
   txKeySent_ = false;
   txHold_ = 0;
+  txLoggedThisPass_ = false;
   txSamples_.clear();
   txCursor_ = 0;
   txPeriodMark_ = -1;

@@ -110,6 +110,39 @@ int shellReady(const MainWindow& window) {
   const auto* tune = window.findChild<QPushButton*>("txTune");
   if (!tune || tune->isChecked())
     return fail("Tune is not idle");
+  const auto* activity = window.findChild<QComboBox*>("txActivity");
+  if (!activity || activity->count() < 18 || activity->itemText(0) != QLatin1String("Standard") ||
+      activity->findText(QStringLiteral("ARRL Field Day")) < 0)
+    return fail("contest activity list is missing");
+  const auto* cqType = window.findChild<QComboBox*>("txCqType");
+  const char* cqNames[] = {"CQ", "CQ MDX", "CQ DX", "CQ UP", "CQ IOTA", "CQ POTA", "CQ SOTA",
+                           "CQ BOTA", "CQ WWFF", "CQ AF"};
+  if (!cqType)
+    return fail("CQ type list is missing");
+  for (const char* name : cqNames) {
+    if (cqType->findText(QLatin1String(name)) < 0)
+      return fail("a CQ type is missing");
+  }
+  const auto* foxCq = window.findChild<QComboBox*>("txFoxCq");
+  if (!foxCq || foxCq->findText(QStringLiteral("QSY To")) < 0 ||
+      foxCq->findText(QStringLiteral("Free Msg")) < 0)
+    return fail("Super Fox CQ list is missing");
+  const auto* dupes = window.findChild<QComboBox*>("txDupes");
+  const char* dupeNames[] = {"No Limit", "1 QSO", "2 QSOs", "3 QSOs"};
+  if (!dupes || dupes->count() != 4)
+    return fail("dupe list is missing");
+  for (int i = 0; i < 4; ++i) {
+    if (dupes->itemText(i) != QLatin1String(dupeNames[i]))
+      return fail("dupe choice is wrong");
+  }
+  if (!window.findChild<QSpinBox*>("txQueueLimit") || !window.findChild<QSpinBox*>("txSlots") ||
+      !window.findChild<QSpinBox*>("txMaxPeriods") || !window.findChild<QCheckBox*>("txCns") ||
+      !window.findChild<QCheckBox*>("txCqOnFree") || !window.findChild<QPushButton*>("txClrQueue") ||
+      !window.findChild<QPushButton*>("txClrNow") || !window.findChild<QWidget*>("txMultiOptions"))
+    return fail("multi TX options are missing");
+  const auto* qso = window.findChild<QPlainTextEdit*>("txQso");
+  if (!qso || !qso->isReadOnly() || !qso->toPlainText().isEmpty())
+    return fail("QSO pane is not empty");
 
   const auto macros = window.findChildren<QPushButton*>("macro");
   if (macros.size() != 8)

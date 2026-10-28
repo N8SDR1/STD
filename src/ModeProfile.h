@@ -31,6 +31,10 @@ public:
   bool superHound() const { return hound_; }
   bool superFox() const { return fox_; }
   bool txFirst() const { return txFirst_; }
+  // Remembers the even or odd slot. Does not key.
+  void setTxFirst(bool first);
+  // Super Hound answers on TX SECOND. Does not key.
+  void setTxFirstLocked(bool locked);
   bool multiAnswer() const;
   QSpinBox* speedBox() const { return speed_; }
   QSpinBox* startBox() const { return start_; }

@@ -87,9 +87,25 @@ private:
   void setTxStatus(const QString& text);
   void loadReplyFromLine(int line);
   void refreshTxFields();
+  void refreshTxChrome();
   void selectTxSlot(int index);
   int selectedTxSlot() const;
   bool periodReady(const QString& mode);
+  bool halfIsFirst(const QString& mode) const;
+  bool txHalfOpen(const QString& mode) const;
+  void armAnswerSlot();
+  void armUserTx();
+  void appendQso(const QString& side, const QString& text);
+  void noteTheirReply(const QString& message);
+  void enqueueCaller(const QString& call, int db, int dist);
+  void promoteNow();
+  void sortQueue();
+  void paintMultiLists();
+  void syncCqEditor(bool stock);
+  void flipMaxPeriods();
+  int txActivityId() const;
+  QString serialText() const;
+  QString composedCq(const QString& kind) const;
   QString transmitMessage() const;
   QString stationCall() const;
   QString stationGrid() const;
@@ -158,9 +174,19 @@ private:
   int txTuneHz_ = 1500;
   qint64 txTuneStartMs_ = 0;
   int txTuneLimitMs_ = 0;
+  struct QueuedCall {
+    QString call;
+    int db = 0;
+    int dist = 0;
+  };
+
   QString txHisCall_;
   QString txReport_;
   QString txQrg_;
+  QVector<QueuedCall> txQueue_;
+  QVector<QueuedCall> txNow_;
+  bool txFreeArmed_ = false;
+  bool txLoggedThisPass_ = false;
   int txPeriodMark_ = -1;
   QVector<DecodeRow> shownDecodes_;
 };
