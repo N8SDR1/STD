@@ -113,6 +113,11 @@ int shellReady(const MainWindow& window) {
   const auto* tune = window.findChild<QPushButton*>("txTune");
   if (!tune || tune->isChecked())
     return fail("Tune is not idle");
+  const auto* halt = window.findChild<QPushButton*>("txHalt");
+  if (!halt || halt->isCheckable() || halt->isChecked() ||
+      !halt->toolTip().contains(QLatin1String("START")) ||
+      !halt->toolTip().contains(QLatin1String("Does not key")))
+    return fail("Halt is missing");
   const auto* activity = window.findChild<QComboBox*>("txActivity");
   if (!activity || activity->count() < 18 || activity->itemText(0) != QLatin1String("Standard") ||
       activity->findText(QStringLiteral("ARRL Field Day")) < 0)

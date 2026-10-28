@@ -84,6 +84,7 @@ private:
   void alignDecodeHeader();
   void setUserTx(bool on);
   void setTune(bool on);
+  void haltTx();
   void stopTune(bool uncheck);
   void pumpUserTx();
   void onTxPull(int sampleRateHz, int length, int channels);

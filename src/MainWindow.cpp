@@ -590,7 +590,7 @@ void MainWindow::buildDocks() {
       "transmitText",
       "Transmit text.",
       false,
-      "Double-click a decode to arm the other slot. Tune stops itself. START is never sent."));
+      "Double-click a decode to arm the other slot. Halt ends TX now. Tune stops itself. START is never sent."));
   transmitDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
   placeDockTitle(transmitDock_, QStringLiteral("Transmit"), {"txClrQueue", "txClrNow"});
 
@@ -1077,8 +1077,17 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "or when the try limit is reached. CQ on free continues with CQ. CNS ignores the limit. "
         "START is never sent."));
     connect(tx, &QPushButton::toggled, this, [this](bool on) { setUserTx(on); });
+    auto* halt = new QPushButton(QStringLiteral("Halt"), panel);
+    halt->setObjectName(QStringLiteral("txHalt"));
+    halt->setFont(interfaceFont(12));
+    halt->setFocusPolicy(Qt::NoFocus);
+    halt->setToolTip(QStringLiteral(
+        "MSHV STOP TX. Ends this transmission now, even mid-slot, and stops the sequence. "
+        "Does not key. START is never sent."));
+    connect(halt, &QPushButton::clicked, this, [this] { haltTx(); });
     buttons->addWidget(tune);
     buttons->addWidget(tx);
+    buttons->addWidget(halt);
     buttons->addStretch(1);
     layout->addLayout(buttons);
     auto* qso = new QPlainTextEdit(panel);
@@ -1135,8 +1144,8 @@ void MainWindow::applyStationLock() {
     tx->setEnabled(haveCall);
     tx->setToolTip(haveCall
                        ? QStringLiteral(
-                             "Send the selected standard or extra line once. "
-                             "Double-click a CQ to fill the reply. TRX goes out only after this is pressed. "
+                             "Send the selected line on its slot and hold TRX until that slot ends. "
+                             "Halt ends it now. TRX goes out only after this is pressed. "
                              "START is never sent.")
                        : QStringLiteral(
                              "Set your callsign under Options → User before TX. This does not key."));
@@ -3204,6 +3213,20 @@ void MainWindow::loadReplyFromLine(int line) {
   }
   armAnswerSlot(row.time, msgPos);
   armUserTx();
+}
+
+void MainWindow::haltTx() {
+  const bool live = txTune_ || txKeySent_ || txSequence_;
+  auto* tx = findChild<QPushButton*>(QStringLiteral("txSend"));
+  const bool armed = tx && tx->isChecked();
+  if (txTune_)
+    stopTune(true);
+  stopUserTx(true);
+  if (live || armed)
+    setTxStatus(QStringLiteral(
+        "Halted. TRX is off and the sequence stopped. Nothing was keyed. START was not sent."));
+  else
+    setTxStatus(QStringLiteral("Nothing is transmitting. Halt did not key. START was not sent."));
 }
 
 void MainWindow::setTune(bool on) {
