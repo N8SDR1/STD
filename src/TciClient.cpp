@@ -325,6 +325,12 @@ void TciClient::onBinary(const QByteArray& frame) {
   Q_UNUSED(receiver);
   Q_UNUSED(codec);
   Q_UNUSED(crc);
+  // Host pull. The reply is type-2 audio from the TX pump. No START.
+  if (type == kTxChrono) {
+    if (length > 0 && length <= 16384)
+      emit txPull(int(sampleRate), int(length), int(channels < 1 ? 1 : channels));
+    return;
+  }
   if (type != kRxAudio)
     return;
 
@@ -369,22 +375,28 @@ void TciClient::setTxGain(float linear) {
   txGain_ = linear;
 }
 
-void TciClient::pushTxAudio(const float* samples, int count, int sampleRateHz) {
-  if (sampleRateHz > 0)
+void TciClient::pushTxAudio(const float* samples, int count, int sampleRateHz, int channels) {
+  if (sampleRateHz == 48000)
     sampleRate_ = sampleRateHz;
-  sendTxAudio(samples, count);
+  const int rate = sampleRateHz > 0 ? sampleRateHz : 48000;
+  const int ch = channels == 2 ? 2 : 1;
+  sendTxAudio(samples, count, rate, ch);
 }
 
-void TciClient::sendTxAudio(const float* samples, int count) {
+void TciClient::sendTxAudio(const float* samples, int count, int rate, int channels) {
   if (!socket_ || !open_ || !transmit_ || count <= 0 || !samples)
     return;
+  if (channels != 1 && channels != 2)
+    channels = 1;
+  if (rate <= 0)
+    rate = 48000;
 
   QByteArray frame;
   QDataStream stream(&frame, QIODevice::WriteOnly);
   stream.setByteOrder(QDataStream::LittleEndian);
   stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
-  stream << quint32(0) << quint32(sampleRate_) << kFloat32 << quint32(0) << quint32(0)
-         << quint32(count) << kTxAudio << quint32(1);
+  stream << quint32(0) << quint32(rate) << kFloat32 << quint32(0) << quint32(0) << quint32(count)
+         << kTxAudio << quint32(channels);
   for (int i = 0; i < 8; ++i)
     stream << quint32(0);
   const float gain = txGain_;

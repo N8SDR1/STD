@@ -190,7 +190,7 @@ QPushButton:disabled {
   border-color: #1c3344;
 }
 
-QPlainTextEdit {
+QPlainTextEdit, QListWidget {
   background: #080d13;
   color: #d7e6f2;
   border: 1px solid #1c3344;

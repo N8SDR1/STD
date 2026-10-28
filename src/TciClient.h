@@ -38,7 +38,9 @@ public:
   void setTxGain(float linear);
 
   // Type-2 TX audio. Lyra accepts it only after trx:0,true,tci.
-  void pushTxAudio(const float* samples, int count, int sampleRateHz);
+  // channels is 1 (mono) or 2 (L and R already interleaved in samples).
+  // count is the number of floats. This does not send START.
+  void pushTxAudio(const float* samples, int count, int sampleRateHz, int channels = 1);
 
   // FT8 dial on receiver 0, VFO A. No-op unless the socket is open.
   // Does not send START and does not key.
@@ -57,6 +59,9 @@ signals:
   void receiveBandChanged(int lowHz, int highHz);
   // Mono float32, one real channel taken from a type-1 RX frame.
   void rxAudio(int sampleRateHz, const QByteArray& mono);
+  // Host TX_CHRONO pull. length is the header scalar count. Answer with
+  // pushTxAudio. This is not a key and it is not START.
+  void txPull(int sampleRateHz, int length, int channels);
 
 private:
   void sendCommand(const QString& command);
@@ -65,7 +70,7 @@ private:
   void yieldSingleClient();
   void stopAudio();
   void onBinary(const QByteArray& frame);
-  void sendTxAudio(const float* samples, int count);
+  void sendTxAudio(const float* samples, int count, int rate, int channels);
   void settle(const QString& error);
   void armTimeout(int token);
 

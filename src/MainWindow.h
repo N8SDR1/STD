@@ -86,6 +86,12 @@ private:
   void setTune(bool on);
   void stopTune(bool uncheck);
   void pumpUserTx();
+  void onTxPull(int sampleRateHz, int length, int channels);
+  void fillTune(float* dst, int frames);
+  void fillWave(float* dst, int frames, int step);
+  void sendTxBlock(const float* mono, int frames, int rate, int channels);
+  bool slotShouldEnd(const QString& mode) const;
+  void pushRealtimeTx();
   void stopUserTx(bool uncheck);
   void setTxStatus(const QString& text);
   void loadReplyFromLine(int line);
@@ -116,6 +122,8 @@ private:
   void noteTheirReply(const QString& time, int db, const QString& message);
   void applyTheirReply(const QString& time, int db, const QString& message);
   void enqueueCaller(const QString& call, int db, int dist);
+  void addTypedQueue();
+  void deleteQueueRow(bool nowList);
   void promoteNow();
   void sortQueue();
   void paintMultiLists();
@@ -212,6 +220,12 @@ private:
   bool txCqFreeLatched_ = false;
   int txTries_ = 0;
   qint64 txSeqStartMs_ = 0;
+  qint64 txPlayOriginMs_ = 0;
+  qint64 txLastPullMs_ = 0;
+  qint64 txGuardDeadlineMs_ = 0;
+  qint64 txPeriodEndMs_ = 0;
+  int txTuneSent_ = 0;
+  int txSymbolSamples_ = 0;
   QString txSentText_;
   QVector<DecodeRow> shownDecodes_;
 };

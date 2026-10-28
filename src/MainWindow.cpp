@@ -16,6 +16,7 @@
 #include <cmath>
 #include <vector>
 
+#include <QAbstractItemView>
 #include <QAction>
 #include <QActionGroup>
 #include <QButtonGroup>
@@ -32,9 +33,11 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLinearGradient>
+#include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
@@ -379,6 +382,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   rememberGain("rxGain", "audio/rxGainDb", false);
   rememberGain("txGain", "audio/txGainDb", true);
 
+  connect(tci_, &TciClient::txPull, this, [this](int rate, int length, int channels) {
+    onTxPull(rate, length, channels);
+  });
   connect(tci_, &TciClient::rxAudio, this, [this](int rate, const QByteArray& mono) {
     if (mono.size() < int(sizeof(float)))
       return;
@@ -784,18 +790,63 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     tabs->setObjectName(QStringLiteral("txMultiOptions"));
     tabs->setFont(interfaceFont(11));
     tabs->setDocumentMode(true);
-    auto* queuePage = new QPlainTextEdit(tabs);
-    queuePage->setObjectName(QStringLiteral("txQueueList"));
-    queuePage->setReadOnly(true);
-    queuePage->setFont(monoFont(12));
-    queuePage->setPlaceholderText(QStringLiteral("Queue"));
-    queuePage->setToolTip(QStringLiteral("Callers waiting. This does not key."));
-    auto* nowPage = new QPlainTextEdit(tabs);
-    nowPage->setObjectName(QStringLiteral("txNowList"));
-    nowPage->setReadOnly(true);
-    nowPage->setFont(monoFont(12));
-    nowPage->setPlaceholderText(QStringLiteral("Now"));
-    nowPage->setToolTip(QStringLiteral("Callers in this pass. This does not key."));
+    auto* queuePage = new QWidget(tabs);
+    queuePage->setObjectName(QStringLiteral("txQueuePage"));
+    auto* queueLayout = new QVBoxLayout(queuePage);
+    queueLayout->setContentsMargins(2, 2, 2, 2);
+    queueLayout->setSpacing(4);
+    auto* queueEntryRow = new QHBoxLayout();
+    queueEntryRow->setSpacing(4);
+    auto* queueEntry = new QLineEdit(queuePage);
+    queueEntry->setObjectName(QStringLiteral("txQueueEntry"));
+    queueEntry->setFont(monoFont(12));
+    queueEntry->setPlaceholderText(QStringLiteral("Call"));
+    queueEntry->setMaxLength(13);
+    queueEntry->setToolTip(QStringLiteral(
+        "Type a call and press Enter. It waits in the queue. This does not key."));
+    auto* queueAdd = new QPushButton(QStringLiteral("Add"), queuePage);
+    queueAdd->setObjectName(QStringLiteral("txQueueAdd"));
+    queueAdd->setFont(interfaceFont(11));
+    queueAdd->setFocusPolicy(Qt::NoFocus);
+    queueAdd->setToolTip(QStringLiteral("Put that call in the queue. This does not key."));
+    auto* queueDel = new QPushButton(QStringLiteral("Del"), queuePage);
+    queueDel->setObjectName(QStringLiteral("txQueueDel"));
+    queueDel->setFont(interfaceFont(11));
+    queueDel->setFocusPolicy(Qt::NoFocus);
+    queueDel->setToolTip(QStringLiteral(
+        "Delete the selected queue row. Delete does the same. This does not unkey."));
+    queueEntryRow->addWidget(queueEntry, 1);
+    queueEntryRow->addWidget(queueAdd);
+    queueEntryRow->addWidget(queueDel);
+    auto* queueList = new QListWidget(queuePage);
+    queueList->setObjectName(QStringLiteral("txQueueList"));
+    queueList->setFont(monoFont(12));
+    queueList->setSelectionMode(QAbstractItemView::SingleSelection);
+    queueList->setToolTip(QStringLiteral(
+        "Callers waiting. Type a call above. Delete removes the selected row. This does not key."));
+    queueList->installEventFilter(this);
+    queueLayout->addLayout(queueEntryRow);
+    queueLayout->addWidget(queueList, 1);
+    auto* nowPage = new QWidget(tabs);
+    nowPage->setObjectName(QStringLiteral("txNowPage"));
+    auto* nowLayout = new QVBoxLayout(nowPage);
+    nowLayout->setContentsMargins(2, 2, 2, 2);
+    nowLayout->setSpacing(4);
+    auto* nowDel = new QPushButton(QStringLiteral("Del"), nowPage);
+    nowDel->setObjectName(QStringLiteral("txNowDel"));
+    nowDel->setFont(interfaceFont(11));
+    nowDel->setFocusPolicy(Qt::NoFocus);
+    nowDel->setToolTip(QStringLiteral(
+        "Delete the selected now row. This does not unkey and does not send START."));
+    auto* nowList = new QListWidget(nowPage);
+    nowList->setObjectName(QStringLiteral("txNowList"));
+    nowList->setFont(monoFont(12));
+    nowList->setSelectionMode(QAbstractItemView::SingleSelection);
+    nowList->setToolTip(QStringLiteral(
+        "Callers in this pass. Delete removes the selected row. This does not key."));
+    nowList->installEventFilter(this);
+    nowLayout->addWidget(nowDel, 0, Qt::AlignLeft);
+    nowLayout->addWidget(nowList, 1);
     auto* settings = new QWidget(tabs);
     settings->setObjectName(QStringLiteral("txMultiSettings"));
     auto* settingsLayout = new QVBoxLayout(settings);
@@ -935,10 +986,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     tabs->addTab(queuePage, QStringLiteral("Queue 0"));
     tabs->addTab(nowPage, QStringLiteral("Now 0"));
     tabs->addTab(settings, QStringLiteral("Settings"));
-    tabs->setCurrentIndex(2);
-    queuePage->setFixedHeight(48);
-    nowPage->setFixedHeight(48);
-    tabs->setMaximumHeight(112);
+    tabs->setCurrentIndex(0);
+    tabs->setMaximumHeight(168);
     tabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     layout->addWidget(tabs, 0);
     connect(queueLimit, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
@@ -983,14 +1032,24 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       refreshTxFields();
       setTxStatus(QStringLiteral("That free message is on Tx6. Nothing was keyed. START was not sent."));
     });
+    connect(queueEntry, &QLineEdit::returnPressed, this, [this] { addTypedQueue(); });
+    connect(queueAdd, &QPushButton::clicked, this, [this] { addTypedQueue(); });
+    connect(queueDel, &QPushButton::clicked, this, [this] { deleteQueueRow(false); });
+    connect(nowDel, &QPushButton::clicked, this, [this] { deleteQueueRow(true); });
     connect(clrQueue, &QPushButton::clicked, this, [this] {
       txQueue_.clear();
+      if (auto* entry = findChild<QLineEdit*>(QStringLiteral("txQueueEntry")))
+        entry->clear();
       paintMultiLists();
+      if (auto* multi = findChild<QTabWidget*>(QStringLiteral("txMultiOptions")))
+        multi->setCurrentIndex(0);
       setTxStatus(QStringLiteral("Queue cleared. Nothing was unkeyed. START was not sent."));
     });
     connect(clrNow, &QPushButton::clicked, this, [this] {
       txNow_.clear();
       paintMultiLists();
+      if (auto* multi = findChild<QTabWidget*>(QStringLiteral("txMultiOptions")))
+        multi->setCurrentIndex(1);
       setTxStatus(QStringLiteral("Now list cleared. Nothing was unkeyed. START was not sent."));
     });
 
@@ -1013,9 +1072,10 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     tx->setFont(interfaceFont(12));
     tx->setFocusPolicy(Qt::NoFocus);
     tx->setToolTip(QStringLiteral(
-        "Send the selected line on its next slot, then keep calling for Max Periods. "
-        "Stops on 73, when someone else answers, or when the try limit is reached. "
-        "CQ on free continues with CQ. CNS ignores the limit. START is never sent."));
+        "Send the selected line on its slot and hold TRX until that slot ends. "
+        "Max Periods is how many times it keys. Stops on 73, when someone else answers, "
+        "or when the try limit is reached. CQ on free continues with CQ. CNS ignores the limit. "
+        "START is never sent."));
     connect(tx, &QPushButton::toggled, this, [this](bool on) { setUserTx(on); });
     buttons->addWidget(tune);
     buttons->addWidget(tx);
@@ -1767,6 +1827,7 @@ void MainWindow::placeDockTitle(QDockWidget* dock, const QString& title,
   auto* bar = new QWidget(dock);
   bar->setObjectName(QStringLiteral("dockTitle"));
   bar->setAttribute(Qt::WA_StyledBackground, true);
+  bar->setMinimumHeight(28);
   auto* row = new QHBoxLayout(bar);
   row->setContentsMargins(8, 2, 4, 2);
   row->setSpacing(6);
@@ -1775,8 +1836,11 @@ void MainWindow::placeDockTitle(QDockWidget* dock, const QString& title,
   row->addWidget(label);
   row->addStretch(1);
   for (const char* name : buttons) {
-    if (auto* button = dock->findChild<QPushButton*>(QLatin1String(name)))
+    if (auto* button = dock->findChild<QPushButton*>(QLatin1String(name))) {
+      button->setMinimumHeight(22);
+      button->setFocusPolicy(Qt::NoFocus);
       row->addWidget(button);
+    }
   }
   auto* close = new QToolButton(bar);
   close->setText(QStringLiteral("×"));
@@ -2289,6 +2353,13 @@ QString joinParts(const QStringList& parts) {
   return kept.join(QLatin1Char(' '));
 }
 
+int tonalSamples(const std::vector<float>& wave) {
+  int n = int(wave.size());
+  while (n > 0 && wave[static_cast<size_t>(n - 1)] == 0.0f)
+    --n;
+  return std::max(1, n);
+}
+
 QString reportText(int db) {
   if (db > 49)
     db = 49;
@@ -2412,20 +2483,23 @@ void MainWindow::flipMaxPeriods() {
 
 void MainWindow::paintMultiLists() {
   auto* tabs = findChild<QTabWidget*>(QStringLiteral("txMultiOptions"));
-  auto* queue = findChild<QPlainTextEdit*>(QStringLiteral("txQueueList"));
-  auto* now = findChild<QPlainTextEdit*>(QStringLiteral("txNowList"));
-  auto paint = [](QPlainTextEdit* edit, const QVector<QueuedCall>& rows) {
-    if (!edit)
+  auto paint = [](QListWidget* list, const QVector<QueuedCall>& rows) {
+    if (!list)
       return;
-    QStringList lines;
-    for (const QueuedCall& row : rows)
-      lines << QStringLiteral("%1  %2 dB  %3").arg(row.call).arg(row.db).arg(row.dist);
-    const QString text = lines.join(QLatin1Char('\n'));
-    if (edit->toPlainText() != text)
-      edit->setPlainText(text);
+    const int current = list->currentRow();
+    const QSignalBlocker block(list);
+    list->clear();
+    for (const QueuedCall& row : rows) {
+      const QString line = (row.db == 0 && row.dist == 0)
+                               ? row.call
+                               : QStringLiteral("%1  %2 dB  %3").arg(row.call).arg(row.db).arg(row.dist);
+      list->addItem(line);
+    }
+    if (current >= 0 && current < list->count())
+      list->setCurrentRow(current);
   };
-  paint(queue, txQueue_);
-  paint(now, txNow_);
+  paint(findChild<QListWidget*>(QStringLiteral("txQueueList")), txQueue_);
+  paint(findChild<QListWidget*>(QStringLiteral("txNowList")), txNow_);
   if (!tabs)
     return;
   tabs->setTabText(0, QStringLiteral("Queue %1").arg(txQueue_.size()));
@@ -2444,6 +2518,60 @@ void MainWindow::sortQueue() {
                      [](const QueuedCall& a, const QueuedCall& b) { return a.db > b.db; });
   }
   paintMultiLists();
+}
+
+void MainWindow::addTypedQueue() {
+  auto* entry = findChild<QLineEdit*>(QStringLiteral("txQueueEntry"));
+  if (!entry)
+    return;
+  const QString call = entry->text().trimmed().toUpper().section(QLatin1Char(' '), 0, 0);
+  if (!isCall(call)) {
+    setTxStatus(QStringLiteral(
+        "That is not a callsign. Nothing was added and nothing was keyed. START was not sent."));
+    return;
+  }
+  int limit = 5;
+  if (const auto* spin = findChild<QSpinBox*>(QStringLiteral("txQueueLimit")))
+    limit = spin->value();
+  for (const QueuedCall& row : txQueue_) {
+    if (row.call == call) {
+      setTxStatus(QStringLiteral("%1 is already in the queue. Nothing was keyed. START was not sent.")
+                      .arg(call));
+      return;
+    }
+  }
+  for (const QueuedCall& row : txNow_) {
+    if (row.call == call) {
+      setTxStatus(QStringLiteral("%1 is already in Now. Nothing was keyed. START was not sent.").arg(call));
+      return;
+    }
+  }
+  if (limit <= 0 || txQueue_.size() >= limit) {
+    setTxStatus(QStringLiteral("The queue is full. Nothing was added and nothing was keyed."));
+    return;
+  }
+  txQueue_.push_back(QueuedCall{call, 0, 0});
+  entry->clear();
+  sortQueue();
+  if (auto* tabs = findChild<QTabWidget*>(QStringLiteral("txMultiOptions")))
+    tabs->setCurrentIndex(0);
+  setTxStatus(QStringLiteral("%1 is in the queue. Nothing was keyed. START was not sent.").arg(call));
+}
+
+void MainWindow::deleteQueueRow(bool nowList) {
+  auto* list = findChild<QListWidget*>(nowList ? QStringLiteral("txNowList") : QStringLiteral("txQueueList"));
+  QVector<QueuedCall>& rows = nowList ? txNow_ : txQueue_;
+  if (!list)
+    return;
+  const int row = list->currentRow();
+  if (row < 0 || row >= rows.size()) {
+    setTxStatus(QStringLiteral("Select a row to delete. Nothing was unkeyed. START was not sent."));
+    return;
+  }
+  const QString call = rows.at(row).call;
+  rows.removeAt(row);
+  paintMultiLists();
+  setTxStatus(QStringLiteral("%1 removed. Nothing was unkeyed. START was not sent.").arg(call));
 }
 
 void MainWindow::enqueueCaller(const QString& call, int db, int dist) {
@@ -2729,7 +2857,13 @@ bool MainWindow::rebuildTxWave() {
   txHold_ = 0;
   txKeySent_ = false;
   txLoggedThisPass_ = false;
-  return buildTxWave(mode, text, tone, &txSamples_) && !txSamples_.empty();
+  txPlayOriginMs_ = 0;
+  txLastPullMs_ = 0;
+  txGuardDeadlineMs_ = 0;
+  txPeriodEndMs_ = 0;
+  const bool built = buildTxWave(mode, text, tone, &txSamples_) && !txSamples_.empty();
+  txSymbolSamples_ = built ? tonalSamples(txSamples_) : 0;
+  return built;
 }
 
 void MainWindow::refreshTxChrome() {
@@ -2944,12 +3078,23 @@ bool MainWindow::periodReady(const QString& mode) {
     return true;
   const bool crossed = txPeriodMark_ >= 0 && into < txPeriodMark_;
   txPeriodMark_ = into;
-  if (!(crossed || into < 300))
+  // The 20 ms pump lands inside this window after the slot opens.
+  // Audio then runs at 48 kHz, so symbol 0 is this close to the edge.
+  if (!(crossed || into < 200))
     return false;
   return open;
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (event->type() == QEvent::KeyPress &&
+      (watched->objectName() == QLatin1String("txQueueList") ||
+       watched->objectName() == QLatin1String("txNowList"))) {
+    const auto* key = static_cast<const QKeyEvent*>(event);
+    if (key->key() == Qt::Key_Delete) {
+      deleteQueueRow(watched->objectName() == QLatin1String("txNowList"));
+      return true;
+    }
+  }
   if (event->type() == QEvent::MouseButtonDblClick &&
       (watched->objectName() == QLatin1String("txMaxPeriods") ||
        watched->objectName() == QLatin1String("txMaxPeriodsEdit"))) {
@@ -3088,7 +3233,9 @@ void MainWindow::setTune(bool on) {
   stopUserTx(true);
   txTuneHz_ = std::clamp(waterfall_ ? waterfall_->txHz() : 1500, 200, 3000);
   txTunePhase_ = 0.0;
-  txHold_ = 2;
+  txTuneSent_ = 0;
+  txLastPullMs_ = 0;
+  txHold_ = 0;
   txTuneLimitMs_ = tuneLimitMs(profile_ ? profile_->digitalMode() : QStringLiteral("FT8"));
   txTuneStartMs_ = QDateTime::currentMSecsSinceEpoch();
   txTune_ = true;
@@ -3176,6 +3323,11 @@ void MainWindow::setUserTx(bool on) {
   txKeySent_ = false;
   txLoggedThisPass_ = false;
   txPeriodMark_ = -1;
+  txPlayOriginMs_ = 0;
+  txLastPullMs_ = 0;
+  txGuardDeadlineMs_ = 0;
+  txPeriodEndMs_ = 0;
+  txSymbolSamples_ = tonalSamples(txSamples_);
   txSentText_.clear();
   txRetargeted_ = false;
   txCqFreeLatched_ = false;
@@ -3196,6 +3348,118 @@ void MainWindow::setUserTx(bool on) {
   txTimer_->start(20);
 }
 
+void MainWindow::fillTune(float* dst, int frames) {
+  const double step = 2.0 * 3.141592653589793 * double(txTuneHz_) / 48000.0;
+  for (int i = 0; i < frames; ++i) {
+    dst[i] = float(0.7 * std::sin(txTunePhase_));
+    txTunePhase_ += step;
+    if (txTunePhase_ > 6.283185307179586)
+      txTunePhase_ -= 6.283185307179586;
+  }
+  txTuneSent_ += frames;
+}
+
+void MainWindow::fillWave(float* dst, int frames, int step) {
+  if (step < 1)
+    step = 1;
+  for (int i = 0; i < frames; ++i) {
+    float sample = 0.0f;
+    if (txCursor_ >= 0 && txCursor_ < int(txSamples_.size()))
+      sample = txSamples_[static_cast<size_t>(txCursor_)];
+    dst[i] = sample;
+    txCursor_ += step;
+  }
+}
+
+void MainWindow::sendTxBlock(const float* mono, int frames, int rate, int channels) {
+  if (!tci_ || !mono || frames < 1)
+    return;
+  if (channels == 2) {
+    std::vector<float> stereo(static_cast<size_t>(frames) * 2);
+    for (int i = 0; i < frames; ++i) {
+      stereo[static_cast<size_t>(i * 2)] = mono[i];
+      stereo[static_cast<size_t>(i * 2 + 1)] = mono[i];
+    }
+    tci_->pushTxAudio(stereo.data(), frames * 2, rate, 2);
+    return;
+  }
+  tci_->pushTxAudio(mono, frames, rate, 1);
+}
+
+void MainWindow::onTxPull(int sampleRateHz, int length, int channels) {
+  if (qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return;
+  if (!tci_ || !tci_->isTransmitting() || length <= 0)
+    return;
+  if (channels != 1 && channels != 2)
+    channels = 1;
+  int rate = 48000;
+  int step = 1;
+  if (sampleRateHz == 24000) {
+    rate = 24000;
+    step = 2;
+  } else if (sampleRateHz == 12000) {
+    rate = 12000;
+    step = 4;
+  } else if (sampleRateHz == 8000) {
+    rate = 8000;
+    step = 6;
+  }
+  int frames = channels == 2 ? length / 2 : length;
+  if (frames < 1)
+    return;
+  if (frames > 4096)
+    frames = 4096;
+  if (!txTune_ && !txKeySent_)
+    return;
+  txLastPullMs_ = QDateTime::currentMSecsSinceEpoch();
+  std::vector<float> mono(static_cast<size_t>(frames));
+  if (txTune_)
+    fillTune(mono.data(), frames);
+  else
+    fillWave(mono.data(), frames, step);
+  sendTxBlock(mono.data(), frames, rate, channels);
+}
+
+bool MainWindow::slotShouldEnd(const QString& mode) const {
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  const int period = periodLengthMs(mode);
+  if (period <= 0) {
+    if (txSamples_.empty() || txPlayOriginMs_ <= 0)
+      return true;
+    const qint64 needMs = qint64(txSamples_.size()) * 1000 / 48000;
+    return txCursor_ >= int(txSamples_.size()) && now - txPlayOriginMs_ >= needMs;
+  }
+  if (txPeriodEndMs_ > 0 && now >= txPeriodEndMs_)
+    return true;
+  const int symbols = std::max(1, txSymbolSamples_);
+  return txGuardDeadlineMs_ > 0 && now >= txGuardDeadlineMs_ && txCursor_ >= symbols;
+}
+
+void MainWindow::pushRealtimeTx() {
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  if (txLastPullMs_ > 0 && now - txLastPullMs_ < 80)
+    return;
+  constexpr int kRate = 48000;
+  constexpr int kChunk = 960;
+  const qint64 origin = txTune_ ? txTuneStartMs_ : txPlayOriginMs_;
+  if (origin <= 0)
+    return;
+  const int sent = txTune_ ? txTuneSent_ : txCursor_;
+  const int allowed = int((now - origin) * kRate / 1000) + kChunk;
+  if (sent >= allowed)
+    return;
+  int frames = std::min(kChunk, allowed - sent);
+  if (frames < 1)
+    return;
+  std::vector<float> mono(static_cast<size_t>(frames));
+  if (txTune_)
+    fillTune(mono.data(), frames);
+  else
+    fillWave(mono.data(), frames, 1);
+  sendTxBlock(mono.data(), frames, kRate, 1);
+}
+
 void MainWindow::pumpUserTx() {
   if (txTune_) {
     if (!tci_ || !tci_->isTransmitting()) {
@@ -3210,20 +3474,7 @@ void MainWindow::pumpUserTx() {
       stopTune(true);
       return;
     }
-    if (txHold_ > 0) {
-      --txHold_;
-      return;
-    }
-    constexpr int kChunk = 2400;
-    std::vector<float> chunk(kChunk);
-    const double step = 2.0 * 3.141592653589793 * double(txTuneHz_) / 48000.0;
-    for (int i = 0; i < kChunk; ++i) {
-      chunk[static_cast<size_t>(i)] = float(0.7 * std::sin(txTunePhase_));
-      txTunePhase_ += step;
-      if (txTunePhase_ > 6.283185307179586)
-        txTunePhase_ -= 6.283185307179586;
-    }
-    tci_->pushTxAudio(chunk.data(), kChunk, 48000);
+    pushRealtimeTx();
     return;
   }
   if (!tci_ || !profile_ || txSamples_.empty()) {
@@ -3239,12 +3490,24 @@ void MainWindow::pumpUserTx() {
       stopUserTx(true);
       return;
     }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
     txKeySent_ = true;
-    txHold_ = 2;
+    txHold_ = 0;
     txJoinOpen_ = false;
+    txCursor_ = 0;
+    txLastPullMs_ = 0;
+    txPlayOriginMs_ = now;
     txSentText_ = transmitMessage();
-    if (const int period = periodLengthMs(mode))
-      txPeriodMark_ = utcIntoPeriodMs(period);
+    if (const int period = periodLengthMs(mode)) {
+      const int into = utcIntoPeriodMs(period);
+      txPeriodMark_ = into;
+      const int guardLeft = (period - txGuardMs(mode)) - into;
+      txGuardDeadlineMs_ = now + std::max(0, guardLeft);
+      txPeriodEndMs_ = now + std::max(50, period - into - 30);
+    } else {
+      txGuardDeadlineMs_ = 0;
+      txPeriodEndMs_ = 0;
+    }
     if (!txLoggedThisPass_) {
       appendQso(QStringLiteral("TX"), txSentText_);
       promoteNow();
@@ -3252,29 +3515,22 @@ void MainWindow::pumpUserTx() {
     }
     if (auto* button = findChild<QPushButton*>(QStringLiteral("txSend")))
       button->setText(QStringLiteral("ON AIR"));
-    setTxStatus(QStringLiteral("On the air, try %1. TRX is held for this slot. START was not sent.")
-                    .arg(txTries_ + 1));
+    const auto* spin = findChild<QSpinBox*>(QStringLiteral("txMaxPeriods"));
+    const int n = spin ? spin->value() : 2;
+    const bool periods = !spin || spin->prefix().startsWith(QLatin1String("Periods"));
+    const QString count =
+        periods ? QStringLiteral("try %1 of %2").arg(txTries_ + 1).arg(n) : QStringLiteral("Max Time");
+    setTxStatus(QStringLiteral(
+                    "On the air, %1. TRX stays up until this slot ends. START was not sent.")
+                    .arg(count));
+    pushRealtimeTx();
     return;
   }
-  if (txHold_ > 0) {
-    --txHold_;
-    return;
-  }
-  if (const int period = periodLengthMs(mode)) {
-    const int into = utcIntoPeriodMs(period);
-    if (into >= period - txGuardMs(mode)) {
-      finishTxPass();
-      return;
-    }
-  }
-  constexpr int kChunk = 2400;
-  if (txCursor_ >= int(txSamples_.size())) {
+  if (slotShouldEnd(mode)) {
     finishTxPass();
     return;
   }
-  const int count = std::min(kChunk, int(txSamples_.size()) - txCursor_);
-  tci_->pushTxAudio(txSamples_.data() + txCursor_, count, 48000);
-  txCursor_ += count;
+  pushRealtimeTx();
 }
 
 void MainWindow::finishTxPass() {
@@ -3291,6 +3547,11 @@ void MainWindow::finishTxPass() {
   txCursor_ = 0;
   txPeriodMark_ = -1;
   txJoinOpen_ = false;
+  txPlayOriginMs_ = 0;
+  txLastPullMs_ = 0;
+  txGuardDeadlineMs_ = 0;
+  txPeriodEndMs_ = 0;
+  txSymbolSamples_ = 0;
   if (!retargeted)
     ++txTries_;
 
@@ -3476,6 +3737,11 @@ void MainWindow::stopUserTx(bool uncheck) {
   txSamples_.clear();
   txCursor_ = 0;
   txPeriodMark_ = -1;
+  txPlayOriginMs_ = 0;
+  txLastPullMs_ = 0;
+  txGuardDeadlineMs_ = 0;
+  txPeriodEndMs_ = 0;
+  txSymbolSamples_ = 0;
   txSequence_ = false;
   txJoinOpen_ = false;
   txRetargeted_ = false;

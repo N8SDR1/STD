@@ -3,7 +3,10 @@
 
 #include "MainWindow.h"
 
+#include "TxWave.h"
 #include "WaterfallWidget.h"
+
+#include <vector>
 
 #include <QAction>
 #include <QApplication>
@@ -259,6 +262,16 @@ int shellReady(const MainWindow& window) {
     return fail("guide is missing");
   if (!window.findChild<QAction*>("saveLayout"))
     return fail("save layout is missing");
+
+  const auto* queueEntry = window.findChild<QLineEdit*>("txQueueEntry");
+  const auto* queueList = window.findChild<QWidget*>("txQueueList");
+  if (!queueEntry || !queueList)
+    return fail("queue entry is missing");
+
+  std::vector<float> ft8;
+  if (!buildTxWave(QStringLiteral("FT8"), QStringLiteral("CQ N8SDR EM79"), 1500, &ft8) ||
+      !ft8TxMatchesMshv(ft8, 1500))
+    return fail("FT8 encoder is not MSHV 8-FSK");
 
   qInfo("STD self-test ok");
   return 0;

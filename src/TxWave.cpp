@@ -17,7 +17,10 @@
 namespace {
 
 constexpr int kRate = 48000;
-constexpr float kScale = 8388607.0f;
+// MSHV's TCI sender divides the generator ints by 8380000 (genft8 writes
+// 8380000*sin, full 24-bit is 8388607). The same scale keeps a tone at
+// ±1, which is what MSHV puts on the wire at TX level 100.
+constexpr float kScale = 8380000.0f;
 
 void fromInts(const int* samples, int count, std::vector<float>* out) {
   out->resize(static_cast<size_t>(std::max(0, count)));
@@ -152,4 +155,75 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
   if (mode == QLatin1String("Hell"))
     return buildHell(text, tone, out);
   return false;
+}
+
+namespace {
+
+// Center of symbol s in the MSHV generator output. genft8 reads dphi
+// starting one symbol in, so symbol s sits at (s + 0.5) * 7680.
+int symbolCenter(int symbol) {
+  return int((symbol + 0.5) * 7680.0);
+}
+
+int bestTone(const float* samples, int count, int toneHz, double* ratio) {
+  int best = -1;
+  double bestMag = 0.0;
+  double second = 0.0;
+  for (int tone = 0; tone < 8; ++tone) {
+    const double freq = double(toneHz) + tone * 6.25;
+    double re = 0.0;
+    double im = 0.0;
+    for (int i = 0; i < count; ++i) {
+      const double w = 2.0 * 3.141592653589793 * freq * double(i) / double(kRate);
+      const double sample = samples[i];
+      re += sample * std::cos(w);
+      im -= sample * std::sin(w);
+    }
+    const double mag = re * re + im * im;
+    if (mag > bestMag) {
+      second = bestMag;
+      bestMag = mag;
+      best = tone;
+    } else if (mag > second) {
+      second = mag;
+    }
+  }
+  *ratio = second > 0.0 ? bestMag / second : 0.0;
+  return best;
+}
+
+}  // namespace
+
+bool ft8TxMatchesMshv(const std::vector<float>& wave, int toneHz) {
+  // 79 symbols * 7680 samples, plus MSHV's 4 s of trailing silence.
+  constexpr int kNsps = 7680;
+  constexpr int kSymbols = 79;
+  if (toneHz < 200 || int(wave.size()) < kSymbols * kNsps)
+    return false;
+  const int costas[7] = {3, 1, 4, 0, 6, 5, 2};
+  const int at[3] = {0, 36, 72};
+  float peak = 0.0f;
+  const int mid = symbolCenter(3);
+  if (mid < 0 || mid >= int(wave.size()))
+    return false;
+  for (int i = -200; i < 200; ++i)
+    peak = std::max(peak, std::fabs(wave[static_cast<size_t>(mid + i)]));
+  // Same full-scale sine MSHV sends at TX level 100. A clipped or empty
+  // buffer fails this before the tone test.
+  if (peak < 0.5f || peak > 1.05f)
+    return false;
+  // One symbol is 7680 samples, so a full-symbol tone test resolves 6.25 Hz.
+  for (int block = 0; block < 3; ++block) {
+    for (int i = 0; i < 7; ++i) {
+      const int symbol = at[block] + i;
+      const int start = symbol * kNsps;
+      if (start < 0 || start + kNsps > int(wave.size()))
+        return false;
+      double ratio = 0.0;
+      const int tone = bestTone(wave.data() + start, kNsps, toneHz, &ratio);
+      if (tone != costas[i] || ratio < 2.0)
+        return false;
+    }
+  }
+  return true;
 }
