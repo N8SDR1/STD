@@ -240,7 +240,8 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
   txHot->setObjectName(QStringLiteral("txGainHot"));
   txHot->setFont(monoFont(12));
   txHot->setToolTip(QStringLiteral(
-      "The TX spectrum is wider than the red protocol channel. The gain is not changed. This does not key."));
+      "Shown only while STD is transmitting. Receive levels do not raise this. "
+      "This build does not transmit and does not key."));
   txHot->hide();
   layout->addWidget(txHot);
   layout->addWidget(separator());

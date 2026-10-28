@@ -335,6 +335,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(tci_, &TciClient::pttChanged, this, [this](bool on) {
     if (statusStrip_)
       statusStrip_->setPtt(on, tci_->isOpen());
+    // The lamp follows the radio. STD is not transmitting, and RX
+    // energy must not raise the TX-gain notice.
+    if (waterfall_)
+      waterfall_->setTransmitting(false);
   });
   auto rememberGain = [this](const char* name, const char* key, bool transmit) {
     auto* spin = statusStrip_ ? statusStrip_->findChild<QSpinBox*>(QLatin1String(name)) : nullptr;
@@ -1136,8 +1140,9 @@ void MainWindow::showGuide() {
       {"RX and TX markers",
        "A green band is the RX channel and a red band is the TX channel. Each starts at the marker "
        "and runs up by the protocol width: 50 Hz on FT8, 90 Hz on FT4, 125 Hz on FT2. Super Hound "
-       "widens the green band to the fox waveform, and Super Fox widens the red band. If the TX "
-       "spectrum runs outside that red band, STD says TX gain is too hot. The gain is not changed. "
+       "widens the green band to the fox waveform, and Super Fox widens the red band. The TX-gain "
+       "notice stays off on receive. It can show only while STD is transmitting, and this build "
+       "does not transmit. The gain is not changed. "
        "Click the waterfall to set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them "
        "together. RX=TX copies RX onto TX. None of these key the radio."},
       {"Layout",

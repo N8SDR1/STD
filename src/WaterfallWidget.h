@@ -20,8 +20,8 @@ class QWindow;
 // Time runs downward, one pixel per spectrum. Frequency runs across the
 // top. The outer span is the receive band reported by TCI
 // (rx_filter_band). The wheel, a drag, and the mode window can narrow
-// inside that span and cannot cross its edges. The FFT grows until each
-// pixel has its own bin, and a bin is not painted across a run of pixels.
+// inside that span and cannot cross its edges. Each pixel is one display
+// bin from a short FFT, the same render as before the protocol markers.
 // Contrast, brightness, speed, start, bandwidth, ticks, and palette sit
 // on the top of this widget and recolor the trace only. A
 // later renderer
@@ -57,6 +57,9 @@ public:
   // Width of the green RX band and the red TX band, in Hz.
   // FT8 is 50. The band starts at the marker and runs upward.
   void setChannelWidth(int rxHz, int txHz);
+  // Radio PTT is not this. Pass true only when STD is transmitting.
+  // This build never does. Receive levels are ignored.
+  void setTransmitting(bool on);
 
   int rxHz() const { return rxHz_; }
   int txHz() const { return txHz_; }
@@ -72,8 +75,8 @@ public:
 signals:
   void frequenciesChanged(int rxHz, int txHz);
   void toneChanged(int contrast, int brightness);
-  // True while energy sits outside the red protocol-width channel.
-  // Display only. This does not change the gain and it does not key.
+  // True only while STD itself is transmitting and the TX spectrum is
+  // wider than the red channel. Receive audio never raises this.
   void txHotChanged(bool hot);
 
 protected:
@@ -167,6 +170,7 @@ private:
   int rxWidthHz_ = 50;
   int txWidthHz_ = 50;
   bool locked_ = false;
+  bool transmitting_ = false;
   bool txHot_ = false;
   int txHotStreak_ = 0;
   int txCoolStreak_ = 0;

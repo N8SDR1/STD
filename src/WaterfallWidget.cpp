@@ -33,7 +33,7 @@ constexpr int kRingBits = 22;
 constexpr int kRingSize = 1 << kRingBits;
 constexpr int kRulerHeight = 32;
 constexpr int kToneBarHeight = 40;
-constexpr int kMaxDisplayFft = 131072;
+constexpr int kMaxDisplayFft = 8192;
 constexpr float kMinSpanFloor = 40.0f;
 constexpr QRgb kField = qRgb(0, 2, 12);
 
@@ -201,14 +201,14 @@ QRgb samplePalette(const Palette& palette, float u) {
 }
 
 QRgb traceColor(float dbAboveNoise, int contrast, int brightness, int palette) {
-  const float threshold = 10.0f * (1.0f - float(brightness) / 100.0f);
-  const float span = 12.0f - 8.0f * (float(contrast) / 100.0f);
-  const float rise = (dbAboveNoise - threshold) / std::max(1.0f, span);
+  const float threshold = 18.0f * (1.0f - float(brightness) / 100.0f);
+  const float span = 22.0f - 16.0f * (float(contrast) / 100.0f);
+  const float rise = (dbAboveNoise - threshold) / span;
   if (!(rise > 0.0f))
     return kField;
-  const float shaped = std::pow(rise > 1.0f ? 1.0f : rise, 1.8f);
+  const float u = rise > 1.0f ? 1.0f : rise;
   const int index = std::clamp(palette, 0, kPaletteCount - 1);
-  return samplePalette(kPalettes[index], shaped);
+  return samplePalette(kPalettes[index], u);
 }
 
 }  // namespace
@@ -451,6 +451,12 @@ void WaterfallWidget::setChannelWidth(int rxHz, int txHz) {
   update();
 }
 
+void WaterfallWidget::setTransmitting(bool on) {
+  transmitting_ = on;
+  if (!transmitting_)
+    clearTxHot();
+}
+
 void WaterfallWidget::clearTxHot() {
   txHotStreak_ = 0;
   txCoolStreak_ = 0;
@@ -461,6 +467,8 @@ void WaterfallWidget::clearTxHot() {
 }
 
 void WaterfallWidget::noteTxSpill(bool spilling) {
+  if (!transmitting_)
+    spilling = false;
   if (spilling) {
     txCoolStreak_ = 0;
     if (txHotStreak_ < 8)
@@ -480,45 +488,10 @@ void WaterfallWidget::noteTxSpill(bool spilling) {
   }
 }
 
-bool WaterfallWidget::txSpectrumSpills(double df, int nfft, float noiseDb) const {
-  if (df <= 0.0 || nfft < 16 || txWidthHz_ < 6 || rateHz_ <= 0)
-    return false;
-  const double nyquist = 0.5 * double(rateHz_);
-  const double lo = double(txHz_);
-  const double hi = lo + double(txWidthHz_);
-  if (hi <= 0.0 || lo >= nyquist)
-    return false;
-
-  const auto peak = [&](double a, double b) {
-    float best = -200.0f;
-    if (b <= a)
-      return best;
-    const int first = std::max(1, int(std::floor(a / df)));
-    const int last = std::min(nfft / 2 - 1, int(std::ceil(b / df)));
-    for (int bin = first; bin <= last; ++bin) {
-      const double freq = double(bin) * df;
-      if (freq < a || freq >= b)
-        continue;
-      const float re = fftRe_[bin];
-      const float im = fftIm_[bin];
-      const float mag = std::sqrt(re * re + im * im) / float(nfft);
-      const float db = 20.0f * std::log10(mag + 1.0e-12f);
-      if (db > best)
-        best = db;
-    }
-    return best;
-  };
-
-  const float inside = peak(std::max(0.0, lo), std::min(hi, nyquist));
-  if (inside < noiseDb + 18.0f)
-    return false;
-  const double skirt = std::max(12.0, df * 2.0);
-  const float left = lo > skirt ? peak(lo - skirt, lo) : -200.0f;
-  const float right = hi < nyquist ? peak(hi, std::min(nyquist, hi + skirt)) : -200.0f;
-  const float outside = std::max(left, right);
-  if (outside < noiseDb + 12.0f)
-    return false;
-  return outside + 12.0f >= inside;
+bool WaterfallWidget::txSpectrumSpills(double, int, float) const {
+  // The waterfall is receive audio. A wide RX trace is not transmit gain.
+  // There is no TX spectrum until STD is transmitting, and this build is not.
+  return false;
 }
 
 void WaterfallWidget::setRxHz(int hz) {
@@ -657,69 +630,74 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
 
   const double span = std::max(1.0, double(viewHiHz_ - viewLoHz_));
   const double pixelHz = span / double(width);
-  int nfft = 8192;
-  const int need = pixelHz > 0.0 ? int(std::ceil(double(rateHz_) / pixelHz)) : nfft;
-  while (nfft < need && nfft < kMaxDisplayFft)
-    nfft <<= 1;
-  while (nfft > 2048 && endSample < nfft)
-    nfft >>= 1;
-  if (endSample < nfft)
+  const int nfft = nextPow2(std::max(width, 64));
+  int groups = int(std::ceil(double(rateHz_) / (pixelHz * double(nfft))));
+  if (groups < 1)
+    groups = 1;
+  int aperture = groups * nfft;
+  if (aperture > kRingSize / 2) {
+    groups = std::max(1, (kRingSize / 2) / nfft);
+    aperture = groups * nfft;
+  }
+  if (endSample < aperture)
     return;
 
   if (fftRe_.size() < nfft) {
     fftRe_.resize(nfft);
     fftIm_.resize(nfft);
   }
-  const qint64 start = endSample - nfft;
+  std::fill(fftRe_.begin(), fftRe_.begin() + nfft, 0.0f);
+  std::fill(fftIm_.begin(), fftIm_.begin() + nfft, 0.0f);
+
+  const double rotate = -6.283185307179586 * double(viewLoHz_) / double(rateHz_);
+  double cs = 1.0;
+  double sn = 0.0;
+  const double dcs = std::cos(rotate);
+  const double dsn = std::sin(rotate);
+  const qint64 start = endSample - aperture;
+  int n = 0;
   for (int i = 0; i < nfft; ++i) {
-    const double t = double(i) / double(nfft - 1);
-    const double window = 0.35875 - 0.48829 * std::cos(6.283185307179586 * t) +
-                          0.14128 * std::cos(12.566370614359172 * t) -
-                          0.01168 * std::cos(18.84955592153876 * t);
-    fftRe_[i] = float(double(sampleAt(start + i)) * window);
-    fftIm_[i] = 0.0f;
+    double accRe = 0.0;
+    double accIm = 0.0;
+    for (int g = 0; g < groups; ++g, ++n) {
+      const double hann = 0.5 - 0.5 * std::cos(6.283185307179586 * double(n) / double(aperture - 1));
+      const double x = double(sampleAt(start + n)) * hann;
+      accRe += x * cs;
+      accIm += x * sn;
+      const double nextCs = cs * dcs - sn * dsn;
+      sn = cs * dsn + sn * dcs;
+      cs = nextCs;
+      if ((n & 1023) == 0) {
+        const double gain = 1.0 / std::max(1.0e-12, std::hypot(cs, sn));
+        cs *= gain;
+        sn *= gain;
+      }
+    }
+    fftRe_[i] = float(accRe);
+    fftIm_[i] = float(accIm);
   }
   fft(fftRe_.data(), fftIm_.data(), nfft);
 
-  const double df = double(rateHz_) / double(nfft);
+  const double df = double(rateHz_) / (double(groups) * double(nfft));
   QVector<float> db(width, -160.0f);
-  QVector<float> heard;
-  heard.reserve(nfft / 2);
-  for (int bin = 1; bin < nfft / 2; ++bin) {
-    const double freq = bin * df;
-    if (freq < viewLoHz_ || freq >= viewHiHz_)
-      continue;
-    const int column = int((freq - viewLoHz_) / pixelHz);
-    if (column < 0 || column >= width)
-      continue;
-    const float mag =
-        std::sqrt(fftRe_[bin] * fftRe_[bin] + fftIm_[bin] * fftIm_[bin]) / float(nfft);
-    const float value = 20.0f * std::log10(mag + 1.0e-12f);
-    heard.push_back(value);
-    if (value > db[column])
-      db[column] = value;
-  }
-  int left = -1;
+  int lastBin = -1;
   for (int c = 0; c < width; ++c) {
-    if (db[c] <= -159.0f)
-      continue;
-    if (left >= 0 && c - left > 1 && c - left <= 3) {
-      for (int i = left + 1; i < c; ++i) {
-        const float t = float(i - left) / float(c - left);
-        db[i] = db[left] + (db[c] - db[left]) * t;
-      }
-    }
-    left = c;
+    const double freq = (double(c) + 0.5) * pixelHz;
+    int bin = int(std::lround(freq / df));
+    if (bin <= lastBin)
+      bin = lastBin + 1;
+    if (bin >= nfft)
+      bin = nfft - 1;
+    lastBin = bin;
+    const float mag = std::sqrt(fftRe_[bin] * fftRe_[bin] + fftIm_[bin] * fftIm_[bin]) / float(nfft);
+    db[c] = 20.0f * std::log10(mag + 1.0e-12f);
   }
-  float noise = -80.0f;
-  if (!heard.isEmpty()) {
-    const int rank = std::clamp(int(heard.size() * 40 / 100), 0, int(heard.size()) - 1);
-    std::nth_element(heard.begin(), heard.begin() + rank, heard.end());
-    noise = heard[rank];
-  }
+  const int rank = std::clamp(width * 40 / 100, 0, width - 1);
+  QVector<float> order = db;
+  std::nth_element(order.begin(), order.begin() + rank, order.end());
+  const float noise = order[rank];
   for (int c = 0; c < width; ++c)
     row->level[c] = db[c] - noise;
-  noteTxSpill(txSpectrumSpills(df, nfft, noise));
 }
 
 void WaterfallWidget::buildToneBar() {
