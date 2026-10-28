@@ -79,6 +79,15 @@ int shellReady(const MainWindow& window) {
       return fail("waterfall palette name is wrong");
   }
 
+  const auto* ticks = window.findChild<QToolButton*>("waterfallTicks");
+  const char* tickNames[] = {"100 Hz", "250 Hz", "500 Hz"};
+  if (!ticks || !ticks->menu() || ticks->menu()->actions().size() != 3)
+    return fail("waterfall tick menu is missing");
+  for (int i = 0; i < 3; ++i) {
+    if (ticks->menu()->actions().at(i)->text() != QLatin1String(tickNames[i]))
+      return fail("waterfall tick step is wrong");
+  }
+
   const auto* subtitle = window.findChild<QLabel*>("brandSubtitle");
   if (!subtitle || subtitle->text() != QLatin1String("Shift, Tone, Decode"))
     return fail("subtitle is missing");

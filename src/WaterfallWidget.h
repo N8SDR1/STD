@@ -144,6 +144,7 @@ private:
   int brightness_ = 50;
   int palette_ = 0;
   int traceSpeed_ = 9;
+  int tickHz_ = 500;
   int rxHz_ = 1200;
   int txHz_ = 1500;
   bool locked_ = false;

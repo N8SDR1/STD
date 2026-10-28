@@ -78,17 +78,6 @@ int nextPow2(int n) {
   return p;
 }
 
-float tickStepHz(float span) {
-  const float raw = span / 8.0f;
-  const float steps[] = {10.0f, 20.0f, 25.0f, 50.0f, 100.0f, 200.0f,
-                          250.0f, 500.0f, 1000.0f, 2000.0f};
-  for (float step : steps) {
-    if (step >= raw)
-      return step;
-  }
-  return 2000.0f;
-}
-
 struct Stop {
   float pos;
   int r;
@@ -656,6 +645,8 @@ void WaterfallWidget::buildToneBar() {
   rxHz_ = std::clamp(settings.value(QStringLiteral("waterfall/rxHz"), rxHz_).toInt(), 0, 5000);
   txHz_ = std::clamp(settings.value(QStringLiteral("waterfall/txHz"), txHz_).toInt(), 0, 5000);
   locked_ = settings.value(QStringLiteral("waterfall/lock"), false).toBool();
+  const int savedTick = settings.value(QStringLiteral("waterfall/tickHz"), tickHz_).toInt();
+  tickHz_ = (savedTick == 100 || savedTick == 250 || savedTick == 500) ? savedTick : 500;
   if (locked_)
     txHz_ = rxHz_;
   palette_ = 0;
@@ -747,6 +738,49 @@ void WaterfallWidget::buildToneBar() {
   layout->addWidget(lock);
   layout->addWidget(equal);
   layout->addStretch(1);
+
+  auto* tickLabel = new QLabel(QStringLiteral("Ticks"), toneBar_);
+  tickLabel->setObjectName("waterfallToneLabel");
+  QFont tickFace("Inter");
+  tickFace.setPixelSize(12);
+  tickLabel->setFont(tickFace);
+  auto* tickButton = new QToolButton(toneBar_);
+  tickButton->setObjectName("waterfallTicks");
+  tickButton->setPopupMode(QToolButton::InstantPopup);
+  tickButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  tickButton->setFocusPolicy(Qt::NoFocus);
+  tickButton->setFont(tickFace);
+  tickButton->setText(QStringLiteral("%1 Hz").arg(tickHz_));
+  tickButton->setAccessibleName("Waterfall ticks");
+  tickButton->setToolTip(QStringLiteral("Ruler marks. 100, 250, or 500 Hz. Does not change the span."));
+  auto* tickMenu = new QMenu(tickButton);
+  tickMenu->setObjectName("waterfallTicksMenu");
+  const int tickSteps[] = {100, 250, 500};
+  for (int step : tickSteps) {
+    QAction* action = tickMenu->addAction(QStringLiteral("%1 Hz").arg(step));
+    action->setCheckable(true);
+    action->setChecked(step == tickHz_);
+    action->setData(step);
+  }
+  connect(tickMenu, &QMenu::triggered, this, [this, tickButton](QAction* chosen) {
+    if (!chosen)
+      return;
+    const int step = chosen->data().toInt();
+    if (step != 100 && step != 250 && step != 500)
+      return;
+    tickHz_ = step;
+    const auto actions = tickButton->menu()->actions();
+    for (QAction* action : actions)
+      action->setChecked(action == chosen);
+    tickButton->setText(QStringLiteral("%1 Hz").arg(tickHz_));
+    QSettings saved;
+    saved.setValue(QStringLiteral("waterfall/tickHz"), tickHz_);
+    update();
+  });
+  tickButton->setMenu(tickMenu);
+  layout->addWidget(tickLabel);
+  layout->addWidget(tickButton);
+  layout->addSpacing(12);
 
   auto* paletteLabel = new QLabel(QStringLiteral("Palette"), toneBar_);
   paletteLabel->setObjectName("waterfallToneLabel");
@@ -960,7 +994,7 @@ void WaterfallWidget::paintRuler(QPainter& painter) const {
   mono.setPixelSize(12);
   painter.setFont(mono);
   const QFontMetrics metrics(mono);
-  const float step = tickStepHz(qMax(1.0f, viewHiHz_ - viewLoHz_));
+  const float step = float(tickHz_);
   const float first = std::ceil(viewLoHz_ / step) * step;
   int lastRight = -1000;
   const int hzReserve = metrics.horizontalAdvance(QStringLiteral("Hz")) + 8;

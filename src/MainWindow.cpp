@@ -589,7 +589,8 @@ void MainWindow::showGuide() {
       {"Waterfall zoom",
        "The wheel zooms around the cursor. Drag pans. Both stay inside the receive band the radio "
        "reports. A double-click or a right-click opens that whole band again. Start and BW narrow "
-       "the same way, and they cannot cross the reported edges."},
+       "the same way, and they cannot cross the reported edges. Ticks on the bottom bar sets the "
+       "ruler marks to 100, 250, or 500 Hz."},
       {"Contrast and brightness",
        "The two sliders on the bottom bar recolor the trace. They do not change the frequency span."},
       {"Palettes",
