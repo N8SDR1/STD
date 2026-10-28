@@ -29,6 +29,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLinearGradient>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
@@ -762,33 +763,11 @@ void MainWindow::buildMenus() {
       action->setObjectName(row.checked ? QStringLiteral("modeFt8") : QStringLiteral("modeFt4"));
     modes->addAction(action);
     const QString modeName = QString::fromLatin1(row.label);
-    connect(action, &QAction::triggered, this, [this, action, modes, mshv = row.mshv, modeName] {
-      for (QAction* other : modes->actions()) {
-        if (other->isChecked() == (other == action))
-          continue;
-        const QSignalBlocker block(other);
-        other->setChecked(other == action);
-      }
-      if (modeName != layoutMode_) {
-        saveModeLayout();
-        layoutMode_ = modeName;
-        if (!restoreModeLayout()) {
-          layoutGuard_ = true;
-          arrangeDefault();
-          resizeToHero();
-          layoutGuard_ = false;
-        }
-      }
-      if (profile_) {
-        if (mshv)
-          profile_->setDigitalMode(modeName);
-        profile_->setMshvFamily(mshv);
-      }
-      if (statusStrip_)
-        statusStrip_->setDigitalMode(modeName);
-      if (mshv)
-        tuneActiveBand();
-    });
+    connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
+  }
+  if (statusStrip_) {
+    if (auto* chip = statusStrip_->findChild<QPushButton*>(QStringLiteral("digitalModeChip")))
+      connect(chip, &QPushButton::clicked, this, [this] { cycleDigitalMode(); });
   }
 
   auto* viewMenu = menuBar()->addMenu("View");
@@ -830,6 +809,58 @@ void MainWindow::buildMenus() {
   connect(guide, &QAction::triggered, this, [this] { showGuide(); });
   auto* about = helpMenu->addAction("About STD");
   connect(about, &QAction::triggered, this, [this] { showAbout(); });
+}
+
+void MainWindow::activateDigitalMode(const QString& modeName) {
+  if (auto* menu = findChild<QMenu*>(QStringLiteral("modeMenu"))) {
+    for (QAction* action : menu->actions()) {
+      if (!action->isCheckable())
+        continue;
+      const bool on = action->text() == modeName;
+      if (action->isChecked() == on)
+        continue;
+      const QSignalBlocker block(action);
+      action->setChecked(on);
+    }
+  }
+  const bool mshv = modeName == QLatin1String("FT8") || modeName == QLatin1String("FT4");
+  if (modeName != layoutMode_) {
+    saveModeLayout();
+    layoutMode_ = modeName;
+    if (!restoreModeLayout()) {
+      layoutGuard_ = true;
+      arrangeDefault();
+      resizeToHero();
+      layoutGuard_ = false;
+    }
+  }
+  if (profile_) {
+    if (mshv)
+      profile_->setDigitalMode(modeName);
+    profile_->setMshvFamily(mshv);
+  }
+  if (statusStrip_)
+    statusStrip_->setDigitalMode(modeName);
+  if (mshv)
+    tuneActiveBand();
+}
+
+void MainWindow::cycleDigitalMode() {
+  QStringList names;
+  if (auto* menu = findChild<QMenu*>(QStringLiteral("modeMenu"))) {
+    for (QAction* action : menu->actions()) {
+      if (action->isCheckable())
+        names.append(action->text());
+    }
+  }
+  if (names.isEmpty())
+    return;
+  int index = names.indexOf(layoutMode_);
+  if (index < 0)
+    index = 0;
+  else
+    index = (index + 1) % names.size();
+  activateDigitalMode(names.at(index));
 }
 
 void MainWindow::tuneActiveBand() {

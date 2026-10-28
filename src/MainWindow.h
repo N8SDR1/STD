@@ -43,6 +43,8 @@ private:
   void showAbout();
   void showGuide();
   void tuneActiveBand();
+  void activateDigitalMode(const QString& modeName);
+  void cycleDigitalMode();
   void openRadioDialog();
   void syncConnectOptions();
   void maybeAutoConnect();

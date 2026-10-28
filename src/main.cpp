@@ -120,8 +120,9 @@ int shellReady(const MainWindow& window) {
       return fail("a DX option is missing");
   }
 
-  const auto* chip = window.findChild<QLabel*>("digitalModeChip");
-  if (!chip || chip->text() != QLatin1String("FT8"))
+  const auto* chip = window.findChild<QPushButton*>("digitalModeChip");
+  if (!chip || !chip->isEnabled() || chip->text() != QLatin1String("FT8") ||
+      !chip->toolTip().contains(QLatin1String("does not key"), Qt::CaseInsensitive))
     return fail("digital mode chip is missing");
   const auto* mode = window.findChild<QLabel*>("modeValue");
   const auto* afc = window.findChild<QLabel*>("afcValue");

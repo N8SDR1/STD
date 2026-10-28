@@ -74,7 +74,7 @@ protected:
   }
 };
 
-void showDigitalMode(QLabel* chip, const QString& mode) {
+void showDigitalMode(QPushButton* chip, const QString& mode) {
   const QString text = mode.isEmpty() ? QStringLiteral("FT8") : mode;
   chip->setText(text);
   const int width = chip->fontMetrics().horizontalAdvance(text) + 20;
@@ -90,20 +90,23 @@ void showDigitalMode(QLabel* chip, const QString& mode) {
     ink = QStringLiteral("#d5e6ef");
   }
   chip->setStyleSheet(QStringLiteral(
-                          "QLabel#digitalModeChip { background: %1; color: %2; border-radius: 11px; padding: 0 8px; }")
+      "QPushButton#digitalModeChip { background: %1; color: %2; border: none; border-radius: 11px; padding: 0 8px; }"
+      "QPushButton#digitalModeChip:hover { border: 1px solid #ffffff; }")
                           .arg(fill, ink));
   chip->setAccessibleName(QStringLiteral("Digital mode %1").arg(text));
 }
 
-QLabel* digitalModeChip(QWidget* parent) {
-  auto* chip = new QLabel(parent);
+QPushButton* digitalModeChip(QWidget* parent) {
+  auto* chip = new QPushButton(parent);
   chip->setObjectName("digitalModeChip");
-  chip->setAlignment(Qt::AlignCenter);
+  chip->setCursor(Qt::PointingHandCursor);
+  chip->setFocusPolicy(Qt::NoFocus);
   QFont font = monoFont(12);
   font.setBold(true);
   chip->setFont(font);
   chip->setFixedHeight(22);
-  chip->setToolTip(QStringLiteral("Active digital mode. This does not key."));
+  chip->setToolTip(QStringLiteral(
+      "Active digital mode. Click to cycle FT8, FT4, RTTY, and PSK31. This does not key."));
   showDigitalMode(chip, QStringLiteral("FT8"));
   return chip;
 }
@@ -261,7 +264,7 @@ void StatusStrip::setMode(const QString& text) {
 }
 
 void StatusStrip::setDigitalMode(const QString& mode) {
-  if (auto* chip = findChild<QLabel*>(QStringLiteral("digitalModeChip")))
+  if (auto* chip = findChild<QPushButton*>(QStringLiteral("digitalModeChip")))
     showDigitalMode(chip, mode);
 }
 
