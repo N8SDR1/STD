@@ -96,6 +96,8 @@ private:
   void stopUserTx(bool uncheck);
   void setTxStatus(const QString& text);
   void loadReplyFromLine(int line);
+  void qsyDecodeLine(int line);
+  void markWaterfallTx();
   void refreshTxFields();
   void refreshTxChrome();
   void selectTxSlot(int index);
@@ -165,6 +167,7 @@ private:
   bool showTime_ = true;
   bool showFreq_ = true;
   bool showDist_ = true;
+  bool qsyOnDecode_ = true;
   bool distMiles_ = true;
   bool filtersOn_ = false;
   bool filterCq_ = false;

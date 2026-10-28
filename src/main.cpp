@@ -118,6 +118,18 @@ int shellReady(const MainWindow& window) {
       !halt->toolTip().contains(QLatin1String("START")) ||
       !halt->toolTip().contains(QLatin1String("Does not key")))
     return fail("Halt is missing");
+  const auto* rxTx = window.findChild<QPushButton*>("freqRxTx");
+  if (!rxTx || rxTx->isCheckable() ||
+      (rxTx->text() != QLatin1String("RX=TX") && rxTx->text() != QLatin1String("TX=RX")) ||
+      !rxTx->toolTip().contains(QLatin1String("TX=RX")) ||
+      !rxTx->toolTip().contains(QLatin1String("does not key")))
+    return fail("RX=TX chip is missing");
+  const auto* qsy = window.findChild<QAction*>("qsyOnDecode");
+  if (!qsy || !qsy->isCheckable() || !qsy->toolTip().contains(QLatin1String("does not key")))
+    return fail("QSY option is missing");
+  const auto* clrNow = window.findChild<QPushButton*>("txClrNow");
+  if (!clrNow || !clrNow->toolTip().contains(QLatin1String("QSO")))
+    return fail("CLR Now does not clear the QSO pane");
   const auto* activity = window.findChild<QComboBox*>("txActivity");
   if (!activity || activity->count() < 18 || activity->itemText(0) != QLatin1String("Standard") ||
       activity->findText(QStringLiteral("ARRL Field Day")) < 0)

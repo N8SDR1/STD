@@ -4,6 +4,7 @@
 #include "WaterfallWidget.h"
 
 #include <QAction>
+#include <QDateTime>
 #include <QFont>
 #include <QFontMetrics>
 #include <QHBoxLayout>
@@ -223,7 +224,8 @@ WaterfallWidget::WaterfallWidget(QWidget* parent) : QWidget(parent) {
   setAccessibleName("Waterfall");
   setAccessibleDescription("No signal. Radio not connected.");
   setToolTip(QStringLiteral(
-      "Click sets RX. Shift+click sets TX. Ctrl+click sets both. Drag pans. This does not key."));
+      "Click sets RX. Shift+click sets TX. Ctrl+click sets both. "
+      "Double-click RX=TX cycles RX=TX and TX=RX. Drag pans. This does not key."));
   rebuildTimer_ = new QTimer(this);
   rebuildTimer_->setInterval(0);
   connect(rebuildTimer_, &QTimer::timeout, this, [this] { rebuildSome(); });
@@ -414,8 +416,14 @@ void WaterfallWidget::setReceiveBand(int lowHz, int highHz) {
   haveBand_ = true;
   bandLoHz_ = left;
   bandHiHz_ = right;
-  const int rx = clampTone(rxHz_);
-  const int tx = locked_ ? rx : clampTone(txHz_);
+  int rx = clampTone(rxHz_);
+  int tx = clampTone(txHz_);
+  if (locked_) {
+    if (rxFollowsTx_)
+      rx = tx;
+    else
+      tx = rx;
+  }
   if (rx != rxHz_ || tx != txHz_) {
     rxHz_ = rx;
     txHz_ = tx;
@@ -453,8 +461,11 @@ void WaterfallWidget::setChannelWidth(int rxHz, int txHz) {
 
 void WaterfallWidget::setTransmitting(bool on) {
   transmitting_ = on;
-  if (!transmitting_)
+  if (!transmitting_) {
+    txMix_.clear();
+    txMixRead_ = 0.0;
     clearTxHot();
+  }
 }
 
 void WaterfallWidget::clearTxHot() {
@@ -488,15 +499,9 @@ void WaterfallWidget::noteTxSpill(bool spilling) {
   }
 }
 
-bool WaterfallWidget::txSpectrumSpills(double, int, float) const {
-  // The waterfall is receive audio. A wide RX trace is not transmit gain.
-  // There is no TX spectrum until STD is transmitting, and this build is not.
-  return false;
-}
-
 void WaterfallWidget::setRxHz(int hz) {
   rxHz_ = clampTone(hz);
-  if (locked_)
+  if (locked_ && !rxFollowsTx_)
     txHz_ = rxHz_;
   clearTxHot();
   rememberFrequencies();
@@ -506,12 +511,50 @@ void WaterfallWidget::setRxHz(int hz) {
 
 void WaterfallWidget::setTxHz(int hz) {
   txHz_ = clampTone(hz);
+  if (locked_ && rxFollowsTx_)
+    rxHz_ = txHz_;
+  clearTxHot();
+  rememberFrequencies();
+  emit frequenciesChanged(rxHz_, txHz_);
+  update();
+}
+
+void WaterfallWidget::qsyAudio(int hz) {
+  txHz_ = clampTone(hz);
   if (locked_)
     rxHz_ = txHz_;
   clearTxHot();
   rememberFrequencies();
   emit frequenciesChanged(rxHz_, txHz_);
   update();
+}
+
+void WaterfallWidget::snapRxTx() {
+  if (rxFollowsTx_)
+    rxHz_ = clampTone(txHz_);
+  else
+    txHz_ = clampTone(rxHz_);
+  clearTxHot();
+  rememberFrequencies();
+  showRxTxChip();
+  emit frequenciesChanged(rxHz_, txHz_);
+  update();
+}
+
+void WaterfallWidget::cycleRxTx() {
+  rxFollowsTx_ = !rxFollowsTx_;
+  snapRxTx();
+}
+
+void WaterfallWidget::showRxTxChip() {
+  auto* equal = findChild<QPushButton*>(QStringLiteral("freqRxTx"));
+  if (!equal)
+    return;
+  equal->setText(rxFollowsTx_ ? QStringLiteral("RX=TX") : QStringLiteral("TX=RX"));
+  equal->setToolTip(QStringLiteral(
+      "Double-click to cycle RX=TX and TX=RX. RX=TX copies TX onto RX. "
+      "TX=RX copies RX onto TX. A click applies that copy. "
+      "Lock makes the other marker follow. This does not key."));
 }
 
 int WaterfallWidget::clampTone(int hz) const {
@@ -531,6 +574,8 @@ void WaterfallWidget::rememberFrequencies() {
   settings.setValue(QStringLiteral("waterfall/rxHz"), rxHz_);
   settings.setValue(QStringLiteral("waterfall/txHz"), txHz_);
   settings.setValue(QStringLiteral("waterfall/lock"), locked_);
+  settings.setValue(QStringLiteral("waterfall/rxTxMode"),
+                    rxFollowsTx_ ? QStringLiteral("RX=TX") : QStringLiteral("TX=RX"));
 }
 
 void WaterfallWidget::applyFrequencyClick(int x, Qt::KeyboardModifiers mods) {
@@ -574,6 +619,67 @@ bool WaterfallWidget::rowMatches(const TraceRow& row) const {
 }
 
 void WaterfallWidget::pushRealAudio(const float* samples, int count, int sampleRateHz) {
+  lastRxMs_ = QDateTime::currentMSecsSinceEpoch();
+  writeAudio(samples, count, sampleRateHz, true);
+}
+
+void WaterfallWidget::mixTxAudio(const float* samples, int count, int sampleRateHz,
+                                 bool overFullScale) {
+  if (!transmitting_ || !samples || count <= 0 || sampleRateHz < 1000)
+    return;
+  noteTxSpill(overFullScale);
+  if (txMixRate_ != sampleRateHz) {
+    txMix_.clear();
+    txMixRead_ = 0.0;
+    txMixRate_ = sampleRateHz;
+  }
+  for (int i = 0; i < count; ++i) {
+    float sample = samples[i];
+    if (!std::isfinite(sample))
+      sample = 0.0f;
+    txMix_.push_back(std::clamp(sample, -1.0f, 1.0f));
+  }
+  const int cap = sampleRateHz * 2;
+  if (txMix_.size() > cap) {
+    txMix_.remove(0, txMix_.size() - cap);
+    txMixRead_ = 0.0;
+  }
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  const bool rxLive = lastRxMs_ > 0 && now - lastRxMs_ < 80 && rateHz_ > 0;
+  if (rxLive)
+    return;
+  QVector<float> block;
+  block.swap(txMix_);
+  txMixRead_ = 0.0;
+  writeAudio(block.constData(), block.size(), sampleRateHz, false);
+}
+
+void WaterfallWidget::blendTxIntoRecent(int count) {
+  if (!transmitting_ || txMix_.isEmpty() || count <= 0 || rateHz_ <= 0 || txMixRate_ <= 0)
+    return;
+  const int mask = kRingSize - 1;
+  int pos = ringWrite_ - count;
+  while (pos < 0)
+    pos += kRingSize;
+  double src = txMixRead_;
+  const double step = double(txMixRate_) / double(rateHz_);
+  for (int i = 0; i < count; ++i) {
+    if (src >= double(txMix_.size()))
+      break;
+    ring_[pos] += txMix_.at(int(src));
+    pos = (pos + 1) & mask;
+    src += step;
+  }
+  const int used = std::min(int(src), int(txMix_.size()));
+  if (used > 0) {
+    txMix_.remove(0, used);
+    txMixRead_ = src - double(used);
+    if (txMixRead_ < 0.0)
+      txMixRead_ = 0.0;
+  }
+}
+
+void WaterfallWidget::writeAudio(const float* samples, int count, int sampleRateHz, bool blendTx) {
   if (!samples || count <= 0 || sampleRateHz < 1000 || surfaceContainer_)
     return;
   if (rateHz_ != sampleRateHz) {
@@ -603,6 +709,8 @@ void WaterfallWidget::pushRealAudio(const float* samples, int count, int sampleR
   pending_.reserve(pending_.size() + count);
   for (int i = 0; i < count; ++i)
     pending_.push_back(std::isfinite(samples[i]) ? samples[i] : 0.0f);
+  if (blendTx)
+    blendTxIntoRecent(count);
 
   const int hop = hopSamples();
   bool drew = false;
@@ -717,6 +825,9 @@ void WaterfallWidget::buildToneBar() {
   rxHz_ = std::clamp(settings.value(QStringLiteral("waterfall/rxHz"), rxHz_).toInt(), 0, 5000);
   txHz_ = std::clamp(settings.value(QStringLiteral("waterfall/txHz"), txHz_).toInt(), 0, 5000);
   locked_ = settings.value(QStringLiteral("waterfall/lock"), false).toBool();
+  rxFollowsTx_ =
+      settings.value(QStringLiteral("waterfall/rxTxMode"), QStringLiteral("RX=TX")).toString() !=
+      QLatin1String("TX=RX");
   const int savedTick = settings.value(QStringLiteral("waterfall/tickHz"), tickHz_).toInt();
   tickHz_ = (savedTick == 100 || savedTick == 250 || savedTick == 500) ? savedTick : 500;
   if (locked_)
@@ -783,28 +894,38 @@ void WaterfallWidget::buildToneBar() {
   lock->setText(locked_ ? QStringLiteral("Unlock") : QStringLiteral("Lock"));
   lock->setFixedHeight(22);
   lock->setFocusPolicy(Qt::NoFocus);
-  lock->setToolTip(QStringLiteral("Lock TX to RX. A click moves both markers. This does not key."));
+  lock->setToolTip(QStringLiteral(
+      "Lock the markers so a click moves both. RX=TX makes RX follow TX. "
+      "TX=RX makes TX follow RX. A decode click moves RX too while this is on. "
+      "This does not key."));
   connect(lock, &QPushButton::toggled, this, [this, lock](bool on) {
     locked_ = on;
-    if (locked_)
-      txHz_ = rxHz_;
+    if (locked_) {
+      if (rxFollowsTx_)
+        rxHz_ = clampTone(txHz_);
+      else
+        txHz_ = clampTone(rxHz_);
+    }
     lock->setText(on ? QStringLiteral("Unlock") : QStringLiteral("Lock"));
     clearTxHot();
     rememberFrequencies();
     update();
     emit frequenciesChanged(rxHz_, txHz_);
   });
-  auto* equal = new QPushButton(QStringLiteral("RX=TX"), toneBar_);
+  auto* equal = new QPushButton(toneBar_);
   equal->setObjectName("freqRxTx");
   equal->setFixedHeight(22);
   equal->setFocusPolicy(Qt::NoFocus);
-  equal->setToolTip(QStringLiteral("Set TX to the RX frequency. This does not key."));
+  equal->installEventFilter(this);
+  showRxTxChip();
   connect(equal, &QPushButton::clicked, this, [this] {
-    txHz_ = rxHz_;
-    clearTxHot();
-    rememberFrequencies();
-    update();
-    emit frequenciesChanged(rxHz_, txHz_);
+    rxTxClickPending_ = true;
+    QTimer::singleShot(220, this, [this] {
+      if (!rxTxClickPending_)
+        return;
+      rxTxClickPending_ = false;
+      snapRxTx();
+    });
   });
   layout->addWidget(lock);
   layout->addWidget(equal);
@@ -1219,6 +1340,19 @@ void WaterfallWidget::wheelEvent(QWheelEvent* event) {
   }
   scheduleRebuild();
   event->accept();
+}
+
+bool WaterfallWidget::eventFilter(QObject* watched, QEvent* event) {
+  if (watched && watched->objectName() == QLatin1String("freqRxTx") &&
+      event->type() == QEvent::MouseButtonDblClick) {
+    const auto* mouse = static_cast<const QMouseEvent*>(event);
+    if (mouse->button() == Qt::LeftButton) {
+      rxTxClickPending_ = false;
+      cycleRxTx();
+      return true;
+    }
+  }
+  return QWidget::eventFilter(watched, event);
 }
 
 void WaterfallWidget::mousePressEvent(QMouseEvent* event) {

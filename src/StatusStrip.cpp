@@ -235,13 +235,15 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
                               QStringLiteral("Local receive gain for the waterfall and the decoder. "
                                              "It does not change the radio and it does not key.")));
   layout->addWidget(gainSpin(this, "txGain", QStringLiteral("TX "), "audio/txGainDb",
-                              QStringLiteral("Local transmit gain. This build does not transmit and does not key.")));
+                              QStringLiteral(
+                                  "Local transmit gain. While Tune or TX is on the air, that "
+                                  "audio is mixed onto the waterfall. It does not key.")));
   auto* txHot = new QLabel(QStringLiteral("TX gain is too hot"), this);
   txHot->setObjectName(QStringLiteral("txGainHot"));
   txHot->setFont(monoFont(12));
   txHot->setToolTip(QStringLiteral(
-      "Shown only while STD is transmitting. Receive levels do not raise this. "
-      "This build does not transmit and does not key."));
+      "Shown while the transmit audio is past full scale. The waterfall is that "
+      "same audio. Receive levels do not raise this. This does not key."));
   txHot->hide();
   layout->addWidget(txHot);
   layout->addWidget(separator());

@@ -23,6 +23,8 @@
 #include <QWebSocket>
 #include <QWidget>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace {
@@ -405,6 +407,19 @@ void TciClient::sendTxAudio(const float* samples, int count, int rate, int chann
   if (frame.size() != kHeaderBytes + count * kSampleBytes)
     return;
   socket_->sendBinaryMessage(frame);
+  const int frames = channels == 2 ? count / 2 : count;
+  if (frames <= 0)
+    return;
+  QByteArray monitor(frames * int(sizeof(float)), Qt::Uninitialized);
+  auto* shaped = reinterpret_cast<float*>(monitor.data());
+  int over = 0;
+  for (int i = 0; i < frames; ++i) {
+    const float raw = samples[channels == 2 ? i * 2 : i] * gain;
+    if (std::fabs(raw) > 1.0f)
+      ++over;
+    shaped[i] = std::clamp(raw, -1.0f, 1.0f);
+  }
+  emit txMonitor(rate, monitor, over * 8 > frames);
 }
 
 void TciClient::settle(const QString& error) {

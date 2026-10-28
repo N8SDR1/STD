@@ -356,10 +356,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(tci_, &TciClient::pttChanged, this, [this](bool on) {
     if (statusStrip_)
       statusStrip_->setPtt(on, tci_->isOpen());
-    // The lamp follows the radio. STD is not transmitting, and RX
-    // energy must not raise the TX-gain notice.
-    if (waterfall_)
-      waterfall_->setTransmitting(false);
+    // The lamp follows the radio. The waterfall TX trace follows only
+    // our Tune or TX key, so receive audio cannot raise the gain notice.
+    markWaterfallTx();
   });
   auto rememberGain = [this](const char* name, const char* key, bool transmit) {
     auto* spin = statusStrip_ ? statusStrip_->findChild<QSpinBox*>(QLatin1String(name)) : nullptr;
@@ -385,6 +384,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(tci_, &TciClient::txPull, this, [this](int rate, int length, int channels) {
     onTxPull(rate, length, channels);
   });
+  connect(tci_, &TciClient::txMonitor, this,
+          [this](int rate, const QByteArray& mono, bool overFullScale) {
+            if (!waterfall_ || mono.size() < int(sizeof(float)))
+              return;
+            const auto* samples = reinterpret_cast<const float*>(mono.constData());
+            const int count = mono.size() / int(sizeof(float));
+            waterfall_->mixTxAudio(samples, count, rate, overFullScale);
+          });
   connect(tci_, &TciClient::rxAudio, this, [this](int rate, const QByteArray& mono) {
     if (mono.size() < int(sizeof(float)))
       return;
@@ -982,7 +989,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     clrNow->setObjectName(QStringLiteral("txClrNow"));
     clrNow->setFont(interfaceFont(11));
     clrNow->setFocusPolicy(Qt::NoFocus);
-    clrNow->setToolTip(QStringLiteral("Clear the now list. This does not unkey and does not send START."));
+    clrNow->setToolTip(QStringLiteral(
+        "Clear the now list and the TX QSO pane. This does not unkey and does not send START."));
     tabs->addTab(queuePage, QStringLiteral("Queue 0"));
     tabs->addTab(nowPage, QStringLiteral("Now 0"));
     tabs->addTab(settings, QStringLiteral("Settings"));
@@ -1048,9 +1056,12 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     connect(clrNow, &QPushButton::clicked, this, [this] {
       txNow_.clear();
       paintMultiLists();
+      if (auto* qso = findChild<QPlainTextEdit*>(QStringLiteral("txQso")))
+        qso->clear();
       if (auto* multi = findChild<QTabWidget*>(QStringLiteral("txMultiOptions")))
         multi->setCurrentIndex(1);
-      setTxStatus(QStringLiteral("Now list cleared. Nothing was unkeyed. START was not sent."));
+      setTxStatus(QStringLiteral(
+          "Now list and the QSO pane cleared. Nothing was unkeyed. START was not sent."));
     });
 
     auto* buttons = new QHBoxLayout();
@@ -1546,6 +1557,11 @@ void MainWindow::buildMenus() {
   addCheck(optionsMenu, "txConfirm73", QStringLiteral("TX Confirmation If 73 Or RR73"), "dx/txConfirm73", true,
            txTip);
   addCheck(optionsMenu, "autoResetQso", QStringLiteral("Auto RESET QSO at end"), "dx/autoReset", true, txTip);
+  addCheck(optionsMenu, "qsyOnDecode", QStringLiteral("QSY TX to the clicked decode"), "dx/qsyOnDecode",
+           true,
+           QStringLiteral(
+               "JTDX and WSJT-X. A click on a CQ or a reply moves TX to that audio frequency. "
+               "RX moves too while Lock is on. Saved. This does not key and does not send START."));
 
   auto* modeMenu = menuBar()->addMenu("Mode");
   modeMenu->setObjectName("modeMenu");
@@ -1793,7 +1809,9 @@ void MainWindow::showGuide() {
        "notice stays off on receive. It can show only while STD is transmitting. The gain spin "
        "does not key. "
        "Click the waterfall to set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them "
-       "together. RX=TX copies RX onto TX. None of these key the radio."},
+       "together. Double-click the RX=TX chip to cycle RX=TX and TX=RX. RX=TX copies TX onto RX. "
+       "TX=RX copies RX onto TX. A click on a CQ or a reply moves TX to that audio frequency, and "
+       "RX as well while Lock is on. That choice is saved. None of these key the radio."},
       {"Layout",
        "View → Save layout stores the dock arrangement for the mode that is selected. The next time "
        "that mode opens, including after a restart, those panels come back. Leaving a mode, or "
@@ -3113,6 +3131,14 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
   auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
   if (!edit || watched != edit->viewport())
     return QMainWindow::eventFilter(watched, event);
+  if (event->type() == QEvent::MouseButtonRelease) {
+    const auto* mouse = static_cast<const QMouseEvent*>(event);
+    if (mouse->button() == Qt::LeftButton) {
+      const QTextCursor cursor = edit->cursorForPosition(mouse->position().toPoint());
+      qsyDecodeLine(cursor.blockNumber());
+    }
+    return QMainWindow::eventFilter(watched, event);
+  }
   if (event->type() != QEvent::MouseButtonDblClick)
     return QMainWindow::eventFilter(watched, event);
   const auto* mouse = static_cast<const QMouseEvent*>(event);
@@ -3121,6 +3147,32 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
   const QTextCursor cursor = edit->cursorForPosition(mouse->position().toPoint());
   loadReplyFromLine(cursor.blockNumber());
   return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::markWaterfallTx() {
+  if (waterfall_)
+    waterfall_->setTransmitting(txKeySent_ || txTune_);
+}
+
+void MainWindow::qsyDecodeLine(int line) {
+  if (!qsyOnDecode_ || !waterfall_ || line < 0 || line >= shownDecodes_.size())
+    return;
+  const DecodeRow row = shownDecodes_.at(line);
+  if (row.freqHz <= 0)
+    return;
+  const QStringList words =
+      row.message.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+  if (words.isEmpty())
+    return;
+  const bool cq = words.at(0).compare(QLatin1String("CQ"), Qt::CaseInsensitive) == 0;
+  bool call = false;
+  for (const QString& word : words) {
+    if (isCall(word))
+      call = true;
+  }
+  if (!cq && !call)
+    return;
+  waterfall_->qsyAudio(row.freqHz);
 }
 
 void MainWindow::loadReplyFromLine(int line) {
@@ -3201,8 +3253,7 @@ void MainWindow::loadReplyFromLine(int line) {
     selected = 1;
   refreshTxFields();
   selectTxSlot(selected);
-  if (waterfall_ && row.freqHz > 0)
-    waterfall_->setTxHz(row.freqHz);
+  qsyDecodeLine(line);
   enqueueCaller(sender, row.db, distanceText(row.message).toInt());
   int msgPos = 0;
   for (int i = 0; i < words.size(); ++i) {
@@ -3269,6 +3320,7 @@ void MainWindow::setTune(bool on) {
     return;
   }
   txKeySent_ = true;
+  markWaterfallTx();
   if (button)
     button->setText(QStringLiteral("TUNE ON"));
   setTxStatus(QStringLiteral(
@@ -3286,6 +3338,7 @@ void MainWindow::stopTune(bool uncheck) {
   if (keyed && tci_)
     tci_->setTransmit(false);
   txKeySent_ = false;
+  markWaterfallTx();
   if (auto* button = findChild<QPushButton*>(QStringLiteral("txTune"))) {
     if (uncheck) {
       const QSignalBlocker block(button);
@@ -3515,6 +3568,7 @@ void MainWindow::pumpUserTx() {
     }
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     txKeySent_ = true;
+    markWaterfallTx();
     txHold_ = 0;
     txJoinOpen_ = false;
     txCursor_ = 0;
@@ -3564,6 +3618,7 @@ void MainWindow::finishTxPass() {
   if (keyed && tci_)
     tci_->setTransmit(false);
   txKeySent_ = false;
+  markWaterfallTx();
   txHold_ = 0;
   txLoggedThisPass_ = false;
   txSamples_.clear();
@@ -3757,6 +3812,7 @@ void MainWindow::stopUserTx(bool uncheck) {
   if (txKeySent_ && tci_)
     tci_->setTransmit(false);
   txKeySent_ = false;
+  markWaterfallTx();
   txHold_ = 0;
   txLoggedThisPass_ = false;
   txSamples_.clear();
@@ -3913,6 +3969,7 @@ void MainWindow::applyDxOptions() {
     hideContinent_[i] = hide.size() > i && hide.at(i) == QLatin1Char('1');
   if (auto* button = findChild<QPushButton*>(QStringLiteral("decodeFilters")))
     filtersOn_ = button->isChecked();
+  qsyOnDecode_ = settings.value(QStringLiteral("dx/qsyOnDecode"), true).toBool();
   clearEachPeriod_ = settings.value(QStringLiteral("dx/clearEachPeriod"), false).toBool();
   maxSignals_ = settings.value(QStringLiteral("dx/maxSignals"), 0).toInt();
   if (maxSignals_ < 0)

@@ -59,6 +59,10 @@ signals:
   void receiveBandChanged(int lowHz, int highHz);
   // Mono float32, one real channel taken from a type-1 RX frame.
   void rxAudio(int sampleRateHz, const QByteArray& mono);
+  // Loopback of a type-2 TX frame after TX gain, one channel.
+  // overFullScale is true when the unclamped samples passed ±1.
+  // This is not a key and it is not START.
+  void txMonitor(int sampleRateHz, const QByteArray& mono, bool overFullScale);
   // Host TX_CHRONO pull. length is the header scalar count. Answer with
   // pushTxAudio. This is not a key and it is not START.
   void txPull(int sampleRateHz, int length, int channels);

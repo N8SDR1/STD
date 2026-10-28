@@ -42,6 +42,9 @@ public:
 
   // Real mono samples, already one channel. sampleRateHz is the frame rate.
   void pushRealAudio(const float* samples, int count, int sampleRateHz);
+  // Loopback of the TCI TX frame, after TX gain. Mixed onto the trace
+  // only while setTransmitting(true). Does not decode and does not key.
+  void mixTxAudio(const float* samples, int count, int sampleRateHz, bool overFullScale);
   void clearAudio();
 
   // Narrow the ruler. The result stays inside the reported receive band.
@@ -65,6 +68,8 @@ public:
   int txHz() const { return txHz_; }
   void setRxHz(int hz);
   void setTxHz(int hz);
+  // Move TX to hz. RX moves too while Lock is on.
+  void qsyAudio(int hz);
   int contrast() const { return contrast_; }
   int brightness() const { return brightness_; }
   // Puts the sliders back without writing settings.
@@ -88,6 +93,7 @@ protected:
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
   void mouseDoubleClickEvent(QMouseEvent* event) override;
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
   struct TraceRow {
@@ -105,8 +111,12 @@ private:
   void paintDial(QPainter& painter, int y) const;
   void pushTrace(qint64 endSample);
   void analyze(qint64 endSample, TraceRow* row);
-  bool txSpectrumSpills(double df, int nfft, float noiseDb) const;
   void noteTxSpill(bool spilling);
+  void snapRxTx();
+  void cycleRxTx();
+  void showRxTxChip();
+  void writeAudio(const float* samples, int count, int sampleRateHz, bool blendTx);
+  void blendTxIntoRecent(int count);
   void clearTxHot();
   void paintTxHot(QPainter& painter) const;
   void scheduleRebuild();
@@ -171,7 +181,13 @@ private:
   int rxWidthHz_ = 50;
   int txWidthHz_ = 50;
   bool locked_ = false;
+  bool rxFollowsTx_ = true;
+  bool rxTxClickPending_ = false;
   bool transmitting_ = false;
+  QVector<float> txMix_;
+  double txMixRead_ = 0.0;
+  int txMixRate_ = 0;
+  qint64 lastRxMs_ = 0;
   bool txHot_ = false;
   int txHotStreak_ = 0;
   int txCoolStreak_ = 0;
