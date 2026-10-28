@@ -9,6 +9,7 @@
 #include "ModeProfile.h"
 #include "StatusStrip.h"
 #include "TciClient.h"
+#include "TxWave.h"
 #include "WaterfallWidget.h"
 
 #include <algorithm>
@@ -21,6 +22,7 @@
 #include <QComboBox>
 #include <QCloseEvent>
 #include <QDataStream>
+#include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QFormLayout>
@@ -42,6 +44,7 @@
 #include <QPixmap>
 #include <QProcess>
 #include <QPlainTextEdit>
+#include <QResizeEvent>
 #include <QRegularExpression>
 #include <QTextBrowser>
 #include <QPushButton>
@@ -51,6 +54,7 @@
 #include <QSpinBox>
 #include <QStringList>
 #include <QTextCursor>
+#include <QTextFrame>
 #include <QUrl>
 #include <QSizePolicy>
 #include <QTimer>
@@ -178,20 +182,24 @@ QString otherCall(const QString& message, const QString& mine) {
   return {};
 }
 
+QString columnCell(const QString& text, int width) {
+  const QString cut = text.size() > width ? text.left(width) : text;
+  return cut.leftJustified(width, QLatin1Char(' '));
+}
+
 QString decodeColumns(const QString& time, const QString& db, const QString& dt, const QString& dist,
                       const QString& message, const QString& freq, bool showTime, bool showFreq,
                       bool showDist) {
-  const QString msg = message.size() < 22 ? message.leftJustified(22) : message;
   QStringList fields;
   if (showTime)
-    fields << QStringLiteral("%1").arg(time, -6);
-  fields << QStringLiteral("%1").arg(db, 3);
-  fields << QStringLiteral("%1").arg(dt, 5);
+    fields << columnCell(time, 8);
+  fields << columnCell(db, 4);
+  fields << columnCell(dt, 6);
   if (showDist)
-    fields << QStringLiteral("%1").arg(dist, 5);
-  fields << msg;
+    fields << columnCell(dist, 6);
+  fields << columnCell(message, 28);
   if (showFreq)
-    fields << QStringLiteral("%1").arg(freq, 5);
+    fields << columnCell(freq, 6);
   return fields.join(QStringLiteral(" | "));
 }
 
@@ -470,6 +478,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   });
   decodeClock->start(200);
 
+  txTimer_ = new QTimer(this);
+  txTimer_->setTimerType(Qt::PreciseTimer);
+  connect(txTimer_, &QTimer::timeout, this, [this] { pumpUserTx(); });
+
   applyDxOptions();
   QTimer::singleShot(0, this, [this] { maybeAutoConnect(); });
 }
@@ -557,7 +569,7 @@ void MainWindow::buildDocks() {
   transmitDock_->setWidget(makeTextPanel(
       "transmitText",
       "Transmit text.\nCharacters stay in this window. Nothing is sent to the radio.",
-      false, "Held locally. This build does not transmit."));
+      false, "Press TX for one FT8, FT4, or Hell transmission. The radio stays on receive until then. START is never sent."));
   transmitDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
 
   macroDock_ = new QDockWidget("Macros", this);
@@ -597,6 +609,19 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
   edit->setTabChangesFocus(true);
   edit->setMinimumHeight(72);
   layout->addWidget(edit);
+
+  if (editName == QLatin1String("transmitText")) {
+    auto* tx = new QPushButton(QStringLiteral("TX"), panel);
+    tx->setObjectName(QStringLiteral("txSend"));
+    tx->setCheckable(true);
+    tx->setChecked(false);
+    tx->setFont(interfaceFont(12));
+    tx->setFocusPolicy(Qt::NoFocus);
+    tx->setToolTip(QStringLiteral(
+        "Send one FT8, FT4, or Hell transmission. TRX goes out only after this is pressed. START is never sent."));
+    connect(tx, &QPushButton::toggled, this, [this](bool on) { setUserTx(on); });
+    layout->addWidget(tx, 0, Qt::AlignLeft);
+  }
 
   if (!note.isEmpty()) {
     auto* caption = new QLabel(note, panel);
@@ -655,6 +680,8 @@ QWidget* MainWindow::makeReceivePanel() {
   edit->setFont(monoFont(13));
   edit->setTabChangesFocus(true);
   edit->setMinimumHeight(72);
+  edit->setLineWrapMode(QPlainTextEdit::NoWrap);
+  edit->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   edit->document()->setDocumentMargin(0);
   layout->addWidget(edit, 1);
 
@@ -1136,13 +1163,18 @@ void MainWindow::showGuide() {
        "Synchronization calibrates the period clock. Macros edit eight local texts. Network "
        "Configuration stores a PSK Reporter style address and does not send spots. Decode List "
        "Options show or hide Time, Dist, and Freq, and can clear the list each period. Log options, ASeq, "
-       "TX confirmation, and Auto RESET QSO are saved. Transmit is off, so they do not key."},
+       "TX confirmation, and Auto RESET QSO are saved. Those options do not key."},
+      {"TX",
+       "Press TX to send one transmission. FT8 waits for the next 15 second boundary and FT4 waits "
+       "for the next 7.5 second boundary. Hell starts at once. TRX goes out when that audio starts, "
+       "and only because TX was pressed. START is never sent. An empty box does not key. FT2, RTTY, "
+       "and PSK31 do not key. The button releases when the audio ends."},
       {"RX and TX markers",
        "A green band is the RX channel and a red band is the TX channel. Each starts at the marker "
        "and runs up by the protocol width: 50 Hz on FT8, 90 Hz on FT4, 125 Hz on FT2. Super Hound "
        "widens the green band to the fox waveform, and Super Fox widens the red band. The TX-gain "
-       "notice stays off on receive. It can show only while STD is transmitting, and this build "
-       "does not transmit. The gain is not changed. "
+       "notice stays off on receive. It can show only while STD is transmitting. The gain spin "
+       "does not key. "
        "Click the waterfall to set RX. Shift+click sets TX. Ctrl+click sets both. Lock moves them "
        "together. RX=TX copies RX onto TX. None of these key the radio."},
       {"Layout",
@@ -1227,6 +1259,7 @@ void MainWindow::showEvent(QShowEvent* event) {
         const DockSignature once = dockSignature(saveState(1));
         const DockSignature twice = dockSignature(saveState(1));
         layoutReady_ = true;
+        alignDecodeHeader();
         if (!once.parsed || once.bytes.isEmpty() || once.bytes != twice.bytes)
           qFatal("layout signature failed");
         return;
@@ -1236,11 +1269,18 @@ void MainWindow::showEvent(QShowEvent* event) {
       if (!restored)
         resizeToHero();
       captureLayoutBaseline();
+      alignDecodeHeader();
     });
   }
 }
 
+void MainWindow::resizeEvent(QResizeEvent* event) {
+  QMainWindow::resizeEvent(event);
+  alignDecodeHeader();
+}
+
 void MainWindow::closeEvent(QCloseEvent* event) {
+  stopUserTx(false);
   offerLayoutSave();
   QMainWindow::closeEvent(event);
 }
@@ -1584,10 +1624,146 @@ QString MainWindow::distanceText(const QString& message) const {
   double lat2 = 0.0;
   double lon2 = 0.0;
   if (!gridCenter(home, &lat1, &lon1) || !gridCenter(theirs, &lat2, &lon2))
-    return QString::fromUtf8("—");
+    return QStringLiteral("-");
   const double km = kilometers(lat1, lon1, lat2, lon2);
   const double shown = distMiles_ ? km * 0.621371 : km;
   return QString::number(int(std::lround(shown)));
+}
+
+void MainWindow::alignDecodeHeader() {
+  if (headerAlignQueued_)
+    return;
+  auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader"));
+  auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
+  if (!header || !edit || !edit->viewport())
+    return;
+  headerAlignQueued_ = true;
+  header->setContentsMargins(0, 0, 0, 0);
+  QTextFrameFormat cleared = edit->document()->rootFrame()->frameFormat();
+  cleared.setLeftMargin(0);
+  cleared.setTopMargin(0);
+  cleared.setRightMargin(0);
+  cleared.setBottomMargin(0);
+  edit->document()->rootFrame()->setFrameFormat(cleared);
+  QTimer::singleShot(0, this, [this] {
+    headerAlignQueued_ = false;
+    auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader"));
+    auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
+    if (!header || !edit || !edit->viewport() || !header->parentWidget())
+      return;
+    const QWidget* parent = header->parentWidget();
+    const int textX = edit->viewport()->mapTo(parent, QPoint(0, 0)).x();
+    const int headerX = header->mapTo(parent, QPoint(0, 0)).x();
+    const int delta = textX - headerX;
+    if (delta > 0)
+      header->setContentsMargins(delta, 0, 0, 0);
+    else if (delta < 0) {
+      QTextFrameFormat format = edit->document()->rootFrame()->frameFormat();
+      format.setLeftMargin(-delta);
+      format.setTopMargin(0);
+      format.setRightMargin(0);
+      format.setBottomMargin(0);
+      edit->document()->rootFrame()->setFrameFormat(format);
+    }
+  });
+}
+
+namespace {
+
+bool periodBoundary(const QString& mode) {
+  const QTime now = QDateTime::currentDateTimeUtc().time();
+  const int ms = ((now.hour() * 60 + now.minute()) * 60 + now.second()) * 1000 + now.msec();
+  if (mode == QLatin1String("FT8"))
+    return (ms % 15000) < 80;
+  if (mode == QLatin1String("FT4"))
+    return (ms % 7500) < 80;
+  return true;
+}
+
+}  // namespace
+
+void MainWindow::setUserTx(bool on) {
+  if (!on) {
+    stopUserTx(false);
+    return;
+  }
+  auto* button = findChild<QPushButton*>(QStringLiteral("txSend"));
+  auto release = [button] {
+    if (!button)
+      return;
+    const QSignalBlocker block(button);
+    button->setChecked(false);
+    button->setText(QStringLiteral("TX"));
+  };
+  if (qEnvironmentVariableIsSet("STD_SELFTEST") || !tci_ || !tci_->isOpen() || !profile_ || !txTimer_) {
+    release();
+    return;
+  }
+  const QString mode = profile_->digitalMode();
+  auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("transmitText"));
+  const QString text = edit ? edit->toPlainText() : QString();
+  const int tone = waterfall_ ? waterfall_->txHz() : 1500;
+  if (!buildTxWave(mode, text, tone, &txSamples_) || txSamples_.empty()) {
+    release();
+    return;
+  }
+  txCursor_ = 0;
+  txHold_ = 0;
+  txKeySent_ = false;
+  if (button)
+    button->setText(mode == QLatin1String("Hell") ? QStringLiteral("TX") : QStringLiteral("WAIT"));
+  txTimer_->start(20);
+}
+
+void MainWindow::pumpUserTx() {
+  if (!tci_ || !profile_ || txSamples_.empty()) {
+    stopUserTx(true);
+    return;
+  }
+  const QString mode = profile_->digitalMode();
+  if (!txKeySent_) {
+    if (!periodBoundary(mode))
+      return;
+    if (!tci_->setTransmit(true)) {
+      stopUserTx(true);
+      return;
+    }
+    txKeySent_ = true;
+    txHold_ = 2;
+    if (auto* button = findChild<QPushButton*>(QStringLiteral("txSend")))
+      button->setText(QStringLiteral("ON AIR"));
+    return;
+  }
+  if (txHold_ > 0) {
+    --txHold_;
+    return;
+  }
+  constexpr int kChunk = 2400;
+  if (txCursor_ >= int(txSamples_.size())) {
+    stopUserTx(true);
+    return;
+  }
+  const int count = std::min(kChunk, int(txSamples_.size()) - txCursor_);
+  tci_->pushTxAudio(txSamples_.data() + txCursor_, count, 48000);
+  txCursor_ += count;
+}
+
+void MainWindow::stopUserTx(bool uncheck) {
+  if (txTimer_)
+    txTimer_->stop();
+  if (txKeySent_ && tci_)
+    tci_->setTransmit(false);
+  txKeySent_ = false;
+  txHold_ = 0;
+  txSamples_.clear();
+  txCursor_ = 0;
+  if (auto* button = findChild<QPushButton*>(QStringLiteral("txSend"))) {
+    if (uncheck) {
+      const QSignalBlocker block(button);
+      button->setChecked(false);
+    }
+    button->setText(QStringLiteral("TX"));
+  }
 }
 
 bool MainWindow::keepDecode(const QString& message) const {

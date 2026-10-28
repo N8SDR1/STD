@@ -59,6 +59,8 @@ qt_add_executable(std
   src/StatusStrip.h
   src/TciClient.cpp
   src/TciClient.h
+  src/TxWave.cpp
+  src/TxWave.h
   src/hell/HellEngine.cpp
   src/hell/HellEngine.h
   src/hell/HellRaster.cpp

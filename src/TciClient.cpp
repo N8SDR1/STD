@@ -175,6 +175,11 @@ void TciClient::disconnectFromHost() {
   userClose_ = true;
   ++generation_;
   // AUDIO_STOP is per socket. It drops this subscription only.
+  // Unkey first if this socket was the one that sent TRX.
+  if (transmit_)
+    setTransmit(false);
+  if (socket_)
+    socket_->flush();
   stopAudio();
   open_ = false;
   transmit_ = false;
@@ -183,10 +188,17 @@ void TciClient::disconnectFromHost() {
   settle(QString());
 }
 
-void TciClient::setTransmit(bool) {
-  // This build does not send TRX. true would key. false would unkey
-  // through Lyra's requestMoxFromTci(false).
-  transmit_ = false;
+bool TciClient::setTransmit(bool on) {
+  if (!socket_ || socket_->state() != QAbstractSocket::ConnectedState || !open_) {
+    transmit_ = false;
+    return false;
+  }
+  if (on == transmit_)
+    return true;
+  // true keys. false unkeys, and only after this socket sent true.
+  transmit_ = on;
+  sendCommand(on ? QStringLiteral("trx:0,true,tci") : QStringLiteral("trx:0,false"));
+  return true;
 }
 
 void TciClient::setDialHz(qint64 hz) {
@@ -217,7 +229,7 @@ void TciClient::beginSession() {
   // live Protocol 2 session stays up. START would close that session.
   // AUDIO_SAMPLERATE and AUDIO_STREAM_* are global, so they are not
   // sent. A band button may write VFO and MODULATION later. TRX is
-  // never sent.
+  // not sent here. The TX button is the only caller of setTransmit.
   sendCommand(QStringLiteral("AUDIO_START:0"));
   audioStarted_ = true;
 }
@@ -357,8 +369,14 @@ void TciClient::setTxGain(float linear) {
   txGain_ = linear;
 }
 
+void TciClient::pushTxAudio(const float* samples, int count, int sampleRateHz) {
+  if (sampleRateHz > 0)
+    sampleRate_ = sampleRateHz;
+  sendTxAudio(samples, count);
+}
+
 void TciClient::sendTxAudio(const float* samples, int count) {
-  if (!socket_ || !open_ || count <= 0 || !samples)
+  if (!socket_ || !open_ || !transmit_ || count <= 0 || !samples)
     return;
 
   QByteArray frame;

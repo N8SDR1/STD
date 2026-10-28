@@ -18,6 +18,7 @@ class HellEngine;
 class ModeProfile;
 class QAction;
 class QDockWidget;
+class QResizeEvent;
 class QShowEvent;
 class QToolBar;
 class StatusStrip;
@@ -34,6 +35,7 @@ public:
 
 protected:
   void showEvent(QShowEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
   void closeEvent(QCloseEvent* event) override;
 
 private:
@@ -71,6 +73,10 @@ private:
   QWidget* makeMacroRow();
   void refreshDecodes();
   void applyChannelWidth();
+  void alignDecodeHeader();
+  void setUserTx(bool on);
+  void pumpUserTx();
+  void stopUserTx(bool uncheck);
   void openDecodeFilters();
   bool keepDecode(const QString& message) const;
   QString distanceText(const QString& message) const;
@@ -125,4 +131,10 @@ private:
   QDockWidget* macroDock_ = nullptr;
   QDockWidget* statusDock_ = nullptr;
   bool heroSized_ = false;
+  bool headerAlignQueued_ = false;
+  QTimer* txTimer_ = nullptr;
+  std::vector<float> txSamples_;
+  int txCursor_ = 0;
+  int txHold_ = 0;
+  bool txKeySent_ = false;
 };

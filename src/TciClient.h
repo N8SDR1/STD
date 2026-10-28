@@ -11,8 +11,9 @@ class QWidget;
 // One TCI WebSocket. Connect shares a radio that is already on the
 // air. The only command it sends then is AUDIO_START for receiver 0,
 // which subscribes this socket to real RX audio. It does not send
-// START, TRX, or the global audio-format setters. A later band or
-// mode choice may send one VFO write and one MODULATION.
+// START or the global audio-format setters. TRX is sent only by
+// setTransmit, and only when the operator presses TX. A later band
+// or mode choice may send one VFO write and one MODULATION.
 class TciClient : public QObject {
   Q_OBJECT
 
@@ -28,11 +29,16 @@ public:
   QString host() const { return host_; }
   quint16 port() const { return port_; }
 
-  // Kept off. TRX true would key, and TRX false would unkey.
-  void setTransmit(bool on);
+  // Sends trx:0,true,tci or trx:0,false. Call this only from the TX
+  // button. Connect does not call it. False is sent only after true.
+  bool setTransmit(bool on);
+  bool isTransmitting() const { return transmit_; }
 
-  // Local multiplier for a future TX audio frame. Does not send a command.
+  // Local multiplier for a TX audio frame. Does not send a command.
   void setTxGain(float linear);
+
+  // Type-2 TX audio. Lyra accepts it only after trx:0,true,tci.
+  void pushTxAudio(const float* samples, int count, int sampleRateHz);
 
   // FT8 dial on receiver 0, VFO A. No-op unless the socket is open.
   // Does not send START and does not key.
