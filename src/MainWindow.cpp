@@ -745,7 +745,9 @@ void MainWindow::buildMenus() {
   auto* modeMenu = menuBar()->addMenu("Mode");
   modeMenu->setObjectName("modeMenu");
   auto* modes = new QActionGroup(this);
-  modes->setExclusive(true);
+  // Exclusive groups swallow a second click on the checked mode. None still
+  // shows one check, and every click can cycle that mode's dials.
+  modes->setExclusionPolicy(QActionGroup::ExclusionPolicy::None);
   const struct {
     const char* label;
     bool mshv;
@@ -760,7 +762,13 @@ void MainWindow::buildMenus() {
       action->setObjectName(row.checked ? QStringLiteral("modeFt8") : QStringLiteral("modeFt4"));
     modes->addAction(action);
     const QString modeName = QString::fromLatin1(row.label);
-    connect(action, &QAction::triggered, this, [this, mshv = row.mshv, modeName] {
+    connect(action, &QAction::triggered, this, [this, action, modes, mshv = row.mshv, modeName] {
+      for (QAction* other : modes->actions()) {
+        if (other->isChecked() == (other == action))
+          continue;
+        const QSignalBlocker block(other);
+        other->setChecked(other == action);
+      }
       if (modeName != layoutMode_) {
         saveModeLayout();
         layoutMode_ = modeName;
@@ -852,17 +860,21 @@ void MainWindow::showGuide() {
       {"Mode profile",
        "Mode → FT8 or FT4 shows Speed, Start, BW, Auto Dec, Region, and the band buttons. RTTY and PSK31 "
        "hide that bar. Region Auto reads the callsign. N8SDR/VE uses VE, and the call is left as typed. "
-       "Region 1, 2, or 3 overrides that. MSHV uses one FT8 and FT4 dial table for every region. Choosing "
-       "FT8, FT4, or a band button sends that dial with vfo:0,0,<Hz> and modulation:0,digu. FT8 and FT4 "
-       "are DIGU on every band. Neither command keys the radio, and neither is START."},
+       "Region 1, 2, or 3 overrides that. The dials are the WSJT-X list. 40 m FT4 is 7.0475 MHz in every "
+       "region. 80 m FT4 is 3.568 MHz in Region 3 and 3.575 MHz otherwise. Type a dial in Extra and press "
+       "Enter to insert it for this mode and band. Right-click Extra clears that list. Clicking the mode "
+       "again, or the same band button, cycles the WSJT-X default and those extras. Choosing FT8, FT4, or a band "
+       "button sends vfo:0,0,<Hz> and modulation:0,digu. "
+       "FT8 and FT4 are DIGU on every band. Neither "
+       "command keys the radio, and neither is START."},
       {"FT8 and FT4 decode",
        "Auto Dec is on by default. The MSHV FT8 decoder starts on the period that is still running, "
        "about 11.8 seconds in, before the tones end, then again at 13.6 and 14.6 seconds when three-stage "
        "is on. FT4 is one pass at 6.1 seconds of its 7.5 second period. MSHV does not run that three-stage "
        "timer for FT4. Each line is painted as soon as the decoder finds it. The Receive pane has column "
        "headers Time, dB, DT, Message, and Freq. Filter keeps lines that contain the text. CLR MSG clears "
-       "the list. Freq is the audio frequency in Hz. Dist is not computed. The band buttons use MSHV’s "
-       "FT4 dials and send modulation:0,digu on every band. Decoding does not send START and it does not key."},
+       "the list. Freq is the audio frequency in Hz. Dist is not computed. The band buttons use the WSJT-X "
+       "dials and send modulation:0,digu on every band. Decoding does not send START and it does not key."},
       {"DX options",
        "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Time "
        "Synchronization calibrates the period clock. Macros edit eight local texts. Network "

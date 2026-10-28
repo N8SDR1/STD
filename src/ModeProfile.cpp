@@ -12,7 +12,9 @@
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMetaType>
 #include <QPushButton>
+#include <QVariant>
 #include <QSettings>
 #include <QStringList>
 #include <QSignalBlocker>
@@ -30,28 +32,23 @@ QFont barFont() {
   return font;
 }
 
-// MSHV 2.76.7 src/config_band_all.h, all_bands_mods_frq.
-// Columns are MSK, FSK, FT4, FT8, JT65, Q65, FT2. The dots in
-// "7.047.000" are thousands separators. These ten buttons are the
-// HF set. FT4 Hz is that FT4 column, unchanged:
-//   1.8  1.840.000    3.5  3.575.000    7  7.047.000
-//   10   10.140.000   14   14.080.000   18 18.104.000
-//   21   21.140.000   24   24.919.000   28 28.180.000
-//   50   50.318.000
-// MSHV keeps this one dial table for IARU regions 1, 2, and 3.
-// The region control does not switch the sideband. FT8 and FT4
-// send DIGU on every band, including 1.8, 3.5, and 7.
+// WSJT-X FrequencyList.cpp working frequencies. 40 m FT4 is
+// 7.0475 MHz (7047500 Hz) in every region, marked provisional.
+// 80 m FT4 is 3.575 MHz, and 3.568 MHz in Region 3. FT8 and FT4
+// send DIGU on every band. MSHV stays the decoder.
 struct Ft8Band {
   const char* label;
   qint64 ft8Hz;
   qint64 ft4Hz;
+  qint64 ft4Region3Hz;
 };
 
 constexpr Ft8Band kBands[] = {
-    {"1.8", 1840000, 1840000},  {"3.5", 3573000, 3575000}, {"7", 7074000, 7047000},
-    {"10", 10136000, 10140000}, {"14", 14074000, 14080000}, {"18", 18100000, 18104000},
-    {"21", 21074000, 21140000}, {"24", 24915000, 24919000}, {"28", 28074000, 28180000},
-    {"50", 50313000, 50318000},
+    {"1.8", 1840000, 1840000, 0},       {"3.5", 3573000, 3575000, 3568000},
+    {"7", 7074000, 7047500, 0},         {"10", 10136000, 10140000, 0},
+    {"14", 14074000, 14080000, 0},      {"18", 18100000, 18104000, 0},
+    {"21", 21074000, 21140000, 0},      {"24", 24915000, 24919000, 0},
+    {"28", 28074000, 28180000, 0},      {"50", 50313000, 50318000, 0},
 };
 
 constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
@@ -249,8 +246,24 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   row->addWidget(speed_);
   row->addWidget(start_);
   row->addWidget(bandwidth_);
+  extra_ = new QSpinBox(bar_);
+  extra_->setObjectName(QStringLiteral("profileExtra"));
+  extra_->setFont(barFont());
+  extra_->setRange(0, 250000000);
+  extra_->setSingleStep(500);
+  extra_->setSpecialValueText(QStringLiteral("default"));
+  extra_->setPrefix(QStringLiteral("Extra "));
+  extra_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+  extra_->setFixedWidth(150);
+  extra_->setToolTip(QStringLiteral(
+      "Type a dial in Hz and press Enter to insert it for this mode and band. "
+      "Click the mode or the band button to cycle the WSJT-X default and those extras. "
+      "Right-click clears them. DIGU. Does not key."));
+  extra_->setContextMenuPolicy(Qt::CustomContextMenu);
+
   row->addWidget(autoDec);
   row->addWidget(region_);
+  row->addWidget(extra_);
 
   auto* bands = new QButtonGroup(bar_);
   bands->setExclusive(true);
@@ -263,8 +276,15 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
     bands->addButton(button, i);
     row->addWidget(button);
     connect(button, &QPushButton::clicked, this, [this, i] {
-      band_ = i;
+      if (band_ == i)
+        advanceCycle();
+      else {
+        band_ = i;
+        cycle_ = 0;
+        reloadExtras();
+      }
       remember();
+      refreshBands();
       emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
     });
   }
@@ -295,6 +315,14 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
     refreshBands();
     emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
   });
+  connect(extra_, &QSpinBox::editingFinished, this, [this] { insertExtra(extra_->value()); });
+  connect(extra_, &QWidget::customContextMenuRequested, this, [this] {
+    extras_.clear();
+    cycle_ = 0;
+    saveExtras();
+    refreshBands();
+    emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
+  });
   refreshBands();
 }
 
@@ -305,7 +333,15 @@ void ModeProfile::setMshvFamily(bool mshv) {
 }
 
 void ModeProfile::setDigitalMode(const QString& mode) {
-  mode_ = (mode == QLatin1String("FT4")) ? QStringLiteral("FT4") : QStringLiteral("FT8");
+  const QString next = (mode == QLatin1String("FT4")) ? QStringLiteral("FT4") : QStringLiteral("FT8");
+  const bool same = next == mode_;
+  mode_ = next;
+  if (same)
+    advanceCycle();
+  else {
+    cycle_ = 0;
+    reloadExtras();
+  }
   refreshBands();
 }
 
@@ -318,6 +354,7 @@ int ModeProfile::effectiveRegion() const {
 }
 
 void ModeProfile::refreshBands() {
+  reloadExtras();
   QSettings settings;
   const CallRegion station = regionFromCall(settings.value(QStringLiteral("dx/reportCall")).toString());
   const int chosen = effectiveRegion();
@@ -327,7 +364,8 @@ void ModeProfile::refreshBands() {
   QString tip = QStringLiteral(
       "IARU region for these dials. Auto reads the callsign. A portable suffix such as N8SDR/VE uses "
       "that country, and the home call is left as typed. Pick Region 1, 2, or 3 to override. "
-      "MSHV uses one FT8 and FT4 dial table for every region. DIGU on every band. Does not key.");
+      "Dials are the WSJT-X list. 40 m FT4 is 7.0475 MHz in every region. 80 m FT4 is 3.568 MHz "
+      "in Region 3. DIGU on every band. Does not key.");
   if (regionChoice_ == QLatin1String("auto")) {
     if (station.region >= 1)
       tip.prepend(QStringLiteral("Auto · Region %1 from %2. ").arg(station.region).arg(where));
@@ -341,10 +379,25 @@ void ModeProfile::refreshBands() {
   const auto buttons = bar_->findChildren<QPushButton*>(QStringLiteral("profileBand"),
                                                         Qt::FindDirectChildrenOnly);
   for (int i = 0; i < buttons.size() && i < kBandCount; ++i) {
-    const qint64 hz = mode_ == QLatin1String("FT4") ? kBands[i].ft4Hz : kBands[i].ft8Hz;
+    const bool here = i == band_;
+    const qint64 hz = here && cycle_ > 0 && cycle_ <= extras_.size() ? extras_.at(cycle_ - 1) : tableHz(i);
+    const QList<qint64> extras = here ? extras_ : storedExtras(i);
+    QString cycleNote;
+    if (!extras.isEmpty()) {
+      QStringList dials;
+      dials << QString::number(tableHz(i));
+      for (qint64 extraHz : extras)
+        dials << QString::number(extraHz);
+      const int step = here ? std::min(cycle_, static_cast<int>(dials.size()) - 1) : 0;
+      cycleNote = QStringLiteral(" · %1/%2 %3")
+                      .arg(step + 1)
+                      .arg(dials.size())
+                      .arg(dials.join(QStringLiteral(", ")));
+    }
     const QString region = chosen >= 1 ? QStringLiteral("Region %1").arg(chosen) : QStringLiteral("Auto");
-    buttons[i]->setToolTip(QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  %4  ·  DIGU")
-                               .arg(QString::fromLatin1(kBands[i].label), mode_, QString::number(hz), region));
+    buttons[i]->setToolTip(QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  %4  ·  DIGU%5")
+                               .arg(QString::fromLatin1(kBands[i].label), mode_, QString::number(hz), region,
+                                    cycleNote));
     buttons[i]->setAccessibleName(buttons[i]->toolTip());
   }
 }
@@ -389,10 +442,85 @@ bool ModeProfile::autoDecode() const {
   return box && box->isChecked();
 }
 
+qint64 ModeProfile::tableHz(int index) const {
+  const Ft8Band& band = kBands[index];
+  if (mode_ == QLatin1String("FT4")) {
+    if (effectiveRegion() == 3 && band.ft4Region3Hz > 0)
+      return band.ft4Region3Hz;
+    return band.ft4Hz;
+  }
+  return band.ft8Hz;
+}
+
 qint64 ModeProfile::dialHz() const {
-  if (mode_ == QLatin1String("FT4"))
-    return kBands[band_].ft4Hz;
-  return kBands[band_].ft8Hz;
+  if (cycle_ > 0 && cycle_ <= extras_.size())
+    return extras_.at(cycle_ - 1);
+  return tableHz(band_);
+}
+
+QList<qint64> ModeProfile::storedExtras(int index) const {
+  QList<qint64> extras;
+  QSettings settings;
+  const QString key =
+      QStringLiteral("profile/extra/%1/%2").arg(mode_, QString::fromLatin1(kBands[index].label));
+  const QVariant stored = settings.value(key);
+  const auto accept = [&extras, this, index](qint64 hz) {
+    if (hz > 0 && hz != tableHz(index) && !extras.contains(hz))
+      extras.append(hz);
+  };
+  if (stored.userType() == QMetaType::QStringList) {
+    for (const QString& text : stored.toStringList())
+      accept(text.toLongLong());
+  } else {
+    accept(stored.toLongLong());
+  }
+  return extras;
+}
+
+void ModeProfile::reloadExtras() {
+  extras_ = storedExtras(band_);
+  if (cycle_ > extras_.size())
+    cycle_ = 0;
+  if (!extra_)
+    return;
+  const QSignalBlocker block(extra_);
+  extra_->setValue(0);
+}
+
+void ModeProfile::saveExtras() const {
+  QSettings settings;
+  const QString key =
+      QStringLiteral("profile/extra/%1/%2").arg(mode_, QString::fromLatin1(kBands[band_].label));
+  if (extras_.isEmpty()) {
+    settings.remove(key);
+    return;
+  }
+  QStringList texts;
+  for (qint64 hz : extras_)
+    texts.append(QString::number(hz));
+  settings.setValue(key, texts);
+}
+
+void ModeProfile::advanceCycle() {
+  reloadExtras();
+  const int count = extras_.size() + 1;
+  if (count <= 1) {
+    cycle_ = 0;
+    return;
+  }
+  cycle_ = (cycle_ + 1) % count;
+}
+
+void ModeProfile::insertExtra(qint64 hz) {
+  if (!extra_)
+    return;
+  if (hz > 0 && hz != tableHz(band_) && !extras_.contains(hz)) {
+    extras_.append(hz);
+    saveExtras();
+  }
+  const QSignalBlocker block(extra_);
+  extra_->setValue(0);
+  refreshBands();
 }
 
 QString ModeProfile::sideband() const {

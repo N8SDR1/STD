@@ -194,6 +194,10 @@ int shellReady(const MainWindow& window) {
   const auto* region = window.findChild<QComboBox*>("profileRegion");
   if (!region || region->count() < 4 || !region->itemText(0).contains(QStringLiteral("Auto")))
     return fail("region control is missing");
+  const auto* extra = window.findChild<QSpinBox*>("profileExtra");
+  if (!extra || extra->minimum() != 0 || !extra->toolTip().contains(QStringLiteral("DIGU")) ||
+      !extra->toolTip().contains(QStringLiteral("does not key"), Qt::CaseInsensitive))
+    return fail("extra frequency is missing");
   bool guide = false;
   if (window.menuBar()) {
     for (QAction* menuAction : window.menuBar()->actions()) {

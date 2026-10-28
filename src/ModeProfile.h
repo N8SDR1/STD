@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <QList>
 #include <QString>
 #include <QWidget>
 
@@ -42,7 +43,13 @@ private:
   void applySpan();
   void remember() const;
   void refreshBands();
+  void reloadExtras();
+  void saveExtras() const;
+  void advanceCycle();
+  void insertExtra(qint64 hz);
+  QList<qint64> storedExtras(int index) const;
   int effectiveRegion() const;
+  qint64 tableHz(int index) const;
 
   QWidget* bar_ = nullptr;
   QWidget* keyboard_ = nullptr;
@@ -50,8 +57,11 @@ private:
   QSpinBox* start_ = nullptr;
   QSpinBox* bandwidth_ = nullptr;
   QComboBox* region_ = nullptr;
+  QSpinBox* extra_ = nullptr;
   QString regionChoice_ = QStringLiteral("auto");
   int band_ = 0;
   bool family_ = true;
   QString mode_ = QStringLiteral("FT8");
+  QList<qint64> extras_;
+  int cycle_ = 0;
 };
