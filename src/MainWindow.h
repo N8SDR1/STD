@@ -35,6 +35,8 @@ QIcon stdIcon();
 class MainWindow : public QMainWindow {
 public:
   explicit MainWindow(QWidget* parent = nullptr);
+  // Self-test plants a call on Tx1–Tx5. It does not key and does not send START.
+  void placeAnswer(const QString& call);
 
 protected:
   void showEvent(QShowEvent* event) override;

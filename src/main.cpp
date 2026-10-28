@@ -56,7 +56,7 @@ QPalette darkPalette() {
   return palette;
 }
 
-int shellReady(const MainWindow& window) {
+int shellReady(MainWindow& window) {
   auto fail = [](const char* reason) {
     qCritical("%s", reason);
     return 1;
@@ -128,9 +128,33 @@ int shellReady(const MainWindow& window) {
   const auto* qsy = window.findChild<QAction*>("qsyOnDecode");
   if (!qsy || !qsy->isCheckable() || !qsy->toolTip().contains(QLatin1String("does not key")))
     return fail("QSY option is missing");
-  const auto* clrNow = window.findChild<QPushButton*>("txClrNow");
+  auto* clrNow = window.findChild<QPushButton*>("txClrNow");
   if (!clrNow || !clrNow->toolTip().contains(QLatin1String("QSO")))
     return fail("CLR Now does not clear the QSO pane");
+  window.placeAnswer(QStringLiteral("ZZ9ZZ"));
+  const auto* planted = window.findChild<QLineEdit*>(QStringLiteral("tx1"));
+  if (!planted || !planted->text().contains(QLatin1String("ZZ9ZZ")))
+    return fail("answer was not placed on Tx1");
+  clrNow->click();
+  if (tune->isChecked())
+    return fail("CLR Now keyed");
+  const auto* send = window.findChild<QPushButton*>(QStringLiteral("txSend"));
+  if (send && send->isChecked())
+    return fail("CLR Now armed TX");
+  QString cqLine;
+  for (int i = 1; i <= 6; ++i) {
+    const auto* field = window.findChild<QLineEdit*>(QStringLiteral("tx%1").arg(i));
+    if (!field)
+      return fail("a standard TX field is missing");
+    if (field->text().contains(QLatin1String("ZZ9ZZ")))
+      return fail("CLR Now left a call on a TX line");
+    if (i == 1)
+      cqLine = field->text();
+    else if (field->text() != cqLine)
+      return fail("CLR Now left a call on a TX line");
+  }
+  if (cqLine.isEmpty() || !cqLine.startsWith(QLatin1String("CQ")))
+    return fail("CLR Now did not restore CQ");
   const auto* activity = window.findChild<QComboBox*>("txActivity");
   if (!activity || activity->count() < 18 || activity->itemText(0) != QLatin1String("Standard") ||
       activity->findText(QStringLiteral("ARRL Field Day")) < 0)

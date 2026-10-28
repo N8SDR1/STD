@@ -996,7 +996,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     clrNow->setFont(interfaceFont(11));
     clrNow->setFocusPolicy(Qt::NoFocus);
     clrNow->setToolTip(QStringLiteral(
-        "Clear the now list and the TX QSO pane. This does not unkey and does not send START."));
+        "Clear the now list and the TX QSO pane. Tx1 through Tx6 go back to CQ your call and grid. "
+        "This does not unkey and does not send START."));
     tabs->addTab(queuePage, QStringLiteral("Queue 0"));
     tabs->addTab(nowPage, QStringLiteral("Now 0"));
     tabs->addTab(settings, QStringLiteral("Settings"));
@@ -1061,13 +1062,26 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     });
     connect(clrNow, &QPushButton::clicked, this, [this] {
       txNow_.clear();
+      txHisCall_.clear();
+      txReport_.clear();
+      txFreeArmed_ = false;
       paintMultiLists();
       if (auto* qso = findChild<QPlainTextEdit*>(QStringLiteral("txQso")))
         qso->clear();
       if (auto* multi = findChild<QTabWidget*>(QStringLiteral("txMultiOptions")))
         multi->setCurrentIndex(1);
+      // Tx6 is the CQ line. setChecked does not click, so this does not arm TX.
+      selectTxSlot(5);
+      refreshTxFields();
+      if (!txKeySent_ && !txTune_) {
+        if (const auto* tx = findChild<QPushButton*>(QStringLiteral("txSend"))) {
+          if (tx->isChecked())
+            rebuildTxWave();
+        }
+      }
       setTxStatus(QStringLiteral(
-          "Now list and the QSO pane cleared. Nothing was unkeyed. START was not sent."));
+          "Now list and the QSO pane cleared. Tx1 through Tx6 are CQ again. "
+          "Nothing was unkeyed. START was not sent."));
     });
 
     auto* buttons = new QHBoxLayout();
@@ -1769,7 +1783,10 @@ void MainWindow::showGuide() {
        "Tx6 as CQ, then arms TX. FT8 and FT4 wait for the slot, or join the one that is still open. "
        "FT2 decodes and does not key. Tx1 through Tx5 stay HIS OUR GRID, report, R+report, RR73, and "
        "73. Tx6 stays CQ OUR GRID. GRID is the locator from Options → User. CLR Now clears the now list "
-       "and the QSO pane and does not unkey. START is never sent."},
+       "and the QSO pane, and puts CQ YOURCALL GRID back on Tx1 through Tx6. A contest uses that "
+       "contest CQ, such as CQ FD or CQ TEST. The other station comes off those lines. CLR Now does "
+       "not unkey. Halt only stops the transmission and leaves Tx1 through Tx6 as they are. START is "
+       "never sent."},
       {"Feld Hell",
        "Mode → Hell receives Feld Hell from the Fldigi 4.2.06 column detector. The Receive pane paints "
        "the tape and does not turn the picture into text. The tone starts at 1500 Hz. Click the "
@@ -1788,7 +1805,8 @@ void MainWindow::showGuide() {
        "on the chip applies that copy. The choice is saved. None of this keys the radio or sends START."},
       {"Halt",
        "Halt ends the transmission immediately, even in the middle of a slot, turns TRX off, and stops "
-       "the sequence. If nothing is transmitting, Halt does not key. It does not send START."},
+       "the sequence. If nothing is transmitting, Halt does not key. It leaves Tx1 through Tx6 as they "
+       "are. It does not send START."},
       {"User callsign",
        "Options → User stores the callsign and the locator. DIST is the distance from that locator to "
        "the grid in a message. Tx1 through Tx5 and the CQ on Tx6 use that locator. TX and Tune stay "
@@ -2969,6 +2987,11 @@ void MainWindow::refreshTxChrome() {
   refreshTxFields();
 }
 
+void MainWindow::placeAnswer(const QString& call) {
+  txHisCall_ = call.trimmed().toUpper();
+  refreshTxFields();
+}
+
 void MainWindow::refreshTxFields() {
   const QString mine = stationCall().trimmed().toUpper();
   QString grid = stationGrid().trimmed().toUpper();
@@ -3083,14 +3106,27 @@ void MainWindow::refreshTxFields() {
     if (cq && cq->currentIndex() > 0) {
       const QString kind = cq->currentText();
       const bool typed = fox || kind == QLatin1String("Free Msg");
-      if (typed && txFreeArmed_) {
-        if (const auto* free = findChild<QLineEdit*>(QStringLiteral("txFreeCq"))) {
-          const QString text = free->text().trimmed();
-          if (!text.isEmpty())
-            lines[5] = text;
-        }
-      } else if (!typed)
+      if (!typed)
         lines[5] = composedCq(kind);
+    }
+  }
+  // No other station: every standard line is the CQ line, including a contest
+  // prefix such as CQ FD or CQ TEST. A free message still replaces only Tx6.
+  // 73 with CNS keeps txHisCall_, so those lines stay on the worked station.
+  if (his.isEmpty()) {
+    const QString cq = lines[5];
+    for (int i = 0; i < 5; ++i)
+      lines[i] = cq;
+  }
+  if ((fox || multi) && txFreeArmed_) {
+    auto* cq = findChild<QComboBox*>(fox ? QStringLiteral("txFoxCq") : QStringLiteral("txCqType"));
+    const bool typed = fox || (cq && cq->currentText() == QLatin1String("Free Msg"));
+    if (cq && cq->currentIndex() > 0 && typed) {
+      if (const auto* free = findChild<QLineEdit*>(QStringLiteral("txFreeCq"))) {
+        const QString text = free->text().trimmed();
+        if (!text.isEmpty())
+          lines[5] = text;
+      }
     }
   }
   const char* names[7] = {"tx1", "tx2", "tx3", "tx4", "tx5", "tx6", "txExtra"};
