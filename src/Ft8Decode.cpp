@@ -30,10 +30,17 @@
 namespace {
 
 constexpr int kAudioRate = 12000;
+// decoderft8.cpp sync8 reads dd[] through index 179999, then the pass
+// writes dd[zero_dd .. 180009]. MSHV's buffer is 16*12000 and the tail
+// is padded; c_dd stays the real length. A shorter block is a heap smash
+// after the first line is printed. dd1[] is 182600, so c_dd must stay
+// below that.
 // 79 FT8 symbols at 160 ms. The single pass starts once that waveform is in.
 constexpr int kDecodeSamples = 12640 * kAudioRate / 1000;
 constexpr int kMinKeep = 6 * kAudioRate;
 constexpr int kRing = 20 * kAudioRate;
+constexpr int kDecoderCapacity = 16 * kAudioRate;
+constexpr double kDecoderPad = 1e-8;
 constexpr qint64 kPeriodMs = 15000;
 constexpr qint64 kDecodeAtMs = 12640;
 // MSHV scales int16 audio by 1/2560, which is 12.8 at full scale.
@@ -135,8 +142,11 @@ public:
       const double average = sum / static_cast<double>(job.samples.size());
       for (double& sample : job.samples)
         sample -= average;
+      const int realCount = static_cast<int>(job.samples.size());
+      if (job.samples.size() < static_cast<size_t>(kDecoderCapacity))
+        job.samples.resize(static_cast<size_t>(kDecoderCapacity), kDecoderPad);
       const QByteArray stamp = job.stamp.toLatin1();
-      decode(session, job.samples.data(), static_cast<int>(job.samples.size()), job.lowHz, job.highHz,
+      decode(session, job.samples.data(), realCount, job.lowHz, job.highHz,
              job.rxHz, job.txHz, job.depth, job.ap, job.id3dec, stamp.constData(),
              [](const char* time, int db, const char* dt, const char* message, int freqHz, void* user) {
                auto* worker = static_cast<Worker*>(user);

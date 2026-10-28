@@ -307,7 +307,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
               decodes_.remove(0, decodes_.size() - 499);
             decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
             refreshDecodes();
-          });
+          },
+          Qt::QueuedConnection);
   if (waterfall_) {
     ft8_->setSpot(waterfall_->rxHz(), waterfall_->txHz());
     connect(waterfall_, &WaterfallWidget::frequenciesChanged, ft8_, &Ft8Decode::setSpot);

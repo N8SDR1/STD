@@ -20,6 +20,9 @@ Ft8Session* ft8_session_open(void);
 void ft8_session_close(Ft8Session* session);
 
 /* samples are mutable: the decoder subtracts tones in place.
+   The pointer must address at least 192000 doubles. The decoder reads
+   and writes through index 180009 even when count is the shorter
+   in-progress window. count itself stays that window length.
    lowHz/highHz are the audio window (Start and Start+BW).
    rxHz is the RX marker (nfqso). txHz is the TX marker (SetStTxFreq).
    depth is 1 fast, 2 normal, 3 deep. apOn enables a-priori decode.
