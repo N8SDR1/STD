@@ -609,6 +609,9 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
   layout->setContentsMargins(8, 8, 8, 8);
   layout->setSpacing(6);
 
+  if (editName == QLatin1String("transmitText"))
+    addStationFields(panel, layout, true);
+
   auto* edit = new QPlainTextEdit(panel);
   edit->setObjectName(editName);
   edit->setPlaceholderText(placeholder);
@@ -658,6 +661,90 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
   return panel;
 }
 
+void MainWindow::addStationFields(QWidget* panel, QVBoxLayout* layout, bool transmit) {
+  QSettings settings;
+  auto* row = new QHBoxLayout();
+  row->setSpacing(6);
+  auto* callLabel = new QLabel(QStringLiteral("Callsign"), panel);
+  callLabel->setFont(interfaceFont(12));
+  auto* call = new QLineEdit(panel);
+  call->setObjectName(transmit ? QStringLiteral("txStationCall") : QStringLiteral("stationCall"));
+  call->setPlaceholderText(QStringLiteral("N8SDR"));
+  call->setMaxLength(20);
+  call->setClearButtonEnabled(true);
+  call->setFont(interfaceFont(12));
+  call->setToolTip(QStringLiteral(
+      "Your callsign. TX replies use it. A portable suffix such as N8SDR/VE sets the region. "
+      "This does not key."));
+  call->setText(settings.value(QStringLiteral("dx/reportCall")).toString());
+  auto* gridLabel = new QLabel(QStringLiteral("Locator"), panel);
+  gridLabel->setFont(interfaceFont(12));
+  auto* grid = new QLineEdit(panel);
+  grid->setObjectName(transmit ? QStringLiteral("txStationGrid") : QStringLiteral("stationGrid"));
+  grid->setPlaceholderText(QStringLiteral("EM79"));
+  grid->setMaxLength(6);
+  grid->setFixedWidth(76);
+  grid->setClearButtonEnabled(true);
+  grid->setFont(interfaceFont(12));
+  grid->setToolTip(QStringLiteral(
+      "Your grid. DIST is from here to the grid in a decode. TX replies include it. This does not key."));
+  grid->setText(settings.value(QStringLiteral("dx/reportGrid")).toString());
+  row->addWidget(callLabel);
+  row->addWidget(call, 1);
+  row->addWidget(gridLabel);
+  row->addWidget(grid);
+  layout->addLayout(row);
+  connect(call, &QLineEdit::textChanged, this, [this, call] { rememberStation(call); });
+  connect(grid, &QLineEdit::textChanged, this, [this, grid] { rememberStation(grid); });
+}
+
+void MainWindow::rememberStation(QLineEdit* source) {
+  if (!source)
+    return;
+  const int cursor = source->cursorPosition();
+  const QString upper = source->text().toUpper();
+  if (upper != source->text()) {
+    const QSignalBlocker block(source);
+    source->setText(upper);
+    source->setCursorPosition(cursor);
+  }
+  const bool call = source->objectName().contains(QStringLiteral("Call"));
+  const QString text = source->text().trimmed();
+  QSettings store;
+  store.setValue(call ? QStringLiteral("dx/reportCall") : QStringLiteral("dx/reportGrid"), text);
+  const QString name = source->objectName();
+  QString otherName = QStringLiteral("stationGrid");
+  if (name == QLatin1String("stationCall"))
+    otherName = QStringLiteral("txStationCall");
+  else if (name == QLatin1String("txStationCall"))
+    otherName = QStringLiteral("stationCall");
+  else if (name == QLatin1String("stationGrid"))
+    otherName = QStringLiteral("txStationGrid");
+  if (auto* other = findChild<QLineEdit*>(otherName)) {
+    if (other->text() != source->text()) {
+      const QSignalBlocker block(other);
+      other->setText(source->text());
+    }
+  }
+  if (call) {
+    if (profile_)
+      profile_->refreshStation();
+  } else
+    refreshDecodes();
+}
+
+QString MainWindow::stationCall() const {
+  if (auto* edit = findChild<QLineEdit*>(QStringLiteral("stationCall")))
+    return edit->text().trimmed();
+  return QSettings().value(QStringLiteral("dx/reportCall")).toString().trimmed();
+}
+
+QString MainWindow::stationGrid() const {
+  if (auto* edit = findChild<QLineEdit*>(QStringLiteral("stationGrid")))
+    return edit->text().trimmed();
+  return QSettings().value(QStringLiteral("dx/reportGrid")).toString().trimmed();
+}
+
 QWidget* MainWindow::makeReceivePanel() {
   auto* panel = new QWidget(this);
   panel->setObjectName("textPanel");
@@ -665,6 +752,8 @@ QWidget* MainWindow::makeReceivePanel() {
   auto* layout = new QVBoxLayout(panel);
   layout->setContentsMargins(8, 8, 8, 8);
   layout->setSpacing(4);
+
+  addStationFields(panel, layout, false);
 
   auto* tools = new QHBoxLayout();
   tools->setSpacing(6);
@@ -1263,6 +1352,10 @@ void MainWindow::showGuide() {
        "Configuration stores a PSK Reporter style address and does not send spots. Decode List "
        "Options show or hide Time, Dist, and Freq, and can clear the list each period. Log options, ASeq, "
        "TX confirmation, and Auto RESET QSO are saved. Those options do not key."},
+      {"Callsign and locator",
+       "Callsign and Locator are on the receive list and on the transmit box. They are saved. "
+       "DIST is the distance from your locator to the grid in the message. A click on a decode "
+       "builds the reply from your callsign and locator. Typing them does not key."},
       {"Text",
        "Options → RX / TX Text sets the font and the size of the receive list, its column titles, "
        "and the transmit box. The faces are Consolas, Cascadia Mono, Lucida Console, Courier New, "
@@ -1722,8 +1815,7 @@ void MainWindow::applyChannelWidth() {
 }
 
 QString MainWindow::distanceText(const QString& message) const {
-  QSettings settings;
-  const QString home = settings.value(QStringLiteral("dx/reportGrid")).toString().trimmed();
+  const QString home = stationGrid();
   const QString theirs = gridInMessage(message);
   double lat1 = 0.0;
   double lon1 = 0.0;
@@ -1929,9 +2021,8 @@ void MainWindow::loadReplyFromLine(int line) {
   if (line < 0 || line >= shownDecodes_.size())
     return;
   const DecodeRow row = shownDecodes_.at(line);
-  QSettings settings;
-  const QString mine = settings.value(QStringLiteral("dx/reportCall")).toString();
-  const QString grid = settings.value(QStringLiteral("dx/reportGrid")).toString();
+  const QString mine = stationCall();
+  const QString grid = stationGrid();
   const QString reply = replyFor(row.message, row.db, mine, grid);
   auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("transmitText"));
   if (!edit || reply.isEmpty()) {
@@ -1943,7 +2034,7 @@ void MainWindow::loadReplyFromLine(int line) {
     waterfall_->setTxHz(row.freqHz);
   if (mine.trimmed().isEmpty())
     setTxStatus(QStringLiteral(
-        "Loaded their call. Set your call under Options → Network configuration, then press TX. Nothing was keyed."));
+        "Loaded their call. Type yours in Callsign, then press TX. Nothing was keyed."));
   else
     setTxStatus(QStringLiteral("Loaded %1. Press TX to send it. Nothing was keyed.").arg(reply));
 }
@@ -2137,8 +2228,7 @@ void MainWindow::stopUserTx(bool uncheck) {
 bool MainWindow::keepDecode(const QString& message) const {
   if (!filtersOn_)
     return true;
-  QSettings settings;
-  const QString mine = settings.value(QStringLiteral("dx/reportCall")).toString().trimmed();
+  const QString mine = stationCall();
   if (!mine.isEmpty() && message.contains(mine, Qt::CaseInsensitive))
     return true;
   const auto token = [&](const char* word) {
@@ -2440,8 +2530,12 @@ void MainWindow::openNetworkDialog() {
     return;
   QSettings store;
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
-  store.setValue(QStringLiteral("dx/reportCall"), call->text().trimmed());
-  store.setValue(QStringLiteral("dx/reportGrid"), grid->text().trimmed());
+  store.setValue(QStringLiteral("dx/reportCall"), call->text().trimmed().toUpper());
+  store.setValue(QStringLiteral("dx/reportGrid"), grid->text().trimmed().toUpper());
+  if (auto* callEdit = findChild<QLineEdit*>(QStringLiteral("stationCall")))
+    callEdit->setText(call->text().trimmed().toUpper());
+  if (auto* gridEdit = findChild<QLineEdit*>(QStringLiteral("stationGrid")))
+    gridEdit->setText(grid->text().trimmed().toUpper());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
   if (profile_) {
