@@ -2,7 +2,7 @@
 title: Macros
 ---
 
-Software in testing. The RST/LOG macro does not log. Fldigi's `<LOG>` tag is not implemented. A later change can make `<LOG>` store the QSO the way Fldigi does. Until then, pressing that button inserts text and nothing is written to the log.
+Supports importing Fldigi custom macros.
 
 ## What is filled in
 

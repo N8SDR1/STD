@@ -189,7 +189,7 @@ layout: null
         <a class="btn btn-ghost" href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a>
         <a class="btn btn-ghost" href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a>
       </div>
-      <p class="platforms">Qt 6.11.1 MSVC on Windows · Connect sends AUDIO_START:0 · The text command START is never sent · CW stays in Lyra</p>
+      <p class="platforms">Qt 6.11.1 MSVC on Windows · CW stays in Lyra</p>
     </header>
 
     <section class="showcase">
@@ -227,8 +227,7 @@ layout: null
         <div class="card"><h3><span class="ico">〰️</span> BPSK</h3><p>PSK31, 63, 125, 250, 500, and 1000. A zero reverses the phase. QPSK is not in this build.</p></div>
         <div class="card"><h3><span class="ico">🎼</span> Olivia and Contestia</h3><p>4/250, 8/250, 8/500, 16/500, 16/1000, and 32/1000. Gray-coded tones.</p></div>
         <div class="card"><h3><span class="ico">🎚️</span> MFSK, DominoEX, Thor</h3><p>MFSK4 through 128, NASA K=7. DominoEX 4–22 with FEC off. Thor 4–22, K=7 only. The long and micro rows stay off the menu.</p></div>
-        <div class="card"><h3><span class="ico">🔌</span> TCI</h3><p>Connect sends <code>AUDIO_START:0</code>. Disconnect sends <code>AUDIO_STOP:0</code>. The text command START is never sent. <code>trx</code> goes out only when you press TX or Tune.</p></div>
-        <div class="card"><h3><span class="ico">📝</span> Macros</h3><p>The RST/LOG button does not log. Fldigi’s <code>&lt;LOG&gt;</code> tag is not implemented, so that press only inserts text. A QSO is stored on a separate path, when a sent line ends in 73 or RR73 and a log option is on. <a href="https://github.com/N8SDR1/STD/wiki/Macros">Macro notes</a>.</p></div>
+        <div class="card"><h3><span class="ico">📝</span> Macros</h3><p>Supports importing Fldigi custom macros. <a href="https://github.com/N8SDR1/STD/wiki/Macros">Macro notes</a>.</p></div>
       </div>
     </section>
 
@@ -262,7 +261,7 @@ layout: null
         </div>
         <div class="card">
           <h3><span class="ico">📒</span> SDRLogger+</h3>
-          <p>The logbook. TCI, the DX cluster, and the place a finished contact belongs. The RST/LOG macro in STD still does not write it.</p>
+          <p>The logbook. TCI, the DX cluster, and the place a finished contact belongs.</p>
           <a class="btn btn-ghost" href="https://n8sdr1.github.io/SDRLoggerPlus/">Visit SDRLogger+</a>
           <a class="btn btn-ghost" href="https://github.com/N8SDR1/SDRLoggerPlus">★ GitHub</a>
         </div>
@@ -275,7 +274,7 @@ layout: null
         <p><span class="name">Rick Langford (N8SDR)</span> — author of STD, and of the bourbon prescription.</p>
         <div class="divider"></div>
         <p style="margin-top:14px; color: var(--muted);">Modem math rewritten from <strong style="color:var(--text)">Fldigi</strong> (Dave Freese, W1HKJ, GPL-3). FT8, FT4, and FT2 from <strong style="color:var(--text)">MSHV</strong> (Christo, LZ2HV). TCI ideas from TCIdigi, without vendoring that tree. CW stays in <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a>.</p>
-        <p style="margin-top:14px; color: var(--muted);">STD is GPL&nbsp;v3. The text command START is never sent.</p>
+        <p style="margin-top:14px; color: var(--muted);">STD is GPL&nbsp;v3.</p>
       </div>
     </section>
   </div>
