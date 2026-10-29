@@ -18,8 +18,6 @@ Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier
 
 ## Screenshots
 
-Gallery images belong in [`screenshots/landingpage`](https://github.com/N8SDR1/STD/tree/main/screenshots/landingpage). The same pictures are on the [Pages site](https://n8sdr1.github.io/STD/).
-
 ![STD on 20 m FT8](screenshots/landingpage/STD%20digital.png)
 
 ![STD transmitting on 20 m FT8](screenshots/landingpage/Screenshot%202026-10-29%20130502.png)
