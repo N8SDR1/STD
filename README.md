@@ -1,10 +1,8 @@
 # STD
 
-**Shift, Tone, Decode**
+**Shift, Tone, Decode.** Software in testing. Version 0.1.0.
 
-STD is a standalone digimode console. This slice is a Qt 6 dock shell plus one TCI radio socket. FT8, FT4, and Hell transmit only when TX is pressed.
-
-The title bar is **STD**. The subtitle under the name is Shift, Tone, Decode. That subtitle is not drawn on the icon.
+STD is a Qt 6 digimode console for a TCI radio. This tree is what is on the bench while the modes are proved on the air. It is not a finished release.
 
 Copyright (C) 2026 Rick Langford (N8SDR).
 
@@ -12,43 +10,86 @@ Copyright (C) 2026 Rick Langford (N8SDR).
 
 GNU General Public License, version 3. The license text is [`COPYING`](COPYING).
 
-Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier: GPL-3.0-or-later`). A later build that links modem code granted under GPL-3 only, with no “or later” clause, is distributed as a whole under GPL-3.
+Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier: GPL-3.0-or-later`). Modem math rewritten from Fldigi (Dave Freese W1HKJ and the Fldigi authors, GPL-3) and the FT8, FT4, and FT2 path from MSHV are GPL-3. CW stays in Lyra.
 
-## What this window contains
+## Screenshots
 
-- **Waterfall** — the large dock. With no audio it paints a standby graticule, the dial, and “No signal”. Once type-1 RX frames arrive, time scrolls downward and frequency runs across the top. Each pixel of the visible span is its own FFT bin, so a signal is a thin vertical trace on a dark blue field. A green line marks the RX audio frequency and a red line marks TX. Click sets RX, Shift+click sets TX, Ctrl+click sets both. Lock keeps them together, and RX=TX copies RX onto TX. None of that keys the radio. The outer span is the receive band from `rx_filter_band` (receiver 0). For a 0–3400 Hz filter the ruler stops at 3400. The wheel, a drag, and Start/BW can narrow inside that span, for example 100–3000 or 200–2700, and cannot cross the reported edges. A double-click returns to the whole reported band. Until that report arrives, the limit is the audio that actually arrives. Contrast, Brightness, Lock, RX=TX, Ticks, and a Palette menu sit on the bar along the bottom of the waterfall. Ticks sets the ruler marks to 100, 250, or 500 Hz. Contrast and Brightness recolor the trace and leave the span alone. The menu lists Classic, Inferno, Viridis, Plasma, Rainbow, Ocean, Night, Grayscale, and Amber. Decode lines go to the Receive pane, not onto the trace. The widget can embed a `QWindow` later (a Vulkan surface included). This slice does not link Vulkan.
-- **Receive** — empty, read-only text until a decode lands. Column headers sit above it: Time, dB, DT, Dist, Message, Freq. Dist is miles from the locator in Options → User to the grid in the message, or kilometers. TX replies use that callsign and locator. While the socket is down the pane says no radio is connected. With Auto Dec on (the default) and FT8 audio arriving, the first pass starts about 11.8 seconds into the period, before the tones end. FT4 is one pass at 6.1 seconds of its 7.5 second period. FT2 is one pass at 3.4 seconds of its 3.75 second period. Each line is painted as soon as the decoder finds it. Filter keeps lines that contain the text. CLR MSG clears the list. Freq is the audio frequency in Hz. Hell replaces that list with a Feld Hell tape from the Fldigi 4.2.06 column detector. The tape is the picture. It is not turned into text, and it does not transmit.
-- **Mode** — one mode bar sits under the waterfall. Hell hides Start and BW and keeps Speed, Auto Dec, Region, and the band buttons. Hell dials are the Feld Hell Club signal minus 1500 Hz, so 20 m is 14.0615 MHz for the 14.063 MHz calling frequency. 30 m Region 1 uses 10.144 MHz. The tone starts at 1500 Hz. Click the waterfall to move it. DIGU. This does not key.
-- **Transmit** — MSHV standard lines Tx1–Tx6 and one extra line. Tx1 is their call, your call, your grid. Tx2 is the report. Tx3 is R and the report. Tx4 is RR73. Tx5 is 73. Tx6 is CQ with your grid. Extra is CQ plus a kHz, as in CQ 236. Double-click a CQ to fill that sequence and select Tx1. That double-click does not key. Tune and TX stay locked until a callsign is saved under Options → User. Tune sends a tone at the TX marker for the MSHV length, 29 seconds on FT8, then stops. TX sends the selected line. FT8 and FT4 wait for the next slot. Hell and Tune start at once. TRX goes out only after Tune or TX is pressed. START is never sent. An empty line does not key. FT2, RTTY, and PSK31 do not key.
-- **Macros** — eight slots, M1–M8. Options → Macros edits them. A filled button copies its text into the transmit box. Nothing is sent.
-- **Options** — Decode (three-stage FT8, Fast/Normal/Deep, Enable AP, max decoded signals), Time Synchronization, User for the callsign and locator, Network Configuration for a PSK Reporter style address, decode-list columns, and log / ASeq / TX-confirm / Auto RESET QSO checkboxes. The reporter does not send. Log, ASeq, TX confirmation, and Auto RESET are saved and do not key, because transmit is off. MSK and Q65 decoders are not in this build.
-- **FT8, FT4, and FT2** — the mode bar sits under the waterfall. Contrast, Brightness, Speed, Start, BW, Ticks, and Palette stay on the waterfall. Super Hound or Super Fox sets 40 m FT8 to 7.056 MHz DIGU and the RX marker to 750 Hz. That is still a 15 second FT8 period. The green and red bands are the protocol width: 50 Hz on FT8, 90 Hz on FT4, 125 Hz on FT2. The TX-gain notice stays off on receive. It can show only while STD is transmitting. The gain spin does not key. Super Hound widens the green band and Super Fox widens the red band to the fox waveform. TX FIRST and TX SECOND only remember a slot. FILTERS trims the receive list. Multi turns on MSHV multi-answer for more than one caller. None of these mode-bar controls key the radio. Lock and RX=TX sit with that waterfall group. The mode bar also has Auto Dec, Region, a narrow Extra field, and band buttons 1.8, 3.5, 7, 10, 14, 18, 21, 24, 28, and 50 MHz. Region Auto reads the callsign. A portable suffix such as N8SDR/VE uses that country, and the call is stored as typed. Region 1, 2, or 3 overrides it. Band buttons use the WSJT-X FrequencyList dials for FT8 and FT4. 40 m FT4 is 7.0475 MHz in every region. 80 m FT4 is 3.568 MHz in Region 3. FT2 uses the MSHV dials. Extra inserts more dials for the current mode and band. Clicking that mode again, or the same band button, cycles the WSJT-X default and those extras. Right-click Extra clears them. The sideband is `modulation:0,digu` on every band. Neither command is `START`, and neither keys the radio. RTTY and PSK31 hide that bar. Their menus are not loaded yet.
-- **Connect** — Radio → Connect…. Host and port, default port 50001. One WebSocket. Connect sends `AUDIO_START:0` and nothing else: no `START`, no `TRX`, and no global audio-format setter. Auto-connect, on by default, opens that saved host and port when STD starts. Auto monitor, also on by default, stays on receive and decode and does not transmit. A band button is what writes the dial and the sideband, and only while the socket is already open. Disconnect sends `AUDIO_STOP:0` for this socket only. A server that allows only one client is reported on the status line, and STD closes so it does not keep that slot. `TRX` is sent only when the TX button is pressed.
-- **Help → Guide** — short notes for connect, zoom, contrast, brightness, palettes, the mode profile, and FT8 decode.
-- **Status strip** — Mode, the digital-mode chip (FT8, FT4, FT2, Hell, RTTY, PSK31), AFC, Squelch, the dial, an RX peak meter, RX and TX gain, a PTT lamp that follows the radio, and “Monitor …” while auto monitor is on, “Connected …” otherwise, or “Radio not connected” with the socket error. The meter is an average and is green from about -1 dB to 0 dB. RX gain is applied to the waterfall and the decoder only. TX gain stays local. Neither gain is sent to the radio. The lamp does not key, and the meter does not either.
+Gallery images belong in [`screenshots/landingpage`](https://github.com/N8SDR1/STD/tree/main/screenshots/landingpage). Put a PNG in that folder and the link shows it after the next push.
 
-Panels can dock, float, and tab. View → Save layout stores that arrangement for the current mode, and the next start restores it. View → Reset layout stacks the current mode again. The status strip stays pinned to the column. The RX meter is an average, not each peak.
+![STD on 20 m FT8](screenshots/landingpage/STD%20digital.png)
+
+## Modes that key
+
+TX sends one of these when the operator presses TX or Tune. Opening the radio does not key. The text command START is never sent.
+
+| Mode | What this build sends |
+| --- | --- |
+| FT8 | 15 s. DIGU. MSHV generator. |
+| FT4 | 7.5 s. DIGU. |
+| FT2 | 3.75 s. DIGU. |
+| Feld Hell | 17.5 columns/s, 14 pixels per column, 2 ms raised cosine. Ink is the carrier. |
+| Slow Hell | 2.1875 columns/s, same cosine. |
+| Feld Hell X5 | 87.5 columns/s, hard keyed. |
+| Feld Hell X9 | 157.5 columns/s, hard keyed. |
+| FSK Hell | 17.5 columns/s, 122.5 Hz shift, reverse off. A tone stays up. |
+| FSK Hell-105 | 17.5 columns/s, 55 Hz shift, reverse off. |
+| Hell 80 | 35 columns/s, 300 Hz shift, reverse off. |
+| RTTY | One menu row. 45.45 baud, 170 Hz, 5 bits, 1.5 stop, mark high, reverse off. A space sends LTRS, then the space. |
+| PSK31 through PSK1000 | BPSK at 31.25, 62.5, 125, 250, 500, and 1000 baud. A zero reverses the phase. |
+| Olivia | 4/250, 8/250, 8/500, 16/500, 16/1000, 32/1000. |
+| Contestia | The same six rows. |
+| MFSK | MFSK4, 8, 11, 16, 22, 31, 32, 64, 128. NASA K=7. MFSK64L and MFSK128L are absent. |
+| DominoEX | 4, 5, 8, 11, 16, 22. 18-tone incremental keying. FEC is off. Micro is absent. |
+| Thor | 4, 5, 8, 11, 16, 22. NASA K=7. Thor Micro and the K=15 speeds stay off the menu. |
+
+## Receive only
+
+**WEFAX-576** receives. IOC 576, 120 lines per minute. Black is 400 Hz below the cursor and white is 400 Hz above it. It does not key, and it does not send START.
+
+## Still in progress
+
+These are not on the Mode menu. They do not key.
+
+- **MT63**, short and long, at 500, 1000, and 2000 Hz. The Walsh code checks out. A character has not yet come back out of the audio.
+- **QPSK and 8PSK.** When they are written they will use Fldigi's convolutional code.
+- MSHV modes still outside STD are listed in [`docs/mshv-modes.md`](docs/mshv-modes.md).
+
+CW stays in Lyra. STD does not send CW.
+
+## Macros and the log
+
+A macro button inserts text. It does not log a QSO, and the insert itself does not key.
+
+`<MYCALL>` and `<MYLOC>` are filled in. `<LOG>` is removed. `<RST>` and `<MYRST>` stay in the box as written, so the RST/LOG macro can transmit the characters `<RST>` if TX is pressed afterward. `<CALL>` is left as written too.
+
+A QSO is stored when the sent line ends in `73` or `RR73`, that line contains the other station's call, and a log option is on (automatic, prompt, WSJT-X UDP, or DXKeeper TCP). That path writes ADIF. The `<LOG>` tag does not call it.
+
+## Connect
+
+Radio → Connect opens one WebSocket. The default port is 50001.
+
+- Connect sends `AUDIO_START:0`.
+- Disconnect sends `AUDIO_STOP:0`.
+- The sideband command is `modulation:0,digu` or `modulation:0,digl`.
+- `trx:0,true,tci` goes out only when the operator presses TX or Tune.
+
+The text command START is never sent.
 
 ## Build
 
-Requirements: a C++17 compiler, CMake 3.21 or newer, Qt 6 Widgets, and Qt 6 WebSockets (6.2 or newer).
+Requirements: a C++17 compiler, CMake 3.21 or newer, Qt 6 Widgets, Qt 6 GuiPrivate, and Qt 6 WebSockets.
 
 On Debian and Ubuntu:
 
 ```bash
 sudo apt install build-essential cmake qt6-base-dev qt6-websockets-dev
-```
-
-Configure and build from the repository root:
-
-```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-If CMake cannot find Qt, the error names the missing piece: Widgets (`qt6-base-dev`) or WebSockets (`qt6-websockets-dev`). A custom prefix can be passed as `-DQt6_DIR=/path/to/lib/cmake/Qt6`.
+If CMake cannot find Qt, the error names the missing piece. A custom prefix can be passed as `-DQt6_DIR=/path/to/lib/cmake/Qt6`.
 
-On Windows the same build compiles MSHV’s FT8 decoder from the sibling `MSHV` directory with MinGW and writes `ft8dec.dll` next to `std.exe`. Those algorithm files stay in that tree, copyright headers included. The DLL is loaded only to decode. It does not open the radio.
+On Windows the kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\msvc2022_64`. CMake is `C:\Qt\Tools\CMake_64\bin\cmake.exe`. The compiler is Visual Studio 18 Community. `ft8dec.dll` is built by `src/ft8/build_ft8dec.cmd` from the sibling MSHV tree and is loaded only to decode. The MinGW kit at `C:\Qt\6.11.1\mingw_64` is not the kit this build uses.
 
 ## Run
 
@@ -56,9 +97,9 @@ On Windows the same build compiles MSHV’s FT8 decoder from the sibling `MSHV` 
 ./build/std
 ```
 
-The window title is STD. The icon is the rounded-square mark from [`resources/std-icon.jpg`](resources/std-icon.jpg). That file is a wide frame with dark side margins; [`resources/std-icon.png`](resources/std-icon.png) is the same mark cropped square and embedded in the binary.
+The window title is STD. The icon is the rounded-square mark from [`resources/std-icon.png`](resources/std-icon.png).
 
-A headless check constructs the window, checks the empty panes and the disconnected radio line, then exits:
+A headless check constructs the window and exits:
 
 ```bash
 STD_SELFTEST=1 QT_QPA_PLATFORM=offscreen ./build/std
@@ -66,6 +107,8 @@ STD_SELFTEST=1 QT_QPA_PLATFORM=offscreen ./build/std
 
 Exit status 0 prints `STD self-test ok`.
 
-## Not in this slice
+## More
 
-No sound device. FT8 decode uses the MSHV GPL decoder on audio that TCI already delivered. The dial stays blank until the radio sends `VFO`. AFC and squelch stay blank on purpose.
+- Web version of this page: <https://n8sdr1.github.io/STD/>
+- Wiki: <https://github.com/N8SDR1/STD/wiki>
+- Longer notes: [modes](docs/modes.md), [Hell](docs/hell.md), [macros](docs/macros.md), [connect](docs/connect.md)
