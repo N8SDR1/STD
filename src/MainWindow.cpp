@@ -1828,8 +1828,8 @@ void MainWindow::showGuide() {
        "once. START is never sent."},
       {"Waterfall transmit",
        "While Tune or TX is on the air, the waterfall keeps the receive audio. The transmit waveform "
-       "is not mixed into that picture. A short trace is drawn at the TX audio frequency, about as "
-       "high as the other stations, split or locked. If the radio sends the transmission back on the "
+       "is not mixed into that picture. A short trace is drawn at the TX audio frequency, visible "
+       "there, about as high as the other stations, split or locked. If the radio sends the transmission back on the "
        "receive stream, that is what you see. The notice TX gain is too hot means the audio going to "
        "the radio is past full scale, before this display. Receive audio does not raise the notice. "
        "None of this keys the radio or sends START."},

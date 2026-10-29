@@ -120,6 +120,7 @@ private:
   void blendTxIntoRecent(int count);
   void noteRxLevel(const float* samples, int count);
   void stampTxTone(TraceRow* row);
+  void refreshTxTone();
   void clearTxHot();
   void paintTxHot(QPainter& painter) const;
   void scheduleRebuild();

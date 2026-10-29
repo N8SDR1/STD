@@ -465,7 +465,9 @@ void WaterfallWidget::setTransmitting(bool on) {
     txMix_.clear();
     txMixRead_ = 0.0;
     clearTxHot();
+    return;
   }
+  refreshTxTone();
 }
 
 void WaterfallWidget::clearTxHot() {
@@ -639,6 +641,7 @@ void WaterfallWidget::mixTxAudio(const float* samples, int count, int sampleRate
   // is drawn as it is heard. stampTxTone adds a short trace at the TX
   // audio frequency only, about as high as the other stations.
   noteTxSpill(overFullScale);
+  refreshTxTone();
 }
 
 void WaterfallWidget::blendTxIntoRecent(int count) {
@@ -682,29 +685,43 @@ void WaterfallWidget::stampTxTone(TraceRow* row) {
       continue;
     traces.push_back(level);
   }
-  // Same colour scale as traceColor. The tone stays in the lower half of
-  // that scale, so it cannot reach the yellow end the way a full-scale
-  // mix did. Split and locked both use this TX frequency.
+  // traceColor is black at or below threshold and full yellow at
+  // threshold + span. The old stamp sat near the floor and then scaled
+  // that dB value like a gain, so the pixel fell back under the floor.
+  // Keep the tone in the upper middle of the scale: visible, short of
+  // the blown yellow a full-scale mix made. Split and locked both use
+  // this TX frequency.
   const float threshold = 18.0f * (1.0f - float(brightness_) / 100.0f);
   const float span = std::max(6.0f, 22.0f - 16.0f * (float(contrast_) / 100.0f));
-  const float ceiling = threshold + span * 0.45f;
-  float reference = threshold + span * 0.22f;
+  const float floor = threshold + span * 0.62f;
+  const float ceiling = threshold + span * 0.80f;
+  float reference = floor;
   if (!traces.isEmpty()) {
     std::sort(traces.begin(), traces.end());
     reference = traces.at(traces.size() / 2);
   }
-  reference = std::clamp(reference, threshold + 1.0f, ceiling);
+  reference = std::clamp(reference, floor, ceiling);
   const float center = float(txHz_);
-  const float half = std::max(8.0f, float(pixel));
+  const float half = std::max(14.0f, float(pixel) * 2.0f);
   for (int column = 0; column < row->level.size(); ++column) {
     const float away = std::fabs(hzOf(column) - center);
     if (away > half)
       continue;
     const float taper = 1.0f - away / half;
-    const float level = reference * (0.72f + 0.28f * taper);
+    const float level = floor + (reference - floor) * taper;
     if (row->level[column] < level)
       row->level[column] = level;
   }
+}
+
+void WaterfallWidget::refreshTxTone() {
+  if (!transmitting_ || rowCount_ <= 0)
+    return;
+  TraceRow& row = rowAt(0);
+  if (!rowMatches(row))
+    return;
+  stampTxTone(&row);
+  update();
 }
 
 void WaterfallWidget::writeAudio(const float* samples, int count, int sampleRateHz, bool blendTx) {
@@ -1085,6 +1102,7 @@ void WaterfallWidget::rebuildSome() {
     if (rowMatches(row))
       continue;
     analyze(row.endSample, &row);
+    stampTxTone(&row);
     --budget;
     update();
   }
