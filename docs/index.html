@@ -1,0 +1,293 @@
+---
+layout: null
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STD — Shift, Tone, Decode</title>
+<meta name="description" content="STD is Shift, Tone, Decode, a Qt 6 TCI digimode console in testing. Around the shack it also answers to Sending Transmittal Disease. Help keep the infections spreading and buy us a shot of bourbon.">
+<link rel="icon" type="image/png" href="logo.png">
+<style>
+  :root {
+    --bg: #0a0e14;
+    --panel: #111620;
+    --panel-2: #0f1420;
+    --line: rgba(255,255,255,0.07);
+    --accent: #00e5ff;
+    --gold: #e8c477;
+    --text: #cdd9e5;
+    --head: #e6edf3;
+    --muted: #6b7a8d;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background:
+      radial-gradient(circle at 50% -10%, rgba(0,229,255,0.10), transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+  header { text-align: center; padding: 72px 0 40px; }
+  .logo {
+    width: 132px; height: 132px; border-radius: 28px;
+    box-shadow: 0 12px 48px rgba(0,229,255,0.22), 0 0 0 1px rgba(232,196,119,0.18);
+  }
+  .wordmark {
+    margin-top: 22px;
+    font-size: clamp(40px, 8.5vw, 64px);
+    font-weight: 800; letter-spacing: 3px; color: var(--head); line-height: 1;
+  }
+  .wordmark .accent { color: var(--accent); text-shadow: 0 0 22px rgba(0,229,255,0.55); }
+  .tagline { margin-top: 16px; font-size: clamp(15px, 2.4vw, 19px); color: var(--text); }
+  .aka {
+    margin-top: 10px;
+    font-size: clamp(18px, 3vw, 26px);
+    font-weight: 700;
+    color: var(--gold);
+    letter-spacing: 0.3px;
+  }
+  .joke {
+    max-width: 720px;
+    margin: 18px auto 0;
+    font-size: 16px;
+    color: var(--text);
+  }
+  .bourbon {
+    margin-top: 14px;
+    color: var(--gold);
+    font-weight: 700;
+    font-size: 16px;
+  }
+  .badge {
+    display: inline-block; margin-top: 16px; padding: 4px 12px; border-radius: 999px;
+    font-size: 12px; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--gold); background: rgba(232,196,119,0.10); border: 1px solid rgba(232,196,119,0.30);
+  }
+
+  .cta { margin-top: 30px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 12px 22px; border-radius: 12px; font-size: 15px; font-weight: 600;
+    border: 1px solid var(--line); transition: transform .12s ease, background .2s ease, border-color .2s ease;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn-primary { background: var(--accent); color: #04121a; border-color: transparent; box-shadow: 0 8px 30px rgba(0,229,255,0.25); }
+  .btn-primary:hover { background: #4af0ff; }
+  .btn-ghost { background: rgba(255,255,255,0.03); color: var(--head); }
+  .btn-ghost:hover { border-color: rgba(0,229,255,0.5); color: var(--accent); }
+  .platforms { margin-top: 18px; font-size: 13px; color: var(--muted); letter-spacing: 0.4px; }
+
+  .showcase { padding: 8px 0 24px; }
+  .frame {
+    border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: var(--panel-2);
+    box-shadow: 0 30px 90px rgba(0,0,0,0.6), 0 0 60px rgba(0,229,255,0.06);
+  }
+  .frame-bar { display: flex; align-items: center; gap: 7px; padding: 9px 14px; background: #0c1119; border-bottom: 1px solid var(--line); }
+  .frame-bar .dot { width: 10px; height: 10px; border-radius: 50%; background: #2a3342; }
+  .frame-title { margin-left: 10px; font-size: 12px; color: var(--muted); letter-spacing: 0.3px; }
+  .frame img { display: block; width: 100%; height: auto; }
+  .shot-note {
+    margin-top: 12px; text-align: center; font-size: 12.5px; line-height: 1.6;
+    color: var(--muted);
+  }
+  .shot-note a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(0,229,255,0.35); }
+  .shot-note a:hover { border-bottom-color: var(--accent); }
+
+  section { padding: 40px 0; }
+  h2 { font-size: 13px; letter-spacing: 3px; text-transform: uppercase; color: var(--accent); margin-bottom: 22px; text-align: center; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .card {
+    background: linear-gradient(180deg, var(--panel), var(--panel-2));
+    border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px;
+  }
+  .card h3 { color: var(--head); font-size: 16px; margin-bottom: 8px; display: flex; align-items: center; gap: 9px; }
+  .card p { font-size: 14px; color: var(--text); }
+  .card .ico { font-size: 18px; }
+  .card .btn { margin-top: 14px; }
+
+  .road-card {
+    background: linear-gradient(180deg, rgba(232,196,119,0.06), var(--panel-2));
+    border: 1px dashed rgba(232,196,119,0.30);
+  }
+  .pill-planned {
+    display: inline-block; margin-bottom: 12px;
+    font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--gold); background: rgba(232,196,119,0.10);
+    border: 1px solid rgba(232,196,119,0.30); border-radius: 999px; padding: 3px 10px;
+  }
+  .pill-testing {
+    display: inline-block; margin-bottom: 12px;
+    font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--accent); background: rgba(0,229,255,0.10);
+    border: 1px solid rgba(0,229,255,0.30); border-radius: 999px; padding: 3px 10px;
+  }
+
+  .credits { background: var(--panel-2); border: 1px solid var(--line); border-radius: 16px; padding: 26px; }
+  .credits p { font-size: 14.5px; margin: 6px 0; }
+  .credits .name { color: var(--head); font-weight: 600; }
+
+  footer { text-align: center; padding: 34px 0 56px; color: var(--muted); font-size: 13px; }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--accent); }
+  .divider { height: 1px; background: var(--line); margin: 8px 0 0; }
+
+  .marquee-sec { padding: 24px 0 44px; }
+  .marquee-sub { text-align: center; color: var(--muted); font-size: 14px; margin: -8px 0 24px; }
+  .marquee {
+    position: relative; overflow: hidden;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+            mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+  }
+  .marquee-track {
+    display: flex; gap: 20px; width: max-content;
+    animation: marquee-scroll 40s linear infinite;
+  }
+  .marquee:hover .marquee-track { animation-play-state: paused; }
+  @keyframes marquee-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  .shot {
+    flex: 0 0 auto; width: 340px;
+    border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: var(--panel-2);
+    box-shadow: 0 16px 44px rgba(0,0,0,0.5), 0 0 34px rgba(0,229,255,0.05);
+  }
+  .shot img { display: block; width: 100%; height: auto; }
+  .shot .cap {
+    padding: 10px 14px; font-size: 12.5px; color: var(--text);
+    border-top: 1px solid var(--line); letter-spacing: 0.2px;
+  }
+  .shot .cap b { color: var(--head); font-weight: 600; }
+  @media (prefers-reduced-motion: reduce) {
+    .marquee-track { animation: none; }
+    .marquee { overflow-x: auto; -webkit-mask-image: none; mask-image: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img class="logo" src="logo.png" alt="STD capsule logo">
+      <div class="wordmark">ST<span class="accent">D</span></div>
+      <p class="tagline">Shift, Tone, Decode. A Qt&nbsp;6 digimode console for a TCI radio.</p>
+      <p class="aka">Sending Transmittal Disease</p>
+      <p class="joke">The real expansion is Shift, Tone, Decode. Around the shack it also answers to Sending Transmittal Disease, because this build is still in the contagious stage. It keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air.</p>
+      <p class="bourbon">STD: Help keep the infections spreading and buy us a shot of bourbon.</p>
+      <div><span class="badge">v0.1.0 · testing phase · highly transmissible · GPL v3</span></div>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/N8SDR1/STD">★ GitHub</a>
+        <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD/wiki">📖 Wiki</a>
+        <a class="btn btn-ghost" href="https://www.paypal.com/donate/?business=NP2ZQS4LR454L&amp;no_recurring=0&amp;item_name=STD%3A+Help+keep+the+infections+spreading+and+buy+us+a+shot+of+bourbon.&amp;currency_code=USD">☕ Bourbon</a>
+        <a class="btn btn-ghost" href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a>
+        <a class="btn btn-ghost" href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a>
+      </div>
+      <p class="platforms">Qt 6.11.1 MSVC on Windows · Connect sends AUDIO_START:0 · The text command START is never sent · CW stays in Lyra</p>
+    </header>
+
+    <section class="showcase">
+      <div class="frame">
+        <div class="frame-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="frame-title">STD — 20 m FT8, on the air</span>
+        </div>
+        <img src="screenshots/std-ft8-tx.png" alt="STD transmitting on 20 m FT8, waterfall and the on-air exchange">
+      </div>
+      <p class="shot-note">
+        Testing phase. These pictures live in
+        <a href="https://github.com/N8SDR1/STD/tree/main/screenshots/landingpage">screenshots/landingpage</a>.
+        Drop another PNG there and it can join the outbreak.
+      </p>
+    </section>
+
+    <section class="marquee-sec">
+      <h2>Caught on the bench</h2>
+      <p class="marquee-sub">20&nbsp;m FT8 on receive, the same session on the air, and a Feld Hell test that actually looks like letters.</p>
+      <div class="marquee">
+        <div class="marquee-track">
+          <div class="shot"><img src="screenshots/std-ft8.png" alt="STD on 20 m FT8, receive"><div class="cap"><b>20 m FT8</b> — receive, Region 2, the band is busy</div></div>
+          <div class="shot"><img src="screenshots/std-ft8-tx.png" alt="STD transmitting on 20 m FT8"><div class="cap"><b>On the air</b> — TX lit, one slot of the exchange going out</div></div>
+          <div class="shot"><img src="screenshots/std-hell.png" alt="Feld Hell test tape in STD"><div class="cap"><b>Feld Hell</b> — the tape says this is a test from Hell</div></div>
+          <div class="shot" aria-hidden="true"><img src="screenshots/std-ft8.png" alt=""><div class="cap"><b>20 m FT8</b> — receive, Region 2, the band is busy</div></div>
+          <div class="shot" aria-hidden="true"><img src="screenshots/std-ft8-tx.png" alt=""><div class="cap"><b>On the air</b> — TX lit, one slot of the exchange going out</div></div>
+          <div class="shot" aria-hidden="true"><img src="screenshots/std-hell.png" alt=""><div class="cap"><b>Feld Hell</b> — the tape says this is a test from Hell</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>What it sends</h2>
+      <p class="marquee-sub">TX sends these when you press TX or Tune. Opening the radio does not key.</p>
+      <div class="grid">
+        <div class="card"><h3><span class="ico">📡</span> FT8, FT4, FT2</h3><p>15&nbsp;s, 7.5&nbsp;s, and 3.75&nbsp;s. DIGU. The MSHV generator. Contest lines Tx1–Tx6 are messages, not extra modes.</p></div>
+        <div class="card"><h3><span class="ico">🖋️</span> Hell</h3><p>Feld, Slow, X5, X9, FSK, FSK-105, and Hell&nbsp;80, each at its Fldigi column rate. Feld Hell is 17.5&nbsp;columns/s, 14&nbsp;pixels, a 2&nbsp;ms raised cosine. <a href="https://github.com/N8SDR1/STD/wiki/Hell">Hell notes</a>.</p></div>
+        <div class="card"><h3><span class="ico">⌨️</span> RTTY</h3><p>One menu row. 45.45&nbsp;baud, 170&nbsp;Hz, mark high, 5&nbsp;bits, 1.5&nbsp;stop. A space sends LTRS, then the space.</p></div>
+        <div class="card"><h3><span class="ico">〰️</span> BPSK</h3><p>PSK31, 63, 125, 250, 500, and 1000. A zero reverses the phase. QPSK is not in this build.</p></div>
+        <div class="card"><h3><span class="ico">🎼</span> Olivia and Contestia</h3><p>4/250, 8/250, 8/500, 16/500, 16/1000, and 32/1000. Gray-coded tones.</p></div>
+        <div class="card"><h3><span class="ico">🎚️</span> MFSK, DominoEX, Thor</h3><p>MFSK4 through 128, NASA K=7. DominoEX 4–22 with FEC off. Thor 4–22, K=7 only. The long and micro rows stay off the menu.</p></div>
+        <div class="card"><h3><span class="ico">🔌</span> TCI</h3><p>Connect sends <code>AUDIO_START:0</code>. Disconnect sends <code>AUDIO_STOP:0</code>. The text command START is never sent. <code>trx</code> goes out only when you press TX or Tune.</p></div>
+        <div class="card"><h3><span class="ico">📝</span> Macros</h3><p>The RST/LOG button does not log. Fldigi’s <code>&lt;LOG&gt;</code> tag is not implemented, so that press only inserts text. A QSO is stored on a separate path, when a sent line ends in 73 or RR73 and a log option is on. <a href="https://github.com/N8SDR1/STD/wiki/Macros">Macro notes</a>.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Receive only</h2>
+      <div class="grid">
+        <div class="card"><h3><span class="ico">🗞️</span> WEFAX-576</h3><p>IOC 576, 120 lines per minute. Black is 400&nbsp;Hz below the cursor and white is 400&nbsp;Hz above it. It does not key, and it does not send START.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Still spreading</h2>
+      <p class="marquee-sub">Not on the Mode menu. They do not key. The outbreak is incomplete on purpose.</p>
+      <div class="grid">
+        <div class="card road-card"><span class="pill-testing">On the bench</span><h3><span class="ico">🌊</span> MT63</h3><p>500, 1000, and 2000&nbsp;Hz, short and long. The Walsh code checks out. A character has not yet come back out of the audio, so the menu stays clear of it.</p></div>
+        <div class="card road-card"><span class="pill-planned">Later</span><h3><span class="ico">✳️</span> QPSK and 8PSK</h3><p>Not written. When they land they will use Fldigi’s convolutional code.</p></div>
+        <div class="card road-card"><span class="pill-planned">Later</span><h3><span class="ico">📻</span> JS8Call</h3><p>Queued, from <a href="https://js8call.com/JS8Call-improved/">JS8Call-improved</a>. Not this build.</p></div>
+        <div class="card road-card"><span class="pill-planned">Queued</span><h3><span class="ico">📋</span> FLD-88</h3><p>On the list. Not in the menu, and not keying.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Companion apps</h2>
+      <p class="marquee-sub">Same shack, same developer. STD is the digimode console. The other two already have their own waiting rooms.</p>
+      <div class="grid">
+        <div class="card">
+          <h3><span class="ico">🎛️</span> Lyra</h3>
+          <p>The transceiver. Protocol&nbsp;1 and Protocol&nbsp;2, the panadapter, and the CW that stays over there. STD does not send CW.</p>
+          <a class="btn btn-ghost" href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Visit Lyra</a>
+          <a class="btn btn-ghost" href="https://github.com/N8SDR1/Lyra-SDR-cpp">★ GitHub</a>
+        </div>
+        <div class="card">
+          <h3><span class="ico">📒</span> SDRLogger+</h3>
+          <p>The logbook. TCI, the DX cluster, and the place a finished contact belongs. The RST/LOG macro in STD still does not write it.</p>
+          <a class="btn btn-ghost" href="https://n8sdr1.github.io/SDRLoggerPlus/">Visit SDRLogger+</a>
+          <a class="btn btn-ghost" href="https://github.com/N8SDR1/SDRLoggerPlus">★ GitHub</a>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Credits</h2>
+      <div class="credits">
+        <p><span class="name">Rick Langford (N8SDR)</span> — author of STD, and of the bourbon prescription.</p>
+        <div class="divider"></div>
+        <p style="margin-top:14px; color: var(--muted);">Modem math rewritten from <strong style="color:var(--text)">Fldigi</strong> (Dave Freese, W1HKJ, GPL-3). FT8, FT4, and FT2 from <strong style="color:var(--text)">MSHV</strong> (Christo, LZ2HV). TCI ideas from TCIdigi, without vendoring that tree. CW stays in <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a>.</p>
+        <p style="margin-top:14px; color: var(--muted);">STD is GPL&nbsp;v3. The text command START is never sent.</p>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <p>© 2026 Rick Langford (N8SDR) · Shift, Tone, Decode · Sending Transmittal Disease · GPL v3</p>
+    <p style="margin-top:6px;"><a href="https://github.com/N8SDR1/STD">GitHub</a> · <a href="https://github.com/N8SDR1/STD/wiki">Wiki</a> · <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a> · <a href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a></p>
+  </footer>
+</body>
+</html>

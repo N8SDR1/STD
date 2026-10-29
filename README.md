@@ -1,8 +1,8 @@
 # STD
 
-**Shift, Tone, Decode.** Software in testing. Version 0.1.0.
+**Shift, Tone, Decode.** Software in testing. Version 0.1.0. Around the shack it also answers to **Sending Transmittal Disease**.
 
-The name is the joke, and the joke is the release plan. STD is a Qt 6 digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air.
+The real expansion is Shift, Tone, Decode. The other one is the joke. STD is a Qt 6 digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air. [Lyra](https://n8sdr1.github.io/Lyra-SDR-cpp/) is the transceiver. [SDRLogger+](https://n8sdr1.github.io/SDRLoggerPlus/) is the logbook. CW stays in Lyra.
 
 **STD: Help keep the infections spreading and buy us a shot of bourbon.**
 
