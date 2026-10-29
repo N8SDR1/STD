@@ -12,6 +12,7 @@
 #include "fftfilt.h"
 #include "filters.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -19,7 +20,6 @@ namespace {
 
 constexpr int kSampleRate = 8000;
 constexpr int kColumnLen = 20;
-constexpr double kColumnRate = 17.5;
 constexpr double kBandwidthHz = 245.0;
 
 double clampd(double x, double lo, double hi) {
@@ -47,7 +47,8 @@ struct HellEngine::Private {
   int colData[2 * kColumnLen] = {};
   bool squelchOn = false;
   int squelchLevel = 10;
-  const double downsampleInc = (kColumnLen * kColumnRate) / static_cast<double>(kSampleRate);
+  double columnRate = 17.5;
+  double downsampleInc = (kColumnLen * 17.5) / static_cast<double>(kSampleRate);
   C_FIR_filter* hilbert = nullptr;
   fftfilt* lowpass = nullptr;
   Cmovavg* average = nullptr;
@@ -56,9 +57,10 @@ struct HellEngine::Private {
     hilbert = new C_FIR_filter();
     hilbert->init_hilbert(37, 1);
     lowpass = new fftfilt(0, 0.5 * kBandwidthHz / kSampleRate, 1024);
-    // feld::restart sets the averager to 500 * rate / (height * 17.5).
+    // feld::restart sets the averager to 500 * rate / (height * column rate).
     average = new Cmovavg(200);
-    average->setLength(500 * kSampleRate / static_cast<int>(kColumnLen * kColumnRate));
+    const int pixels = std::max(1, static_cast<int>(kColumnLen * columnRate));
+    average->setLength(std::max(1, 500 * kSampleRate / pixels));
   }
 
   void close() {
@@ -163,6 +165,17 @@ void HellEngine::setSquelch(bool on, int level) {
     level = 100;
   d_->squelchOn = on;
   d_->squelchLevel = level;
+}
+
+void HellEngine::setColumnRate(double columnsPerSecond) {
+  if (columnsPerSecond < 1.0)
+    columnsPerSecond = 17.5;
+  d_->columnRate = columnsPerSecond;
+  d_->downsampleInc = (kColumnLen * d_->columnRate) / static_cast<double>(kSampleRate);
+  if (d_->average) {
+    const int pixels = std::max(1, static_cast<int>(kColumnLen * d_->columnRate));
+    d_->average->setLength(std::max(1, 500 * kSampleRate / pixels));
+  }
 }
 
 void HellEngine::setToneHz(int hz) {

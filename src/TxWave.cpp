@@ -3,6 +3,7 @@
 
 #include "DigitalMode.h"
 #include "TxWave.h"
+#include "hell/HellFont.h"
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
@@ -74,94 +75,161 @@ bool buildFt2(const QString& message, int toneHz, std::vector<float>* out) {
   return buildFt("ft2_generate", 220000, message, toneHz, out);
 }
 
-int glyphColumn(QChar ch, int column) {
-  struct Glyph {
-    char ch;
-    unsigned char col[5];
-  };
-  // 5x7. Bit 0 is the top of the glyph. buildHell sends bit 6 first so the
-  // bottom pixel leads, which is Fldigi get_font_data (b0 = bottom row).
-  static const Glyph glyphs[] = {
-      {' ', {0x00, 0x00, 0x00, 0x00, 0x00}}, {'0', {0x3E, 0x51, 0x49, 0x45, 0x3E}},
-      {'1', {0x00, 0x42, 0x7F, 0x40, 0x00}}, {'2', {0x42, 0x61, 0x51, 0x49, 0x46}},
-      {'3', {0x21, 0x41, 0x45, 0x4B, 0x31}}, {'4', {0x18, 0x14, 0x12, 0x7F, 0x10}},
-      {'5', {0x27, 0x45, 0x45, 0x45, 0x39}}, {'6', {0x3C, 0x4A, 0x49, 0x49, 0x30}},
-      {'7', {0x01, 0x71, 0x09, 0x05, 0x03}}, {'8', {0x36, 0x49, 0x49, 0x49, 0x36}},
-      {'9', {0x06, 0x49, 0x49, 0x29, 0x1E}}, {'A', {0x7E, 0x11, 0x11, 0x11, 0x7E}},
-      {'B', {0x7F, 0x49, 0x49, 0x49, 0x36}}, {'C', {0x3E, 0x41, 0x41, 0x41, 0x22}},
-      {'D', {0x7F, 0x41, 0x41, 0x22, 0x1C}}, {'E', {0x7F, 0x49, 0x49, 0x49, 0x41}},
-      {'F', {0x7F, 0x09, 0x09, 0x09, 0x01}}, {'G', {0x3E, 0x41, 0x49, 0x49, 0x7A}},
-      {'H', {0x7F, 0x08, 0x08, 0x08, 0x7F}}, {'I', {0x00, 0x41, 0x7F, 0x41, 0x00}},
-      {'J', {0x20, 0x40, 0x41, 0x3F, 0x01}}, {'K', {0x7F, 0x08, 0x14, 0x22, 0x41}},
-      {'L', {0x7F, 0x40, 0x40, 0x40, 0x40}}, {'M', {0x7F, 0x02, 0x0C, 0x02, 0x7F}},
-      {'N', {0x7F, 0x04, 0x08, 0x10, 0x7F}}, {'O', {0x3E, 0x41, 0x41, 0x41, 0x3E}},
-      {'P', {0x7F, 0x09, 0x09, 0x09, 0x06}}, {'Q', {0x3E, 0x41, 0x51, 0x21, 0x5E}},
-      {'R', {0x7F, 0x09, 0x19, 0x29, 0x46}}, {'S', {0x46, 0x49, 0x49, 0x49, 0x31}},
-      {'T', {0x01, 0x01, 0x7F, 0x01, 0x01}}, {'U', {0x3F, 0x40, 0x40, 0x40, 0x3F}},
-      {'V', {0x1F, 0x20, 0x40, 0x20, 0x1F}}, {'W', {0x3F, 0x40, 0x38, 0x40, 0x3F}},
-      {'X', {0x63, 0x14, 0x08, 0x14, 0x63}}, {'Y', {0x07, 0x08, 0x70, 0x08, 0x07}},
-      {'Z', {0x61, 0x51, 0x49, 0x45, 0x43}}, {'/', {0x20, 0x10, 0x08, 0x04, 0x02}},
-      {'+', {0x08, 0x08, 0x3E, 0x08, 0x08}}, {'-', {0x08, 0x08, 0x08, 0x08, 0x08}},
-      {'.', {0x00, 0x60, 0x60, 0x00, 0x00}}, {'?', {0x02, 0x01, 0x51, 0x09, 0x06}},
-  };
-  const QChar upper = ch.toUpper();
-  const Glyph* found = &glyphs[0];
-  for (const Glyph& glyph : glyphs) {
-    if (QLatin1Char(glyph.ch) == upper) {
-      found = &glyph;
-      break;
-    }
+// fldigi feld::get_font_data. -1 when this column and every column to its
+// right are blank, which ends the character. Bit 0 of the result is the
+// bottom row and is the first pixel in time.
+int hellColumnBits(unsigned char c, int column) {
+  if (column > 15 || c < ' ' || c > '~')
+    return -1;
+  const int index = int(c) - int(' ');
+  const unsigned mask = 1u << (15 - column);
+  unsigned all = 0;
+  for (int row = 0; row < kHellFontRows; ++row)
+    all |= kHellFont[index][row];
+  int bits = 0;
+  for (int row = 0; row < kHellFontRows; ++row) {
+    if ((kHellFont[index][kHellFontRows - 1 - row] & mask) != 0)
+      bits |= 1 << row;
   }
-  if (column < 0 || column >= 5)
-    return 0;
-  return found->col[column];
+  const unsigned rest = (1u << (15 - column)) - 1u;
+  if (bits == 0 && (all & rest) == 0)
+    return -1;
+  return bits;
 }
 
-int firstInkRow(QChar ch, int column) {
-  for (int row = 0; row < 20; ++row) {
-    const int glyphRow = row - 6;
-    if (glyphRow < 0 || glyphRow >= 7)
-      continue;
-    if (((glyphColumn(ch, column) >> (6 - glyphRow)) & 1) != 0)
-      return row;
+struct HellTx {
+  double columnsPerSec = 17.5;
+  bool shaped = true;
+  bool fsk = false;
+  double shiftHz = 0.0;
+};
+
+HellTx hellTxFor(const QString& mode) {
+  HellTx tx;
+  tx.columnsPerSec = hellColumnRate(mode);
+  if (mode == QLatin1String("Feld Hell X5") || mode == QLatin1String("Feld Hell X9"))
+    tx.shaped = false;
+  if (mode == QLatin1String("FSK Hell")) {
+    tx.shaped = false;
+    tx.fsk = true;
+    tx.shiftHz = 122.5;
+  } else if (mode == QLatin1String("FSK Hell-105")) {
+    tx.shaped = false;
+    tx.fsk = true;
+    tx.shiftHz = 55.0;
+  } else if (mode == QLatin1String("Hell 80")) {
+    tx.shaped = false;
+    tx.fsk = true;
+    tx.shiftHz = 300.0;
   }
-  return -1;
+  return tx;
 }
 
-bool buildHell(const QString& message, int toneHz, std::vector<float>* out) {
-  // Fldigi Feld Hell transmit is on-off keying of one tone. Ink is the
-  // carrier, paper is silence. The column is 20 pixels at 17.5 columns/s,
-  // which is Fldigi's receive sampler (HellRcvHeight), so each pixel is
-  // one raster sample. The bottom glyph bit goes out first.
-  const double pixelsPerSecond = 20.0 * 17.5;
-  const double pixelSamples = double(kRate) / pixelsPerSecond;
+// fldigi initKeyWaveform, HellPulseFast default 1: 2 ms raised cosine.
+// Index is an 8000 Hz sample. OnShape rises over the first 16. OffShape
+// stays full for 16, then falls over the next 16.
+double hellEdge(int sample, bool rising) {
+  const double idx = double(sample) * 8000.0 / double(kRate);
+  auto on = [](double i) {
+    if (i <= 0.0)
+      return 0.0;
+    if (i >= 16.0)
+      return 1.0;
+    return 0.5 * (1.0 - std::cos(3.141592653589793 * i / 16.0));
+  };
+  if (rising)
+    return on(idx);
+  if (idx >= 32.0)
+    return 0.0;
+  const double src = 31.0 - idx;
+  return src < 16.0 ? on(src) : 1.0;
+}
+
+bool buildHell(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
+               std::vector<int>* echoAt) {
+  // fldigi feld.cxx send_symbol / tx_char (Dave Freese, W1HKJ, GPL-3).
+  // Amplitude Hell is on-off keying. Ink is the carrier, paper is silence.
+  // The column is 14 pixels. Feld Hell is 17.5 columns/s, 245 pixels/s.
+  // Feld and Slow use the 2 ms raised cosine. X5 and X9 are hard keyed.
+  // FSK Hell, FSK Hell-105, and Hell 80 keep a tone up and move it by
+  // half the shift. Reverse is off, so ink is the lower tone.
+  const HellTx timing = hellTxFor(mode);
   const int tone = std::clamp(toneHz, 200, 3000);
   out->clear();
+  if (echoAt)
+    echoAt->clear();
   double phase = 0.0;
-  const double step = 2.0 * 3.141592653589793 * double(tone) / double(kRate);
-  auto emitPixel = [&](bool ink) {
-    const int n = std::max(1, int(std::lround(pixelSamples)));
-    for (int i = 0; i < n; ++i) {
-      out->push_back(ink ? float(0.6 * std::sin(phase)) : 0.0f);
-      phase += step;
+  double counter = 0.0;
+  int previous = 0;
+  const double step = timing.columnsPerSec * double(kHellFontRows) / double(kRate);
+  auto sendPixel = [&](int current, int next) {
+    int n = 0;
+    for (;;) {
+      double amp = 1.0;
+      double freq = double(tone);
+      if (timing.fsk) {
+        freq += (current ? -1.0 : 1.0) * timing.shiftHz / 2.0;
+      } else if (!timing.shaped) {
+        amp = current ? 1.0 : 0.0;
+      } else if (previous == 0 && current == 1) {
+        amp = hellEdge(n, true);
+      } else if (current == 1 && next == 0) {
+        amp = hellEdge(n, false);
+      } else {
+        amp = current ? 1.0 : 0.0;
+      }
+      out->push_back(float(0.6 * amp * std::sin(phase)));
+      phase += 2.0 * 3.141592653589793 * freq / double(kRate);
       if (phase > 6.283185307179586)
         phase -= 6.283185307179586;
-    }
-  };
-  for (const QChar ch : message) {
-    for (int column = 0; column < 5; ++column) {
-      const int bits = glyphColumn(ch, column);
-      for (int row = 0; row < 20; ++row) {
-        const int glyphRow = row - 6;
-        const bool ink = glyphRow >= 0 && glyphRow < 7 && ((bits >> (6 - glyphRow)) & 1) != 0;
-        emitPixel(ink);
+      ++n;
+      counter += step;
+      if (counter >= 1.0) {
+        counter -= 1.0;
+        break;
       }
     }
-    for (int row = 0; row < 40; ++row)
-      emitPixel(false);
+    previous = current;
+  };
+  auto sendColumn = [&](int bits) {
+    for (int row = 0; row < kHellFontRows; ++row) {
+      const int current = bits & 1;
+      bits >>= 1;
+      const int next = bits & 1;
+      sendPixel(current, next);
+    }
+  };
+  auto sendChar = [&](unsigned char c) {
+    sendColumn(0);
+    if (c == ' ') {
+      sendColumn(0);
+      sendColumn(0);
+      sendColumn(0);
+    } else {
+      for (int column = 0;; ++column) {
+        const int bits = hellColumnBits(c, column);
+        if (bits < 0)
+          break;
+        sendColumn(bits);
+      }
+    }
+    sendColumn(0);
+  };
+  for (int i = 0; i < 3; ++i)
+    sendChar('.');
+  for (const QChar ch : message) {
+    if (echoAt)
+      echoAt->push_back(int(out->size()));
+    unsigned char c = ' ';
+    if (ch.unicode() >= ' ' && ch.unicode() <= '~')
+      c = static_cast<unsigned char>(ch.unicode());
+    else if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n'))
+      c = ' ';
+    sendChar(c);
   }
-  for (int i = 0; i < kRate / 5; ++i)
-    out->push_back(0.0f);
+  for (int i = 0; i < 3; ++i)
+    sendChar('.');
+  sendChar(' ');
   return !out->empty();
 }
 
@@ -185,7 +253,7 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
   if (mode == QLatin1String("FT2"))
     return buildFt2(text, tone, out);
   if (hellFamily(mode))
-    return buildHell(text, tone, out);
+    return buildHell(mode, text, tone, out, echoAt);
   if (rttyMode(mode)) {
     const RttyPlan plan = planRtty(text, tone);
     if (plan.samples.empty())
@@ -244,18 +312,21 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
 }
 
 int hellFirstInkRow(QChar ch, int column) {
-  return firstInkRow(ch, column);
+  if (ch.unicode() < ' ' || ch.unicode() > '~')
+    return -1;
+  const int bits = hellColumnBits(static_cast<unsigned char>(ch.unicode()), column);
+  if (bits <= 0)
+    return -1;
+  for (int row = 0; row < kHellFontRows; ++row) {
+    if (((bits >> row) & 1) != 0)
+      return row;
+  }
+  return -1;
 }
 
 int textModeSamplesPerChar(const QString& mode) {
-  if (!hellFamily(mode))
-    return 0;
-  // Same grid as buildHell: 350 pixels/s, 5 columns of 20 rows, then
-  // 40 blank pixels. The trailing fifth-of-a-second silence is not a
-  // character. 140 * lround(48000/350) is 19180 samples, about 400 ms.
-  constexpr double kPixelsPerSecond = 20.0 * 17.5;
-  const int pixelSamples = std::max(1, int(std::lround(48000.0 / kPixelsPerSecond)));
-  return 140 * pixelSamples;
+  Q_UNUSED(mode);
+  return 0;
 }
 
 namespace {

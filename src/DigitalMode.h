@@ -13,6 +13,20 @@ inline bool hellFamily(const QString& mode) {
          mode == QLatin1String("FSK Hell-105") || mode == QLatin1String("Hell 80");
 }
 
+// fldigi feld::restart column rate. Transmit pixels per second are
+// 14 times this. Receive columns stay 20 pixels high.
+inline double hellColumnRate(const QString& mode) {
+  if (mode == QLatin1String("Slow Hell"))
+    return 2.1875;
+  if (mode == QLatin1String("Feld Hell X5"))
+    return 87.5;
+  if (mode == QLatin1String("Feld Hell X9"))
+    return 157.5;
+  if (mode == QLatin1String("Hell 80"))
+    return 35.0;
+  return 17.5;
+}
+
 // Fldigi keyboard text: one transmit box, a receive echo, CLR RX, and CLR TX.
 // FT8, FT4, and FT2 stay on the MSHV sequencer. CW stays in Lyra.
 // A later menu item is covered when its name starts with one of these

@@ -12,17 +12,17 @@
 // mark/space. PSK31 and the other BPSK speeds are varicode. Empty when the
 // mode has no generator or the message is blank.
 // echoAt, when set, receives the 48 kHz sample where each source character
-// starts. Hell leaves it empty and uses textModeSamplesPerChar.
+// starts. Hell fills it. The three leader dots and the tail are not entries.
 bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
                  std::vector<int>* echoAt = nullptr);
 
-// 48 kHz samples for one transmitted character. Hell is the Feld Hell
-// glyph (140 pixels). RTTY and PSK stay 0 here and pace the echo from
-// the echoAt list buildTxWave fills. A mode with no modulator stays 0
-// so the receive echo does not print text that never went out.
+// 48 kHz samples for one transmitted character. Hell, RTTY, and PSK stay
+// 0 here and pace the echo from the echoAt list buildTxWave fills. A mode
+// with no modulator stays 0 so the receive echo does not print text that
+// never went out.
 int textModeSamplesPerChar(const QString& mode);
 
-// First ink row in a 20-pixel Hell column. 0 is the first sample in time,
+// First ink row in a 14-pixel Hell column. 0 is the first sample in time,
 // the bottom of the column, matching Fldigi. -1 when the column is blank.
 int hellFirstInkRow(QChar ch, int column);
 

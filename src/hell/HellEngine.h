@@ -17,6 +17,9 @@ public:
 
   void setArmed(bool armed);
   void setToneHz(int hz);
+  // fldigi feldcolumnrate. Feld Hell and both FSK Hell speeds are 17.5.
+  // Slow Hell is 2.1875, X5 is 87.5, X9 is 157.5, Hell 80 is 35.
+  void setColumnRate(double columnsPerSecond);
   // Fldigi sqlonoff and sldrSquelchValue. Off prints every column.
   // On drops a column whose metric is at or below level (0..100).
   void setSquelch(bool on, int level);

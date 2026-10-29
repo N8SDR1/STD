@@ -1999,7 +1999,9 @@ void MainWindow::buildMenus() {
     action->setToolTip(QStringLiteral(
         "Fldigi Hell screen: receive tape, transmit text, receive echo, and macros. "
         "Sent characters print in the receive pane as they go out. "
-        "The column rate stays Feld Hell for now. This does not key and does not send START."));
+        "Feld Hell is 17.5 columns/s, 14 pixels, a 2 ms raised cosine. "
+        "Slow, X5, X9, FSK, and Hell 80 each use their own rate. "
+        "This does not key and does not send START."));
     modes->addAction(action);
     const QString modeName = QString::fromLatin1(row.label);
     connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
@@ -2270,8 +2272,10 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     waterfall_->setRxHz(1500);
   if (fax && waterfall_)
     waterfall_->setRxHz(1900);
-  if (hell_)
+  if (hell_) {
+    hell_->setColumnRate(hellColumnRate(modeName));
     hell_->setArmed(autoMonitor_ && hell);
+  }
   if (rtty_) {
     rtty_->setToneHz(waterfall_ ? waterfall_->rxHz() : 1500);
     rtty_->setArmed(autoMonitor_ && rtty);
@@ -2437,7 +2441,13 @@ void MainWindow::showGuide() {
        "TX FIRST stay hidden. The tone starts at 1500 Hz. Click the waterfall to move it. The dial "
        "is the Feld Hell Club signal minus 1500 Hz, so 20 m is 14.0615 MHz. A macro copies into the "
        "transmit box. TX macro, off unless you turn it on, also presses TX. AFC on the waterfall "
-       "stays off. SQL is the Fldigi squelch. Slow, X5, X9, FSK, and Hell 80 use this same screen. "
+       "stays off. SQL is the Fldigi squelch. "
+       "Feld Hell and Slow Hell key one tone: ink is the carrier, paper is silence, 14 pixels "
+       "per column, bottom pixel first, with a 2 ms raised cosine. Feld Hell is 17.5 columns/s "
+       "(245 pixels/s). Slow Hell is 2.1875. Feld Hell X5 is 87.5 and Feld Hell X9 is 157.5, "
+       "both hard keyed. FSK Hell, FSK Hell-105, and Hell 80 keep the tone up and shift it. "
+       "Reverse is off, so ink is the lower tone. The shifts are 122.5 Hz, 55 Hz, and 300 Hz. "
+       "Those three run at 17.5, 17.5, and 35 columns/s. They share this screen. "
        "START is never sent."},
       {"Keyboard text",
        "RTTY and the BPSK speeds use that same transmit box, receive echo, CLR RX, and CLR TX. "

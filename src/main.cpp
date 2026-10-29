@@ -19,6 +19,7 @@
 #include "WaterfallGpu.h"
 #include "WaterfallWidget.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -372,15 +373,57 @@ int shellReady(MainWindow& window) {
       keyboardTextMode(QStringLiteral("FT4")) || keyboardTextMode(QStringLiteral("FT2")) ||
       keyboardTextMode(QStringLiteral("CW")))
     return fail("keyboard text mode list is wrong");
-  if (textModeSamplesPerChar(QStringLiteral("Feld Hell")) != 19180 ||
-      textModeSamplesPerChar(QStringLiteral("Hell 80")) != 19180 ||
+  if (textModeSamplesPerChar(QStringLiteral("Feld Hell")) != 0 ||
+      textModeSamplesPerChar(QStringLiteral("Hell 80")) != 0 ||
       textModeSamplesPerChar(QStringLiteral("PSK31")) != 0 ||
       textModeSamplesPerChar(QStringLiteral("RTTY")) != 0 ||
       textModeSamplesPerChar(QStringLiteral("Olivia 8/250")) != 0 ||
       textModeSamplesPerChar(QStringLiteral("FT8")) != 0)
     return fail("character length is wrong");
-  if (hellFirstInkRow(QLatin1Char('L'), 1) != 6)
+  if (hellFirstInkRow(QLatin1Char('L'), 1) != 3)
     return fail("Hell transmit polarity is inverted");
+  if (hellColumnRate(QStringLiteral("Feld Hell")) != 17.5 ||
+      hellColumnRate(QStringLiteral("Slow Hell")) != 2.1875 ||
+      hellColumnRate(QStringLiteral("Feld Hell X5")) != 87.5 ||
+      hellColumnRate(QStringLiteral("Hell 80")) != 35.0)
+    return fail("Hell column rate is wrong");
+  std::vector<float> feldWave;
+  std::vector<float> slowWave;
+  std::vector<float> fastWave;
+  std::vector<float> fskWave;
+  std::vector<int> hellEcho;
+  if (!buildTxWave(QStringLiteral("Feld Hell"), QStringLiteral("E"), 1500, &feldWave, &hellEcho) ||
+      hellEcho.size() != 1 ||
+      !buildTxWave(QStringLiteral("Slow Hell"), QStringLiteral("E"), 1500, &slowWave, nullptr) ||
+      !buildTxWave(QStringLiteral("Feld Hell X5"), QStringLiteral("E"), 1500, &fastWave, nullptr) ||
+      !buildTxWave(QStringLiteral("FSK Hell"), QStringLiteral("E"), 1500, &fskWave, nullptr))
+    return fail("Hell modulator is missing");
+  int hellInk = 0;
+  for (; hellInk < int(feldWave.size()); ++hellInk) {
+    if (std::fabs(feldWave[static_cast<size_t>(hellInk)]) > 0.05f)
+      break;
+  }
+  if (hellInk < 2000)
+    return fail("Feld Hell has no blank column ahead of the dots");
+  float early = 0.0f;
+  float later = 0.0f;
+  for (int i = hellInk; i < hellInk + 48 && i < int(feldWave.size()); ++i)
+    early = std::max(early, std::fabs(feldWave[static_cast<size_t>(i)]));
+  for (int i = hellInk + 192; i < hellInk + 288 && i < int(feldWave.size()); ++i)
+    later = std::max(later, std::fabs(feldWave[static_cast<size_t>(i)]));
+  if (early > 0.45f || later < 0.5f)
+    return fail("Feld Hell rise is not the 2 ms raised cosine");
+  const double slowRatio = double(slowWave.size()) / double(feldWave.size());
+  const double fastRatio = double(feldWave.size()) / double(fastWave.size());
+  if (slowRatio < 7.9 || slowRatio > 8.1 || fastRatio < 4.9 || fastRatio > 5.1)
+    return fail("Hell family rates do not match Fldigi");
+  for (int i = 0; i + 64 < int(fskWave.size()); i += 64) {
+    float peak = 0.0f;
+    for (int j = 0; j < 64; ++j)
+      peak = std::max(peak, std::fabs(fskWave[static_cast<size_t>(i + j)]));
+    if (peak < 0.2f)
+      return fail("FSK Hell is on-off instead of two tones");
+  }
   if (hellTapeRowFromTop(0, 40) != 39 || hellTapeRowFromTop(39, 40) != 0)
     return fail("Hell tape polarity is inverted");
   const auto* mode = window.findChild<QLabel*>("modeValue");
