@@ -480,6 +480,16 @@ QString textFromAudio(const Spec& spec, const float* samples, int count, int sam
 
 }  // namespace
 
+const char* mfskVaricode(int ch) {
+  if (ch < 0 || ch > 255)
+    ch = 0;
+  return kCode[ch];
+}
+
+int mfskVaridec(unsigned symbol) {
+  return varidec(symbol);
+}
+
 int mfskBandwidthHz(const QString& mode) {
   const Spec* spec = specFor(mode);
   if (!spec)

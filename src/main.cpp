@@ -10,6 +10,7 @@
 #include "QsoLog.h"
 #include "TxWave.h"
 #include "dominoex/DominoModem.h"
+#include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
@@ -366,7 +367,8 @@ int shellReady(MainWindow& window) {
       !keyboardTextMode(QStringLiteral("QPSK31")) ||       !keyboardTextMode(QStringLiteral("Olivia 8/250")) ||
       !keyboardTextMode(QStringLiteral("Contestia 8/250")) ||
       !keyboardTextMode(QStringLiteral("MFSK16")) ||
-      !keyboardTextMode(QStringLiteral("DominoEX 16")) || keyboardTextMode(QStringLiteral("FT8")) ||
+      !keyboardTextMode(QStringLiteral("DominoEX 16")) ||
+      !keyboardTextMode(QStringLiteral("Thor 16")) || keyboardTextMode(QStringLiteral("FT8")) ||
       keyboardTextMode(QStringLiteral("FT4")) || keyboardTextMode(QStringLiteral("FT2")) ||
       keyboardTextMode(QStringLiteral("CW")))
     return fail("keyboard text mode list is wrong");
@@ -670,6 +672,31 @@ int shellReady(MainWindow& window) {
       !domino16->toolTip().contains(QLatin1String("START")) ||
       domino16->toolTip().contains(QLatin1String("does not key yet")))
     return fail("DominoEX 16 is missing");
+  for (const char* name : {"Thor 16", "Thor 8"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
+      return fail("Thor modulator is missing");
+    const QString back =
+        thorDecode(QString::fromLatin1(name), wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1Char('E'))) {
+      qCritical("Thor decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
+      return fail("Thor did not decode");
+    }
+  }
+  std::vector<float> thorCq;
+  if (!buildTxWave(QStringLiteral("Thor 16"), QStringLiteral("CQ"), 1500, &thorCq))
+    return fail("Thor modulator is missing");
+  const QString thorCqBack =
+      thorDecode(QStringLiteral("Thor 16"), thorCq.data(), int(thorCq.size()), 48000, 1500);
+  if (!thorCqBack.contains(QLatin1String("CQ"))) {
+    qCritical("Thor CQ decode [%s]", qPrintable(thorCqBack));
+    return fail("Thor did not decode");
+  }
+  const auto* thor16 = window.findChild<QAction*>(QStringLiteral("modeThor16"));
+  if (!thor16 || !thor16->toolTip().contains(QLatin1String("15.625")) ||
+      !thor16->toolTip().contains(QLatin1String("START")) ||
+      thor16->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("Thor 16 is missing");
   if (keyboardTextMode(QStringLiteral("WEFAX-576")))
     return fail("WEFAX is a keyboard mode");
   std::vector<float> faxWave;

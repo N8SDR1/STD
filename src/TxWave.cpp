@@ -4,6 +4,7 @@
 #include "DigitalMode.h"
 #include "TxWave.h"
 #include "dominoex/DominoModem.h"
+#include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
@@ -214,6 +215,15 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
   }
   if (dominoBandwidthHz(mode) > 0) {
     const DominoPlan plan = planDomino(mode, text, tone);
+    if (plan.samples.empty())
+      return false;
+    *out = plan.samples;
+    if (echoAt)
+      *echoAt = plan.echoAt;
+    return true;
+  }
+  if (thorBandwidthHz(mode) > 0) {
+    const ThorPlan plan = planThor(mode, text, tone);
     if (plan.samples.empty())
       return false;
     *out = plan.samples;

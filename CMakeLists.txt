@@ -105,6 +105,8 @@ qt_add_executable(std
   src/mfsk/MfskModem.h
   src/dominoex/DominoModem.cpp
   src/dominoex/DominoModem.h
+  src/thor/ThorModem.cpp
+  src/thor/ThorModem.h
   resources/resources.qrc
 )
 

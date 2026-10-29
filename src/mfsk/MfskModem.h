@@ -20,6 +20,11 @@ struct MfskPlan {
 // 0 when the name is not an MFSK speed STD modulates.
 int mfskBandwidthHz(const QString& mode);
 
+// IZ8BLY varicode bit string. Out of range returns the NUL code.
+const char* mfskVaricode(int ch);
+// The character 0..255 whose code equals symbol, or -1.
+int mfskVaridec(unsigned symbol);
+
 MfskPlan planMfsk(const QString& mode, const QString& text, int centerHz);
 QString mfskDecode(const QString& mode, const float* samples, int count, int sampleRateHz,
                    int centerHz);

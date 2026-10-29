@@ -21,6 +21,7 @@ class QEvent;
 class Ft8Decode;
 class HellEngine;
 class DominoEngine;
+class ThorEngine;
 class MfskEngine;
 class OliviaEngine;
 class PskEngine;
@@ -309,6 +310,7 @@ private:
   OliviaEngine* olivia_ = nullptr;
   MfskEngine* mfsk_ = nullptr;
   DominoEngine* domino_ = nullptr;
+  ThorEngine* thor_ = nullptr;
   WefaxEngine* wefax_ = nullptr;
   QVector<DecodeRow> shownDecodes_;
 };
