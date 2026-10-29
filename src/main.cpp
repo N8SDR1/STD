@@ -18,6 +18,7 @@
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
 #include "wefax/WefaxModem.h"
+#include "js8/Js8Modem.h"
 #include "WaterfallGpu.h"
 #include "WaterfallWidget.h"
 
@@ -373,7 +374,8 @@ int shellReady(MainWindow& window) {
       !keyboardTextMode(QStringLiteral("Contestia 8/250")) ||
       !keyboardTextMode(QStringLiteral("MFSK16")) ||
       !keyboardTextMode(QStringLiteral("DominoEX 16")) ||
-      !keyboardTextMode(QStringLiteral("Thor 16")) || keyboardTextMode(QStringLiteral("FT8")) ||
+      !keyboardTextMode(QStringLiteral("Thor 16")) || !keyboardTextMode(QStringLiteral("JS8")) ||
+      keyboardTextMode(QStringLiteral("FT8")) ||
       keyboardTextMode(QStringLiteral("FT4")) || keyboardTextMode(QStringLiteral("FT2")) ||
       keyboardTextMode(QStringLiteral("JT65A")) || keyboardTextMode(QStringLiteral("Q65A")) ||
       keyboardTextMode(QStringLiteral("CW")))
@@ -846,6 +848,21 @@ int shellReady(MainWindow& window) {
       return fail("Thor K=15 did not decode");
     }
   }
+  {
+    std::vector<float> wave;
+    if (!buildTxWave(QStringLiteral("JS8"), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
+      return fail("JS8 modulator is missing");
+    const QString back = js8Decode(wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1Char('E'))) {
+      qCritical("JS8 decode [%s] samples %d", qPrintable(back), int(wave.size()));
+      return fail("JS8 did not decode");
+    }
+  }
+  const auto* js8 = window.findChild<QAction*>(QStringLiteral("modeJs8"));
+  if (!js8 || !js8->toolTip().contains(QLatin1String("15")) ||
+      !js8->toolTip().contains(QLatin1String("START")) ||
+      js8->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("JS8 is missing");
   const auto* mt63Menu = window.findChild<QMenu*>(QStringLiteral("modeMt63Menu"));
   if (!mt63Menu || mt63Menu->actions().size() != 6)
     return fail("MT63 submenu is missing");

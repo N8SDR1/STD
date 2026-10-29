@@ -28,6 +28,7 @@ class OliviaEngine;
 class PskEngine;
 class RttyEngine;
 class WefaxEngine;
+class Js8Engine;
 class ModeProfile;
 class QAction;
 class QDockWidget;
@@ -314,5 +315,6 @@ private:
   DominoEngine* domino_ = nullptr;
   ThorEngine* thor_ = nullptr;
   WefaxEngine* wefax_ = nullptr;
+  Js8Engine* js8_ = nullptr;
   QVector<DecodeRow> shownDecodes_;
 };

@@ -109,6 +109,8 @@ qt_add_executable(std
   src/thor/ThorModem.h
   src/mt63/Mt63Modem.cpp
   src/mt63/Mt63Modem.h
+  src/js8/Js8Modem.cpp
+  src/js8/Js8Modem.h
   src/mt63/fldigi/dsp.cxx
   src/mt63/fldigi/mt63base.cxx
   resources/resources.qrc

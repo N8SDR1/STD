@@ -12,6 +12,7 @@
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
+#include "js8/Js8Modem.h"
 
 #include <QCoreApplication>
 #include <QString>
@@ -354,6 +355,15 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
   }
   if (oliviaBandwidthHz(mode) > 0) {
     const OliviaPlan plan = planOlivia(mode, text, tone);
+    if (plan.samples.empty())
+      return false;
+    *out = plan.samples;
+    if (echoAt)
+      *echoAt = plan.echoAt;
+    return true;
+  }
+  if (js8Mode(mode)) {
+    const Js8Plan plan = planJs8(text, tone);
     if (plan.samples.empty())
       return false;
     *out = plan.samples;

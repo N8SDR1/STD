@@ -21,6 +21,7 @@ Connect sends `AUDIO_START:0`. The text command START is never sent. CW stays in
 | DominoEX | Micro, 4, 5, 8, 11, 16, 22 | 18-tone incremental keying. FEC is off. Micro is 2 baud. |
 | Thor | 4, 5, 8, 11, 16, 22, 25x4, 50x1, 50x2, 100 | Slow speeds are NASA K=7. 25x4, 50x1, 50x2, and 100 are IEEE K=15. 18-tone incremental keying. |
 | MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L | 64 carriers, Walsh code, short or long interleave. Centered on the cursor. |
+| JS8 | one row, labeled JS8 | JS8Call-improved Normal. 15 s, 50 Hz, JS8 Costas. The transmit box is the payload. |
 
 TX or Tune is what sends `trx`. An empty line does not key.
 
@@ -40,4 +41,4 @@ CW stays in Lyra.
 
 ## Later
 
-JS8Call is later, from [JS8Call-improved](https://js8call.com/JS8Call-improved/). FLD-88 is queued. Neither is in this build.
+FLD-88 is queued. It is not in this build. JS8 Fast, Turbo, Slow, and Ultra are a different symbol clock and are not on the menu.

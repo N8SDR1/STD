@@ -49,6 +49,7 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | DominoEX | Micro, 4, 5, 8, 11, 16, 22. 18-tone incremental keying. FEC is off. Micro is 2 baud. |
 | Thor | 4, 5, 8, 11, 16, 22 are NASA K=7. 25x4, 50x1, 50x2, and 100 are IEEE K=15. Thor Micro stays off the menu. |
 | MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L. 64 carriers, Walsh code, short or long interleave. |
+| JS8 | JS8Call-improved Normal. 15 s, 50 Hz. The transmit box is the payload. |
 
 ## Receive only
 
@@ -59,7 +60,7 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 These are not on the Mode menu. They do not key.
 
 - **8PSK.** A different constellation from QPSK. Not on the menu.
-- **JS8Call** is later ([JS8Call-improved](https://js8call.com/JS8Call-improved/)). **FLD-88** is queued.
+- **FLD-88** is queued. JS8 Fast, Turbo, Slow, and Ultra are not on the menu.
 - MSHV modes still outside STD are listed in [`docs/mshv-modes.md`](docs/mshv-modes.md).
 
 CW stays in Lyra. STD does not send CW.

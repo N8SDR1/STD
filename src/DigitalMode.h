@@ -183,7 +183,7 @@ inline bool keyboardTextMode(const QString& mode) {
     return true;
   static const char* prefixes[] = {"RTTY",    "PSK",   "BPSK", "QPSK", "8PSK", "Olivia",
                                    "Contestia", "MT63", "MFSK", "Domino", "THOR", "IFKP",
-                                   "Throb"};
+                                   "Throb",     "JS8"};
   for (const char* prefix : prefixes) {
     if (mode.startsWith(QLatin1String(prefix), Qt::CaseInsensitive))
       return true;
