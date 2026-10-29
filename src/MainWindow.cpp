@@ -1827,11 +1827,12 @@ void MainWindow::showGuide() {
        "the MSHV length, about 29 seconds, then stops. Uncheck Tune to stop early. Halt stops it at "
        "once. START is never sent."},
       {"Waterfall transmit",
-       "While Tune or TX is on the air, the audio STD is sending is mixed onto the waterfall. The trace "
-       "is drawn at about the same height as the other stations, with the markers split or locked. It "
-       "is not drawn at full scale. The notice TX gain is too hot means that audio, before this display "
-       "scale, is past full scale. Receive audio does not raise the notice. The mix does not key and "
-       "does not send START."},
+       "While Tune or TX is on the air, the waterfall keeps the receive audio. The transmit waveform "
+       "is not mixed into that picture. A short trace is drawn at the TX audio frequency, about as "
+       "high as the other stations, split or locked. If the radio sends the transmission back on the "
+       "receive stream, that is what you see. The notice TX gain is too hot means the audio going to "
+       "the radio is past full scale, before this display. Receive audio does not raise the notice. "
+       "None of this keys the radio or sends START."},
       {"Docking and layouts",
        "Waterfall, Receive, Transmit, Macros, and the status strip are docks. Drag a title to move a "
        "pane or float it. Close hides it. The View menu lists those panes and shows a hidden one again. "

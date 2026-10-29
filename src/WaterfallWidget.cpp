@@ -631,66 +631,19 @@ void WaterfallWidget::mixTxAudio(const float* samples, int count, int sampleRate
                                  bool overFullScale) {
   if (!transmitting_ || !samples || count <= 0 || sampleRateHz < 1000)
     return;
+  // Lyra's panafall does not add the transmit waveform to the receive
+  // waterfall. That waveform is full scale. Dropping it into this real
+  // FFT saturates the trace, and the tone's harmonics show up off the TX
+  // frequency. The hot notice still watches the unscaled samples. The
+  // receive stream is left alone, so a transmission the radio sends back
+  // is drawn as it is heard. stampTxTone adds a short trace at the TX
+  // audio frequency only, about as high as the other stations.
   noteTxSpill(overFullScale);
-  if (txMixRate_ != sampleRateHz) {
-    txMix_.clear();
-    txMixRead_ = 0.0;
-    txMixRate_ = sampleRateHz;
-  }
-  float txPeak = 0.0f;
-  for (int i = 0; i < count; ++i) {
-    float sample = samples[i];
-    if (!std::isfinite(sample))
-      sample = 0.0f;
-    txPeak = std::max(txPeak, std::fabs(std::clamp(sample, -1.0f, 1.0f)));
-  }
-  // Time-domain match, then the spectral trim. The product stays at or
-  // below 1, for a split TX and for markers sitting on the same frequency.
-  const float gain = std::min(1.0f, txMixGain(txPeak) * txTrim_);
-  for (int i = 0; i < count; ++i) {
-    float sample = samples[i];
-    if (!std::isfinite(sample))
-      sample = 0.0f;
-    txMix_.push_back(std::clamp(sample, -1.0f, 1.0f) * gain);
-  }
-  const int cap = sampleRateHz * 2;
-  if (txMix_.size() > cap) {
-    txMix_.remove(0, txMix_.size() - cap);
-    txMixRead_ = 0.0;
-  }
-  const qint64 now = QDateTime::currentMSecsSinceEpoch();
-  const bool rxLive = lastRxMs_ > 0 && now - lastRxMs_ < 80 && rateHz_ > 0;
-  if (rxLive)
-    return;
-  QVector<float> block;
-  block.swap(txMix_);
-  txMixRead_ = 0.0;
-  writeAudio(block.constData(), block.size(), sampleRateHz, false);
 }
 
 void WaterfallWidget::blendTxIntoRecent(int count) {
-  if (!transmitting_ || txMix_.isEmpty() || count <= 0 || rateHz_ <= 0 || txMixRate_ <= 0)
-    return;
-  const int mask = kRingSize - 1;
-  int pos = ringWrite_ - count;
-  while (pos < 0)
-    pos += kRingSize;
-  double src = txMixRead_;
-  const double step = double(txMixRate_) / double(rateHz_);
-  for (int i = 0; i < count; ++i) {
-    if (src >= double(txMix_.size()))
-      break;
-    ring_[pos] += txMix_.at(int(src));
-    pos = (pos + 1) & mask;
-    src += step;
-  }
-  const int used = std::min(int(src), int(txMix_.size()));
-  if (used > 0) {
-    txMix_.remove(0, used);
-    txMixRead_ = src - double(used);
-    if (txMixRead_ < 0.0)
-      txMixRead_ = 0.0;
-  }
+  // The transmit monitor is not added to the receive ring. See mixTxAudio.
+  Q_UNUSED(count);
 }
 
 void WaterfallWidget::noteRxLevel(const float* samples, int count) {
@@ -706,17 +659,52 @@ void WaterfallWidget::noteRxLevel(const float* samples, int count) {
     rxPeak_ = 0.97f * rxPeak_ + 0.03f * peak;
 }
 
-float WaterfallWidget::txMixGain(float txPeak) const {
-  float ref = rxPeak_;
-  if (!(ref > 1.0e-5f))
-    ref = 0.012f;
-  if (!(txPeak > 1.0e-8f))
-    return 0.0f;
-  // Well under the broadband peak. A full-scale monitor at that peak
-  // paints a wide smear; one FT8 trace is much smaller. The spectral
-  // trim then matches the other traces. Do not turn a quiet
-  // transmission up to full scale.
-  return std::min(1.0f, ref * 0.22f / txPeak);
+void WaterfallWidget::stampTxTone(TraceRow* row) {
+  if (!transmitting_ || !row || row->level.size() < 8 || !(row->hi > row->lo))
+    return;
+  const double pixel = double(row->hi - row->lo) / double(row->level.size());
+  if (!(pixel > 0.0))
+    return;
+  auto hzOf = [&](int column) {
+    return float(double(row->lo) + (double(column) + 0.5) * pixel);
+  };
+  const float txLo = float(txHz_) - 80.0f;
+  const float txHi = float(txHz_ + txWidthHz_) + 80.0f;
+  QVector<float> traces;
+  for (int column = 1; column + 1 < row->level.size(); ++column) {
+    const float hz = hzOf(column);
+    if (hz >= txLo && hz <= txHi)
+      continue;
+    const float level = row->level.at(column);
+    if (level < 8.0f)
+      continue;
+    if (level < row->level.at(column - 1) || level < row->level.at(column + 1))
+      continue;
+    traces.push_back(level);
+  }
+  // Same colour scale as traceColor. The tone stays in the lower half of
+  // that scale, so it cannot reach the yellow end the way a full-scale
+  // mix did. Split and locked both use this TX frequency.
+  const float threshold = 18.0f * (1.0f - float(brightness_) / 100.0f);
+  const float span = std::max(6.0f, 22.0f - 16.0f * (float(contrast_) / 100.0f));
+  const float ceiling = threshold + span * 0.45f;
+  float reference = threshold + span * 0.22f;
+  if (!traces.isEmpty()) {
+    std::sort(traces.begin(), traces.end());
+    reference = traces.at(traces.size() / 2);
+  }
+  reference = std::clamp(reference, threshold + 1.0f, ceiling);
+  const float center = float(txHz_);
+  const float half = std::max(8.0f, float(pixel));
+  for (int column = 0; column < row->level.size(); ++column) {
+    const float away = std::fabs(hzOf(column) - center);
+    if (away > half)
+      continue;
+    const float taper = 1.0f - away / half;
+    const float level = reference * (0.72f + 0.28f * taper);
+    if (row->level[column] < level)
+      row->level[column] = level;
+  }
 }
 
 void WaterfallWidget::writeAudio(const float* samples, int count, int sampleRateHz, bool blendTx) {
@@ -777,75 +765,7 @@ void WaterfallWidget::pushTrace(qint64 endSample) {
   TraceRow& row = rows_[newest_];
   row.endSample = endSample;
   analyze(endSample, &row);
-  noteTxOverlay(row);
-}
-
-void WaterfallWidget::noteTxOverlay(const TraceRow& row) {
-  if (!transmitting_ || row.level.size() < 8 || !(row.hi > row.lo))
-    return;
-  const double pixel = double(row.hi - row.lo) / double(row.level.size());
-  auto hzOf = [&](int column) {
-    return float(double(row.lo) + (double(column) + 0.5) * pixel);
-  };
-  // The red marker is the tone we added, split or locked. Measure that
-  // channel, then walk out through the smear so it is not counted as
-  // another station.
-  const float txCenter = float(txHz_) + float(txWidthHz_) * 0.5f;
-  int txAt = 0;
-  float nearest = 1.0e9f;
-  float txMax = -160.0f;
-  const float txLo = float(txHz_) - 40.0f;
-  const float txHi = float(txHz_ + txWidthHz_) + 40.0f;
-  for (int column = 0; column < row.level.size(); ++column) {
-    const float hz = hzOf(column);
-    const float away = std::fabs(hz - txCenter);
-    if (away < nearest) {
-      nearest = away;
-      txAt = column;
-    }
-    if (hz >= txLo && hz <= txHi)
-      txMax = std::max(txMax, row.level.at(column));
-  }
-  if (!(txMax > 4.0f))
-    return;
-  const float skirt = std::max(10.0f, txMax - 18.0f);
-  int left = txAt;
-  int right = txAt;
-  while (left > 0) {
-    const bool close = std::fabs(hzOf(left) - txCenter) < 150.0f;
-    if (!close && row.level.at(left) < skirt)
-      break;
-    --left;
-  }
-  while (right + 1 < row.level.size()) {
-    const bool close = std::fabs(hzOf(right) - txCenter) < 150.0f;
-    if (!close && row.level.at(right) < skirt)
-      break;
-    ++right;
-  }
-  QVector<float> traces;
-  for (int column = 1; column + 1 < row.level.size(); ++column) {
-    if (column >= left && column <= right)
-      continue;
-    const float level = row.level.at(column);
-    if (level < 8.0f)
-      continue;
-    if (level < row.level.at(column - 1) || level < row.level.at(column + 1))
-      continue;
-    traces.push_back(level);
-  }
-  // Median receive trace. No extra heat: a hotter tone is the smear.
-  float reference = 14.0f;
-  if (!traces.isEmpty()) {
-    std::sort(traces.begin(), traces.end());
-    reference = traces.at(traces.size() / 2);
-  }
-  const float error = txMax - reference;
-  if (std::fabs(error) < 1.5f)
-    return;
-  const float stepDb = error > 0.0f ? std::min(error, 60.0f) : std::max(error, -12.0f);
-  const float step = std::pow(10.0f, -stepDb / 20.0f);
-  txTrim_ = std::clamp(txTrim_ * step, 1.0e-5f, 32.0f);
+  stampTxTone(&row);
 }
 
 void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {

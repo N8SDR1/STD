@@ -119,8 +119,7 @@ private:
   void writeAudio(const float* samples, int count, int sampleRateHz, bool blendTx);
   void blendTxIntoRecent(int count);
   void noteRxLevel(const float* samples, int count);
-  void noteTxOverlay(const TraceRow& row);
-  float txMixGain(float txPeak) const;
+  void stampTxTone(TraceRow* row);
   void clearTxHot();
   void paintTxHot(QPainter& painter) const;
   void scheduleRebuild();
