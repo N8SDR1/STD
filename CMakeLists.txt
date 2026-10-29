@@ -113,12 +113,19 @@ qt_add_executable(std
   src/js8/Js8Modem.h
   src/wspr/WsprModem.cpp
   src/wspr/WsprModem.h
+  src/spot/PskReporter.cpp
+  src/spot/PskReporter.h
+  src/UpdateChecker.cpp
+  src/UpdateChecker.h
   src/mt63/fldigi/dsp.cxx
   src/mt63/fldigi/mt63base.cxx
   resources/resources.qrc
 )
 
-target_compile_definitions(std PRIVATE STD_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(std PRIVATE
+  STD_VERSION="${PROJECT_VERSION}"
+  STD_REPO_OWNER="N8SDR1"
+  STD_REPO_NAME="STD")
 target_include_directories(std PRIVATE
   "${CMAKE_SOURCE_DIR}/src"
   "${CMAKE_SOURCE_DIR}/src/hell/fldigi"

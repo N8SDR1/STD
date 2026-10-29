@@ -18,6 +18,8 @@
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
+#include "spot/PskReporter.h"
+#include "UpdateChecker.h"
 #include "ModeProfile.h"
 #include "QsoLog.h"
 #include "StatusStrip.h"
@@ -577,10 +579,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   thor_ = new ThorEngine(this);
   connect(thor_, &ThorEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   js8_ = new Js8Engine(this);
-  connect(js8_, &Js8Engine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
+  connect(js8_, &Js8Engine::textReady, this, [this](const QString& text) {
+    appendRxEcho(text);
+    noteDecodeSpot(QStringLiteral("JS8"), text, 0, waterfall_ ? waterfall_->rxHz() : 1500);
+  });
   wspr_ = new WsprEngine(this);
   connect(wspr_, &WsprEngine::textReady, this, [this](const QString& text) {
     appendRxEcho(text + QLatin1Char('\n'));
+    noteDecodeSpot(QStringLiteral("WSPR"), text, 0, waterfall_ ? waterfall_->rxHz() : 1500);
   });
   wefax_ = new WefaxEngine(this);
   connect(wefax_, &WefaxEngine::imageChanged, this, [this] {
@@ -657,6 +663,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
               decodes_.remove(0, decodes_.size() - 499);
             decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
             noteTheirReply(time, db, message);
+            noteDecodeSpot(profile_ ? profile_->digitalMode() : QString(), message, db, freqHz);
             refreshDecodes();
           },
           Qt::QueuedConnection);
@@ -731,6 +738,21 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(txTimer_, &QTimer::timeout, this, [this] { pumpUserTx(); });
 
   applyDxOptions();
+  spots_ = new PskUploader(this);
+  updates_ = new UpdateChecker(this);
+  connect(updates_, &UpdateChecker::updateAvailable, this, [this](const QString& tag, const QString& url,
+                                                                  const QString& body) {
+    onUpdateAvailable(tag, url, body);
+  });
+  connect(updates_, &UpdateChecker::noUpdate, this, [this] { onNoUpdate(); });
+  connect(updates_, &UpdateChecker::checkFailed, this, [this](const QString& reason) {
+    onUpdateCheckFailed(reason);
+  });
+  if (!qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    QSettings updateSettings;
+    if (updateSettings.value(QStringLiteral("update_check/check_on_startup"), true).toBool())
+      QTimer::singleShot(5000, this, [this] { checkForUpdates(false); });
+  }
   QTimer::singleShot(0, this, [this] { maybeAutoConnect(); });
 }
 
@@ -772,6 +794,16 @@ void MainWindow::buildBrandBar() {
   layout->addStretch(1);
 
   brandBar_->addWidget(host);
+  updateAction_ = brandBar_->addAction(QStringLiteral("\u2B06  Update"));
+  updateAction_->setObjectName(QStringLiteral("updateAvailable"));
+  updateAction_->setVisible(false);
+  updateAction_->setToolTip(QStringLiteral(
+      "A newer STD release is available. Click to open the release page. Does not key and does not "
+      "send START."));
+  connect(updateAction_, &QAction::triggered, this, [this] {
+    if (!pendingUpdateUrl_.isEmpty())
+      QDesktopServices::openUrl(QUrl(pendingUpdateUrl_));
+  });
 }
 
 void MainWindow::buildDocks() {
@@ -1531,6 +1563,97 @@ void MainWindow::maybeWsprHop() {
     beginWsprTune();
 }
 
+void MainWindow::openPskReporterMap() const {
+  QDesktopServices::openUrl(QUrl(pskReporterMapUrl(stationCall())));
+}
+
+void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz) {
+  if (!spots_ || mode.trimmed().isEmpty())
+    return;
+  QString call;
+  QString grid;
+  if (!pskSpotFromMessage(message, &call, &grid))
+    return;
+  const qint64 dial = profile_ ? profile_->dialHz() : 0;
+  if (dial < 100000)
+    return;
+  PskSpot spot;
+  spot.call = call;
+  spot.grid = grid;
+  spot.freqHz = dial + qMax(0, audioHz);
+  spot.mode = pskReporterModeName(mode);
+  spot.snr = db;
+  spot.unixTime = quint32(QDateTime::currentSecsSinceEpoch());
+  spots_->note(spot, stationCall(), stationGrid());
+}
+
+void MainWindow::checkForUpdates(bool manual) {
+  if (!updates_)
+    return;
+  updateCheckManual_ = manual;
+  updates_->check();
+}
+
+void MainWindow::onUpdateAvailable(const QString& tag, const QString& url, const QString& body) {
+  pendingUpdateUrl_ = url;
+  if (updateAction_) {
+    updateAction_->setText(QStringLiteral("\u2B06  %1").arg(tag));
+    updateAction_->setVisible(true);
+  }
+  QSettings saved;
+  saved.setValue(QStringLiteral("update_check/latest_tag"), tag);
+  saved.setValue(QStringLiteral("update_check/latest_url"), url);
+  if (!updateCheckManual_) {
+    const QStringList skipped = saved.value(QStringLiteral("update_check/skipped_versions")).toStringList();
+    if (skipped.contains(tag))
+      return;
+    const QStringList seen = saved.value(QStringLiteral("update_check/modal_seen_versions")).toStringList();
+    if (seen.contains(tag))
+      return;
+  }
+
+  QMessageBox box(this);
+  box.setWindowTitle(QStringLiteral("STD update available"));
+  box.setTextFormat(Qt::RichText);
+  box.setText(QStringLiteral("<b>STD %1</b> is available (you're running %2).").arg(tag, QLatin1String(STD_VERSION)));
+  if (!body.trimmed().isEmpty()) {
+    QString notes = body.trimmed();
+    if (notes.size() > 600)
+      notes = notes.left(600) + QStringLiteral("\u2026");
+    box.setInformativeText(notes);
+  }
+  QPushButton* openBtn = box.addButton(QStringLiteral("Open release page"), QMessageBox::AcceptRole);
+  box.addButton(QStringLiteral("Remind me later"), QMessageBox::RejectRole);
+  QPushButton* skipBtn = box.addButton(QStringLiteral("Skip this version"), QMessageBox::DestructiveRole);
+  box.exec();
+  if (box.clickedButton() == openBtn)
+    QDesktopServices::openUrl(QUrl(url));
+  else if (box.clickedButton() == skipBtn) {
+    QStringList skipped = saved.value(QStringLiteral("update_check/skipped_versions")).toStringList();
+    if (!skipped.contains(tag))
+      skipped << tag;
+    saved.setValue(QStringLiteral("update_check/skipped_versions"), skipped);
+  }
+  QStringList seen = saved.value(QStringLiteral("update_check/modal_seen_versions")).toStringList();
+  if (!seen.contains(tag))
+    seen << tag;
+  saved.setValue(QStringLiteral("update_check/modal_seen_versions"), seen);
+}
+
+void MainWindow::onNoUpdate() {
+  if (!updateCheckManual_)
+    return;
+  QMessageBox::information(this, QStringLiteral("Check for Updates"),
+                           QStringLiteral("You're running the latest STD (%1).").arg(QLatin1String(STD_VERSION)));
+}
+
+void MainWindow::onUpdateCheckFailed(const QString& reason) {
+  if (!updateCheckManual_)
+    return;
+  QMessageBox::warning(this, QStringLiteral("Check for Updates"),
+                       QStringLiteral("Couldn't check for updates:\n%1").arg(reason));
+}
+
 QString MainWindow::stationCall() const {
   return QSettings().value(QStringLiteral("dx/reportCall")).toString().trimmed();
 }
@@ -1965,8 +2088,16 @@ void MainWindow::buildMenus() {
 
   auto* networkConfig = optionsMenu->addAction(QStringLiteral("Network Configuration"));
   networkConfig->setObjectName(QStringLiteral("networkConfig"));
-  networkConfig->setToolTip(QStringLiteral("PSK Reporter style settings. Spots are not sent. Does not key."));
+  networkConfig->setToolTip(QStringLiteral(
+      "PSK Reporter. Upload stays off until Enable is checked. Does not key and does not send START."));
   connect(networkConfig, &QAction::triggered, this, [this] { openNetworkDialog(); });
+
+  auto* pskMap = optionsMenu->addAction(QStringLiteral("PSK Reporter map"));
+  pskMap->setObjectName(QStringLiteral("pskReporterLink"));
+  pskMap->setToolTip(QStringLiteral(
+      "Opens pskreporter.info for the callsign saved under Options → User. Does not upload, does not "
+      "key, and does not send START."));
+  connect(pskMap, &QAction::triggered, this, [this] { openPskReporterMap(); });
 
   auto graphicsLabel = [](const QString& key) {
     if (key == QLatin1String("d3d11"))
@@ -2504,6 +2635,11 @@ void MainWindow::buildMenus() {
   auto* guide = helpMenu->addAction("Guide");
   guide->setObjectName("helpGuide");
   connect(guide, &QAction::triggered, this, [this] { showGuide(); });
+  auto* updates = helpMenu->addAction(QStringLiteral("Check for Updates\u2026"));
+  updates->setObjectName(QStringLiteral("checkForUpdates"));
+  updates->setToolTip(QStringLiteral(
+      "Look on GitHub for a newer STD release. Does not key and does not send START."));
+  connect(updates, &QAction::triggered, this, [this] { checkForUpdates(true); });
   auto* about = helpMenu->addAction("About STD");
   connect(about, &QAction::triggered, this, [this] { showAbout(); });
   applyTextStyle();
@@ -2911,7 +3047,8 @@ void MainWindow::showGuide() {
       {"DX options",
        "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Time "
        "Synchronization calibrates the period clock. Macros are a Fldigi .mdf; see Macros. Network "
-       "Configuration stores a PSK Reporter style address and does not send spots. Decode List Options "
+       "Configuration can upload a PSK Reporter spot after a decode. That upload is off until Enable "
+       "is checked. PSK Reporter map opens the map for the saved callsign. Decode List Options "
        "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
        "decode is on by default. Log options, the ADIF path, the logger addresses, ASeq, TX "
        "confirmation, and Auto RESET QSO are saved. Those options do not key."},
@@ -6397,10 +6534,6 @@ void MainWindow::openNetworkDialog() {
   dialog.setMinimumWidth(460);
   auto* enable = new QCheckBox(QStringLiteral("Enable PSK Reporter style spots"), &dialog);
   enable->setChecked(settings.value(QStringLiteral("dx/reportEnabled"), false).toBool());
-  auto* call = new QLineEdit(settings.value(QStringLiteral("dx/reportCall")).toString(), &dialog);
-  call->setPlaceholderText(QStringLiteral("Callsign"));
-  auto* grid = new QLineEdit(settings.value(QStringLiteral("dx/reportGrid")).toString(), &dialog);
-  grid->setPlaceholderText(QStringLiteral("Grid"));
   auto* region = new QComboBox(&dialog);
   region->setObjectName(QStringLiteral("profileRegionSetting"));
   region->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
@@ -6411,7 +6544,7 @@ void MainWindow::openNetworkDialog() {
   const int regionIndex = region->findData(savedRegion);
   region->setCurrentIndex(regionIndex < 0 ? 0 : regionIndex);
   region->setToolTip(QStringLiteral(
-      "Auto reads the callsign. N8SDR/VE uses VE. The call is stored as typed. DIGU on every band. Does not key."));
+      "Auto reads the callsign from Options → User. N8SDR/VE uses VE. DIGU on every band. Does not key."));
   auto* host = new QLineEdit(
       settings.value(QStringLiteral("dx/reportHost"), QStringLiteral("report.pskreporter.info")).toString(),
       &dialog);
@@ -6419,20 +6552,27 @@ void MainWindow::openNetworkDialog() {
   port->setRange(1, 65535);
   port->setValue(settings.value(QStringLiteral("dx/reportPort"), 4739).toInt());
   auto* form = new QFormLayout;
-  form->addRow(QStringLiteral("Call"), call);
-  form->addRow(QStringLiteral("Grid"), grid);
   form->addRow(QStringLiteral("Region"), region);
   form->addRow(QStringLiteral("Server"), host);
   form->addRow(QStringLiteral("UDP port"), port);
   auto* note = new QLabel(
-      QStringLiteral("The call is saved as typed. A portable suffix such as N8SDR/VE sets Auto to that "
-                     "country; Region 1, 2, or 3 overrides it. The address is saved. This build does not "
-                     "send spots, does not send START, and does not key. FT8 and FT4 stay DIGU."),
+      QStringLiteral("Callsign and locator stay in Options → User. This dialog does not ask for them again. "
+                     "A portable suffix such as N8SDR/VE sets Auto to that country; Region 1, 2, or 3 "
+                     "overrides it. Enable uploads a spot a few seconds after an FT8, FT4, FT2, JT65, Q65, "
+                     "JS8, or WSPR decode. Leave it off and nothing is uploaded. View spots opens the map. "
+                     "This does not send START and does not key."),
       &dialog);
   note->setWordWrap(true);
+  auto* map = new QPushButton(QStringLiteral("View spots"), &dialog);
+  map->setObjectName(QStringLiteral("pskReporterMap"));
+  map->setToolTip(QStringLiteral(
+      "Opens pskreporter.info for the callsign in Options → User. Does not upload, does not key, and "
+      "does not send START."));
+  connect(map, &QPushButton::clicked, this, [this] { openPskReporterMap(); });
   auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
   auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
   auto* buttons = new QHBoxLayout;
+  buttons->addWidget(map);
   buttons->addStretch(1);
   buttons->addWidget(ok);
   buttons->addWidget(cancel);
@@ -6447,8 +6587,6 @@ void MainWindow::openNetworkDialog() {
     return;
   QSettings store;
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
-  store.setValue(QStringLiteral("dx/reportCall"), call->text().trimmed().toUpper());
-  store.setValue(QStringLiteral("dx/reportGrid"), grid->text().trimmed().toUpper());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
   if (profile_) {
@@ -6854,7 +6992,7 @@ void MainWindow::showAbout() {
   about.setIconPixmap(windowIcon().pixmap(64, 64));
   about.setTextFormat(Qt::RichText);
   const QString html = QString::fromUtf8(R"HTML(
-<p><b>STD</b> — Shift, Tone, Decode<br>Version %1</p>
+<p><b>STD</b> — Shift, Tone, Decode<br>Version %1 · %2</p>
 <p>Copyright (C) 2026 Rick Langford (N8SDR)<br>
 Licensed under the <b>GNU General Public License, version 3</b> or any later version. See the file COPYING.</p>
 <p>STD speaks TCI. Connect sends <b>AUDIO_START</b> for receiver 0. The text command START is never sent. FT8, FT4, FT2, Feld Hell, RTTY, the BPSK speeds, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, JS8, and WSPR transmit when TX is pressed. WEFAX-576 receives only. CW stays in Lyra.</p>
@@ -6862,12 +7000,12 @@ Licensed under the <b>GNU General Public License, version 3</b> or any later ver
 <p><b>Sources and references.</b> These projects were read for conventions. Each stays under its own license.</p>
 <ul>
 <li><b>MSHV</b> (Christo, LZ2HV) — FT8, FT4, and FT2 decoder, periods, and contest messages.</li>
-<li><b>WSJT-X</b> (Joe Taylor, K1JT, GPL-3) and <b>JTDX-improved</b> — WSPR-2. Tx power, Tx Pct, and band hopping. Not MSHV.</li>
+<li><b>WSJT-X</b> (Joe Taylor, K1JT, GPL-3) and <b>JTDX-improved</b> — WSPR-2 and the PSK Reporter datagram (Edson Pereira, PY2SDR). Tx power, Tx Pct, and band hopping. Not MSHV.</li>
 <li><b>Fldigi</b> (Dave Freese, W1HKJ, GPL-3) — Feld Hell tape, macro files (.mdf), RTTY mark/space (45.45 baud, 170 Hz, mark high on DIGU), BPSK varicode, Olivia and Contestia (Pawel Jalocha's block code), MFSK (NASA K=7, IZ8BLY varicode, diagonal interleaver), DominoEX (18-tone IFK+, FEC off), Thor (K=7, 18-tone IFK+), and WEFAX-576 receive.</li>
 <li><b>TCIdigi</b> — TCI audio for a Fldigi-style keyboard. STD does not include that tree.</li>
 <li><b>Lyra</b> (N8SDR, GPL-3) — the TCI client this socket follows. CW stays there.</li>
 </ul>
-)HTML").arg(QLatin1String(STD_VERSION));
+)HTML").arg(QLatin1String(STD_VERSION), stdVersionName());
   about.setText(html);
   QPushButton* donate =
       about.addButton(QStringLiteral("☕ Donate via PayPal"), QMessageBox::ActionRole);

@@ -69,11 +69,17 @@ layout: null
     font-weight: 700;
     font-size: 16px;
   }
+  .chips { margin-top: 16px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
   .badge {
-    display: inline-block; margin-top: 16px; padding: 4px 12px; border-radius: 999px;
+    display: inline-block; padding: 4px 12px; border-radius: 999px;
     font-size: 12px; letter-spacing: 1px; text-transform: uppercase;
     color: var(--gold); background: rgba(232,196,119,0.10); border: 1px solid rgba(232,196,119,0.30);
   }
+  a.chip-release {
+    color: #04121a; background: var(--accent); border-color: transparent;
+    font-weight: 700;
+  }
+  a.chip-release:hover { background: #4af0ff; }
 
   .cta { margin-top: 30px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
   .btn {
@@ -206,7 +212,10 @@ layout: null
       <p class="aka">Sending Transmittal Disease</p>
       <p class="joke">The real expansion is Shift, Tone, Decode. Around the shack it also answers to Sending Transmittal Disease, because this build is still in the contagious stage. It keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air.</p>
       <p class="bourbon">STD: Help keep the infections spreading and buy us a shot of bourbon.</p>
-      <div><span class="badge">v0.1.0 · testing phase · highly transmissible · GPL v3</span></div>
+      <div class="chips">
+        <span class="badge">v0.1.0 · testing phase · highly transmissible · GPL v3</span>
+        <a class="badge chip-release" href="https://github.com/N8SDR1/STD/releases">Releases · v0.1.0 pre-release</a>
+      </div>
       <div class="cta">
         <a class="btn btn-primary" href="https://github.com/N8SDR1/STD">★ GitHub</a>
         <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD/wiki">📖 Wiki</a>
@@ -316,7 +325,7 @@ layout: null
 
   <footer>
     <p>© 2026 Rick Langford (N8SDR) · Shift, Tone, Decode · Sending Transmittal Disease · GPL v3</p>
-    <p style="margin-top:6px;"><a href="https://github.com/N8SDR1/STD">GitHub</a> · <a href="https://github.com/N8SDR1/STD/wiki">Wiki</a> · <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a> · <a href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a></p>
+    <p style="margin-top:6px;"><a href="https://github.com/N8SDR1/STD">GitHub</a> · <a href="https://github.com/N8SDR1/STD/releases">Releases</a> · <a href="https://github.com/N8SDR1/STD/wiki">Wiki</a> · <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a> · <a href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a></p>
   </footer>
 </body>
 </html>

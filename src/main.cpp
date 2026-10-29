@@ -20,6 +20,8 @@
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
+#include "spot/PskReporter.h"
+#include "UpdateChecker.h"
 #include "WaterfallGpu.h"
 #include "WaterfallWidget.h"
 
@@ -1028,6 +1030,78 @@ int shellReady(MainWindow& window) {
     if (txStampIsFirstHalf(QString::fromLatin1(row.mode), row.minute, row.second) != row.first)
       return fail("period half is wrong");
   }
+  QString spotCall;
+  QString spotGrid;
+  if (!pskSpotFromMessage(QStringLiteral("CQ N8SDR EM79"), &spotCall, &spotGrid) ||
+      spotCall != QLatin1String("N8SDR") || spotGrid != QLatin1String("EM79"))
+    return fail("PSK Reporter missed a CQ");
+  if (!pskSpotFromMessage(QStringLiteral("W1AW N8SDR FN31"), &spotCall, &spotGrid) ||
+      spotCall != QLatin1String("W1AW") || spotGrid != QLatin1String("FN31"))
+    return fail("PSK Reporter picked the wrong call");
+  if (!pskSpotFromMessage(QStringLiteral("N8SDR EM79 37"), &spotCall, &spotGrid) ||
+      spotCall != QLatin1String("N8SDR") || spotGrid != QLatin1String("EM79"))
+    return fail("PSK Reporter missed WSPR");
+  if (pskSpotFromMessage(QStringLiteral("E"), &spotCall, &spotGrid))
+    return fail("PSK Reporter invented a call");
+  if (pskReporterModeName(QStringLiteral("JT65A")) != QLatin1String("JT65") ||
+      pskReporterModeName(QStringLiteral("Q65A")) != QLatin1String("Q65"))
+    return fail("PSK Reporter mode name is wrong");
+  const QString mapUrl = pskReporterMapUrl(QStringLiteral("n8sdr"));
+  if (!mapUrl.startsWith(QLatin1String("https://pskreporter.info/pskmap.html")) ||
+      !mapUrl.contains(QLatin1String("callsign=N8SDR")))
+    return fail("PSK Reporter link is wrong");
+  if (pskReporterMapUrl(QString()).contains(QLatin1String("callsign=")))
+    return fail("PSK Reporter link invented a callsign");
+  PskSpot spot;
+  spot.call = QStringLiteral("W1AW");
+  spot.grid = QStringLiteral("FN31");
+  spot.freqHz = 14074000;
+  spot.mode = QStringLiteral("FT8");
+  spot.snr = -15;
+  spot.unixTime = 1700000000;
+  const QByteArray packet = pskReporterDatagram(QStringLiteral("N8SDR"), QStringLiteral("EM79"),
+                                                QStringLiteral("STD 0.1.0"), QString(), {spot},
+                                                1700000000, 1, 0x12345678);
+  if (packet.size() < 16 || quint8(packet.at(0)) != 0x00 || quint8(packet.at(1)) != 0x0A)
+    return fail("PSK Reporter header is wrong");
+  const int declared = (quint8(packet.at(2)) << 8) | quint8(packet.at(3));
+  if (declared != packet.size() || packet.at(12) != char(0x12) || packet.at(15) != char(0x78))
+    return fail("PSK Reporter length is wrong");
+  if (!packet.contains("N8SDR") || !packet.contains("EM79") || !packet.contains("W1AW") ||
+      !packet.contains("FT8"))
+    return fail("PSK Reporter spot is wrong");
+  const int callAt = packet.indexOf("W1AW");
+  if (callAt < 1 || quint8(packet.at(callAt - 1)) != 4 || quint8(packet.at(callAt + 4)) != 0x00 ||
+      quint8(packet.at(callAt + 5)) != 0xD6 || quint8(packet.at(callAt + 6)) != 0xC0 ||
+      quint8(packet.at(callAt + 7)) != 0x90 || quint8(packet.at(callAt + 8)) != 0xF1)
+    return fail("PSK Reporter frequency is wrong");
+  if (pskReporterDatagram(QString(), QStringLiteral("EM79"), QStringLiteral("STD"), QString(), {spot},
+                          1, 1, 1)
+          .size() != 0)
+    return fail("PSK Reporter sent without a callsign");
+  const auto* pskLink = window.findChild<QAction*>(QStringLiteral("pskReporterLink"));
+  const auto* network = window.findChild<QAction*>(QStringLiteral("networkConfig"));
+  if (!pskLink || !pskLink->toolTip().contains(QLatin1String("pskreporter.info")) ||
+      !pskLink->toolTip().contains(QLatin1String("does not send START")) ||
+      pskLink->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("PSK Reporter link is missing");
+  if (!network || network->toolTip().contains(QLatin1String("Spots are not sent")))
+    return fail("PSK Reporter still says spots are not sent");
+  if (window.findChild<QLineEdit*>(QStringLiteral("pskCall")) ||
+      window.findChild<QLineEdit*>(QStringLiteral("reportCall")) ||
+      window.findChild<QLineEdit*>(QStringLiteral("wsprCall")))
+    return fail("a second callsign field was added");
+  if (stdVersionName() != QStringLiteral("testing phase \u00B7 highly transmissible"))
+    return fail("version subtitle is wrong");
+  if (!UpdateChecker::isNewer(QStringLiteral("v0.1.1"), QStringLiteral("0.1.0")) ||
+      UpdateChecker::isNewer(QStringLiteral("v0.1.0"), QStringLiteral("0.1.0")) ||
+      UpdateChecker::isNewer(QStringLiteral("v0.0.9"), QStringLiteral("0.1.0")))
+    return fail("update compare is wrong");
+  const auto* checkUpdates = window.findChild<QAction*>(QStringLiteral("checkForUpdates"));
+  const auto* updateChip = window.findChild<QAction*>(QStringLiteral("updateAvailable"));
+  if (!checkUpdates || !checkUpdates->toolTip().contains(QLatin1String("does not send START")) ||
+      !updateChip || updateChip->isVisible())
+    return fail("update notice is missing");
 
   qInfo("STD self-test ok");
   return 0;

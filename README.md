@@ -85,6 +85,10 @@ Radio → Connect opens one WebSocket. The default port is 50001.
 
 The text command START is never sent.
 
+Options → PSK Reporter map opens the map for the callsign in Options → User. Options → Network Configuration uploads a spot after a decode only when Enable is checked. That box is off until the operator turns it on. There is no second callsign field.
+
+Help → Check for Updates uses the same notice as Lyra. A newer GitHub release, including a pre-release, opens a dialog the first time, then leaves an indicator on the brand bar.
+
 ## Build
 
 STD is a 64-bit Windows application. The kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\msvc2022_64`. CMake is `C:\Qt\Tools\CMake_64\bin\cmake.exe`. The compiler is Visual Studio 18 Community. It needs Qt 6 Widgets, Qt 6 GuiPrivate, and Qt 6 WebSockets. `ft8dec.dll` is built by `src/ft8/build_ft8dec.cmd` from the sibling MSHV tree and is loaded only to decode. The MinGW kit at `C:\Qt\6.11.1\mingw_64` is not the kit this build uses.
@@ -98,5 +102,6 @@ A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_Q
 ## More
 
 - Web version of this page: <https://n8sdr1.github.io/STD/>
+- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.0 pre-release, testing phase · highly transmissible)
 - Wiki: <https://github.com/N8SDR1/STD/wiki>
 - Longer notes: [modes](docs/modes.md), [Hell](docs/hell.md), [macros](docs/macros.md), [connect](docs/connect.md)
