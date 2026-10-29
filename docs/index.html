@@ -75,11 +75,20 @@ layout: null
     font-size: 12px; letter-spacing: 1px; text-transform: uppercase;
     color: var(--gold); background: rgba(232,196,119,0.10); border: 1px solid rgba(232,196,119,0.30);
   }
-  a.chip-release {
+  a.chip-download {
     color: #04121a; background: var(--accent); border-color: transparent;
-    font-weight: 700;
+    font-weight: 800; font-size: 14px; letter-spacing: 0.4px;
+    padding: 8px 16px; text-transform: none;
+    box-shadow: 0 8px 30px rgba(0,229,255,0.25);
   }
-  a.chip-release:hover { background: #4af0ff; }
+  a.chip-download:hover { background: #4af0ff; }
+  a.chip-release {
+    color: var(--head); background: rgba(255,255,255,0.06);
+    border-color: rgba(0,229,255,0.45);
+    font-weight: 700; font-size: 14px; letter-spacing: 0.4px;
+    padding: 8px 16px; text-transform: none;
+  }
+  a.chip-release:hover { color: var(--accent); border-color: var(--accent); }
 
   .cta { margin-top: 30px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
   .btn {
@@ -214,10 +223,13 @@ layout: null
       <p class="bourbon">STD: Help keep the infections spreading and buy us a shot of bourbon.</p>
       <div class="chips">
         <span class="badge">v0.1.0 · testing phase · highly transmissible · GPL v3</span>
-        <a class="badge chip-release" href="https://github.com/N8SDR1/STD/releases">Releases · v0.1.0 pre-release</a>
+        <a class="badge chip-download" href="https://github.com/N8SDR1/STD/releases/download/v0.1.0/STD-0.1.0-win64.zip">Download STD</a>
+        <a class="badge chip-release" href="https://github.com/N8SDR1/STD/releases/tag/v0.1.0">Releases</a>
       </div>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/N8SDR1/STD">★ GitHub</a>
+        <a class="btn btn-primary" href="https://github.com/N8SDR1/STD/releases/download/v0.1.0/STD-0.1.0-win64.zip">Download STD</a>
+        <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD/releases/tag/v0.1.0">Releases</a>
+        <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD">★ GitHub</a>
         <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD/wiki">📖 Wiki</a>
         <a class="btn btn-ghost" href="https://www.paypal.com/donate/?business=NP2ZQS4LR454L&amp;no_recurring=0&amp;item_name=STD%3A+Help+keep+the+infections+spreading+and+buy+us+a+shot+of+bourbon.&amp;currency_code=USD">☕ Bourbon</a>
         <a class="btn btn-ghost" href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a>
@@ -325,7 +337,7 @@ layout: null
 
   <footer>
     <p>© 2026 Rick Langford (N8SDR) · Shift, Tone, Decode · Sending Transmittal Disease · GPL v3</p>
-    <p style="margin-top:6px;"><a href="https://github.com/N8SDR1/STD">GitHub</a> · <a href="https://github.com/N8SDR1/STD/releases">Releases</a> · <a href="https://github.com/N8SDR1/STD/wiki">Wiki</a> · <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a> · <a href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a></p>
+    <p style="margin-top:6px;"><a href="https://github.com/N8SDR1/STD/releases/download/v0.1.0/STD-0.1.0-win64.zip">Download STD</a> · <a href="https://github.com/N8SDR1/STD/releases/tag/v0.1.0">Releases</a> · <a href="https://github.com/N8SDR1/STD">GitHub</a> · <a href="https://github.com/N8SDR1/STD/wiki">Wiki</a> · <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a> · <a href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a></p>
   </footer>
 </body>
 </html>
