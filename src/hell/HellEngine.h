@@ -20,6 +20,9 @@ public:
   // fldigi feldcolumnrate. Feld Hell and both FSK Hell speeds are 17.5.
   // Slow Hell is 2.1875, X5 is 87.5, X9 is 157.5, Hell 80 is 35.
   void setColumnRate(double columnsPerSecond);
+  // 0 keeps the amplitude detector. 122.5, 55, and 300 select fldigi FSKH_rx.
+  // Reverse is off: the lower tone is ink.
+  void setFskShiftHz(double shiftHz);
   // Fldigi sqlonoff and sldrSquelchValue. Off prints every column.
   // On drops a column whose metric is at or below level (0..100).
   void setSquelch(bool on, int level);

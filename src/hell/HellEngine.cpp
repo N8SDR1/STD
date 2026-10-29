@@ -48,10 +48,28 @@ struct HellEngine::Private {
   bool squelchOn = false;
   int squelchLevel = 10;
   double columnRate = 17.5;
+  double fskShift = 0.0;
+  double phi2freq = 0.0;
   double downsampleInc = (kColumnLen * 17.5) / static_cast<double>(kSampleRate);
+  cmplx prev = cmplx(0.0, 0.0);
   C_FIR_filter* hilbert = nullptr;
   fftfilt* lowpass = nullptr;
   Cmovavg* average = nullptr;
+  Cmovavg* bbfilt = nullptr;
+
+  void applyFilter() {
+    if (!lowpass)
+      return;
+    if (fskShift > 0.0) {
+      // feld::restart for MODE_FSKH245 / FSKH105 / HELL80.
+      const double bandwidth = 5.0 * std::round(4.0 * fskShift / 5.0);
+      phi2freq = static_cast<double>(kSampleRate) / M_PI / (fskShift / 2.0);
+      lowpass->create_filter(0, 1.0 * bandwidth / kSampleRate);
+    } else {
+      phi2freq = 0.0;
+      lowpass->create_filter(0, 0.5 * kBandwidthHz / kSampleRate);
+    }
+  }
 
   void open() {
     hilbert = new C_FIR_filter();
@@ -59,17 +77,21 @@ struct HellEngine::Private {
     lowpass = new fftfilt(0, 0.5 * kBandwidthHz / kSampleRate, 1024);
     // feld::restart sets the averager to 500 * rate / (height * column rate).
     average = new Cmovavg(200);
+    bbfilt = new Cmovavg(8);
     const int pixels = std::max(1, static_cast<int>(kColumnLen * columnRate));
     average->setLength(std::max(1, 500 * kSampleRate / pixels));
+    applyFilter();
   }
 
   void close() {
     delete hilbert;
     delete lowpass;
     delete average;
+    delete bbfilt;
     hilbert = nullptr;
     lowpass = nullptr;
     average = nullptr;
+    bbfilt = nullptr;
   }
 
   void reset() {
@@ -83,6 +105,7 @@ struct HellEngine::Private {
     peakval = 0.0;
     peakhold = 0.0;
     agc = 0.0;
+    prev = cmplx(0.0, 0.0);
     colPointer = 0;
     for (int& sample : colData)
       sample = 0;
@@ -139,6 +162,42 @@ struct HellEngine::Private {
       colData[i] = colData[i + kColumnLen];
     return !gated;
   }
+
+  // feld::FSKH_rx. The phase step between samples is the tone, not the loudness.
+  bool takeFsk(cmplx z, QByteArray* column) {
+    const cmplx step = std::conj(prev) * z;
+    prev = z;
+    double f = std::arg(step) * phi2freq;
+    if (bbfilt)
+      f = bbfilt->run(f);
+    const double avg = average->run(std::abs(z));
+    rxcounter += downsampleInc;
+    if (rxcounter < 1.0)
+      return false;
+    rxcounter -= 1.0;
+
+    if (avg > agc)
+      agc = avg;
+    else
+      agc *= (1.0 - 0.01 / kColumnLen);
+    const double metric = clampd(1000.0 * agc, 0.0, 100.0);
+    const bool gated = squelchOn && metric <= static_cast<double>(squelchLevel);
+
+    // Reverse off, blackboard off. A negative step is the lower tone, which is ink.
+    const double vid = clampd(0.5 * (f + 1.0), 0.0, 1.0);
+    const int ix = static_cast<int>(vid * 255.0);
+    colData[colPointer + kColumnLen] = ix;
+    ++colPointer;
+    if (colPointer < kColumnLen)
+      return false;
+    column->resize(2 * kColumnLen);
+    for (int i = 0; i < 2 * kColumnLen; ++i)
+      (*column)[i] = static_cast<char>(colData[i]);
+    colPointer = 0;
+    for (int i = 0; i < kColumnLen; ++i)
+      colData[i] = colData[i + kColumnLen];
+    return !gated;
+  }
 };
 
 HellEngine::HellEngine(QObject* parent) : QObject(parent), d_(new Private) {
@@ -178,6 +237,18 @@ void HellEngine::setColumnRate(double columnsPerSecond) {
   }
 }
 
+void HellEngine::setFskShiftHz(double shiftHz) {
+  if (shiftHz < 1.0)
+    shiftHz = 0.0;
+  if (std::fabs(d_->fskShift - shiftHz) < 0.01)
+    return;
+  d_->fskShift = shiftHz;
+  if (d_->armed)
+    d_->reset();
+  else
+    d_->applyFilter();
+}
+
 void HellEngine::setToneHz(int hz) {
   if (hz < 200)
     hz = 200;
@@ -213,7 +284,9 @@ void HellEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
     const int n = d_->lowpass->run(z, &filtered);
     for (int i = 0; i < n; ++i) {
       QByteArray column;
-      if (d_->takePixel(filtered[i], &column))
+      const bool printed = d_->fskShift > 0.0 ? d_->takeFsk(filtered[i], &column)
+                                              : d_->takePixel(filtered[i], &column);
+      if (printed)
         emit columnReady(column);
     }
   }

@@ -2274,6 +2274,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     waterfall_->setRxHz(1900);
   if (hell_) {
     hell_->setColumnRate(hellColumnRate(modeName));
+    hell_->setFskShiftHz(hellFskShiftHz(modeName));
     hell_->setArmed(autoMonitor_ && hell);
   }
   if (rtty_) {
@@ -2447,6 +2448,7 @@ void MainWindow::showGuide() {
        "(245 pixels/s). Slow Hell is 2.1875. Feld Hell X5 is 87.5 and Feld Hell X9 is 157.5, "
        "both hard keyed. FSK Hell, FSK Hell-105, and Hell 80 keep the tone up and shift it. "
        "Reverse is off, so ink is the lower tone. The shifts are 122.5 Hz, 55 Hz, and 300 Hz. "
+       "The tape for those three reads the shift, not the loudness, so a steady tone still draws. "
        "Those three run at 17.5, 17.5, and 35 columns/s. They share this screen. "
        "START is never sent."},
       {"Keyboard text",

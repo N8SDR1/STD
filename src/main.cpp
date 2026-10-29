@@ -9,6 +9,7 @@
 
 #include "QsoLog.h"
 #include "TxWave.h"
+#include "hell/HellEngine.h"
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
@@ -21,8 +22,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 #include <vector>
 
+#include <QByteArray>
 #include <QAction>
 #include <QApplication>
 #include <QFile>
@@ -424,6 +427,36 @@ int shellReady(MainWindow& window) {
     if (peak < 0.2f)
       return fail("FSK Hell is on-off instead of two tones");
   }
+  if (hellFskShiftHz(QStringLiteral("FSK Hell")) != 122.5 ||
+      hellFskShiftHz(QStringLiteral("FSK Hell-105")) != 55.0 ||
+      hellFskShiftHz(QStringLiteral("Hell 80")) != 300.0 ||
+      hellFskShiftHz(QStringLiteral("Feld Hell")) != 0.0)
+    return fail("FSK Hell shift is wrong");
+  auto countInk = [](const std::vector<float>& wave, double shift) {
+    HellEngine tape;
+    tape.setColumnRate(17.5);
+    tape.setFskShiftHz(shift);
+    tape.setToneHz(1500);
+    int dark = 0;
+    int light = 0;
+    QObject::connect(&tape, &HellEngine::columnReady, [&](const QByteArray& column) {
+      for (unsigned char pixel : column) {
+        if (pixel < 40)
+          ++dark;
+        if (pixel > 200)
+          ++light;
+      }
+    });
+    tape.setArmed(true);
+    tape.pushAudio(wave.data(), static_cast<int>(wave.size()), 48000);
+    return std::pair<int, int>(dark, light);
+  };
+  const auto fskInk = countInk(fskWave, 122.5);
+  const auto ampInk = countInk(fskWave, 0.0);
+  if (fskInk.first < 20 || fskInk.second < 20)
+    return fail("FSK Hell tape did not print both tones");
+  if (ampInk.first > 5 && ampInk.second > 5)
+    return fail("amplitude detector printed an FSK Hell tape");
   if (hellTapeRowFromTop(0, 40) != 39 || hellTapeRowFromTop(39, 40) != 0)
     return fail("Hell tape polarity is inverted");
   const auto* mode = window.findChild<QLabel*>("modeValue");

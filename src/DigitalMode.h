@@ -27,6 +27,17 @@ inline double hellColumnRate(const QString& mode) {
   return 17.5;
 }
 
+// Fldigi hell_bandwidth for the frequency-shift rows. 0 is amplitude Hell.
+inline double hellFskShiftHz(const QString& mode) {
+  if (mode == QLatin1String("FSK Hell"))
+    return 122.5;
+  if (mode == QLatin1String("FSK Hell-105"))
+    return 55.0;
+  if (mode == QLatin1String("Hell 80"))
+    return 300.0;
+  return 0.0;
+}
+
 // Fldigi keyboard text: one transmit box, a receive echo, CLR RX, and CLR TX.
 // FT8, FT4, and FT2 stay on the MSHV sequencer. CW stays in Lyra.
 // A later menu item is covered when its name starts with one of these
