@@ -13,6 +13,7 @@
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
 #include "js8/Js8Modem.h"
+#include "wspr/WsprModem.h"
 
 #include <QCoreApplication>
 #include <QString>
@@ -369,6 +370,15 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
     *out = plan.samples;
     if (echoAt)
       *echoAt = plan.echoAt;
+    return true;
+  }
+  if (wsprMode(mode)) {
+    const std::vector<float> wave = wsprModulate(text, tone);
+    if (wave.empty())
+      return false;
+    *out = wave;
+    if (echoAt)
+      echoAt->clear();
     return true;
   }
   if (mt63BandwidthHz(mode) > 0) {

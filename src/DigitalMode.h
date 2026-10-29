@@ -173,6 +173,11 @@ inline int q65ChannelHz(const QString& mode) {
   return 0;
 }
 
+// WSPR-2. Not a keyboard mode and not the FT8 sequencer.
+inline bool wsprMode(const QString& mode) {
+  return mode.compare(QLatin1String("WSPR"), Qt::CaseInsensitive) == 0;
+}
+
 inline bool sequencedFamily(const QString& mode) {
   return mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
          mode == QLatin1String("FT2") || jt65Mode(mode) || q65Mode(mode);

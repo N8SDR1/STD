@@ -50,6 +50,7 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | Thor | 4, 5, 8, 11, 16, 22 are NASA K=7. 25x4, 50x1, 50x2, and 100 are IEEE K=15. Thor Micro stays off the menu. |
 | MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L. 64 carriers, Walsh code, short or long interleave. |
 | JS8 | JS8Call-improved Normal. 15 s, 50 Hz. The transmit box is the payload. |
+| WSPR | WSPR-2 from WSJT-X and JTDX. Tx power, Tx Pct, and band hopping. The locator is Options → User. |
 
 ## Receive only
 

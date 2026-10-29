@@ -29,6 +29,7 @@ class PskEngine;
 class RttyEngine;
 class WefaxEngine;
 class Js8Engine;
+class WsprEngine;
 class ModeProfile;
 class QAction;
 class QDockWidget;
@@ -176,6 +177,10 @@ private:
   void openContestTags();
   QString composedCq(const QString& kind) const;
   QString transmitMessage() const;
+  QString wsprOutbound() const;
+  int wsprTxPct() const;
+  void maybeWsprHop();
+  void beginWsprTune();
   QString stationCall() const;
   QString stationGrid() const;
   void openDecodeFilters();
@@ -316,5 +321,8 @@ private:
   ThorEngine* thor_ = nullptr;
   WefaxEngine* wefax_ = nullptr;
   Js8Engine* js8_ = nullptr;
+  WsprEngine* wspr_ = nullptr;
+  int wsprHopMark_ = -1;
+  bool wsprHopTune_ = false;
   QVector<DecodeRow> shownDecodes_;
 };

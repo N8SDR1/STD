@@ -19,6 +19,7 @@
 #include "rtty/RttyModem.h"
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
+#include "wspr/WsprModem.h"
 #include "WaterfallGpu.h"
 #include "WaterfallWidget.h"
 
@@ -40,6 +41,12 @@
 #include <QTextEdit>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDate>
+#include <QDateTime>
+#include <QDialog>
+#include <QTableWidget>
+#include <QTime>
+#include <QTimeZone>
 #include <QMenuBar>
 #include <QPushButton>
 #include <QSpinBox>
@@ -375,6 +382,7 @@ int shellReady(MainWindow& window) {
       !keyboardTextMode(QStringLiteral("MFSK16")) ||
       !keyboardTextMode(QStringLiteral("DominoEX 16")) ||
       !keyboardTextMode(QStringLiteral("Thor 16")) || !keyboardTextMode(QStringLiteral("JS8")) ||
+      keyboardTextMode(QStringLiteral("WSPR")) ||
       keyboardTextMode(QStringLiteral("FT8")) ||
       keyboardTextMode(QStringLiteral("FT4")) || keyboardTextMode(QStringLiteral("FT2")) ||
       keyboardTextMode(QStringLiteral("JT65A")) || keyboardTextMode(QStringLiteral("Q65A")) ||
@@ -863,6 +871,77 @@ int shellReady(MainWindow& window) {
       !js8->toolTip().contains(QLatin1String("START")) ||
       js8->toolTip().contains(QLatin1String("does not key yet")))
     return fail("JS8 is missing");
+  {
+    std::vector<float> wave;
+    if (!buildTxWave(QStringLiteral("WSPR"), QStringLiteral("N8SDR EM79 37"), 1500, &wave) ||
+        wave.size() < 1000000)
+      return fail("WSPR modulator is missing");
+    const QString back = wsprDecode(wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1String("N8SDR")) || !back.contains(QLatin1String("EM79")) ||
+        !back.contains(QLatin1String("37"))) {
+      qCritical("WSPR decode [%s] samples %d", qPrintable(back), int(wave.size()));
+      return fail("WSPR did not decode");
+    }
+  }
+  const auto* wspr = window.findChild<QAction*>(QStringLiteral("modeWspr"));
+  if (!wspr || !wspr->toolTip().contains(QLatin1String("Tx Pct")) ||
+      !wspr->toolTip().contains(QLatin1String("START")) ||
+      wspr->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("WSPR is missing");
+  const auto* wsprPower = window.findChild<QComboBox*>(QStringLiteral("wsprPower"));
+  if (!wsprPower || wsprPower->count() != 19 || wsprPower->findData(37) < 0 ||
+      wsprPower->findData(0) < 0 || wsprPower->findData(60) < 0)
+    return fail("WSPR power is missing");
+  const auto* wsprPct = window.findChild<QSpinBox*>(QStringLiteral("wsprTxPct"));
+  if (!wsprPct || wsprPct->minimum() != 0 || wsprPct->maximum() != 100)
+    return fail("WSPR Tx Pct is missing");
+  if (!window.findChild<QLabel*>(QStringLiteral("wsprLocator")) ||
+      !window.findChild<QCheckBox*>(QStringLiteral("wsprBandHop")) ||
+      !window.findChild<QPushButton*>(QStringLiteral("wsprSchedule")))
+    return fail("WSPR locator or band hop is missing");
+  if (window.findChild<QLineEdit*>(QStringLiteral("wsprCall")) ||
+      window.findChild<QLineEdit*>(QStringLiteral("wsprGrid")))
+    return fail("WSPR added a callsign field");
+  if (wsprBandIndex(0) != 0 || wsprBandIndex(10) != 5 || wsprDialHz(5) != 14095600 ||
+      wsprDialHz(4) != 10138700 || wsprDialHz(0) != 136000)
+    return fail("WSPR dials are wrong");
+  if (wsprTxThisSlot(0))
+    return fail("WSPR Tx Pct 0 transmitted");
+  const QDateTime wsprDay(QDate(2026, 10, 29), QTime(16, 0), QTimeZone(QTimeZone::UTC));
+  const QDateTime wsprNight(QDate(2026, 10, 29), QTime(4, 0), QTimeZone(QTimeZone::UTC));
+  const int wsprDayPeriod = wsprGrayPeriod(QStringLiteral("EM79"), 60, wsprDay);
+  const int wsprNightPeriod = wsprGrayPeriod(QStringLiteral("EM79"), 60, wsprNight);
+  if (wsprDayPeriod != 1 || wsprNightPeriod != 3) {
+    qCritical("WSPR grayline day %d night %d", wsprDayPeriod, wsprNightPeriod);
+    return fail("WSPR grayline is wrong");
+  }
+  bool hopBits[60] = {};
+  hopBits[1 * 10 + 5] = true;
+  if (wsprPickBand(1, 5, true, hopBits) != 5 || wsprPickBand(1, 0, true, hopBits) != 5)
+    return fail("WSPR band hop missed 20 m");
+  hopBits[1 * 10 + 5] = false;
+  if (wsprPickBand(1, 0, true, hopBits) != -1)
+    return fail("WSPR band hop invented a band");
+  showWsprBandHopping(&window);
+  auto* schedule = window.findChild<QDialog*>(QStringLiteral("wsprSchedule"));
+  const auto* hopTable = window.findChild<QTableWidget*>(QStringLiteral("wsprHopTable"));
+  const auto* gray = window.findChild<QSpinBox*>(QStringLiteral("wsprGrayTime"));
+  if (!schedule || !schedule->windowTitle().contains(QLatin1String("WSPR Band Hopping")) ||
+      !hopTable || hopTable->columnCount() != 10 || hopTable->rowCount() != 6 || !gray ||
+      gray->suffix() != QLatin1String("min"))
+    return fail("WSPR schedule is missing");
+  if (!hopTable->horizontalHeaderItem(0) ||
+      hopTable->horizontalHeaderItem(0)->text() != QLatin1String("160m") ||
+      !hopTable->horizontalHeaderItem(9) ||
+      hopTable->horizontalHeaderItem(9)->text() != QLatin1String("10m") ||
+      !hopTable->verticalHeaderItem(0) ||
+      hopTable->verticalHeaderItem(0)->text() != QLatin1String("Sunrise grayline") ||
+      !hopTable->verticalHeaderItem(4) ||
+      hopTable->verticalHeaderItem(4)->text() != QLatin1String("Tune") ||
+      !hopTable->verticalHeaderItem(5) ||
+      hopTable->verticalHeaderItem(5)->text() != QLatin1String("Rx only"))
+    return fail("WSPR schedule labels are wrong");
+  schedule->close();
   const auto* mt63Menu = window.findChild<QMenu*>(QStringLiteral("modeMt63Menu"));
   if (!mt63Menu || mt63Menu->actions().size() != 6)
     return fail("MT63 submenu is missing");

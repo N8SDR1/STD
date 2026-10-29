@@ -111,6 +111,8 @@ qt_add_executable(std
   src/mt63/Mt63Modem.h
   src/js8/Js8Modem.cpp
   src/js8/Js8Modem.h
+  src/wspr/WsprModem.cpp
+  src/wspr/WsprModem.h
   src/mt63/fldigi/dsp.cxx
   src/mt63/fldigi/mt63base.cxx
   resources/resources.qrc
