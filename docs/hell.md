@@ -24,6 +24,8 @@ Reverse is off. On the FSK rows, ink is the lower tone and white is the higher t
 
 The font is Fldigi's `feldhell_12` (12-pixel variable width, sent as 14-row columns). Case is kept. A space is a blank column run. Three leader dots go out before the operator's text, and three dots plus a space follow it.
 
+![Feld Hell test](screenshots/std-hell.png)
+
 ## Receive tape
 
 The amplitude-Hell tape uses that mode's column rate, with 20-pixel receive columns. FSK Hell, FSK Hell-105, and Hell 80 are still drawn with the amplitude detector, so the tape does not read an FSK signal.

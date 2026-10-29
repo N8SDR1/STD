@@ -2,7 +2,11 @@
 
 **Shift, Tone, Decode.** Software in testing. Version 0.1.0.
 
-STD is a Qt 6 digimode console for a TCI radio. This tree is what is on the bench while the modes are proved on the air. It is not a finished release.
+The name is the joke, and the joke is the release plan. STD is a Qt 6 digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air.
+
+**STD: Help keep the infections spreading and buy us a shot of bourbon.**
+
+[☕ Donate via PayPal](https://www.paypal.com/donate/?business=NP2ZQS4LR454L&no_recurring=0&item_name=STD%3A+Help+keep+the+infections+spreading+and+buy+us+a+shot+of+bourbon.&currency_code=USD)
 
 Copyright (C) 2026 Rick Langford (N8SDR).
 
@@ -14,9 +18,13 @@ Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier
 
 ## Screenshots
 
-Gallery images belong in [`screenshots/landingpage`](https://github.com/N8SDR1/STD/tree/main/screenshots/landingpage). Put a PNG in that folder and the link shows it after the next push.
+Gallery images belong in [`screenshots/landingpage`](https://github.com/N8SDR1/STD/tree/main/screenshots/landingpage). The same pictures are on the [Pages site](https://n8sdr1.github.io/STD/).
 
 ![STD on 20 m FT8](screenshots/landingpage/STD%20digital.png)
+
+![STD transmitting on 20 m FT8](screenshots/landingpage/Screenshot%202026-10-29%20130502.png)
+
+![Feld Hell test](screenshots/landingpage/Screenshot%202026-10-29%20125605.png)
 
 ## Modes that key
 
@@ -52,17 +60,18 @@ These are not on the Mode menu. They do not key.
 
 - **MT63**, short and long, at 500, 1000, and 2000 Hz. The Walsh code checks out. A character has not yet come back out of the audio.
 - **QPSK and 8PSK.** When they are written they will use Fldigi's convolutional code.
+- **JS8Call** is later ([JS8Call-improved](https://js8call.com/JS8Call-improved/)). **FLD-88** is queued.
 - MSHV modes still outside STD are listed in [`docs/mshv-modes.md`](docs/mshv-modes.md).
 
 CW stays in Lyra. STD does not send CW.
 
 ## Macros and the log
 
-A macro button inserts text. It does not log a QSO, and the insert itself does not key.
+The RST/LOG macro does not log. Fldigi's `<LOG>` tag is not implemented. Pressing that button inserts text, and nothing is stored. Adding Fldigi-style `<LOG>` is a later change.
 
-`<MYCALL>` and `<MYLOC>` are filled in. `<LOG>` is removed. `<RST>` and `<MYRST>` stay in the box as written, so the RST/LOG macro can transmit the characters `<RST>` if TX is pressed afterward. `<CALL>` is left as written too.
+`<MYCALL>` and `<MYLOC>` are filled in. `<LOG>` is deleted from the text. `<RST>` and `<MYRST>` stay in the box as written, so a later TX can send the characters `<RST>`. `<CALL>` is left as written too.
 
-A QSO is stored when the sent line ends in `73` or `RR73`, that line contains the other station's call, and a log option is on (automatic, prompt, WSJT-X UDP, or DXKeeper TCP). That path writes ADIF. The `<LOG>` tag does not call it.
+A separate path, not the macro tag, stores a QSO when the sent line ends in `73` or `RR73`, that line contains the other station's call, and a log option is on (automatic, prompt, WSJT-X UDP, or DXKeeper TCP). That path writes ADIF.
 
 ## Connect
 

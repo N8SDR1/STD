@@ -4,15 +4,23 @@ title: STD
 
 **Shift, Tone, Decode.** Software in testing. Version 0.1.0.
 
-STD is a Qt 6 digimode console for a TCI radio. This tree is what is on the bench while the modes are proved on the air. It is not a finished release.
+The name is the joke, and the joke is the release plan. STD is a Qt 6 digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air.
+
+**STD: Help keep the infections spreading and buy us a shot of bourbon.**
+
+[☕ Donate via PayPal](https://www.paypal.com/donate/?business=NP2ZQS4LR454L&no_recurring=0&item_name=STD%3A+Help+keep+the+infections+spreading+and+buy+us+a+shot+of+bourbon.&currency_code=USD)
 
 Copyright (C) 2026 Rick Langford (N8SDR). License: [GPL-3](https://github.com/N8SDR1/STD/blob/main/COPYING). Source: [N8SDR1/STD](https://github.com/N8SDR1/STD).
 
 ## Screenshots
 
-Gallery images go in [screenshots/landingpage](https://github.com/N8SDR1/STD/tree/main/screenshots/landingpage). Add a PNG there and this link shows it after the next push.
+These pictures are copied from [screenshots/landingpage](https://github.com/N8SDR1/STD/tree/main/screenshots/landingpage). Add a PNG there and it can be copied onto this site.
 
-![STD on 20 m FT8](https://github.com/N8SDR1/STD/raw/main/screenshots/landingpage/STD%20digital.png)
+![STD on 20 m FT8](screenshots/std-ft8.png)
+
+![STD transmitting on 20 m FT8](screenshots/std-ft8-tx.png)
+
+![Feld Hell test](screenshots/std-hell.png)
 
 ## Modes that key
 
@@ -37,9 +45,11 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 
 **MT63** (500, 1000, and 2000 Hz, short and long) is not on the menu and does not key. **QPSK** and **8PSK** are not in this build. CW stays in Lyra.
 
+JS8Call is later ([JS8Call-improved](https://js8call.com/JS8Call-improved/)). FLD-88 is queued.
+
 ## Macros
 
-A macro inserts text. `<LOG>` is removed and does not store a QSO. `<RST>` stays literal. Details are on the [macros](macros.html) page.
+The RST/LOG macro does not log. Fldigi's `<LOG>` tag is not implemented, so that button only inserts text. Details are on the [macros](macros.html) page.
 
 ## Connect
 

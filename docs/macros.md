@@ -2,7 +2,7 @@
 title: Macros
 ---
 
-Software in testing. A macro button inserts text into the transmit box. The insert does not key, and it does not log.
+Software in testing. The RST/LOG macro does not log. Fldigi's `<LOG>` tag is not implemented. A later change can make `<LOG>` store the QSO the way Fldigi does. Until then, pressing that button inserts text and nothing is written to the log.
 
 ## What is filled in
 
@@ -36,7 +36,7 @@ Nothing is stored.
 
 ## When a QSO is stored
 
-Logging runs after a transmission, and only when all of these are true:
+This path is not the RST/LOG button, and it is not Fldigi `<LOG>`. Logging runs after a transmission, and only when all of these are true:
 
 - The sent line's last word is `73` or `RR73`.
 - The line contains the other station's call from the current QSO.

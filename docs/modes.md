@@ -37,3 +37,7 @@ These do not key.
 - MSHV modes still outside this program (MSK144, Q65, JT65, and the rest) stay listed in [mshv-modes.md](mshv-modes.md) until they are implemented.
 
 CW stays in Lyra.
+
+## Later
+
+JS8Call is later, from [JS8Call-improved](https://js8call.com/JS8Call-improved/). FLD-88 is queued. Neither is in this build.
