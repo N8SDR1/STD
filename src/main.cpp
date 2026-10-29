@@ -797,6 +797,55 @@ int shellReady(MainWindow& window) {
       !thor16->toolTip().contains(QLatin1String("START")) ||
       thor16->toolTip().contains(QLatin1String("does not key yet")))
     return fail("Thor 16 is missing");
+  for (const char* name : {"QPSK31", "QPSK63", "QPSK125", "QPSK250", "QPSK500"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
+      return fail("QPSK modulator is missing");
+    const QString back =
+        pskDecode(QString::fromLatin1(name), wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1Char('E'))) {
+      qCritical("QPSK decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
+      return fail("QPSK did not decode");
+    }
+  }
+  const auto* qpsk31 = window.findChild<QAction*>(QStringLiteral("modeQpsk31"));
+  if (!qpsk31 || !qpsk31->toolTip().contains(QLatin1String("31.25")) ||
+      !qpsk31->toolTip().contains(QLatin1String("START")) ||
+      qpsk31->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("QPSK31 is missing");
+  for (const char* name : {"MFSK64L", "MFSK128L"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
+      return fail("MFSK long modulator is missing");
+    const QString back =
+        mfskDecode(QString::fromLatin1(name), wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1Char('E'))) {
+      qCritical("MFSK decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
+      return fail("MFSK long did not decode");
+    }
+  }
+  for (const char* name : {"DominoEX Micro"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
+      return fail("DominoEX Micro modulator is missing");
+    const QString back =
+        dominoDecode(QString::fromLatin1(name), wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1Char('E'))) {
+      qCritical("DominoEX decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
+      return fail("DominoEX Micro did not decode");
+    }
+  }
+  for (const char* name : {"Thor 25x4", "Thor 50x1", "Thor 50x2", "Thor 100"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
+      return fail("Thor K=15 modulator is missing");
+    const QString back =
+        thorDecode(QString::fromLatin1(name), wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1Char('E'))) {
+      qCritical("Thor decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
+      return fail("Thor K=15 did not decode");
+    }
+  }
   const auto* mt63Menu = window.findChild<QMenu*>(QStringLiteral("modeMt63Menu"));
   if (!mt63Menu || mt63Menu->actions().size() != 6)
     return fail("MT63 submenu is missing");

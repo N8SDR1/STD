@@ -44,9 +44,10 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | PSK31 through PSK1000 | BPSK at 31.25, 62.5, 125, 250, 500, and 1000 baud. A zero reverses the phase. |
 | Olivia | 4/250, 8/250, 8/500, 16/500, 16/1000, 32/1000. |
 | Contestia | The same six rows. |
-| MFSK | MFSK4, 8, 11, 16, 22, 31, 32, 64, 128. NASA K=7. MFSK64L and MFSK128L are absent. |
-| DominoEX | 4, 5, 8, 11, 16, 22. 18-tone incremental keying. FEC is off. Micro is absent. |
-| Thor | 4, 5, 8, 11, 16, 22. NASA K=7. Thor Micro and the K=15 speeds stay off the menu. |
+| QPSK31 through QPSK500 | K=5 convolutional code at 31.25, 62.5, 125, 250, and 500 baud. |
+| MFSK | MFSK4, 8, 11, 16, 22, 31, 32, 64, 64L, 128, 128L. NASA K=7. The L rows use the long interleaver. |
+| DominoEX | Micro, 4, 5, 8, 11, 16, 22. 18-tone incremental keying. FEC is off. Micro is 2 baud. |
+| Thor | 4, 5, 8, 11, 16, 22 are NASA K=7. 25x4, 50x1, 50x2, and 100 are IEEE K=15. Thor Micro stays off the menu. |
 | MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L. 64 carriers, Walsh code, short or long interleave. |
 
 ## Receive only
@@ -57,7 +58,7 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 
 These are not on the Mode menu. They do not key.
 
-- **QPSK and 8PSK.** When they are written they will use Fldigi's convolutional code.
+- **8PSK.** A different constellation from QPSK. Not on the menu.
 - **JS8Call** is later ([JS8Call-improved](https://js8call.com/JS8Call-improved/)). **FLD-88** is queued.
 - MSHV modes still outside STD are listed in [`docs/mshv-modes.md`](docs/mshv-modes.md).
 

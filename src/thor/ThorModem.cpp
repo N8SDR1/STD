@@ -1,11 +1,11 @@
 // Copyright (C) 2026 Rick Langford (N8SDR)
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Thor rewritten from fldigi (Dave Freese W1HKJ, GPL-3). The K=7 speeds
-// use the NASA polynomials 0x6d and 0x4f, the IZ8BLY varicode, a 4 by 10
-// diagonal interleaver, and 18-tone incremental keying. The K=15 speeds
-// are a different code and are not modulated here. The fldigi sources
-// are not compiled into STD.
+// Thor rewritten from fldigi (Dave Freese W1HKJ, GPL-3). The slow speeds
+// use the NASA K=7 polynomials 0x6d and 0x4f, the IZ8BLY varicode, a 4 by 10
+// diagonal interleaver, and 18-tone incremental keying. Thor 25x4, 50x1,
+// 50x2, and 100 use the IEEE K=15 polynomials and a depth-50 interleaver.
+// The fldigi sources are not compiled into STD.
 
 #include "ThorModem.h"
 
@@ -21,23 +21,48 @@
 namespace {
 
 constexpr int kTones = 18;
-constexpr int kConstraint = 7;
-constexpr int kPoly1 = 0x6d;
-constexpr int kPoly2 = 0x4f;
 constexpr int kPath = 256;
 constexpr int kBits = 4;
-constexpr int kDepth = 10;
+constexpr int kNasaPoly1 = 0x6d;
+constexpr int kNasaPoly2 = 0x4f;
+// fldigi thor.h IEEE polynomials, octal.
+constexpr int kIeeePoly1 = 044735;
+constexpr int kIeeePoly2 = 063057;
 
 struct Spec {
   const char* name;
   double baud;
   int doubled;
+  int depth;
+  int flushChars;
+  int constraint;
+  int poly1;
+  int poly2;
+  int traceback;
 };
 
+const Spec kSlow{nullptr, 0, 0, 10, 4, 7, kNasaPoly1, kNasaPoly2, 45};
+const Spec kFast{nullptr, 0, 0, 50, 40, 15, kIeeePoly1, kIeeePoly2, 15 * 12};
+
+Spec modeSpec(const char* name, double baud, int doubled, const Spec& code) {
+  Spec spec = code;
+  spec.name = name;
+  spec.baud = baud;
+  spec.doubled = doubled;
+  return spec;
+}
+
 const Spec kModes[] = {
-    {"Thor 4", 8000.0 / 2048.0, 2},  {"Thor 5", 11025.0 / 2048.0, 2},
-    {"Thor 8", 8000.0 / 1024.0, 2},  {"Thor 11", 11025.0 / 1024.0, 1},
-    {"Thor 16", 8000.0 / 512.0, 1},  {"Thor 22", 11025.0 / 512.0, 1},
+    modeSpec("Thor 4", 8000.0 / 2048.0, 2, kSlow),
+    modeSpec("Thor 5", 11025.0 / 2048.0, 2, kSlow),
+    modeSpec("Thor 8", 8000.0 / 1024.0, 2, kSlow),
+    modeSpec("Thor 11", 11025.0 / 1024.0, 1, kSlow),
+    modeSpec("Thor 16", 8000.0 / 512.0, 1, kSlow),
+    modeSpec("Thor 22", 11025.0 / 512.0, 1, kSlow),
+    modeSpec("Thor 25x4", 8000.0 / 320.0, 4, kFast),
+    modeSpec("Thor 50x1", 8000.0 / 160.0, 1, kFast),
+    modeSpec("Thor 50x2", 8000.0 / 160.0, 2, kFast),
+    modeSpec("Thor 100", 8000.0 / 80.0, 1, kFast),
 };
 
 const Spec* specFor(const QString& mode) {
@@ -63,13 +88,13 @@ int parity(unsigned long word) {
 
 class ConvEncoder {
 public:
-  ConvEncoder() { init(); }
+  ConvEncoder(int constraint, int poly1, int poly2) : poly1_(poly1), poly2_(poly2) { init(constraint); }
 
-  void init() {
-    const int size = 1 << kConstraint;
+  void init(int constraint) {
+    const int size = 1 << constraint;
     output_.assign(static_cast<size_t>(size), 0);
     for (int i = 0; i < size; ++i)
-      output_[static_cast<size_t>(i)] = parity(unsigned(kPoly1 & i)) | (parity(unsigned(kPoly2 & i)) << 1);
+      output_[static_cast<size_t>(i)] = parity(unsigned(poly1_ & i)) | (parity(unsigned(poly2_ & i)) << 1);
     shreg_ = 0;
     mask_ = unsigned(size - 1);
   }
@@ -83,12 +108,14 @@ private:
   std::vector<int> output_;
   unsigned shreg_ = 0;
   unsigned mask_ = 0;
+  int poly1_ = 0;
+  int poly2_ = 0;
 };
 
 class Interleave {
 public:
-  Interleave(bool reverse) : reverse_(reverse) {
-    table_.assign(static_cast<size_t>(kBits * kBits * kDepth), reverse ? 128 : 0);
+  Interleave(bool reverse, int depth) : reverse_(reverse), depth_(depth) {
+    table_.assign(static_cast<size_t>(kBits * kBits * depth_), reverse ? 128 : 0);
   }
 
   unsigned char& at(int layer, int row, int col) {
@@ -96,7 +123,7 @@ public:
   }
 
   void symbols(unsigned char* psyms) {
-    for (int layer = 0; layer < kDepth; ++layer) {
+    for (int layer = 0; layer < depth_; ++layer) {
       for (int row = 0; row < kBits; ++row) {
         for (int col = 0; col < kBits - 1; ++col)
           at(layer, row, col) = at(layer, row, col + 1);
@@ -120,12 +147,16 @@ public:
 
 private:
   bool reverse_ = false;
+  int depth_ = 10;
   std::vector<unsigned char> table_;
 };
 
 class Viterbi {
 public:
-  Viterbi() { init(); }
+  Viterbi(int constraint, int poly1, int poly2, int traceback)
+      : constraint_(constraint), poly1_(poly1), poly2_(poly2), traceback_(traceback) {
+    init();
+  }
 
   int decode(unsigned char sym0, unsigned char sym1, int* metric) {
     const unsigned curr = ptr_;
@@ -162,18 +193,17 @@ private:
   }
 
   void init() {
-    nstates_ = 1 << (kConstraint - 1);
-    const int size = 1 << kConstraint;
+    nstates_ = 1 << (constraint_ - 1);
+    const int size = 1 << constraint_;
     output_.assign(static_cast<size_t>(size), 0);
     for (int i = 0; i < size; ++i)
-      output_[static_cast<size_t>(i)] = parity(unsigned(kPoly1 & i)) | (parity(unsigned(kPoly2 & i)) << 1);
+      output_[static_cast<size_t>(i)] = parity(unsigned(poly1_ & i)) | (parity(unsigned(poly2_ & i)) << 1);
     metrics_.assign(static_cast<size_t>(kPath * nstates_), 0);
     history_.assign(static_cast<size_t>(kPath * nstates_), 0);
     for (int i = 0; i < 256; ++i) {
       mettab_[0][i] = 128 - i;
       mettab_[1][i] = i - 128;
     }
-    traceback_ = 45;
     ptr_ = 0;
   }
 
@@ -206,6 +236,9 @@ private:
   }
 
   int nstates_ = 0;
+  int constraint_ = 7;
+  int poly1_ = 0;
+  int poly2_ = 0;
   int traceback_ = 45;
   unsigned ptr_ = 0;
   std::vector<int> output_;
@@ -216,6 +249,9 @@ private:
 
 class ToneTx {
 public:
+  explicit ToneTx(const Spec& spec)
+      : spec_(spec), enc_(spec.constraint, spec.poly1, spec.poly2), inlv_(false, spec.depth) {}
+
   void sendRaw(int nibble) {
     const int tone = (prev_ + 2 + (nibble & 15)) % kTones;
     prev_ = tone;
@@ -244,7 +280,7 @@ public:
   }
 
   void flushTail() {
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < spec_.flushChars; ++i)
       sendChar(0);
     bitstate_ = 0;
   }
@@ -266,8 +302,9 @@ private:
     }
   }
 
+  Spec spec_;
   ConvEncoder enc_;
-  Interleave inlv_{false};
+  Interleave inlv_;
   unsigned bitshreg_ = 0;
   int bitstate_ = 0;
   int prev_ = 0;
@@ -276,6 +313,9 @@ private:
 
 class ToneRx {
 public:
+  explicit ToneRx(const Spec& spec)
+      : inlv_(true, spec.depth), dec_(spec.constraint, spec.poly1, spec.poly2, spec.traceback) {}
+
   void setPrev(int tone) { prev_ = tone; }
 
   // A negative tone is a puncture: no carrier, so the interleaver and the
@@ -381,7 +421,7 @@ private:
     return QString(QChar::fromLatin1(char(ch)));
   }
 
-  Interleave inlv_{true};
+  Interleave inlv_;
   Viterbi dec_;
   unsigned char pair_[2] = {};
   int symcounter_ = 0;
@@ -431,7 +471,7 @@ int peakTone(const double* magnitude) {
 QString textFromAudio(const Spec& spec, const float* samples, int count, int sampleRateHz, int centerHz) {
   const int separ = std::max(8, int(std::lround(double(sampleRateHz) / spec.baud)));
   const int symbols = count / separ;
-  ToneRx rx;
+  ToneRx rx(spec);
   QString text;
   double magnitude[kTones];
   const double low = lowHz(spec, centerHz);
@@ -440,9 +480,11 @@ QString textFromAudio(const Spec& spec, const float* samples, int count, int sam
     toneMagnitude(samples, count, s * separ, separ, low, spacing, sampleRateHz, 1, magnitude);
     text += rx.pushTone(peakTone(magnitude));
   }
-  // Traceback is 45 and the 4 by 10 interleaver holds the tail. fldigi
-  // keeps demodulating after the tones. Forty-eight punctures release it.
-  for (int i = 0; i < 48; ++i)
+  // The K=7 traceback is 45 and the 4 by 10 interleaver holds the tail.
+  // K=15 uses a traceback of 180 and a depth of 50. fldigi keeps
+  // demodulating after the tones. Punctures release that delay.
+  const int extra = spec.constraint > 7 ? 220 : 48;
+  for (int i = 0; i < extra; ++i)
     text += rx.pushTone(-1);
   return text;
 }
@@ -462,7 +504,7 @@ ThorPlan planThor(const QString& mode, const QString& text, int centerHz) {
   if (!spec || text.isEmpty())
     return plan;
   const int separ = std::max(8, int(std::lround(48000.0 / spec->baud)));
-  ToneTx tx;
+  ToneTx tx(*spec);
   tx.clearBits();
   for (int i = 0; i < 16; ++i)
     tx.sendRaw(0);
@@ -610,7 +652,7 @@ void ThorEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
     d_->locked = true;
     d_->lock = bestAt;
     d_->next = 0;
-    d_->rx = std::make_unique<ToneRx>();
+    d_->rx = std::make_unique<ToneRx>(*spec);
     if (bestAt >= separ) {
       toneMagnitude(d_->pending.data(), int(d_->pending.size()), bestAt - separ, separ, low, spacing,
                     sampleRateHz, 1, magnitude);

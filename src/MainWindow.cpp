@@ -1501,7 +1501,7 @@ QWidget* MainWindow::makeReceivePanel() {
       "Sent text prints here in red as it goes out."));
   echo->setToolTip(QStringLiteral(
       "Fldigi transmit echo. Characters print in red as the audio goes out. "
-      "Hell keeps the tape. RTTY, BPSK, Olivia, Contestia, MFSK, DominoEX, and Thor print received text here too. "
+      "Hell keeps the tape. RTTY, BPSK, QPSK, Olivia, Contestia, MFSK, DominoEX, and Thor print received text here too. "
       "This does not key and does not send START."));
   echo->setLineWrapMode(QTextEdit::WidgetWidth);
   echo->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
@@ -1617,8 +1617,7 @@ QWidget* MainWindow::makeMacroRow() {
                       QSettings().value(QStringLiteral("dx/macroTx"), false).toBool());
   macroTx->setToolTip(QStringLiteral(
       "Off copies a macro into the transmit box. That does not key. "
-      "On also presses TX. Hell, RTTY, the BPSK speeds, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 can key. "
-      "QPSK does not key yet. "
+      "On also presses TX. Hell, RTTY, BPSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 can key. "
       "START is never sent."));
   connect(macroTx, &QPushButton::toggled, this, [](bool on) {
     QSettings().setValue(QStringLiteral("dx/macroTx"), on);
@@ -2062,6 +2061,29 @@ void MainWindow::buildMenus() {
   } pskRows[] = {{"PSK31", "modePsk31", "31.25"},   {"PSK63", "modePsk63", "62.5"},
                  {"PSK125", "modePsk125", "125"},   {"PSK250", "modePsk250", "250"},
                  {"PSK500", "modePsk500", "500"},   {"PSK1000", "modePsk1000", "1000"}};
+  auto* qpskMenu = modeMenu->addMenu(QStringLiteral("QPSK"));
+  qpskMenu->setObjectName(QStringLiteral("modeQpskMenu"));
+  qpskMenu->setToolTip(QStringLiteral(
+      "Fldigi QPSK on DIGU. K=5 convolutional code. A dibit turns the carrier by a quarter. "
+      "TX sends it. START is never sent. 8PSK is a different constellation and is not here."));
+  const struct {
+    const char* label;
+    const char* objectName;
+    const char* baud;
+  } qpskRows[] = {{"QPSK31", "modeQpsk31", "31.25"}, {"QPSK63", "modeQpsk63", "62.5"},
+                  {"QPSK125", "modeQpsk125", "125"}, {"QPSK250", "modeQpsk250", "250"},
+                  {"QPSK500", "modeQpsk500", "500"}};
+  for (const auto& row : qpskRows) {
+    auto* action = qpskMenu->addAction(QString::fromLatin1(row.label));
+    action->setCheckable(true);
+    action->setObjectName(QString::fromLatin1(row.objectName));
+    action->setToolTip(QStringLiteral("Fldigi %1 on DIGU. %2 baud. K=5 convolutional code. "
+                                      "TX sends it. START is never sent.")
+                           .arg(QLatin1String(row.label), QLatin1String(row.baud)));
+    modes->addAction(action);
+    const QString modeName = QString::fromLatin1(row.label);
+    connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
+  }
   for (const auto& row : pskRows) {
     auto* action = pskMenu->addAction(QString::fromLatin1(row.label));
     action->setCheckable(true);
@@ -2119,15 +2141,18 @@ void MainWindow::buildMenus() {
                   {"MFSK11", "modeMfsk11", "10.77"},   {"MFSK16", "modeMfsk16", "15.625"},
                   {"MFSK22", "modeMfsk22", "21.53"},   {"MFSK31", "modeMfsk31", "31.25"},
                   {"MFSK32", "modeMfsk32", "31.25"},   {"MFSK64", "modeMfsk64", "62.5"},
-                  {"MFSK128", "modeMfsk128", "125"}};
+                  {"MFSK64L", "modeMfsk64L", "62.5"},  {"MFSK128", "modeMfsk128", "125"},
+                  {"MFSK128L", "modeMfsk128L", "125"}};
   for (const auto& row : mfskRows) {
     auto* action = mfskMenu->addAction(QString::fromLatin1(row.label));
     action->setCheckable(true);
     action->setObjectName(QString::fromLatin1(row.objectName));
+    const bool longInterleave = QLatin1String(row.label).endsWith(QLatin1String("L"));
     action->setToolTip(QStringLiteral(
         "Fldigi %1 on DIGU. %2 baud. Gray-coded tones, NASA K=7, varicode, and the fldigi "
-        "interleaver. TX sends it. START is never sent.")
-                           .arg(QLatin1String(row.label), QLatin1String(row.baud)));
+        "%3 interleaver. TX sends it. START is never sent.")
+                           .arg(QLatin1String(row.label), QLatin1String(row.baud),
+                                longInterleave ? QStringLiteral("long") : QStringLiteral("diagonal")));
     modes->addAction(action);
     const QString modeName = QString::fromLatin1(row.label);
     connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
@@ -2141,7 +2166,8 @@ void MainWindow::buildMenus() {
     const char* label;
     const char* objectName;
     const char* baud;
-  } dominoRows[] = {{"DominoEX 4", "modeDominoex4", "3.906"},
+  } dominoRows[] = {{"DominoEX Micro", "modeDominoexMicro", "2"},
+                    {"DominoEX 4", "modeDominoex4", "3.906"},
                     {"DominoEX 5", "modeDominoex5", "5.383"},
                     {"DominoEX 8", "modeDominoex8", "7.8125"},
                     {"DominoEX 11", "modeDominoex11", "10.77"},
@@ -2162,23 +2188,32 @@ void MainWindow::buildMenus() {
   auto* thorMenu = modeMenu->addMenu(QStringLiteral("Thor"));
   thorMenu->setObjectName(QStringLiteral("modeThorMenu"));
   thorMenu->setToolTip(QStringLiteral(
-      "Fldigi Thor on DIGU. NASA K=7, varicode, a 4 by 10 interleaver, and 18-tone incremental "
-      "keying. TX sends it. START is never sent."));
+      "Fldigi Thor on DIGU. The slow speeds are NASA K=7. Thor 25x4, 50x1, 50x2, and 100 are "
+      "IEEE K=15. Varicode and 18-tone incremental keying. TX sends it. START is never sent."));
   const struct {
     const char* label;
     const char* objectName;
     const char* baud;
-  } thorRows[] = {{"Thor 4", "modeThor4", "3.906"},   {"Thor 5", "modeThor5", "5.383"},
-                  {"Thor 8", "modeThor8", "7.8125"},  {"Thor 11", "modeThor11", "10.77"},
-                  {"Thor 16", "modeThor16", "15.625"}, {"Thor 22", "modeThor22", "21.53"}};
+    const char* code;
+  } thorRows[] = {{"Thor 4", "modeThor4", "3.906", "K=7"},
+                  {"Thor 5", "modeThor5", "5.383", "K=7"},
+                  {"Thor 8", "modeThor8", "7.8125", "K=7"},
+                  {"Thor 11", "modeThor11", "10.77", "K=7"},
+                  {"Thor 16", "modeThor16", "15.625", "K=7"},
+                  {"Thor 22", "modeThor22", "21.53", "K=7"},
+                  {"Thor 25x4", "modeThor25x4", "25", "K=15"},
+                  {"Thor 50x1", "modeThor50x1", "50", "K=15"},
+                  {"Thor 50x2", "modeThor50x2", "50", "K=15"},
+                  {"Thor 100", "modeThor100", "100", "K=15"}};
   for (const auto& row : thorRows) {
     auto* action = thorMenu->addAction(QString::fromLatin1(row.label));
     action->setCheckable(true);
     action->setObjectName(QString::fromLatin1(row.objectName));
     action->setToolTip(QStringLiteral(
-        "Fldigi %1 on DIGU. %2 baud. K=7 convolutional code, varicode, and 18-tone IFK+. "
+        "Fldigi %1 on DIGU. %2 baud. %3 convolutional code, varicode, and 18-tone IFK+. "
         "TX sends it. START is never sent.")
-                           .arg(QLatin1String(row.label), QLatin1String(row.baud)));
+                           .arg(QLatin1String(row.label), QLatin1String(row.baud),
+                                QLatin1String(row.code)));
     modes->addAction(action);
     const QString modeName = QString::fromLatin1(row.label);
     connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
@@ -2322,7 +2357,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     statusStrip_->setDigitalMode(modeName);
   showKeyboardReceive(modeName);
   const bool rtty = rttyMode(modeName);
-  const bool psk = pskMode(modeName) && pskBaud(modeName) > 0.0;
+  const bool psk = keyedPsk(modeName);
   const bool olivia = oliviaBandwidthHz(modeName) > 0;
   const bool mfsk = mfskBandwidthHz(modeName) > 0;
   const bool domino = dominoBandwidthHz(modeName) > 0;
@@ -2537,18 +2572,18 @@ void MainWindow::showGuide() {
        "8/500, 16/500, 16/1000, and 32/1000. Each character is one block-code impulse, scrambled "
        "and sent as Gray-coded tones centered on the cursor. Contestia uses a 6-bit set and "
        "prints capitals. TX sends those. Mode → MFSK is MFSK4, MFSK8, MFSK11, MFSK16, MFSK22, "
-       "MFSK31, MFSK32, MFSK64, and MFSK128. Tones are Gray coded. Each character is IZ8BLY "
+       "MFSK31, MFSK32, MFSK64, MFSK64L, MFSK128, and MFSK128L. Tones are Gray coded. Each character is IZ8BLY "
        "varicode, a NASA K=7 convolutional code, and the fldigi diagonal interleaver, centered "
-       "on the cursor. TX sends those. Mode → DominoEX is DominoEX 4, 5, 8, 11, 16, and 22. "
+       "on the cursor. The L speeds use the long interleaver. TX sends those. Mode → DominoEX is DominoEX Micro, 4, 5, 8, 11, 16, and 22. "
        "Eighteen tones, incremental frequency keying, and the DominoEX nibble varicode. FEC is off. "
-       "TX sends those. Mode → Thor is Thor 4, 5, 8, 11, 16, and 22. Each character is the IZ8BLY "
-       "varicode, a NASA K=7 convolutional code, and a 4 by 10 interleaver, sent as 18-tone "
-       "incremental keying centered on the cursor. TX sends those. Thor 25x4, 50x1, 50x2, and 100 "
-       "use a K=15 code and do not key yet. Mode → MT63 is MT63-500S, MT63-500L, MT63-1000S, "
+       "Micro is 2 baud. TX sends those. Mode → Thor is Thor 4, 5, 8, 11, 16, 22, 25x4, 50x1, 50x2, and 100. Each character is the IZ8BLY "
+       "varicode and 18-tone incremental keying centered on the cursor. The slow speeds are NASA K=7 with a 4 by 10 interleaver. "
+       "25x4, 50x1, 50x2, and 100 are IEEE K=15. TX sends those. Mode → MT63 is MT63-500S, MT63-500L, MT63-1000S, "
        "MT63-1000L, MT63-2000S, and MT63-2000L. Sixty-four carriers, a Walsh code, and the fldigi "
-       "short or long interleaver, centered on the cursor. TX sends those. QPSK does not key yet. "
-       "A macro copies into the box. TX macro also presses TX when it is on. Hell, RTTY, the "
-       "BPSK speeds, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
+       "short or long interleaver, centered on the cursor. TX sends those. Mode → QPSK is QPSK31, QPSK63, QPSK125, QPSK250, and QPSK500. "
+       "Each varicode bit is a K=5 dibit. 8PSK is a different constellation and is not on this menu. "
+       "A macro copies into the box. TX macro also presses TX when it is on. Hell, RTTY, BPSK, QPSK, "
+       "Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
        "CW stays in Lyra. START is never sent."},
       {"WEFAX",
        "Mode → WEFAX-576 receives only. It does not key and it does not send START. IOC is 576 and "
@@ -2557,15 +2592,15 @@ void MainWindow::showGuide() {
        "and white is 2300 Hz until you move it. Folder picks the directory. Until you pick one, pictures "
        "save under Documents\\STD\\wefax. Save writes the picture received so far as a PNG. A stop tone "
        "also writes that file. CLR RX clears the picture and does not unkey. TX and Tune do not key "
-       "in this mode. Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 are on the mode menu and they do key. "
-       "QPSK does not key yet. CW stays in Lyra."},
+       "in this mode. Olivia, Contestia, MFSK, DominoEX, Thor, QPSK, and MT63 are on the mode menu and they do key. "
+       "8PSK is not on this menu. CW stays in Lyra."},
       {"Macros",
        "File → Macros → Open loads one Fldigi .mdf, and that file is the set in use. Save writes "
        "the names and the text back as a .mdf. Options → Macros can Open that file, start a New "
        "set, and Save it. The bank button 1 through 4 shows which 12 are on the bar. The name and "
        "the text stay editable. A filled button copies its text into the transmit box. TX macro, "
        "off unless you turn it on, also presses TX. Hell, RTTY, the BPSK speeds, Olivia, Contestia, "
-       "MFSK, DominoEX, Thor, and MT63 can key. QPSK does not key yet. Opening or saving a .mdf does "
+       "MFSK, DominoEX, Thor, QPSK, and MT63 can key. Opening or saving a .mdf does "
        "not key and does not send START."},
       {"Contest tags",
        "The list above Tx1 is Standard or a contest, the same set MSHV uses. Choosing one writes "
@@ -3329,8 +3364,10 @@ void MainWindow::applyChannelWidth() {
     width = 245;
   else if (rttyMode(mode))
     width = 200;
-  else if (pskMode(mode) && pskBaud(mode) > 0.0)
-    width = std::max(80, int(std::lround(pskBaud(mode) * 1.5)));
+  else if (keyedPsk(mode)) {
+    const double baud = pskBaud(mode) > 0.0 ? pskBaud(mode) : qpskBaud(mode);
+    width = std::max(80, int(std::lround(baud * 1.5)));
+  }
   else if (oliviaBandwidthHz(mode) > 0)
     width = oliviaBandwidthHz(mode);
   else if (mfskBandwidthHz(mode) > 0)
@@ -4052,7 +4089,7 @@ void MainWindow::refreshTxChrome() {
         hell ? QStringLiteral(
                    "Transmit text. A macro copies into this box. TX sends it as Feld Hell. "
                    "Sent characters print in the receive pane.")
-        : (rttyMode(mode) || (pskMode(mode) && pskBaud(mode) > 0.0) || oliviaBandwidthHz(mode) > 0 ||
+        : (rttyMode(mode) || keyedPsk(mode) || oliviaBandwidthHz(mode) > 0 ||
            mfskBandwidthHz(mode) > 0 || dominoBandwidthHz(mode) > 0 || thorBandwidthHz(mode) > 0)
             ? QStringLiteral(
                   "Transmit text. A macro copies into this box. TX sends it. "
@@ -6519,7 +6556,7 @@ void MainWindow::showAbout() {
 <p><b>STD</b> — Shift, Tone, Decode<br>Version %1</p>
 <p>Copyright (C) 2026 Rick Langford (N8SDR)<br>
 Licensed under the <b>GNU General Public License, version 3</b> or any later version. See the file COPYING.</p>
-<p>STD speaks TCI. Connect sends <b>AUDIO_START</b> for receiver 0. The text command START is never sent. FT8, FT4, FT2, Feld Hell, RTTY, the BPSK speeds, Olivia, Contestia, MFSK, DominoEX, and Thor transmit when TX is pressed. WEFAX-576 receives only. CW stays in Lyra.</p>
+<p>STD speaks TCI. Connect sends <b>AUDIO_START</b> for receiver 0. The text command START is never sent. FT8, FT4, FT2, Feld Hell, RTTY, the BPSK speeds, QPSK, Olivia, Contestia, MFSK, DominoEX, and Thor transmit when TX is pressed. WEFAX-576 receives only. CW stays in Lyra.</p>
 <p style='color:#e8c477'><b>STD: Help keep the infections spreading and buy us a shot of bourbon.</b></p>
 <p><b>Sources and references.</b> These projects were read for conventions. Each stays under its own license.</p>
 <ul>

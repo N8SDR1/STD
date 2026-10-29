@@ -25,6 +25,7 @@ struct Spec {
 };
 
 const Spec kModes[] = {
+    {"DominoEX Micro", 2.0, 1},
     {"DominoEX 4", 8000.0 / 2048.0, 2},
     {"DominoEX 5", 11025.0 / 2048.0, 2},
     {"DominoEX 8", 8000.0 / 1024.0, 2},
@@ -511,9 +512,12 @@ DominoPlan planDomino(const QString& mode, const QString& text, int centerHz) {
     return plan;
   const int separ = std::max(8, int(std::lround(48000.0 / spec->baud)));
   ToneTx tx;
+  const bool micro = mode == QLatin1String("DominoEX Micro");
   tx.sendChar(0, true);
   tx.sendChar('\r', false);
-  tx.sendChar(2, false);
+  // Fldigi omits STX and EOT on DominoEX Micro.
+  if (!micro)
+    tx.sendChar(2, false);
   tx.sendChar('\r', false);
   const QByteArray latin = text.toLatin1();
   plan.echoAt.assign(static_cast<size_t>(latin.size()), 0);
@@ -522,7 +526,8 @@ DominoPlan planDomino(const QString& mode, const QString& text, int centerHz) {
     tx.sendChar(static_cast<unsigned char>(latin.at(i)), false);
   }
   tx.sendChar('\r', false);
-  tx.sendChar(4, false);
+  if (!micro)
+    tx.sendChar(4, false);
   tx.sendChar('\r', false);
   for (int i = 0; i < 4; ++i)
     tx.sendChar(0, true);

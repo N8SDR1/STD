@@ -316,7 +316,7 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
       *echoAt = plan.echoAt;
     return true;
   }
-  if (pskMode(mode) && pskBaud(mode) > 0.0) {
+  if (keyedPsk(mode)) {
     const PskPlan plan = planPsk(mode, text, tone);
     if (plan.samples.empty())
       return false;

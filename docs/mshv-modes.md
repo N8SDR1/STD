@@ -51,16 +51,17 @@ shifts 122.5, 55, and 300 Hz. The receive tape reads that shift. RTTY is 45.45 b
 PSK31, PSK63, PSK125, PSK250, PSK500, and PSK1000. Olivia and Contestia are
 4/250, 8/250, 8/500, 16/500, 16/1000, and 32/1000, Gray-coded tones from Pawel
 Jalocha's block code. MFSK is MFSK4, MFSK8, MFSK11, MFSK16, MFSK22, MFSK31,
-MFSK32, MFSK64, and MFSK128: Gray-coded tones, NASA K=7, IZ8BLY varicode, and
-the fldigi diagonal interleaver. MFSK64L and MFSK128L are not in this build.
-DominoEX is 4, 5, 8, 11, 16, and 22: 18-tone incremental frequency keying and
-the nibble varicode. FEC is off. DominoEX Micro is not in this build.
-Thor is Thor 4, 5, 8, 11, 16, and 22: NASA K=7, the IZ8BLY varicode, a 4 by 10
-interleaver, and 18-tone incremental keying. Thor 25x4, 50x1, 50x2, and 100
-use a K=15 code and do not key yet. Thor Micro is not in this build.
+MFSK32, MFSK64, MFSK64L, MFSK128, and MFSK128L: Gray-coded tones, NASA K=7,
+IZ8BLY varicode, and the fldigi diagonal interleaver. The L speeds use the
+long interleaver.
+DominoEX is Micro, 4, 5, 8, 11, 16, and 22: 18-tone incremental frequency
+keying and the nibble varicode. FEC is off. Micro is 2 baud.
+Thor is Thor 4, 5, 8, 11, 16, 22, 25x4, 50x1, 50x2, and 100. The slow speeds
+are NASA K=7 with a 4 by 10 interleaver. 25x4, 50x1, 50x2, and 100 are IEEE
+K=15. Thor Micro is not in this build.
 WEFAX-576 receives only (IOC 576, 120 lines per minute) and saves PNGs to the
 folder. They are still being proved on the air.
 
 MT63-500S, MT63-500L, MT63-1000S, MT63-1000L, MT63-2000S, and MT63-2000L key.
-QPSK does not key yet.
+QPSK31, QPSK63, QPSK125, QPSK250, and QPSK500 key. 8PSK is not in this build.
 CW stays in Lyra.

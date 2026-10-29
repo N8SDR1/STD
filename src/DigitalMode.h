@@ -74,6 +74,33 @@ inline double pskBaud(const QString& mode) {
   return 0.0;
 }
 
+// Fldigi QPSK. K=5 convolutional code, one dibit per varicode bit.
+// 8PSK is a different constellation and is not this.
+inline bool qpskMode(const QString& mode) {
+  return mode.startsWith(QLatin1String("QPSK"), Qt::CaseInsensitive);
+}
+
+// 0 when the name is not a QPSK speed STD modulates. There is no QPSK1000.
+inline double qpskBaud(const QString& mode) {
+  if (!qpskMode(mode))
+    return 0.0;
+  if (mode.contains(QLatin1String("500")))
+    return 500.0;
+  if (mode.contains(QLatin1String("250")))
+    return 250.0;
+  if (mode.contains(QLatin1String("125")))
+    return 125.0;
+  if (mode.contains(QLatin1String("63")))
+    return 62.5;
+  if (mode.contains(QLatin1String("31")))
+    return 31.25;
+  return 0.0;
+}
+
+inline bool keyedPsk(const QString& mode) {
+  return (pskMode(mode) && pskBaud(mode) > 0.0) || qpskBaud(mode) > 0.0;
+}
+
 // HF WEFAX receive. The name is the Fldigi menu label. It does not key.
 inline bool wefaxMode(const QString& mode) {
   return mode.startsWith(QLatin1String("WEFAX"), Qt::CaseInsensitive);

@@ -492,7 +492,7 @@ void ModeProfile::setDigitalMode(const QString& mode) {
   refreshBands();
   const bool hell = hellFamily(mode_);
   const bool keyboard = keyboardTextMode(mode_);
-  const bool keys = rttyMode(mode_) || (pskMode(mode_) && pskBaud(mode_) > 0.0) ||
+  const bool keys = rttyMode(mode_) || keyedPsk(mode_) ||
                     oliviaBandwidthHz(mode_) > 0 || mfskBandwidthHz(mode_) > 0 ||
                     dominoBandwidthHz(mode_) > 0 || thorBandwidthHz(mode_) > 0;
   if (auto* label = qobject_cast<QLabel*>(keyboard_)) {

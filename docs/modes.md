@@ -14,11 +14,12 @@ Connect sends `AUDIO_START:0`. The text command START is never sent. CW stays in
 | Hell | Feld Hell, Slow Hell, Feld Hell X5, Feld Hell X9, FSK Hell, FSK Hell-105, Hell 80 | Fldigi column rates. [Hell notes](hell.html). |
 | RTTY | one row, labeled RTTY | 45.45 baud, 170 Hz, 5 bits, 1.5 stop, mark high, reverse off. USOS: a space sends LTRS, then the space. There is no baud or shift submenu. |
 | PSK | PSK31, PSK63, PSK125, PSK250, PSK500, PSK1000 | BPSK. Symbol rates 31.25, 62.5, 125, 250, 500, 1000 baud. A zero reverses the phase. |
+| QPSK | QPSK31, QPSK63, QPSK125, QPSK250, QPSK500 | K=5 convolutional code. One dibit per varicode bit. 8PSK is not on the menu. |
 | Olivia | 4/250, 8/250, 8/500, 16/500, 16/1000, 32/1000 | Gray-coded tones. Baud 62.5, 31.25, 62.5, 31.25, 62.5, 31.25. |
 | Contestia | the same six | Same shape as Olivia, Contestia scramble. |
-| MFSK | MFSK4, 8, 11, 16, 22, 31, 32, 64, 128 | NASA K=7, varicode, diagonal interleaver. |
-| DominoEX | 4, 5, 8, 11, 16, 22 | 18-tone incremental keying. FEC is off. |
-| Thor | 4, 5, 8, 11, 16, 22 | NASA K=7, varicode, 4 by 10 interleaver, 18-tone incremental keying. |
+| MFSK | MFSK4, 8, 11, 16, 22, 31, 32, 64, 64L, 128, 128L | NASA K=7, varicode, diagonal interleaver. The L rows use the long interleaver. |
+| DominoEX | Micro, 4, 5, 8, 11, 16, 22 | 18-tone incremental keying. FEC is off. Micro is 2 baud. |
+| Thor | 4, 5, 8, 11, 16, 22, 25x4, 50x1, 50x2, 100 | Slow speeds are NASA K=7. 25x4, 50x1, 50x2, and 100 are IEEE K=15. 18-tone incremental keying. |
 | MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L | 64 carriers, Walsh code, short or long interleave. Centered on the cursor. |
 
 TX or Tune is what sends `trx`. An empty line does not key.
@@ -31,9 +32,8 @@ TX or Tune is what sends `trx`. An empty line does not key.
 
 These do not key.
 
-- **QPSK and 8PSK.** Not written. They will use Fldigi's convolutional code.
-- **MFSK64L, MFSK128L, DominoEX Micro, Thor Micro.** Absent on purpose.
-- **Thor 25x4, Thor 50x1, Thor 50x2, Thor 100.** Those speeds use a K=15 code and stay off until a character round-trips.
+- **8PSK.** A different constellation from QPSK. Not on the menu.
+- **Thor Micro.** Not in this build.
 - MSHV modes still outside this program (MSK144, Q65, JT65, and the rest) stay listed in [mshv-modes.md](mshv-modes.md) until they are implemented.
 
 CW stays in Lyra.
