@@ -19,7 +19,11 @@
 #define IcoFile      "..\resources\std.ico"
 
 [Setup]
+; Stable AppId. A later setup with this same id installs over the existing
+; folder (Program Files\STD, or wherever it was first installed). The
+; operator does not uninstall first. Do not change this id.
 AppId={{C4A91E70-6B2D-4F18-9A33-8E5D1C0B7A64}
+UsePreviousAppDir=yes
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
@@ -76,5 +80,6 @@ begin
     'STD is Shift, Tone, Decode, a digimode console for a TCI radio.' + #13#10 +
     'testing phase - highly transmissible.' + #13#10 + #13#10 +
     'Connect sends AUDIO_START for receiver 0. The text command START is never sent. CW stays in Lyra.' + #13#10 + #13#10 +
+    'If STD is already installed, this setup replaces that copy in the same folder. You do not uninstall first.' + #13#10 + #13#10 +
     'Click Next to continue, or Cancel to exit Setup.';
 end;

@@ -376,6 +376,49 @@ bool js8Mode(const QString& mode) {
   return mode.compare(QLatin1String("JS8"), Qt::CaseInsensitive) == 0;
 }
 
+namespace {
+
+struct Js8Calling {
+  const char* name;
+  qint64 dial;
+  const char* place;
+};
+
+// Same table as the Windows user guide PDF and the HTML guide.
+constexpr Js8Calling kSuggested[] = {
+    {"160m", 1842000, "2 kHz above FT8"},  {"80m", 3578000, "5 kHz above FT8"},
+    {"40m", 7078000, "4 kHz above FT8"},   {"30m", 10130000, "6 kHz below FT8"},
+    {"20m", 14078000, "4 kHz above FT8"},  {"17m", 18104000, "4 kHz above FT8"},
+    {"15m", 21078000, "4 kHz above FT8"},  {"12m", 24922000, "9 kHz above FT8"},
+    {"10m", 28078000, "4 kHz above FT8"},  {"6m", 50318000, "5 kHz above FT8"},
+};
+
+constexpr int kSuggestedCount = int(sizeof(kSuggested) / sizeof(kSuggested[0]));
+
+}  // namespace
+
+int js8SuggestedBandCount() {
+  return kSuggestedCount;
+}
+
+qint64 js8SuggestedDialHz(int bandIndex) {
+  if (bandIndex < 0 || bandIndex >= kSuggestedCount)
+    return 0;
+  return kSuggested[bandIndex].dial;
+}
+
+QString js8SuggestedBandName(int bandIndex) {
+  if (bandIndex < 0 || bandIndex >= kSuggestedCount)
+    return {};
+  return QString::fromLatin1(kSuggested[bandIndex].name);
+}
+
+QString js8SuggestedPlace(int bandIndex) {
+  if (bandIndex < 0 || bandIndex >= kSuggestedCount)
+    return {};
+  return QString::fromLatin1(kSuggested[bandIndex].place);
+}
+
 Js8Plan planJs8(const QString& text, int toneHz) {
   Js8Plan plan;
   const int tone = std::clamp(toneHz, 200, 3000);

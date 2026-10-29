@@ -120,18 +120,16 @@ qt_add_executable(std
   src/mt63/fldigi/dsp.cxx
   src/mt63/fldigi/mt63base.cxx
   resources/resources.qrc
+  src/std.rc
 )
+
+# Windows subsystem, and the capsule in src/std.rc is the executable icon.
+set_target_properties(std PROPERTIES WIN32_EXECUTABLE TRUE)
 
 target_compile_definitions(std PRIVATE
   STD_VERSION="${PROJECT_VERSION}"
   STD_REPO_OWNER="N8SDR1"
   STD_REPO_NAME="STD")
-
-# Embed the purple capsule into std.exe so Explorer, the taskbar, and the
-# installer shortcuts show that icon. Same pattern as Lyra's lyra.rc.
-if(WIN32)
-  target_sources(std PRIVATE src/std.rc)
-endif()
 target_include_directories(std PRIVATE
   "${CMAKE_SOURCE_DIR}/src"
   "${CMAKE_SOURCE_DIR}/src/hell/fldigi"

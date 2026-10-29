@@ -468,7 +468,7 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
 void ModeProfile::setMshvFamily(bool mshv) {
   family_ = mshv;
   bar_->setVisible(mshv);
-  keyboard_->setVisible(!mshv);
+  keyboard_->setVisible(!mshv && !wsprMode(mode_));
 }
 
 void ModeProfile::setDigitalMode(const QString& mode) {
@@ -481,6 +481,8 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     next = mode;
   else if (keyboardTextMode(mode))
     next = mode;
+  else if (wsprMode(mode))
+    next = QStringLiteral("WSPR");
   const bool same = next == mode_;
   mode_ = next;
   if (same)
@@ -492,21 +494,26 @@ void ModeProfile::setDigitalMode(const QString& mode) {
   refreshBands();
   const bool hell = hellFamily(mode_);
   const bool keyboard = keyboardTextMode(mode_);
+  const bool js8 = mode_.compare(QLatin1String("JS8"), Qt::CaseInsensitive) == 0;
   const bool keys = rttyMode(mode_) || keyedPsk(mode_) ||
                     oliviaBandwidthHz(mode_) > 0 || mfskBandwidthHz(mode_) > 0 ||
-                    dominoBandwidthHz(mode_) > 0 || thorBandwidthHz(mode_) > 0;
+                    dominoBandwidthHz(mode_) > 0 || thorBandwidthHz(mode_) > 0 || js8;
   if (auto* label = qobject_cast<QLabel*>(keyboard_)) {
-    label->setText(keyboard && !hell
-                       ? (keys ? QStringLiteral("%1 uses the transmit box and the receive echo. "
-                                                "CLR RX and CLR TX clear those. TX sends it. "
-                                                "START is never sent.")
-                                     .arg(mode_)
-                               : QStringLiteral("%1 uses the transmit box and the receive echo. "
-                                                "CLR RX and CLR TX clear those. This mode does not key yet. "
-                                                "START is never sent.")
-                                     .arg(mode_))
-                       : QStringLiteral(
-                             "Keyboard modes keep their own controls. None are loaded yet."));
+    const QString js8Hint = QStringLiteral(
+        "JS8 uses the transmit box and the receive echo. Band buttons move the radio to the "
+        "JS8Call-improved calling dial. CLR RX and CLR TX clear those. TX sends the box. "
+        "START is never sent.");
+    label->setText(!keyboard || hell ? QStringLiteral(
+                                           "Keyboard modes keep their own controls. None are loaded yet.")
+                    : js8       ? js8Hint
+                    : keys      ? QStringLiteral("%1 uses the transmit box and the receive echo. "
+                                                 "CLR RX and CLR TX clear those. TX sends it. "
+                                                 "START is never sent.")
+                                      .arg(mode_)
+                                : QStringLiteral("%1 uses the transmit box and the receive echo. "
+                                                 "CLR RX and CLR TX clear those. This mode does not key yet. "
+                                                 "START is never sent.")
+                                      .arg(mode_));
   }
   if (start_)
     start_->setVisible(!keyboard);

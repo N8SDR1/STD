@@ -424,11 +424,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     applyModeTone();
     connect(profile_, &ModeProfile::tuneRequested, this,
             [this](qint64 hz, const QString&) {
-              if (!tci_ || !profile_->mshvFamily())
+              if (!profile_ || !profile_->mshvFamily())
                 return;
               // FT8 and FT4 stay DIGU on every band, including 160, 80, and 40.
-              tci_->setSideband(QStringLiteral("DIGU"));
-              tci_->setDialHz(hz);
+              qsyDial(hz);
             });
   }
 
@@ -1008,6 +1007,56 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     houndNote->setWordWrap(true);
     layout->addWidget(houndNote);
 
+    auto* js8Bands = new QWidget(panel);
+    js8Bands->setObjectName(QStringLiteral("js8Bands"));
+    js8Bands->setToolTip(QStringLiteral(
+        "JS8Call-improved suggested calling dials, USB. "
+        "2 m (144.178 MHz) is in that guide and is not on this row. "
+        "A click sends DIGU and vfo:0,0. It does not key. START is never sent."));
+    auto* js8BandRow = new QHBoxLayout(js8Bands);
+    js8BandRow->setContentsMargins(0, 2, 0, 2);
+    js8BandRow->setSpacing(3);
+    auto* js8BandLabel = new QLabel(QStringLiteral("Band"), js8Bands);
+    js8BandLabel->setFont(interfaceFont(11));
+    js8BandRow->addWidget(js8BandLabel);
+    auto* js8BandGroup = new QButtonGroup(js8Bands);
+    js8BandGroup->setExclusive(true);
+    for (int i = 0; i < js8SuggestedBandCount(); ++i) {
+      const qint64 dial = js8SuggestedDialHz(i);
+      const QString name = js8SuggestedBandName(i);
+      auto* button = new QPushButton(name, js8Bands);
+      button->setObjectName(QStringLiteral("js8Band%1").arg(i));
+      button->setFont(interfaceFont(11));
+      button->setFocusPolicy(Qt::NoFocus);
+      button->setCheckable(true);
+      button->setToolTip(QStringLiteral(
+          "%1 JS8 dial %2 Hz (%3), DIGU. %4. "
+          "JS8Call-improved suggested calling frequency. "
+          "Sends vfo:0,0 when the radio is connected. Does not key. START is never sent.")
+                             .arg(name)
+                             .arg(dial)
+                             .arg(formatDial(dial), js8SuggestedPlace(i)));
+      js8BandGroup->addButton(button);
+      js8BandRow->addWidget(button);
+      connect(button, &QPushButton::clicked, this, [this, i] {
+        const qint64 dial = js8SuggestedDialHz(i);
+        const bool open = tci_ && tci_->isOpen();
+        qsyDial(dial);
+        setTxStatus(open ? QStringLiteral(
+                               "%1 JS8 dial %2 Hz. DIGU. This does not key. START was not sent.")
+                               .arg(js8SuggestedBandName(i))
+                               .arg(dial)
+                         : QStringLiteral(
+                               "%1 JS8 dial %2 Hz. The radio is not connected, so the VFO was not moved. "
+                               "This does not key. START was not sent.")
+                               .arg(js8SuggestedBandName(i))
+                               .arg(dial));
+      });
+    }
+    js8BandRow->addStretch(1);
+    js8Bands->hide();
+    layout->addWidget(js8Bands);
+
     auto* hellText = new QPlainTextEdit(panel);
     hellText->setObjectName(QStringLiteral("txHell"));
     hellText->setFont(monoFont(13));
@@ -1040,8 +1089,58 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
 
     auto* wspr = new QWidget(panel);
     wspr->setObjectName(QStringLiteral("wsprPanel"));
-    auto* wsprForm = new QFormLayout(wspr);
-    wsprForm->setContentsMargins(0, 4, 0, 0);
+    auto* wsprLayout = new QVBoxLayout(wspr);
+    wsprLayout->setContentsMargins(0, 4, 0, 0);
+    wsprLayout->setSpacing(4);
+    auto* wsprBands = new QWidget(wspr);
+    wsprBands->setObjectName(QStringLiteral("wsprBands"));
+    wsprBands->setToolTip(QStringLiteral(
+        "WSPR dials from WSJT-X and JTDX. A click sends DIGU and vfo:0,0. "
+        "It does not key. START is never sent. 40 m is 7038600 Hz, not the FT8 dial."));
+    auto* wsprBandRow = new QHBoxLayout(wsprBands);
+    wsprBandRow->setContentsMargins(0, 0, 0, 0);
+    wsprBandRow->setSpacing(3);
+    auto* wsprBandLabel = new QLabel(QStringLiteral("Band"), wsprBands);
+    wsprBandLabel->setFont(interfaceFont(11));
+    wsprBandRow->addWidget(wsprBandLabel);
+    auto* wsprBandGroup = new QButtonGroup(wsprBands);
+    wsprBandGroup->setExclusive(true);
+    for (int i = 0; i < 10; ++i) {
+      const qint64 dial = wsprDialHz(i);
+      const QString name = wsprBandName(i);
+      auto* button = new QPushButton(name, wsprBands);
+      button->setObjectName(QStringLiteral("wsprBand%1").arg(i));
+      button->setFont(interfaceFont(11));
+      button->setFocusPolicy(Qt::NoFocus);
+      button->setCheckable(true);
+      button->setToolTip(QStringLiteral(
+          "%1 WSPR dial %2 Hz (%3), DIGU. Sends vfo:0,0 when the radio is connected. "
+          "Does not key. START is never sent.")
+                             .arg(name)
+                             .arg(dial)
+                             .arg(formatDial(dial)));
+      wsprBandGroup->addButton(button);
+      wsprBandRow->addWidget(button);
+      connect(button, &QPushButton::clicked, this, [this, i] {
+        const qint64 dial = wsprDialHz(i);
+        const bool open = tci_ && tci_->isOpen();
+        qsyDial(dial);
+        setTxStatus(open ? QStringLiteral(
+                               "%1 WSPR dial %2 Hz. DIGU. This does not key. START was not sent.")
+                               .arg(wsprBandName(i))
+                               .arg(dial)
+                         : QStringLiteral(
+                               "%1 WSPR dial %2 Hz. The radio is not connected, so the VFO was not moved. "
+                               "This does not key. START was not sent.")
+                               .arg(wsprBandName(i))
+                               .arg(dial));
+      });
+    }
+    wsprBandRow->addStretch(1);
+    wsprLayout->addWidget(wsprBands);
+    auto* wsprFormHost = new QWidget(wspr);
+    auto* wsprForm = new QFormLayout(wsprFormHost);
+    wsprForm->setContentsMargins(0, 0, 0, 0);
     auto* locator = new QLabel(panel);
     locator->setObjectName(QStringLiteral("wsprLocator"));
     locator->setFont(monoFont(13));
@@ -1103,6 +1202,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "Callsign and locator from Options → User, plus Tx power. "
         "TX sends this. There is no second callsign field."));
     wsprForm->addRow(QStringLiteral("Message"), preview);
+    wsprLayout->addWidget(wsprFormHost);
     wspr->hide();
     layout->addWidget(wspr);
     connect(power, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, power](int) {
@@ -1525,6 +1625,19 @@ void MainWindow::beginWsprTune() {
       "WSPR tune carrier, 4 s, before the next period. START was not sent."));
 }
 
+void MainWindow::qsyDial(qint64 hz) {
+  if (hz < 100000)
+    return;
+  liveDialHz_ = hz;
+  if (!tci_ || !tci_->isOpen())
+    return;
+  // Band buttons and WSPR hopping. Connect already sent AUDIO_START:0.
+  // This writes the dial only. START is never sent, and this does not key.
+  tci_->setSideband(QStringLiteral("DIGU"));
+  tci_->setDialHz(hz);
+  showDial(hz);
+}
+
 void MainWindow::maybeWsprHop() {
   if (!profile_ || !wsprMode(profile_->digitalMode()))
     return;
@@ -1554,8 +1667,9 @@ void MainWindow::maybeWsprHop() {
     return;
   }
   const qint64 dial = wsprDialHz(band);
-  tci_->setSideband(QStringLiteral("DIGU"));
-  tci_->setDialHz(dial);
+  qsyDial(dial);
+  if (auto* button = findChild<QPushButton*>(QStringLiteral("wsprBand%1").arg(band)))
+    button->setChecked(true);
   setTxStatus(QStringLiteral("Band Hopping moved to %1, %2 Hz. START was not sent.")
                   .arg(wsprBandName(band))
                   .arg(dial));
@@ -1574,7 +1688,9 @@ void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int
   QString grid;
   if (!pskSpotFromMessage(message, &call, &grid))
     return;
-  const qint64 dial = profile_ ? profile_->dialHz() : 0;
+  qint64 dial = liveDialHz_;
+  if (dial < 100000 && profile_)
+    dial = profile_->dialHz();
   if (dial < 100000)
     return;
   PskSpot spot;
@@ -2336,7 +2452,8 @@ void MainWindow::buildMenus() {
   js8Action->setObjectName(QStringLiteral("modeJs8"));
   js8Action->setToolTip(QStringLiteral(
       "JS8Call-improved Normal. 15 second period, 50 Hz, the JS8 Costas array. "
-      "TX sends the transmit box. START is never sent. Fast, Turbo, Slow, Ultra, and 8PSK are not here."));
+      "Band buttons QSY to the suggested calling dials. TX sends the transmit box. "
+      "START is never sent. Fast, Turbo, Slow, Ultra, and 8PSK are not here."));
   modes->addAction(js8Action);
   connect(js8Action, &QAction::triggered, this, [this] { activateDigitalMode(QStringLiteral("JS8")); });
   auto* wsprAction = modeMenu->addAction(QStringLiteral("WSPR"));
@@ -2344,8 +2461,8 @@ void MainWindow::buildMenus() {
   wsprAction->setObjectName(QStringLiteral("modeWspr"));
   wsprAction->setToolTip(QStringLiteral(
       "WSPR-2 from WSJT-X and JTDX. 2-minute periods on even UTC minutes. "
-      "Tx power, Tx Pct, and Band Hopping are here. The locator is Options → User. "
-      "TX sends it. START is never sent."));
+      "Band buttons QSY to the WSPR dials. No macros. Tx power, Tx Pct, and Band Hopping are here. "
+      "The locator is Options → User. TX sends it. START is never sent."));
   modes->addAction(wsprAction);
   connect(wsprAction, &QAction::triggered, this, [this] { activateDigitalMode(QStringLiteral("WSPR")); });
   auto* hellMenu = modeMenu->addMenu(QStringLiteral("Hell"));
@@ -2672,6 +2789,11 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool text = keyboardTextMode(modeName);
   const bool sequenced = sequencedFamily(modeName);
   const bool family = sequenced || hell;
+  if (profile_) {
+    if (sequenced || text || wsprMode(modeName))
+      profile_->setDigitalMode(modeName);
+    profile_->setMshvFamily(family);
+  }
   const QString layoutKey = hell ? QStringLiteral("Hell") : modeName;
   if (layoutKey != layoutMode_) {
     offerLayoutSave();
@@ -2684,11 +2806,6 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     }
     applyModeTone();
     captureLayoutBaseline();
-  }
-  if (profile_) {
-    if (sequenced || text)
-      profile_->setDigitalMode(modeName);
-    profile_->setMshvFamily(family);
   }
   if (statusStrip_)
     statusStrip_->setDigitalMode(modeName);
@@ -2775,6 +2892,14 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   syncWfHellControls();
   if (family)
     tuneActiveBand();
+  if (wspr)
+    setTxStatus(QStringLiteral(
+        "WSPR. Band buttons move the radio to that WSPR dial. "
+        "No macros. Locator is Options → User. This does not key. START was not sent."));
+  else if (js8)
+    setTxStatus(QStringLiteral(
+        "JS8. Band buttons move the radio to the JS8Call-improved calling dial. "
+        "The transmit box is the message. This does not key. START was not sent."));
 }
 
 void MainWindow::showKeyboardReceive(const QString& mode) {
@@ -2787,8 +2912,24 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
       raster->clear();
     raster->setVisible(hell);
   }
-  if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
+  if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
     echo->setVisible(text || wspr);
+    if (wspr) {
+      echo->setPlaceholderText(QStringLiteral(
+          "WSPR spots print here. Call, locator, and dBm. "
+          "Nothing is uploaded until Options → Network enables PSK Reporter."));
+      echo->setToolTip(QStringLiteral(
+          "WSPR receive reports. There is no macro bar in this mode. "
+          "This does not key and does not send START."));
+    } else {
+      echo->setPlaceholderText(QStringLiteral(
+          "Sent text prints here in red as it goes out."));
+      echo->setToolTip(QStringLiteral(
+          "Fldigi transmit echo. Characters print in red as the audio goes out. "
+          "Hell keeps the tape. RTTY, BPSK, QPSK, Olivia, Contestia, MFSK, DominoEX, and Thor print received text here too. "
+          "This does not key and does not send START."));
+    }
+  }
   if (auto* clrRx = findChild<QPushButton*>(QStringLiteral("clrRx")))
     clrRx->setVisible(text || fax || wspr);
   if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
@@ -2934,10 +3075,14 @@ void MainWindow::showGuide() {
        "short or long interleaver, centered on the cursor. TX sends those. Mode → QPSK is QPSK31, QPSK63, QPSK125, QPSK250, and QPSK500. "
        "Each varicode bit is a K=5 dibit. 8PSK is a different constellation and is not on this menu. "
        "Mode → JS8 is JS8Call-improved Normal, a 15 second 50 Hz frame on the cursor. "
-       "TX sends the transmit box. Fast, Turbo, Slow, and Ultra are not on this menu. "
-       "Mode → WSPR is WSPR-2 from WSJT-X and JTDX. Even UTC minutes, Tx power, Tx Pct, "
+       "Band buttons QSY to the JS8Call-improved suggested dials, 160 m through 6 m. "
+       "2 m is in that guide and is not on the row. TX sends the transmit box. "
+       "Fast, Turbo, Slow, and Ultra are not on this menu. "
+       "Mode → WSPR is WSPR-2 from WSJT-X and JTDX. Even UTC minutes. "
+       "Band buttons QSY to the WSPR dials. There is no macro bar. Tx power, Tx Pct, "
        "and Band Hopping. The locator is the one in Options → User. TX sends that message. "
-       "A macro copies into the box. TX macro also presses TX when it is on. Hell, RTTY, BPSK, QPSK, "
+       "A macro copies into the transmit box on the keyboard modes. WSPR has no macro bar. "
+       "TX macro also presses TX when it is on. Hell, RTTY, BPSK, QPSK, "
        "Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
        "CW stays in Lyra. START is never sent."},
       {"WEFAX",
@@ -2955,8 +3100,8 @@ void MainWindow::showGuide() {
        "set, and Save it. The bank button 1 through 4 shows which 12 are on the bar. The name and "
        "the text stay editable. A filled button copies its text into the transmit box. TX macro, "
        "off unless you turn it on, also presses TX. Hell, RTTY, the BPSK speeds, Olivia, Contestia, "
-       "MFSK, DominoEX, Thor, QPSK, MT63, and JS8 can key. Opening or saving a .mdf does "
-       "not key and does not send START."},
+       "MFSK, DominoEX, Thor, QPSK, MT63, and JS8 can key. WSPR has no macro bar. "
+       "Opening or saving a .mdf does not key and does not send START."},
       {"Contest tags",
        "The list above Tx1 is Standard or a contest, the same set MSHV uses. Choosing one writes "
        "the exchange into Tx1 through Tx5 and the contest CQ, such as CQ FD or CQ TEST, onto Tx6. "
@@ -3121,9 +3266,11 @@ void MainWindow::placeDockTitle(QDockWidget* dock, const QString& title,
 void MainWindow::applyMacroBar() {
   if (!macroDock_)
     return;
-  const bool hell = profile_ && hellFamily(profile_->digitalMode());
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  const bool hell = hellFamily(mode);
   const bool mshv = profile_ && profile_->mshvFamily() && !hell;
-  macroDock_->setVisible(!mshv);
+  const bool wspr = wsprMode(mode);
+  macroDock_->setVisible(!mshv && !wspr);
 }
 
 void MainWindow::syncWfHellControls() {
@@ -4468,6 +4615,8 @@ void MainWindow::refreshTxChrome() {
     clrTx->setVisible(textMode);
   if (auto* wsprPanel = findChild<QWidget*>(QStringLiteral("wsprPanel")))
     wsprPanel->setVisible(wspr);
+  if (auto* js8Bands = findChild<QWidget*>(QStringLiteral("js8Bands")))
+    js8Bands->setVisible(js8Mode(mode));
   const char* sequenceNames[] = {"txStandard", "txActivity", "txPick1", "tx1", "txPick2", "tx2",
                                  "txPick3",    "tx3",        "txPick4", "tx4", "txPick5", "tx5",
                                  "txPick6",    "tx6",        "txPick7", "txExtra", "txQso",
@@ -6935,6 +7084,7 @@ void MainWindow::setReceivePlaceholder(bool connected) {
 
 void MainWindow::showRadioDown(const QString& error) {
   const QString dash = QString::fromUtf8("—");
+  liveDialHz_ = 0;
   dialText_ = dash;
   setReceivePlaceholder(false);
   const QString line = error.isEmpty() ? QStringLiteral("Radio not connected")
@@ -6956,6 +7106,7 @@ void MainWindow::showRadioDown(const QString& error) {
 }
 
 void MainWindow::showRadioUp(const QString& host, quint16 port) {
+  liveDialHz_ = 0;
   dialText_ = QString::fromUtf8("—");
   setReceivePlaceholder(true);
   if (statusStrip_) {
@@ -6973,6 +7124,8 @@ void MainWindow::showRadioUp(const QString& host, quint16 port) {
 void MainWindow::showDial(qint64 hz) {
   if (!tci_ || !tci_->isOpen())
     return;
+  if (hz > 0)
+    liveDialHz_ = hz;
   dialText_ = formatDial(hz);
   if (statusStrip_)
     statusStrip_->setDial(dialText_);

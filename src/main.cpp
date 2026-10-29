@@ -905,8 +905,36 @@ int shellReady(MainWindow& window) {
       window.findChild<QLineEdit*>(QStringLiteral("wsprGrid")))
     return fail("WSPR added a callsign field");
   if (wsprBandIndex(0) != 0 || wsprBandIndex(10) != 5 || wsprDialHz(5) != 14095600 ||
-      wsprDialHz(4) != 10138700 || wsprDialHz(0) != 136000)
+      wsprDialHz(4) != 10138700 || wsprDialHz(3) != 7038600 || wsprDialHz(0) != 136000)
     return fail("WSPR dials are wrong");
+  for (int i = 0; i < 10; ++i) {
+    const auto* button = window.findChild<QPushButton*>(QStringLiteral("wsprBand%1").arg(i));
+    if (!button || button->text() != wsprBandName(i) ||
+        !button->toolTip().contains(QString::number(wsprDialHz(i))) ||
+        !button->toolTip().contains(QLatin1String("START")))
+      return fail("WSPR band button is missing");
+  }
+  const auto* wsprRow = window.findChild<QWidget*>(QStringLiteral("wsprBands"));
+  if (!wsprRow || !wsprRow->toolTip().contains(QLatin1String("7038600")))
+    return fail("WSPR band row is missing");
+  if (js8SuggestedBandCount() != 10 || js8SuggestedDialHz(2) != 7078000 ||
+      js8SuggestedDialHz(4) != 14078000 || js8SuggestedDialHz(9) != 50318000 ||
+      js8SuggestedDialHz(0) != 1842000)
+    return fail("JS8 dials are wrong");
+  for (int i = 0; i < js8SuggestedBandCount(); ++i) {
+    const auto* button = window.findChild<QPushButton*>(QStringLiteral("js8Band%1").arg(i));
+    if (!button || button->text() != js8SuggestedBandName(i) ||
+        !button->toolTip().contains(QString::number(js8SuggestedDialHz(i))) ||
+        !button->toolTip().contains(QLatin1String("START")))
+      return fail("JS8 band button is missing");
+  }
+  const auto* js8Row = window.findChild<QWidget*>(QStringLiteral("js8Bands"));
+  if (!js8Row || !js8Row->toolTip().contains(QLatin1String("144.178")) ||
+      !js8Row->toolTip().contains(QLatin1String("START")))
+    return fail("JS8 band row is missing");
+  if (window.findChild<QLineEdit*>(QStringLiteral("js8Call")) ||
+      window.findChild<QLineEdit*>(QStringLiteral("js8Grid")))
+    return fail("JS8 added a callsign field");
   if (wsprTxThisSlot(0))
     return fail("WSPR Tx Pct 0 transmitted");
   const QDateTime wsprDay(QDate(2026, 10, 29), QTime(16, 0), QTimeZone(QTimeZone::UTC));

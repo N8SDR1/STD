@@ -183,6 +183,8 @@ private:
   int wsprTxPct() const;
   void maybeWsprHop();
   void beginWsprTune();
+  // DIGU and vfo:0,0 when the radio is open. Does not key. START is never sent.
+  void qsyDial(qint64 hz);
   QString stationCall() const;
   QString stationGrid() const;
   void openPskReporterMap() const;
@@ -255,6 +257,7 @@ private:
   bool layoutGuard_ = false;
   QVector<DecodeRow> decodes_;
   QString dialText_ = QString::fromUtf8("—");
+  qint64 liveDialHz_ = 0;
   QDockWidget* waterfallDock_ = nullptr;
   QDockWidget* receiveDock_ = nullptr;
   QDockWidget* transmitDock_ = nullptr;
