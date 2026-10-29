@@ -45,6 +45,8 @@ struct HellEngine::Private {
   double agc = 0.0;
   int colPointer = 0;
   int colData[2 * kColumnLen] = {};
+  bool squelchOn = false;
+  int squelchLevel = 10;
   const double downsampleInc = (kColumnLen * kColumnRate) / static_cast<double>(kSampleRate);
   C_FIR_filter* hilbert = nullptr;
   fftfilt* lowpass = nullptr;
@@ -117,6 +119,9 @@ struct HellEngine::Private {
       agc = avg;
     else
       agc *= (1.0 - 0.01 / kColumnLen);
+    // feld::rx metric is 1000*agc, clamped 0..100, then compared with the slider.
+    const double metric = clampd(1000.0 * agc, 0.0, 100.0);
+    const bool gated = squelchOn && metric <= static_cast<double>(squelchLevel);
 
     // HellBlackboard is off, so a strong tone is ink.
     ix = 255 - ix;
@@ -130,7 +135,7 @@ struct HellEngine::Private {
     colPointer = 0;
     for (int i = 0; i < kColumnLen; ++i)
       colData[i] = colData[i + kColumnLen];
-    return true;
+    return !gated;
   }
 };
 
@@ -149,6 +154,15 @@ void HellEngine::setArmed(bool armed) {
   d_->armed = armed;
   if (armed)
     d_->reset();
+}
+
+void HellEngine::setSquelch(bool on, int level) {
+  if (level < 0)
+    level = 0;
+  if (level > 100)
+    level = 100;
+  d_->squelchOn = on;
+  d_->squelchLevel = level;
 }
 
 void HellEngine::setToneHz(int hz) {

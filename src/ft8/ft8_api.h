@@ -52,12 +52,13 @@ int ft2_session_decode(Ft8Session* session, double* samples, int count, int lowH
 /* MSHV multi-answer a-priori state. on is 0 or 1. This does not transmit. */
 void ft8_session_set_multi_answer(Ft8Session* session, int on);
 
-/* One FT8 or FT4 waveform at 48 kHz, full-scale int samples.
-   samples must hold at least 840000 (FT8) or 420000 (FT4) ints.
+/* One FT8, FT4, or FT2 waveform at 48 kHz, full-scale int samples.
+   samples must hold at least 840000 (FT8), 420000 (FT4), or 220000 (FT2) ints.
    Returns the sample count, or 0 if the message cannot be encoded.
    Does not key a radio. */
 int ft8_generate(const char* message, double toneHz, int* samples, int capacity);
 int ft4_generate(const char* message, double toneHz, int* samples, int capacity);
+int ft2_generate(const char* message, double toneHz, int* samples, int capacity);
 
 #ifdef __cplusplus
 }

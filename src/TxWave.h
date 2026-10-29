@@ -7,10 +7,28 @@
 
 #include <vector>
 
-// One transmission at 48 kHz, float -1..1. FT8 and FT4 come from the
-// MSHV generators. Hell is Feld Hell keyed at the tone. Empty when the
+// One transmission at 48 kHz, float -1..1. FT8, FT4, and FT2 come from the
+// MSHV generators. Hell is Feld Hell keyed at the tone. RTTY is 45.45 baud
+// mark/space. PSK31 and the other BPSK speeds are varicode. Empty when the
 // mode has no generator or the message is blank.
-bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out);
+// echoAt, when set, receives the 48 kHz sample where each source character
+// starts. Hell leaves it empty and uses textModeSamplesPerChar.
+bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
+                 std::vector<int>* echoAt = nullptr);
+
+// 48 kHz samples for one transmitted character. Hell is the Feld Hell
+// glyph (140 pixels). RTTY and PSK stay 0 here and pace the echo from
+// the echoAt list buildTxWave fills. A mode with no modulator stays 0
+// so the receive echo does not print text that never went out.
+int textModeSamplesPerChar(const QString& mode);
+
+// First ink row in a 20-pixel Hell column. 0 is the first sample in time,
+// the bottom of the column, matching Fldigi. -1 when the column is blank.
+int hellFirstInkRow(QChar ch, int column);
+
+// True when a decode timestamp (hhmmss of the period start) falls in the
+// even slot: TX FIRST. FT8 is 15 s, FT4 is 7.5 s, FT2 is 3.75 s.
+bool txStampIsFirstHalf(const QString& mode, int minute, int second);
 
 // True when the buffer is MSHV FT8: 8-FSK, 6.25 Hz spacing, Costas
 // 3,1,4,0,6,5,2 at symbols 0, 36, and 72, each symbol 7680 samples

@@ -3,5 +3,7 @@
   <qresource prefix="/std">
     <file>std-icon.png</file>
     <file>style.qss</file>
+    <file>waterfall.vert.qsb</file>
+    <file>waterfall.frag.qsb</file>
   </qresource>
 </RCC>

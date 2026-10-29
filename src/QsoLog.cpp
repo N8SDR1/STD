@@ -72,6 +72,11 @@ QString recordText(const QsoLog::Record& qso) {
   fields << adif(QStringLiteral("RST_RCVD"), qso.rstRcvd);
   fields << adif(QStringLiteral("STATION_CALLSIGN"), qso.myCall.toUpper());
   fields << adif(QStringLiteral("MY_GRIDSQUARE"), qso.myGrid.toUpper());
+  fields << adif(QStringLiteral("CONTEST_ID"), qso.contestId);
+  fields << adif(QStringLiteral("STX_STRING"), qso.stxString);
+  fields << adif(QStringLiteral("SRX_STRING"), qso.srxString);
+  fields << adif(QStringLiteral("CLASS"), qso.fdClass);
+  fields << adif(QStringLiteral("ARRL_SECT"), qso.arrlSection);
   fields << adif(QStringLiteral("COMMENT"), qso.comment);
   fields.removeAll(QString());
   return fields.join(QString()) + QStringLiteral("<EOR>");

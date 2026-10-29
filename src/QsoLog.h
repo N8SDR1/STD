@@ -25,6 +25,11 @@ public:
     QString myCall;
     QString myGrid;
     QString comment;
+    QString contestId;
+    QString stxString;
+    QString srxString;
+    QString fdClass;
+    QString arrlSection;
     qint64 freqHz = 0;
     QDateTime timeOn;
     QDateTime timeOff;

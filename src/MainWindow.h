@@ -3,9 +3,12 @@
 
 #pragma once
 
+#include "MacroFile.h"
+
 #include <QByteArray>
 #include <QIcon>
 #include <QMainWindow>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -17,6 +20,9 @@ class QEvent;
 
 class Ft8Decode;
 class HellEngine;
+class PskEngine;
+class RttyEngine;
+class WefaxEngine;
 class ModeProfile;
 class QAction;
 class QDockWidget;
@@ -37,6 +43,8 @@ public:
   explicit MainWindow(QWidget* parent = nullptr);
   // Self-test plants a call on Tx1–Tx5. It does not key and does not send START.
   void placeAnswer(const QString& call);
+  // Puts the waterfall RHI widget in the tree before the window is shown.
+  void primeGraphics();
 
 protected:
   void showEvent(QShowEvent* event) override;
@@ -65,12 +73,20 @@ private:
   void applyTextStyle();
   void refreshDecodeHeader();
   void reloadMacros();
+  void loadMacroStore();
+  void storeMacros();
+  void showMacroSet();
+  void openMacroFile(QWidget* parent = nullptr);
+  void saveMacroFile(QWidget* parent = nullptr);
+  void insertMacro(int index);
+  void cycleMacroBank(int step);
   void openTimeDialog();
-  void openMacrosDialog();
+  void openMacrosDialog(int index = -1);
   void openNetworkDialog();
   void openUserDialog();
   void openLogDialog();
-  void rememberQso(const QString& call, const QString& grid, const QString& theirReport, bool fresh);
+  void rememberQso(const QString& call, const QString& grid, const QString& theirReport, bool fresh,
+                   const QString& rxMessage = QString());
   QString maybeLogQso(const QString& sent);
   void applyStationLock();
   void setReceivePlaceholder(bool connected);
@@ -83,10 +99,15 @@ private:
   QWidget* makeReceivePanel();
   void placeDockTitle(QDockWidget* dock, const QString& title, std::initializer_list<const char*> buttons);
   void applyMacroBar();
-  void showHellReceive(bool on);
+  void showKeyboardReceive(const QString& mode);
+  void revealSentEcho();
+  void appendTxEcho(const QString& text);
+  void appendRxEcho(const QString& text);
   QWidget* makeMacroRow();
   void refreshDecodes();
   void applyChannelWidth();
+  void applyHellSquelch();
+  void syncWfHellControls();
   void alignDecodeHeader();
   void setUserTx(bool on);
   void setTune(bool on);
@@ -133,7 +154,9 @@ private:
   void enqueueCaller(const QString& call, int db, int dist, int slot = 1);
   bool queueFollows() const;
   void startQueueHead(const QString& time);
-  void dropWorkedFromNow();
+  // Removes the station just finished from Queue and Now. A later decode
+  // does not put that call back; CLR Queue, CLR Now, or a clicked answer does.
+  void dropWorkedCall();
   void addTypedQueue();
   void deleteQueueRow(bool nowList);
   void promoteNow();
@@ -143,6 +166,8 @@ private:
   void flipMaxPeriods();
   int txActivityId() const;
   QString serialText() const;
+  void advanceLoggedSerial();
+  void openContestTags();
   QString composedCq(const QString& kind) const;
   QString transmitMessage() const;
   QString stationCall() const;
@@ -152,8 +177,12 @@ private:
   QString distanceText(const QString& message) const;
   void saveModeLayout(bool force = false);
   bool restoreModeLayout();
+  void openNamedLayouts();
+  void saveNamedLayout(int slot, const QString& name);
+  bool recallNamedLayout(int slot);
   void rememberModeTone();
   void applyModeTone();
+  void ensureWorkedCalls() const;
 
   struct DecodeRow {
     QString time;
@@ -170,6 +199,10 @@ private:
   TciClient* tci_ = nullptr;
   Ft8Decode* ft8_ = nullptr;
   HellEngine* hell_ = nullptr;
+  QVector<MacroSlot> macros_;
+  int macroBank_ = 0;
+  QString macroFile_;
+  bool macrosDirty_ = false;
   QAction* autoConnectAction_ = nullptr;
   QAction* autoMonitorAction_ = nullptr;
   bool autoMonitor_ = true;
@@ -182,7 +215,14 @@ private:
   bool filterCq_ = false;
   bool filterCq73_ = false;
   QString filterText_;
+  QString filterHideCall_;
+  QString filterHidePrefix_;
+  bool filterQsoB4_ = false;
   bool hideContinent_[7] = {};
+  mutable QSet<QString> workedCalls_;
+  mutable QString workedPath_;
+  mutable qint64 workedStamp_ = 0;
+  mutable qint64 workedSize_ = -1;
   bool clearEachPeriod_ = false;
   int maxSignals_ = 0;
   QString lastPeriod_;
@@ -223,6 +263,7 @@ private:
 
   QsoLog* qsoLog_ = nullptr;
   QString qsoCall_;
+  QString qsoRxMessage_;
   QString qsoGrid_;
   QString qsoRstRcvd_;
   qint64 qsoStartedMs_ = 0;
@@ -232,6 +273,9 @@ private:
   QString txQrg_;
   QVector<QueuedCall> txQueue_;
   QVector<QueuedCall> txNow_;
+  // Calls removed by 73 or by Periods / Max Time. Skipped by the auto queue
+  // so the tail of that QSO does not fill the list again.
+  QVector<QString> txFinishedCalls_;
   bool txFreeArmed_ = false;
   bool txLoggedThisPass_ = false;
   int txPeriodMark_ = -1;
@@ -254,5 +298,11 @@ private:
   int txTuneSent_ = 0;
   int txSymbolSamples_ = 0;
   QString txSentText_;
+  int txEchoCount_ = 0;
+  int txEchoSamples_ = 0;
+  std::vector<int> txEchoAt_;
+  RttyEngine* rtty_ = nullptr;
+  PskEngine* psk_ = nullptr;
+  WefaxEngine* wefax_ = nullptr;
   QVector<DecodeRow> shownDecodes_;
 };

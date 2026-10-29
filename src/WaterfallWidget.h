@@ -9,6 +9,9 @@
 #include <QWidget>
 #include <QtGlobal>
 
+class WaterfallChrome;
+class WaterfallGpu;
+
 class QMouseEvent;
 class QPainter;
 class QTimer;
@@ -20,14 +23,16 @@ class QWindow;
 // Time runs downward, one pixel per spectrum. Frequency runs across the
 // top. The outer span is the receive band reported by TCI
 // (rx_filter_band). The wheel, a drag, and the mode window can narrow
-// inside that span and cannot cross its edges. Each pixel is one display
-// bin from a short FFT, the same render as before the protocol markers.
-// Contrast, brightness, speed, start, bandwidth, ticks, and palette sit
-// on the top of this widget and recolor the trace only. A
-// later renderer
-// can pass a QWindow
-// — including a QVulkanWindow — to setRenderSurface(). Vulkan is not
-// linked here. Nothing here decodes a modem.
+// inside that span and cannot cross its edges. Each pixel averages about
+// three FFT bins, or blends the two bins it sits between. The trace is
+// drawn with Qt RHI. Options → Graphics chooses the backend. Auto uses
+// Vulkan. Direct3D 11, Direct3D 12, OpenGL, and Painter are explicit.
+// Changing the choice destroys the old backend and creates the new one.
+// A different graphics API restarts STD, because one window can drive
+// only one QRhi backend.
+// Contrast, brightness,
+// speed, start, bandwidth, ticks, and palette recolor the trace only.
+// Nothing here decodes a modem.
 class WaterfallWidget : public QWidget {
   Q_OBJECT
 public:
@@ -75,6 +80,13 @@ public:
   int brightness() const { return brightness_; }
   // Puts the sliders back without writing settings.
   void setTone(int contrast, int brightness);
+  // vulkan, d3d11, d3d12, opengl, or painter. Auto is Vulkan.
+  // Options shows the backend that is actually in use. A different API
+  // restarts STD so the window is created on that backend.
+  void setGraphicsMode(const QString& mode);
+  QString graphicsMode() const;
+  // Creates the RHI widget before the top-level window is shown.
+  void primeGraphics();
 
   QSize sizeHint() const override;
   QSize minimumSizeHint() const override;
@@ -82,6 +94,7 @@ public:
 signals:
   void frequenciesChanged(int rxHz, int txHz);
   void toneChanged(int contrast, int brightness);
+  void graphicsModeChanged(const QString& mode);
   // True only while STD itself is transmitting and the TX spectrum is
   // wider than the red channel. Receive audio never raises this.
   void txHotChanged(bool hot);
@@ -105,8 +118,17 @@ private:
     QVector<float> level;
   };
 
+  friend class WaterfallChrome;
+
   void paintPlaceholder(QPainter& painter) const;
+  void paintStandbyPlate(QPainter& painter) const;
   void paintAudio(QPainter& painter) const;
+  void paintOverlays(QPainter& painter) const;
+  QImage spectrumImage() const;
+  void ensureGpu();
+  void placeLayers();
+  void releaseGpu(bool immediate = false);
+  void gpuFallback(const QString& why);
   void paintMarkers(QPainter& painter) const;
   void paintRuler(QPainter& painter) const;
   void paintDial(QPainter& painter, int y) const;
@@ -147,6 +169,12 @@ private:
   const TraceRow& rowAt(int age) const;
 
   QWidget* surfaceContainer_ = nullptr;
+  WaterfallGpu* gpu_ = nullptr;
+  QWidget* chrome_ = nullptr;
+  QString graphicsChoice_ = QStringLiteral("vulkan");
+  QString sessionMode_;
+  bool steppedDown_ = false;
+  bool gpuBroken_ = false;
   QTimer* rebuildTimer_ = nullptr;
   bool radioConnected_ = false;
   QString dialText_ = QString::fromUtf8("—");

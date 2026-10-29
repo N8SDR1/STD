@@ -8,6 +8,18 @@
 
 class QByteArray;
 
+// Fldigi Raster::data puts sample 0 at the bottom of the column. Sample 0
+// is the first audio in time, and Feld Hell sends the bottom pixel first.
+inline int hellTapeRowFromTop(int index, int count) {
+  if (count < 1)
+    return 0;
+  if (index < 0)
+    index = 0;
+  if (index >= count)
+    index = count - 1;
+  return count - 1 - index;
+}
+
 // Scrolling Feld Hell tape. New columns enter on the right.
 class HellRaster : public QWidget {
   Q_OBJECT

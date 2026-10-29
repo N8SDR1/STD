@@ -37,7 +37,8 @@ HellRaster::HellRaster(QWidget* parent) : QWidget(parent) {
   tape_ = QImage(640, 40 * kSampleScale, QImage::Format_RGB32);
   tape_.fill(kPaper);
   setToolTip(QStringLiteral(
-      "Feld Hell receive. The tape is the Fldigi column detector. DIGU. This does not key."));
+      "Feld Hell receive. The first pixel of a column is the bottom, same as Fldigi. "
+      "A tone is ink and silence is paper. DIGU. This does not key and does not send START."));
 }
 
 void HellRaster::clear() {
@@ -60,7 +61,8 @@ void HellRaster::addColumn(const QByteArray& column) {
   QPainter painter(&tape_);
   for (int i = 0; i < samples; ++i) {
     const auto ink = tone(static_cast<unsigned char>(column.at(i)));
-    painter.fillRect(tape_.width() - shift, i * row, shift, row, QColor(ink));
+    const int y = hellTapeRowFromTop(i, samples) * row;
+    painter.fillRect(tape_.width() - shift, y, shift, row, QColor(ink));
   }
   heard_ = true;
   update();

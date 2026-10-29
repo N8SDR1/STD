@@ -3,9 +3,13 @@
 
 #include "WaterfallWidget.h"
 
+#include "WaterfallGpu.h"
+
 #include <QAction>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QFont>
+#include <QProcess>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -26,6 +30,27 @@
 
 #include <algorithm>
 #include <cmath>
+
+class WaterfallChrome : public QWidget {
+public:
+  explicit WaterfallChrome(WaterfallWidget* host) : QWidget(host), host_(host) {
+    setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    setAttribute(Qt::WA_NoSystemBackground, true);
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    setAutoFillBackground(false);
+    setFocusPolicy(Qt::NoFocus);
+  }
+
+protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    host_->paintOverlays(painter);
+  }
+
+private:
+  WaterfallWidget* host_;
+};
 
 namespace {
 
@@ -258,6 +283,7 @@ void WaterfallWidget::clearAudio() {
   clearTxHot();
   if (rebuildTimer_)
     rebuildTimer_->stop();
+  ensureGpu();
   resetView();
 }
 
@@ -783,6 +809,7 @@ void WaterfallWidget::writeAudio(const float* samples, int count, int sampleRate
   }
   if (drew) {
     setAccessibleDescription(QStringLiteral("Receiver audio. Nothing is decoded."));
+    ensureGpu();
     update();
   }
 }
@@ -810,8 +837,9 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
 
   const double span = std::max(1.0, double(viewHiHz_ - viewLoHz_));
   const double pixelHz = span / double(width);
-  const int nfft = nextPow2(std::max(width, 64));
-  int groups = int(std::ceil(double(rateHz_) / (pixelHz * double(nfft))));
+  // About three bins under each pixel. The ring still caps the aperture.
+  const int nfft = kMaxDisplayFft;
+  int groups = int(std::ceil(double(rateHz_) * 3.0 / (pixelHz * double(nfft))));
   if (groups < 1)
     groups = 1;
   int aperture = groups * nfft;
@@ -859,18 +887,39 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
   fft(fftRe_.data(), fftIm_.data(), nfft);
 
   const double df = double(rateHz_) / (double(groups) * double(nfft));
-  QVector<float> db(width, -160.0f);
-  int lastBin = -1;
-  for (int c = 0; c < width; ++c) {
-    const double freq = (double(c) + 0.5) * pixelHz;
-    int bin = int(std::lround(freq / df));
-    if (bin <= lastBin)
-      bin = lastBin + 1;
+  auto magAt = [&](int bin) {
+    if (bin < 0)
+      bin = 0;
     if (bin >= nfft)
       bin = nfft - 1;
-    lastBin = bin;
-    const float mag = std::sqrt(fftRe_[bin] * fftRe_[bin] + fftIm_[bin] * fftIm_[bin]) / float(nfft);
-    db[c] = 20.0f * std::log10(mag + 1.0e-12f);
+    return std::sqrt(fftRe_[bin] * fftRe_[bin] + fftIm_[bin] * fftIm_[bin]);
+  };
+  QVector<float> db(width, -160.0f);
+  for (int c = 0; c < width; ++c) {
+    const double binLo = (double(c) * pixelHz) / df;
+    const double binHi = (double(c + 1) * pixelHz) / df;
+    float mag = 0.0f;
+    if ((binHi - binLo) >= 1.0) {
+      int first = int(std::floor(binLo));
+      int last = int(std::ceil(binHi)) - 1;
+      if (first < 0)
+        first = 0;
+      if (last >= nfft)
+        last = nfft - 1;
+      if (last < first)
+        last = first;
+      double sum = 0.0;
+      const int spanBins = last - first + 1;
+      for (int bin = first; bin <= last; ++bin)
+        sum += double(magAt(bin));
+      mag = float(sum / double(spanBins));
+    } else {
+      const double mid = 0.5 * (binLo + binHi);
+      const int lower = int(std::floor(mid));
+      const float blend = float(mid - double(lower));
+      mag = magAt(lower) * (1.0f - blend) + magAt(lower + 1) * blend;
+    }
+    db[c] = 20.0f * std::log10((mag / float(nfft)) + 1.0e-12f);
   }
   const int rank = std::clamp(width * 40 / 100, 0, width - 1);
   QVector<float> order = db;
@@ -901,6 +950,23 @@ void WaterfallWidget::buildToneBar() {
     if (savedPalette == QLatin1String(kPalettes[i].name))
       palette_ = i;
   }
+  graphicsChoice_ = settings.value(QStringLiteral("waterfall/graphics"), QStringLiteral("auto"))
+                        .toString()
+                        .trimmed()
+                        .toLower();
+  if (graphicsChoice_.isEmpty())
+    graphicsChoice_ = QStringLiteral("auto");
+  const QString knownGraphics[] = {QStringLiteral("auto"),   QStringLiteral("vulkan"),
+                                    QStringLiteral("d3d11"), QStringLiteral("d3d12"),
+                                    QStringLiteral("opengl"), QStringLiteral("painter")};
+  bool knownGraphic = false;
+  for (const QString& key : knownGraphics) {
+    if (graphicsChoice_ == key)
+      knownGraphic = true;
+  }
+  if (!knownGraphic)
+    graphicsChoice_ = QStringLiteral("auto");
+  settings.setValue(QStringLiteral("waterfall/graphics"), graphicsChoice_);
 
   toneBar_ = new QWidget(this);
   toneBar_->setObjectName("waterfallTone");
@@ -948,6 +1014,29 @@ void WaterfallWidget::buildToneBar() {
   addSlider(QStringLiteral("Brightness"), QStringLiteral("waterfallBrightness"), brightness_,
             &brightness_);
   layout->addSpacing(12);
+
+  auto* afc = new QPushButton(QStringLiteral("AFC"), toneBar_);
+  afc->setObjectName(QStringLiteral("wfAfc"));
+  afc->setCheckable(true);
+  afc->setChecked(false);
+  afc->setEnabled(false);
+  afc->setFixedHeight(22);
+  afc->setFocusPolicy(Qt::NoFocus);
+  afc->setToolTip(QStringLiteral(
+      "Fldigi AFC. Feld Hell, FT8, FT4, and FT2 have no AFC switch, so this stays off. "
+      "This does not key and does not send START."));
+  auto* sql = new QPushButton(QStringLiteral("SQL"), toneBar_);
+  sql->setObjectName(QStringLiteral("wfSql"));
+  sql->setCheckable(true);
+  sql->setChecked(false);
+  sql->setEnabled(false);
+  sql->setFixedHeight(22);
+  sql->setFocusPolicy(Qt::NoFocus);
+  sql->setToolTip(QStringLiteral(
+      "Fldigi squelch. On Feld Hell it drops a quiet column. "
+      "This does not key and does not send START."));
+  layout->addWidget(afc);
+  layout->addWidget(sql);
 
   auto* lock = new QPushButton(toneBar_);
   lock->setObjectName("freqLock");
@@ -1102,6 +1191,177 @@ void WaterfallWidget::placeToneBar() {
   toneBar_->raise();
 }
 
+void WaterfallWidget::placeLayers() {
+  const QRect plot = plotRect();
+  if (gpu_)
+    gpu_->setGeometry(plot);
+  if (chrome_)
+    chrome_->setGeometry(rect());
+  if (chrome_)
+    chrome_->raise();
+  placeToneBar();
+}
+
+void WaterfallWidget::releaseGpu(bool immediate) {
+  if (gpu_) {
+    WaterfallGpu* dying = gpu_;
+    gpu_ = nullptr;
+    dying->hide();
+    dying->setParent(nullptr);
+    if (immediate)
+      delete dying;
+    else
+      dying->deleteLater();
+  }
+  if (chrome_) {
+    QWidget* dying = chrome_;
+    chrome_ = nullptr;
+    dying->hide();
+    dying->setParent(nullptr);
+    if (immediate)
+      delete dying;
+    else
+      dying->deleteLater();
+  }
+}
+
+QString WaterfallWidget::graphicsMode() const {
+  if (!sessionMode_.isEmpty())
+    return sessionMode_;
+  if (graphicsChoice_ == QLatin1String("auto") || graphicsChoice_.isEmpty())
+    return QStringLiteral("vulkan");
+  return graphicsChoice_;
+}
+
+void WaterfallWidget::primeGraphics() {
+  if (qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return;
+  ensureGpu();
+}
+
+void WaterfallWidget::setGraphicsMode(const QString& mode) {
+  const QString key = mode.trimmed().toLower();
+  if (key != QLatin1String("auto") && key != QLatin1String("vulkan") &&
+      key != QLatin1String("d3d11") && key != QLatin1String("d3d12") &&
+      key != QLatin1String("opengl") && key != QLatin1String("painter"))
+    return;
+  graphicsChoice_ = key;
+  sessionMode_.clear();
+  steppedDown_ = false;
+  gpuBroken_ = false;
+  QSettings saved;
+  saved.setValue(QStringLiteral("waterfall/graphics"), graphicsChoice_);
+  saved.setValue(QStringLiteral("waterfall/graphicsRev"), 1);
+  const QString requested =
+      (key == QLatin1String("auto") || key.isEmpty()) ? QStringLiteral("vulkan") : key;
+  // Qt locks one RHI backend to the top-level window at creation. A
+  // different choice has to start again with that backend already selected.
+  if (requested != WaterfallGpu::processBackend() &&
+      !qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    qputenv("STD_GRAPHICS_RESTART", "1");
+    const QString exe = QCoreApplication::applicationFilePath();
+    QStringList args = QCoreApplication::arguments();
+    if (!args.isEmpty())
+      args.removeFirst();
+    if (QProcess::startDetached(exe, args, QCoreApplication::applicationDirPath())) {
+      QCoreApplication::quit();
+      return;
+    }
+    qWarning("waterfall graphics restart failed");
+  }
+  releaseGpu(true);
+  ensureGpu();
+  emit graphicsModeChanged(graphicsMode());
+  update();
+}
+
+void WaterfallWidget::gpuFallback(const QString& why) {
+  qWarning("waterfall graphics device unavailable (%s)",
+           why.isEmpty() ? "no device" : qPrintable(why));
+  releaseGpu();
+  gpuBroken_ = true;
+  const QString requested = graphicsMode();
+  if (sessionMode_ == requested)
+    return;
+  sessionMode_ = requested;
+  emit graphicsModeChanged(requested);
+  update();
+}
+
+void WaterfallWidget::ensureGpu() {
+  if (qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return;
+  const QString mode = graphicsMode();
+  const bool painter = mode == QLatin1String("painter") || mode == QLatin1String("software");
+  if (gpuBroken_ || painter) {
+    releaseGpu();
+    return;
+  }
+  QString live;
+  auto api = WaterfallGpu::resolve(mode, &live);
+  if (api == WaterfallGpu::Api::Null) {
+    releaseGpu();
+    return;
+  }
+  if (gpu_ && gpu_->api() != api)
+    releaseGpu();
+  if (!gpu_) {
+    gpu_ = new WaterfallGpu(api, this);
+    gpu_->setObjectName(QStringLiteral("waterfallGpu"));
+    connect(gpu_, &WaterfallGpu::unavailable, this, [this] { gpuFallback(QString()); });
+    connect(gpu_, &WaterfallGpu::backendReady, this, [this](const QString& name) {
+      const QString key = name.toLower();
+      QString driven = QStringLiteral("vulkan");
+      if (key.contains(QLatin1String("d3d12")))
+        driven = QStringLiteral("d3d12");
+      else if (key.contains(QLatin1String("d3d11")))
+        driven = QStringLiteral("d3d11");
+      else if (key.contains(QLatin1String("opengl")) || key == QLatin1String("gl"))
+        driven = QStringLiteral("opengl");
+      else if (key.contains(QLatin1String("null")))
+        driven = QStringLiteral("painter");
+      else if (!key.contains(QLatin1String("vulkan")))
+        return;
+      if (sessionMode_ == driven)
+        return;
+      sessionMode_ = driven;
+      emit graphicsModeChanged(driven);
+    });
+    chrome_ = new WaterfallChrome(this);
+  }
+  placeLayers();
+  gpu_->show();
+  chrome_->show();
+}
+
+QImage WaterfallWidget::spectrumImage() const {
+  const QRect plot = plotRect();
+  const int shown = std::min(rowCount_, std::max(plot.height(), 1));
+  QImage frame(std::max(plot.width(), 1), std::max(plot.height(), 1), QImage::Format_RGB32);
+  frame.fill(kField);
+  for (int y = 0; y < shown; ++y) {
+    const TraceRow& row = rowAt(y);
+    if (!rowMatches(row))
+      continue;
+    auto* dst = reinterpret_cast<QRgb*>(frame.scanLine(y));
+    const int columns = std::min(int(row.level.size()), frame.width());
+    for (int c = 0; c < columns; ++c)
+      dst[c] = traceColor(row.level[c], contrast_, brightness_, palette_);
+  }
+  return frame;
+}
+
+void WaterfallWidget::paintOverlays(QPainter& painter) const {
+  paintMarkers(painter);
+  paintTxHot(painter);
+  paintRuler(painter);
+  const QRect plot = plotRect();
+  painter.fillRect(QRect(8, plot.top() + 4, 248, 18), QColor(0, 2, 12, 210));
+  paintDial(painter, plot.top() + 5);
+  if (rowCount_ <= 0)
+    paintStandbyPlate(painter);
+}
+
 void WaterfallWidget::scheduleRebuild() {
   if (rowCount_ <= 0 || !rebuildTimer_)
     return;
@@ -1161,6 +1421,15 @@ void WaterfallWidget::paintEvent(QPaintEvent* event) {
   Q_UNUSED(event);
   if (surfaceContainer_)
     return;
+  if (gpu_ && gpu_->isVisible()) {
+    QPainter painter(this);
+    painter.fillRect(rect(), QColor("#00020c"));
+    if (rowCount_ > 0)
+      gpu_->present(spectrumImage());
+    if (chrome_)
+      chrome_->update();
+    return;
+  }
   QPainter painter(this);
   painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
   if (rowCount_ > 0)
@@ -1173,7 +1442,7 @@ void WaterfallWidget::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
   if (surfaceContainer_)
     surfaceContainer_->setGeometry(0, kToneBarHeight, width(), qMax(1, height() - kToneBarHeight));
-  placeToneBar();
+  placeLayers();
   if (rowCount_ > 0)
     scheduleRebuild();
 }
@@ -1228,11 +1497,19 @@ void WaterfallWidget::paintPlaceholder(QPainter& painter) const {
   painter.drawText(QRect(area.width() - 52, area.height() - 20, 42, 16),
                    Qt::AlignRight | Qt::AlignVCenter, "kHz");
 
+  paintStandbyPlate(painter);
+}
+
+void WaterfallWidget::paintStandbyPlate(QPainter& painter) const {
+  const QRect area = rect();
   const QRect plate(area.center().x() - 148, area.center().y() - 34, 296, 68);
   painter.setPen(QPen(QColor("#274150"), 1));
   painter.setBrush(QColor(8, 12, 18, 220));
   painter.drawRoundedRect(plate, 8, 8);
 
+  QFont mono("JetBrains Mono");
+  mono.setStyleHint(QFont::Monospace);
+  mono.setPixelSize(12);
   QFont title = mono;
   title.setPixelSize(16);
   title.setBold(true);
@@ -1298,24 +1575,8 @@ void WaterfallWidget::paintRuler(QPainter& painter) const {
 void WaterfallWidget::paintAudio(QPainter& painter) const {
   painter.fillRect(rect(), QColor("#00020c"));
   const QRect plot = plotRect();
-  const int shown = std::min(rowCount_, plot.height());
-  QImage frame(plot.width(), std::max(shown, 1), QImage::Format_RGB32);
-  frame.fill(kField);
-  for (int y = 0; y < shown; ++y) {
-    const TraceRow& row = rowAt(y);
-    if (!rowMatches(row))
-      continue;
-    auto* dst = reinterpret_cast<QRgb*>(frame.scanLine(y));
-    const int columns = std::min(int(row.level.size()), plot.width());
-    for (int c = 0; c < columns; ++c)
-      dst[c] = traceColor(row.level[c], contrast_, brightness_, palette_);
-  }
-  painter.drawImage(plot.topLeft(), frame);
-  paintMarkers(painter);
-  paintTxHot(painter);
-  paintRuler(painter);
-  painter.fillRect(QRect(8, plot.top() + 4, 248, 18), QColor(0, 2, 12, 210));
-  paintDial(painter, plot.top() + 5);
+  painter.drawImage(plot.topLeft(), spectrumImage());
+  paintOverlays(painter);
 }
 
 void WaterfallWidget::paintMarkers(QPainter& painter) const {

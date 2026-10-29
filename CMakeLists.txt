@@ -19,6 +19,12 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# This machine has MinGW and MSVC kits side by side. STD links the MSVC
+# kit only. A MinGW Qt on PATH must not win find_package or windeployqt.
+if(WIN32 AND EXISTS "C:/Qt/6.11.1/msvc2022_64/lib/cmake/Qt6/Qt6Config.cmake")
+  list(PREPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.1/msvc2022_64")
+endif()
+
 find_package(Qt6 6.2 QUIET COMPONENTS Widgets)
 if(NOT Qt6Widgets_FOUND)
   message(FATAL_ERROR
@@ -35,6 +41,13 @@ find_package(Qt6 6.2 QUIET COMPONENTS Network)
 if(NOT Qt6Network_FOUND)
   message(FATAL_ERROR
     "Qt 6 Network was not found, so STD cannot reach a logger.\n"
+    "Install the Qt 6 base development package and re-run cmake.")
+endif()
+
+find_package(Qt6 6.2 QUIET COMPONENTS GuiPrivate)
+if(NOT Qt6GuiPrivate_FOUND)
+  message(FATAL_ERROR
+    "Qt 6 Gui private headers were not found, so the waterfall cannot use Vulkan or Direct3D.\n"
     "Install the Qt 6 base development package and re-run cmake.")
 endif()
 
@@ -58,6 +71,8 @@ qt_add_executable(std
   src/MainWindow.h
   src/WaterfallWidget.cpp
   src/WaterfallWidget.h
+  src/WaterfallGpu.cpp
+  src/WaterfallGpu.h
   src/ModeProfile.cpp
   src/ModeProfile.h
   src/Ft8Decode.cpp
@@ -70,19 +85,29 @@ qt_add_executable(std
   src/TxWave.h
   src/QsoLog.cpp
   src/QsoLog.h
+  src/MacroFile.cpp
+  src/MacroFile.h
   src/hell/HellEngine.cpp
   src/hell/HellEngine.h
   src/hell/HellRaster.cpp
   src/hell/HellRaster.h
   src/hell/fldigi/filters.cxx
   src/hell/fldigi/fftfilt.cxx
+  src/rtty/RttyModem.cpp
+  src/rtty/RttyModem.h
+  src/psk/PskModem.cpp
+  src/psk/PskModem.h
+  src/wefax/WefaxModem.cpp
+  src/wefax/WefaxModem.h
   resources/resources.qrc
 )
 
 target_compile_definitions(std PRIVATE STD_VERSION="${PROJECT_VERSION}")
-target_include_directories(std PRIVATE "${CMAKE_SOURCE_DIR}/src/hell/fldigi")
+target_include_directories(std PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+  "${CMAKE_SOURCE_DIR}/src/hell/fldigi")
 
-target_link_libraries(std PRIVATE Qt6::Widgets Qt6::Network Qt6::WebSockets)
+target_link_libraries(std PRIVATE Qt6::Widgets Qt6::GuiPrivate Qt6::Network Qt6::WebSockets)
 
 if(WIN32)
   set(FT8_DLL "${CMAKE_BINARY_DIR}/ft8dec.dll")
@@ -120,6 +145,25 @@ if(MSVC)
     PROPERTIES COMPILE_OPTIONS "/W1")
 else()
   target_compile_options(std PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# Deploy from the same kit CMake configured (Qt6::qmake's directory).
+# NO_DEFAULT_PATH keeps a MinGW windeployqt on PATH from being chosen.
+if(WIN32)
+  get_target_property(_qmake_exe Qt6::qmake IMPORTED_LOCATION)
+  get_filename_component(_qt_bin_dir "${_qmake_exe}" DIRECTORY)
+  find_program(WINDEPLOYQT_EXE windeployqt HINTS "${_qt_bin_dir}" NO_DEFAULT_PATH)
+  if(WINDEPLOYQT_EXE)
+    add_custom_command(TARGET std POST_BUILD
+      COMMAND "${WINDEPLOYQT_EXE}"
+        --no-translations
+        "$<TARGET_FILE:std>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${_qt_bin_dir}/../plugins/platforms/qoffscreen.dll"
+        "$<TARGET_FILE_DIR:std>/platforms/qoffscreen.dll"
+      COMMENT "windeployqt from ${_qt_bin_dir}"
+      VERBATIM)
+  endif()
 endif()
 
 install(TARGETS std RUNTIME DESTINATION bin)

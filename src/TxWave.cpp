@@ -1,7 +1,10 @@
 // Copyright (C) 2026 Rick Langford (N8SDR)
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "DigitalMode.h"
 #include "TxWave.h"
+#include "psk/PskModem.h"
+#include "rtty/RttyModem.h"
 
 #include <QCoreApplication>
 #include <QString>
@@ -63,12 +66,17 @@ bool buildFt4(const QString& message, int toneHz, std::vector<float>* out) {
   return buildFt("ft4_generate", 420000, message, toneHz, out);
 }
 
+bool buildFt2(const QString& message, int toneHz, std::vector<float>* out) {
+  return buildFt("ft2_generate", 220000, message, toneHz, out);
+}
+
 int glyphColumn(QChar ch, int column) {
   struct Glyph {
     char ch;
     unsigned char col[5];
   };
-  // 5x7, bit 0 at the bottom.
+  // 5x7. Bit 0 is the top of the glyph. buildHell sends bit 6 first so the
+  // bottom pixel leads, which is Fldigi get_font_data (b0 = bottom row).
   static const Glyph glyphs[] = {
       {' ', {0x00, 0x00, 0x00, 0x00, 0x00}}, {'0', {0x3E, 0x51, 0x49, 0x45, 0x3E}},
       {'1', {0x00, 0x42, 0x7F, 0x40, 0x00}}, {'2', {0x42, 0x61, 0x51, 0x49, 0x46}},
@@ -105,7 +113,22 @@ int glyphColumn(QChar ch, int column) {
   return found->col[column];
 }
 
+int firstInkRow(QChar ch, int column) {
+  for (int row = 0; row < 20; ++row) {
+    const int glyphRow = row - 6;
+    if (glyphRow < 0 || glyphRow >= 7)
+      continue;
+    if (((glyphColumn(ch, column) >> (6 - glyphRow)) & 1) != 0)
+      return row;
+  }
+  return -1;
+}
+
 bool buildHell(const QString& message, int toneHz, std::vector<float>* out) {
+  // Fldigi Feld Hell transmit is on-off keying of one tone. Ink is the
+  // carrier, paper is silence. The column is 20 pixels at 17.5 columns/s,
+  // which is Fldigi's receive sampler (HellRcvHeight), so each pixel is
+  // one raster sample. The bottom glyph bit goes out first.
   const double pixelsPerSecond = 20.0 * 17.5;
   const double pixelSamples = double(kRate) / pixelsPerSecond;
   const int tone = std::clamp(toneHz, 200, 3000);
@@ -140,10 +163,13 @@ bool buildHell(const QString& message, int toneHz, std::vector<float>* out) {
 
 }  // namespace
 
-bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out) {
+bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
+                 std::vector<int>* echoAt) {
   if (!out)
     return false;
   out->clear();
+  if (echoAt)
+    echoAt->clear();
   const QString text = message.trimmed();
   if (text.isEmpty())
     return false;
@@ -152,9 +178,44 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
     return buildFt8(text, tone, out);
   if (mode == QLatin1String("FT4"))
     return buildFt4(text, tone, out);
-  if (mode == QLatin1String("Hell"))
+  if (mode == QLatin1String("FT2"))
+    return buildFt2(text, tone, out);
+  if (hellFamily(mode))
     return buildHell(text, tone, out);
+  if (rttyMode(mode)) {
+    const RttyPlan plan = planRtty(text, tone);
+    if (plan.samples.empty())
+      return false;
+    *out = plan.samples;
+    if (echoAt)
+      *echoAt = plan.echoAt;
+    return true;
+  }
+  if (pskMode(mode) && pskBaud(mode) > 0.0) {
+    const PskPlan plan = planPsk(mode, text, tone);
+    if (plan.samples.empty())
+      return false;
+    *out = plan.samples;
+    if (echoAt)
+      *echoAt = plan.echoAt;
+    return true;
+  }
   return false;
+}
+
+int hellFirstInkRow(QChar ch, int column) {
+  return firstInkRow(ch, column);
+}
+
+int textModeSamplesPerChar(const QString& mode) {
+  if (!hellFamily(mode))
+    return 0;
+  // Same grid as buildHell: 350 pixels/s, 5 columns of 20 rows, then
+  // 40 blank pixels. The trailing fifth-of-a-second silence is not a
+  // character. 140 * lround(48000/350) is 19180 samples, about 400 ms.
+  constexpr double kPixelsPerSecond = 20.0 * 17.5;
+  const int pixelSamples = std::max(1, int(std::lround(48000.0 / kPixelsPerSecond)));
+  return 140 * pixelSamples;
 }
 
 namespace {
@@ -193,6 +254,40 @@ int bestTone(const float* samples, int count, int toneHz, double* ratio) {
 }
 
 }  // namespace
+
+bool txStampIsFirstHalf(const QString& mode, int minute, int second) {
+  if (mode == QLatin1String("FT2")) {
+    // A minute holds 16 periods, so the minute does not flip the half.
+    Q_UNUSED(minute);
+    // MSHV stamps floor(k * 3.75). Even k is the first half of the 7.5 s pair.
+    const int marks[] = {0, 3, 7, 11, 15, 18, 22, 26, 30, 33, 37, 41, 45, 48, 52, 56};
+    int sec = second;
+    if (sec < 0)
+      sec = 0;
+    if (sec > 59)
+      sec = 59;
+    int index = 0;
+    for (int i = 0; i < 16; ++i) {
+      if (sec >= marks[i])
+        index = i;
+    }
+    return (index % 2) == 0;
+  }
+  int cs = 0;
+  int periodCs = 1500;
+  if (mode == QLatin1String("FT4")) {
+    periodCs = 750;
+    if (second == 7 || second == 22 || second == 37 || second == 52)
+      cs = 50;
+  }
+  int pos = minute * 6000 + second * 100 + cs;
+  const int pair = periodCs * 2;
+  while (pos >= pair)
+    pos -= pair;
+  while (pos < 0)
+    pos += pair;
+  return pos < periodCs;
+}
 
 bool ft8TxMatchesMshv(const std::vector<float>& wave, int toneHz) {
   // 79 symbols * 7680 samples, plus MSHV's 4 s of trailing silence.

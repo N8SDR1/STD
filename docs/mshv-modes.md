@@ -1,0 +1,52 @@
+# MSHV modes still out of STD
+
+Working list. STD does not vendor the MSHV tree. The names are `ModeStr` in
+`MSHV/src/config_str_all.h` (`COUNT_MODE` is 19). Menu order is `pos_mods`
+in that file. CW is not one of these modes. CW stays in Lyra.
+
+Connect sends `AUDIO_START` for receiver 0. The text command START is never
+sent.
+
+## In STD now
+
+| Mode | What works |
+| --- | --- |
+| FT8 | Decode and TX. 15 s. DIGU. MSHV generator and sequencer. |
+| FT4 | Decode and TX. 7.5 s. DIGU. |
+| FT2 | Decode and TX. 3.75 s. DIGU. |
+
+Contest exchanges on Tx1 through Tx6 are the MSHV activity list. They are
+not extra modes.
+
+## Not in the menu yet
+
+These do not key. Do not drop them.
+
+| Mode | MSHV note |
+| --- | --- |
+| MSK144 | Meteor scatter. |
+| MSKMS | MSHV comments call this MSK144ms. |
+| JTMS | |
+| FSK441 | |
+| FSK315 | |
+| ISCAT-A | |
+| ISCAT-B | |
+| JT6M | |
+| Q65A | Submenu with Q65B, Q65C, and Q65D. |
+| Q65B | |
+| Q65C | |
+| Q65D | |
+| JT65A | Menu label adds HF/50 MHz. |
+| JT65B | Menu label adds VHF/UHF. |
+| JT65C | Menu label adds VHF/UHF. |
+| PI4 | |
+
+## Not this list
+
+Hell, RTTY, BPSK, and WEFAX come from Fldigi, not from `ModeStr`. RTTY is
+45.45 baud, 170 Hz, mark high on DIGU. BPSK is PSK31, PSK63, PSK125, PSK250,
+PSK500, and PSK1000. WEFAX-576 receives only (IOC 576, 120 lines per minute)
+and saves PNGs to the folder. They are still being proved on the air.
+
+Olivia, Contestia, MFSK, MT63, DominoEX, Thor, and QPSK do not key yet.
+CW stays in Lyra.

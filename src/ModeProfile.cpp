@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Rick Langford (N8SDR)
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "DigitalMode.h"
 #include "ModeProfile.h"
 
 #include <algorithm>
@@ -470,8 +471,8 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     next = QStringLiteral("FT4");
   else if (mode == QLatin1String("FT2"))
     next = QStringLiteral("FT2");
-  else if (mode == QLatin1String("Hell"))
-    next = QStringLiteral("Hell");
+  else if (keyboardTextMode(mode))
+    next = mode;
   const bool same = next == mode_;
   mode_ = next;
   if (same)
@@ -481,15 +482,25 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     reloadExtras();
   }
   refreshBands();
-  const bool hell = mode_ == QLatin1String("Hell");
+  const bool hell = hellFamily(mode_);
+  const bool keyboard = keyboardTextMode(mode_);
+  if (auto* label = qobject_cast<QLabel*>(keyboard_)) {
+    label->setText(keyboard && !hell
+                       ? QStringLiteral("%1 uses the transmit box and the receive echo. "
+                                        "CLR RX and CLR TX clear those. This mode does not key yet. "
+                                        "START is never sent.")
+                             .arg(mode_)
+                       : QStringLiteral(
+                             "Keyboard modes keep their own controls. None are loaded yet."));
+  }
   if (start_)
-    start_->setVisible(!hell);
+    start_->setVisible(!keyboard);
   if (bandwidth_)
-    bandwidth_->setVisible(!hell);
+    bandwidth_->setVisible(!keyboard);
   if (auto* box = findChild<QCheckBox*>(QStringLiteral("profileAutoDec")))
-    box->setVisible(!hell);
+    box->setVisible(!keyboard);
   const bool ft8 = mode_ == QLatin1String("FT8");
-  const bool sequenced = ft8 || mode_ == QLatin1String("FT4") || mode_ == QLatin1String("FT2");
+  const bool sequenced = !keyboard && (ft8 || mode_ == QLatin1String("FT4") || mode_ == QLatin1String("FT2"));
   if (auto* hound = findChild<QCheckBox*>(QStringLiteral("profileSuperHound")))
     hound->setVisible(ft8);
   if (auto* fox = findChild<QCheckBox*>(QStringLiteral("profileSuperFox")))
@@ -639,7 +650,7 @@ qint64 ModeProfile::tableHz(int index) const {
   const Ft8Band& band = kBands[index];
   if (mode_ == QLatin1String("FT8") && (hound_ || fox_) && QLatin1String(band.label) == QLatin1String("7"))
     return 7056000;
-  if (mode_ == QLatin1String("Hell")) {
+  if (hellFamily(mode_)) {
     if (effectiveRegion() == 1 && band.hellRegion1Hz > 0)
       return band.hellRegion1Hz;
     return band.hellHz;

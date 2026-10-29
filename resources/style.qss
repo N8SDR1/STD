@@ -131,7 +131,8 @@ QWidget#dockTitle QLabel {
   border: none;
 }
 
-QPushButton#decodeClear, QPushButton#txClrQueue, QPushButton#txClrNow, QPushButton#txUseFree {
+QPushButton#decodeClear, QPushButton#clrRx, QPushButton#clrTx, QPushButton#macroTx,
+QPushButton#txClrQueue, QPushButton#txClrNow, QPushButton#txUseFree {
   padding: 1px 8px;
   border-radius: 4px;
 }
@@ -167,9 +168,29 @@ QLineEdit, QSpinBox {
 }
 
 QSpinBox#profileSpeed, QSpinBox#profileStart, QSpinBox#profileBandwidth,
-QSpinBox#rxGain, QSpinBox#txGain {
+QSpinBox#rxGain, QSpinBox#txGain, QSpinBox#squelchLevel {
   padding: 0 2px;
   min-height: 18px;
+}
+
+QPushButton#afcToggle, QPushButton#squelchToggle, QPushButton#wfAfc, QPushButton#wfSql {
+  background: #101820;
+  color: #00e5ff;
+  border: 1px solid #274150;
+  border-radius: 4px;
+  padding: 0 8px;
+  min-width: 36px;
+}
+
+QPushButton#afcToggle:disabled, QPushButton#squelchToggle:disabled,
+QPushButton#wfAfc:disabled, QPushButton#wfSql:disabled {
+  color: #6d8496;
+  background: #0c1218;
+}
+
+QPushButton#squelchToggle:checked, QPushButton#wfSql:checked {
+  background: #245068;
+  color: #f4fdff;
 }
 
 QPushButton {
@@ -190,7 +211,7 @@ QPushButton:disabled {
   border-color: #1c3344;
 }
 
-QPlainTextEdit, QListWidget {
+QPlainTextEdit, QTextEdit, QListWidget {
   background: #080d13;
   color: #d7e6f2;
   border: 1px solid #1c3344;
@@ -215,7 +236,7 @@ QLabel#decodeHeader {
   margin: 0;
 }
 
-QPlainTextEdit#receiveText {
+QPlainTextEdit#receiveText, QTextEdit#rxEcho {
   padding: 4px;
 }
 

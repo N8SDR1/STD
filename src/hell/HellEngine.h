@@ -17,6 +17,9 @@ public:
 
   void setArmed(bool armed);
   void setToneHz(int hz);
+  // Fldigi sqlonoff and sldrSquelchValue. Off prints every column.
+  // On drops a column whose metric is at or below level (0..100).
+  void setSquelch(bool on, int level);
   void pushAudio(const float* samples, int count, int sampleRateHz);
 
 signals:

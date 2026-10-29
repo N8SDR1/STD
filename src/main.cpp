@@ -1,12 +1,21 @@
 // Copyright (C) 2026 Rick Langford (N8SDR)
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "DigitalMode.h"
+#include "hell/HellRaster.h"
+#include "MacroFile.h"
 #include "MainWindow.h"
+#include "StatusStrip.h"
 
 #include "QsoLog.h"
 #include "TxWave.h"
+#include "psk/PskModem.h"
+#include "rtty/RttyModem.h"
+#include "wefax/WefaxModem.h"
+#include "WaterfallGpu.h"
 #include "WaterfallWidget.h"
 
+#include <cmath>
 #include <vector>
 
 #include <QAction>
@@ -18,6 +27,7 @@
 #include <QPalette>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QMenuBar>
@@ -141,21 +151,51 @@ int shellReady(MainWindow& window) {
   const auto* send = window.findChild<QPushButton*>(QStringLiteral("txSend"));
   if (send && send->isChecked())
     return fail("CLR Now armed TX");
-  QString cqLine;
+  const auto* tx6 = window.findChild<QLineEdit*>(QStringLiteral("tx6"));
+  const auto* activity = window.findChild<QComboBox*>("txActivity");
+  const int activityId = activity ? activity->currentData().toInt() : 0;
+  if (!tx6)
+    return fail("Tx6 is missing");
   for (int i = 1; i <= 6; ++i) {
     const auto* field = window.findChild<QLineEdit*>(QStringLiteral("tx%1").arg(i));
     if (!field)
       return fail("a standard TX field is missing");
     if (field->text().contains(QLatin1String("ZZ9ZZ")))
       return fail("CLR Now left a call on a TX line");
-    if (i == 1)
-      cqLine = field->text();
-    else if (field->text() != cqLine)
-      return fail("CLR Now left a call on a TX line");
   }
-  if (cqLine.isEmpty() || !cqLine.startsWith(QLatin1String("CQ")))
-    return fail("CLR Now did not restore CQ");
-  const auto* activity = window.findChild<QComboBox*>("txActivity");
+  if (activityId == 0) {
+    const auto* tx1 = window.findChild<QLineEdit*>(QStringLiteral("tx1"));
+    const auto* tx2 = window.findChild<QLineEdit*>(QStringLiteral("tx2"));
+    const auto* tx3 = window.findChild<QLineEdit*>(QStringLiteral("tx3"));
+    const auto* tx4 = window.findChild<QLineEdit*>(QStringLiteral("tx4"));
+    const auto* tx5 = window.findChild<QLineEdit*>(QStringLiteral("tx5"));
+    const auto* extra = window.findChild<QLineEdit*>(QStringLiteral("txExtra"));
+    if (!tx1 || tx1->text().isEmpty() || tx1->text().startsWith(QLatin1String("CQ")) ||
+        tx1->text() == tx6->text())
+      return fail("standard Tx1 was left as the CQ");
+    if (!tx2 || (!tx2->text().contains(QLatin1Char('+')) && !tx2->text().contains(QLatin1Char('-'))))
+      return fail("standard report is missing from Tx2");
+    if (!tx3 || !tx3->text().contains(QLatin1Char('R')))
+      return fail("standard roger is missing from Tx3");
+    if (!tx4 || !tx4->text().contains(QLatin1String("RR73")))
+      return fail("standard RR73 is missing from Tx4");
+    if (!tx5 || tx5->text().contains(QLatin1String("RR73")) || !tx5->text().contains(QLatin1String("73")))
+      return fail("standard 73 is missing from Tx5");
+    if (!tx6->text().startsWith(QLatin1String("CQ")))
+      return fail("CLR Now did not restore CQ");
+    if (extra && extra->text().contains(QLatin1String("QSOB4")))
+      return fail("standard extra is a contest line");
+  } else if (!tx6->text().startsWith(QLatin1String("CQ"))) {
+    return fail("contest CQ is missing from Tx6");
+  } else {
+    bool tagged = false;
+    for (int i = 1; i <= 3; ++i) {
+      if (window.findChild<QLineEdit*>(QStringLiteral("tx%1").arg(i))->text() != tx6->text())
+        tagged = true;
+    }
+    if (!tagged)
+      return fail("contest exchange was not written to Tx1 through Tx3");
+  }
   if (!activity || activity->count() < 18 || activity->itemText(0) != QLatin1String("Standard") ||
       activity->findText(QStringLiteral("ARRL Field Day")) < 0)
     return fail("contest activity list is missing");
@@ -190,16 +230,72 @@ int shellReady(MainWindow& window) {
     return fail("QSO pane is not empty");
 
   const auto macros = window.findChildren<QPushButton*>("macro");
-  if (macros.size() != 8)
-    return fail("macro row does not have 8 slots");
+  if (macros.size() != 12)
+    return fail("macro row does not have 12 slots");
   for (const QPushButton* button : macros) {
-    if (button->isEnabled() && !button->toolTip().contains(QLatin1String("Does not key")))
+    if (!button->toolTip().contains(QLatin1String("does not key"), Qt::CaseInsensitive) ||
+        !button->toolTip().contains(QLatin1String("START")))
       return fail("a macro slot can key");
   }
+  const auto* bank = window.findChild<QPushButton*>(QStringLiteral("macroBank"));
+  const auto* active = window.findChild<QLabel*>(QStringLiteral("macroActive"));
+  const auto* macroOpen = window.findChild<QAction*>(QStringLiteral("macroOpen"));
+  const auto* macroSave = window.findChild<QAction*>(QStringLiteral("macroSave"));
+  if (!bank || bank->text() != QLatin1String("1") ||
+      !bank->toolTip().contains(QLatin1String("does not key"), Qt::CaseInsensitive) ||
+      !bank->toolTip().contains(QLatin1String("START")))
+    return fail("macro bank is missing");
+  if (!active || !macroOpen || !macroSave ||
+      !macroOpen->toolTip().contains(QLatin1String("START")) ||
+      !macroSave->toolTip().contains(QLatin1String("does not key"), Qt::CaseInsensitive))
+    return fail("macro file menu is missing");
+  QVector<MacroSlot> parsed;
+  QString parseError;
+  const QString sample = QStringLiteral(
+      "//fldigi macro definition file extended\n"
+      "\n// Macro # 1\n/$ 0 CQ  @>|\n<TX>CQ de <MYCALL><RX>\n");
+  if (!loadMacroDefinition(sample, &parsed, &parseError) || parsed.at(0).name != QLatin1String("CQ  @>|"))
+    return fail("mdf import failed");
+  const QString inserted = macroInsertText(parsed.at(0).text, QStringLiteral("N8SDR"), QStringLiteral("EM89"));
+  if (inserted.contains(QStringLiteral("<TX>")) || inserted.contains(QStringLiteral("<RX>")) ||
+      !inserted.contains(QStringLiteral("N8SDR")))
+    return fail("macro text did not convert");
+  const QVector<MacroSlot> blank = blankMacroSet();
+  if (blank.size() != 48 || blank.at(0).name != QLatin1String("F-1") ||
+      blank.at(47).name != QLatin1String("F-48") || !blank.at(0).text.isEmpty())
+    return fail("new macro set is wrong");
+  QVector<MacroSlot> roundTrip;
+  if (!loadMacroDefinition(saveMacroDefinition(blank), &roundTrip, &parseError) ||
+      roundTrip.at(11).name != QLatin1String("F-12") || !roundTrip.at(11).text.isEmpty())
+    return fail("new macro set did not save as mdf");
+  bool sawFreq = false;
+  bool sawCall = false;
+  for (const MacroTagRow& tag : macroTagList()) {
+    if (tag.tag == QLatin1String("<FREQ>"))
+      sawFreq = true;
+    if (tag.tag == QLatin1String("<MYCALL>"))
+      sawCall = true;
+  }
+  if (!sawFreq || !sawCall)
+    return fail("macro tag list is missing");
+  QFile n8file(QStringLiteral("C:/Users/N8SDR/fldigi.files/macros/macrosN8SDR.mdf"));
+  if (!n8file.open(QIODevice::ReadOnly | QIODevice::Text))
+    return fail("macrosN8SDR.mdf did not open");
+  QVector<MacroSlot> n8;
+  if (!loadMacroDefinition(QString::fromUtf8(n8file.readAll()), &n8, &parseError) || n8.size() != 48)
+    return fail("macrosN8SDR.mdf did not parse");
+  if (n8.at(0).name != QLatin1String("CQ  @>|") || !n8.at(0).text.contains(QStringLiteral("<MYCALL>")) ||
+      !n8.at(0).text.contains(QStringLiteral("<TX>")))
+    return fail("macrosN8SDR CQ slot is wrong");
+  if (!n8.at(2).text.contains(QLatin1Char('\n')) || n8.at(2).name != QLatin1String("RST/ LOG"))
+    return fail("macrosN8SDR newline slot is wrong");
+  if (n8.at(36).name != QLatin1String("3x call") || !n8.at(37).text.contains(QStringLiteral("FH#5065")) ||
+      !n8.at(22).text.isEmpty())
+    return fail("macrosN8SDR later slots are wrong");
 
   const char* dxNames[] = {"decodeThreeStage", "decodeAp",     "decodeDepthFast", "decodeDepthNormal",
                            "decodeDepthDeep",  "timeSync",     "macrosEdit",      "userSettings",
-                           "networkConfig",
+                           "networkConfig", "contestTags",
                            "listShowTime",     "listShowFreq", "listClearPeriod", "logAuto",
                            "logPrompt",        "logFileDialog",   "aseqMostDistant", "txConfirm73",
                            "autoResetQso"};
@@ -212,13 +308,101 @@ int shellReady(MainWindow& window) {
   if (!chip || !chip->isEnabled() || chip->text() != QLatin1String("FT8") ||
       !chip->toolTip().contains(QLatin1String("does not key"), Qt::CaseInsensitive))
     return fail("digital mode chip is missing");
+  const auto* hellMenu = window.findChild<QMenu*>(QStringLiteral("modeHellMenu"));
+  const char* hellNames[] = {"Feld Hell", "Slow Hell", "Feld Hell X5", "Feld Hell X9",
+                             "FSK Hell", "FSK Hell-105", "Hell 80"};
+  if (!hellMenu || hellMenu->actions().size() != 7)
+    return fail("Hell submenu is missing");
+  for (const char* name : hellNames) {
+    bool found = false;
+    for (const QAction* action : hellMenu->actions()) {
+      if (action->text() == QLatin1String(name) && action->isCheckable() &&
+          action->toolTip().contains(QLatin1String("does not key")) &&
+          action->toolTip().contains(QLatin1String("START")))
+        found = true;
+    }
+    if (!found)
+      return fail("a Hell mode is missing");
+  }
+  const auto* hellText = window.findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+  const auto* wfAfc = window.findChild<QPushButton*>(QStringLiteral("wfAfc"));
+  const auto* wfSql = window.findChild<QPushButton*>(QStringLiteral("wfSql"));
+  if (!hellText || !hellText->isHidden() || !wfAfc || wfAfc->isEnabled() || !wfSql || wfSql->isEnabled() ||
+      !wfAfc->toolTip().contains(QLatin1String("does not key")) ||
+      !wfSql->toolTip().contains(QLatin1String("START")))
+    return fail("Hell transmit pane or waterfall AFC SQL is missing");
+  const auto* rxEcho = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+  const auto* clrRx = window.findChild<QPushButton*>(QStringLiteral("clrRx"));
+  const auto* clrTx = window.findChild<QPushButton*>(QStringLiteral("clrTx"));
+  const auto* macroTx = window.findChild<QPushButton*>(QStringLiteral("macroTx"));
+  if (!rxEcho || !rxEcho->isReadOnly() || !rxEcho->isHidden() || !clrRx || !clrRx->isHidden() || !clrTx ||
+      !clrTx->isHidden())
+    return fail("text echo is showing on FT8");
+  if (!rxEcho->toolTip().contains(QLatin1String("does not key")) ||
+      !rxEcho->toolTip().contains(QLatin1String("START")) ||
+      !clrRx->toolTip().contains(QLatin1String("does not key")) ||
+      !clrRx->toolTip().contains(QLatin1String("START")) ||
+      !clrTx->toolTip().contains(QLatin1String("does not key")) ||
+      !clrTx->toolTip().contains(QLatin1String("START")))
+    return fail("text echo tooltip is wrong");
+  if (!macroTx || macroTx->isChecked() || !macroTx->toolTip().contains(QLatin1String("does not key")) ||
+      !macroTx->toolTip().contains(QLatin1String("START")))
+    return fail("TX macro chip is wrong");
+  const auto* rtty = window.findChild<QAction*>(QStringLiteral("modeRtty"));
+  const auto* psk = window.findChild<QAction*>(QStringLiteral("modePsk31"));
+  if (!rtty || !psk || !rtty->isCheckable() || !psk->isCheckable() ||
+      !rtty->toolTip().contains(QLatin1String("START")) ||
+      !rtty->toolTip().contains(QLatin1String("Mark")) ||
+      rtty->toolTip().contains(QLatin1String("does not key yet")) ||
+      !psk->toolTip().contains(QLatin1String("START")) ||
+      !psk->toolTip().contains(QLatin1String("31.25")) ||
+      psk->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("RTTY or PSK31 is missing");
+  if (!keyboardTextMode(QStringLiteral("Feld Hell")) || !keyboardTextMode(QStringLiteral("RTTY")) ||
+      !keyboardTextMode(QStringLiteral("PSK31")) || !keyboardTextMode(QStringLiteral("BPSK63")) ||
+      !keyboardTextMode(QStringLiteral("QPSK31")) || !keyboardTextMode(QStringLiteral("Olivia 8/250")) ||
+      !keyboardTextMode(QStringLiteral("Contestia 8/250")) || keyboardTextMode(QStringLiteral("FT8")) ||
+      keyboardTextMode(QStringLiteral("FT4")) || keyboardTextMode(QStringLiteral("FT2")) ||
+      keyboardTextMode(QStringLiteral("CW")))
+    return fail("keyboard text mode list is wrong");
+  if (textModeSamplesPerChar(QStringLiteral("Feld Hell")) != 19180 ||
+      textModeSamplesPerChar(QStringLiteral("Hell 80")) != 19180 ||
+      textModeSamplesPerChar(QStringLiteral("PSK31")) != 0 ||
+      textModeSamplesPerChar(QStringLiteral("RTTY")) != 0 ||
+      textModeSamplesPerChar(QStringLiteral("Olivia 8/250")) != 0 ||
+      textModeSamplesPerChar(QStringLiteral("FT8")) != 0)
+    return fail("character length is wrong");
+  if (hellFirstInkRow(QLatin1Char('L'), 1) != 6)
+    return fail("Hell transmit polarity is inverted");
+  if (hellTapeRowFromTop(0, 40) != 39 || hellTapeRowFromTop(39, 40) != 0)
+    return fail("Hell tape polarity is inverted");
   const auto* mode = window.findChild<QLabel*>("modeValue");
-  const auto* afc = window.findChild<QLabel*>("afcValue");
-  const auto* squelch = window.findChild<QLabel*>("squelchValue");
-  if (!mode || !afc || !squelch)
+  const auto* afc = window.findChild<QPushButton*>("afcToggle");
+  const auto* squelch = window.findChild<QPushButton*>("squelchToggle");
+  const auto* squelchLevel = window.findChild<QSpinBox*>("squelchLevel");
+  if (!mode || !afc || !squelch || !squelchLevel)
     return fail("status readouts are missing");
-  if (afc->text() != QLatin1String("Off"))
+  if (afc->isEnabled() || afc->isChecked() || afc->text() != QLatin1String("Off") ||
+      !afc->toolTip().contains(QLatin1String("does not key")) ||
+      !afc->toolTip().contains(QLatin1String("START")))
     return fail("AFC is not off");
+  if (squelch->isEnabled() || !squelchLevel->isHidden() ||
+      !squelch->toolTip().contains(QLatin1String("does not key")) ||
+      !squelch->toolTip().contains(QLatin1String("START")))
+    return fail("FT8 squelch is not idle");
+  if (auto* strip = window.findChild<StatusStrip*>(QStringLiteral("statusStrip"))) {
+    strip->setDigitalMode(QStringLiteral("Hell"));
+    if (!squelch->isEnabled() || squelchLevel->isHidden() || afc->isEnabled() ||
+        !afc->toolTip().contains(QLatin1String("Feld Hell")) ||
+        !squelch->toolTip().contains(QLatin1String("does not key")))
+      return fail("Hell squelch is not available");
+    strip->setDigitalMode(QStringLiteral("FT8"));
+    if (squelch->isEnabled() || !squelchLevel->isHidden() ||
+        !window.findChild<QPushButton*>(QStringLiteral("digitalModeChip")) ||
+        window.findChild<QPushButton*>(QStringLiteral("digitalModeChip"))->text() !=
+            QLatin1String("FT8"))
+      return fail("FT8 squelch stayed on");
+  }
 
   const auto* radio = window.findChild<QLabel*>("radioState");
   if (!radio || !radio->text().contains(QLatin1String("not connected"), Qt::CaseInsensitive))
@@ -305,6 +489,10 @@ int shellReady(MainWindow& window) {
     return fail("guide is missing");
   if (!window.findChild<QAction*>("saveLayout"))
     return fail("save layout is missing");
+  const auto* namedLayouts = window.findChild<QAction*>("namedLayouts");
+  if (!namedLayouts || !namedLayouts->toolTip().contains(QStringLiteral("does not key"), Qt::CaseInsensitive) ||
+      !namedLayouts->toolTip().contains(QStringLiteral("START")))
+    return fail("named layouts is missing");
 
   const auto* queueEntry = window.findChild<QLineEdit*>("txQueueEntry");
   const auto* queueList = window.findChild<QWidget*>("txQueueList");
@@ -323,6 +511,139 @@ int shellReady(MainWindow& window) {
       !ft8TxMatchesMshv(ft8, 1500))
     return fail("FT8 encoder is not MSHV 8-FSK");
 
+  auto tonal = [](const std::vector<float>& wave) {
+    int n = int(wave.size());
+    while (n > 0 && wave[static_cast<size_t>(n - 1)] == 0.0f)
+      --n;
+    return n;
+  };
+  std::vector<float> ft4;
+  if (!buildTxWave(QStringLiteral("FT4"), QStringLiteral("CQ N8SDR EM79"), 1500, &ft4))
+    return fail("FT4 encoder is missing");
+  const int ft4Tone = tonal(ft4);
+  // genft4 writes 241920 tone samples (5.04 s) and then silence. The 7.5 s
+  // slot unkeys 1.17 s early, so the tone has to finish before that.
+  if (ft4Tone < 230000 || ft4Tone > 250000 || ft4Tone * 1000 / 48000 > 6330)
+    return fail("FT4 waveform does not fit 7.5 s");
+  std::vector<float> ft2;
+  if (!buildTxWave(QStringLiteral("FT2"), QStringLiteral("CQ N8SDR EM79"), 1500, &ft2))
+    return fail("FT2 encoder is missing");
+  const int ft2Tone = tonal(ft2);
+  // genft2 writes 120960 tone samples (2.52 s). The 3.75 s slot unkeys 0.77 s early.
+  if (ft2Tone < 110000 || ft2Tone > 130000 || ft2Tone * 1000 / 48000 > 2980)
+    return fail("FT2 waveform does not fit 3.75 s");
+
+  auto tonePower = [](const std::vector<float>& wave, int begin, int end, double hz) {
+    double si = 0.0;
+    double sq = 0.0;
+    double phase = 0.0;
+    const double step = 2.0 * 3.141592653589793 * hz / 48000.0;
+    const int n0 = begin < 0 ? 0 : begin;
+    const int n1 = end > int(wave.size()) ? int(wave.size()) : end;
+    for (int i = n0; i < n1; ++i) {
+      const double sample = wave[static_cast<size_t>(i)];
+      si += sample * std::sin(phase);
+      sq += sample * std::cos(phase);
+      phase += step;
+    }
+    return si * si + sq * sq;
+  };
+  std::vector<float> rttyWave;
+  std::vector<int> rttyEcho;
+  if (!buildTxWave(QStringLiteral("RTTY"), QStringLiteral("E"), 1500, &rttyWave, &rttyEcho) ||
+      rttyWave.size() < 3200 || rttyEcho.empty())
+    return fail("RTTY modulator is missing");
+  // Two mark bits of idle, then the LTRS start bit, which is space.
+  const double markHi = tonePower(rttyWave, 0, 2000, 1585.0);
+  const double markLo = tonePower(rttyWave, 0, 2000, 1415.0);
+  if (!(markHi > markLo * 4.0))
+    return fail("RTTY mark is not the higher tone");
+  const double spaceHi = tonePower(rttyWave, 2112, 3100, 1585.0);
+  const double spaceLo = tonePower(rttyWave, 2112, 3100, 1415.0);
+  if (!(spaceLo > spaceHi * 4.0))
+    return fail("RTTY space is not the lower tone");
+  const QString rttyBack = rttyDecode(rttyWave.data(), int(rttyWave.size()), 48000, 1500);
+  if (!rttyBack.contains(QLatin1Char('E')))
+    return fail("RTTY did not decode");
+  std::vector<float> pskWave;
+  if (!buildTxWave(QStringLiteral("PSK31"), QStringLiteral("E"), 1500, &pskWave) || pskWave.size() < 1000)
+    return fail("PSK31 modulator is missing");
+  const double pskOn = tonePower(pskWave, 0, int(pskWave.size()), 1500.0);
+  const double pskOff = tonePower(pskWave, 0, int(pskWave.size()), 1000.0);
+  if (!(pskOn > pskOff * 4.0))
+    return fail("PSK31 carrier is not on the cursor");
+  const QString pskBack =
+      pskDecode(QStringLiteral("PSK31"), pskWave.data(), int(pskWave.size()), 48000, 1500);
+  if (!pskBack.contains(QLatin1Char('E')))
+    return fail("PSK31 did not decode");
+  for (const char* baudName : {"PSK63", "PSK125", "PSK250", "PSK500", "PSK1000"}) {
+    std::vector<float> faster;
+    if (!buildTxWave(QString::fromLatin1(baudName), QStringLiteral("E"), 1500, &faster) ||
+        faster.size() < 1000)
+      return fail("BPSK modulator is missing");
+    const QString back =
+        pskDecode(QString::fromLatin1(baudName), faster.data(), int(faster.size()), 48000, 1500);
+    if (!back.contains(QLatin1Char('E')))
+      return fail("BPSK did not decode");
+  }
+  const auto* psk63 = window.findChild<QAction*>(QStringLiteral("modePsk63"));
+  const auto* fax = window.findChild<QAction*>(QStringLiteral("modeWefax576"));
+  if (!psk63 || !psk63->toolTip().contains(QLatin1String("62.5")) ||
+      !psk63->toolTip().contains(QLatin1String("START")) ||
+      psk63->toolTip().contains(QLatin1String("does not key yet")) || !fax ||
+      !fax->toolTip().contains(QLatin1String("does not key")) ||
+      !fax->toolTip().contains(QLatin1String("START")) ||
+      !fax->toolTip().contains(QLatin1String("576")))
+    return fail("PSK63 or WEFAX is missing");
+  if (keyboardTextMode(QStringLiteral("WEFAX-576")))
+    return fail("WEFAX is a keyboard mode");
+  std::vector<float> faxWave;
+  if (buildTxWave(QStringLiteral("WEFAX-576"), QStringLiteral("E"), 1900, &faxWave))
+    return fail("WEFAX keyed");
+  WefaxSpec faxSpec;
+  const int faxPixels = wefaxPixelsPerLine(faxSpec.ioc);
+  const int faxRows = 8;
+  std::vector<unsigned char> faxGray(static_cast<size_t>(faxPixels * faxRows), 255);
+  for (int y = 0; y < faxRows; ++y) {
+    for (int x = 0; x < faxPixels; ++x) {
+      const double pos = (double(x) + 0.5) / double(faxPixels);
+      const bool phasing = y < 2;
+      if (pos < 0.045 || (!phasing && pos >= 0.12 && pos < 0.28))
+        faxGray[static_cast<size_t>(y * faxPixels + x)] = 0;
+    }
+  }
+  const std::vector<float> faxAudio = wefaxModulateTest(faxSpec, 48000, faxGray, faxPixels, faxRows);
+  const WefaxImage faxBack = wefaxDecode(faxSpec, faxAudio.data(), int(faxAudio.size()), 48000);
+  if (faxBack.width != faxPixels || faxBack.height < 4)
+    return fail("WEFAX did not decode");
+  const auto faxAt = [&](int row, double pos) {
+    int x = int(pos * double(faxBack.width));
+    if (x < 0)
+      x = 0;
+    if (x >= faxBack.width)
+      x = faxBack.width - 1;
+    return int(faxBack.gray[static_cast<size_t>(row * faxBack.width + x)]);
+  };
+  const int faxRow = faxBack.height - 1;
+  if (faxAt(faxRow, 0.02) > 80 || faxAt(faxRow, 0.20) > 80 || faxAt(faxRow, 0.60) < 180)
+    return fail("WEFAX picture is inverted");
+  const struct {
+    const char* mode;
+    int minute;
+    int second;
+    bool first;
+  } halves[] = {
+      {"FT8", 0, 0, true},  {"FT8", 0, 15, false}, {"FT8", 0, 30, true},  {"FT8", 0, 45, false},
+      {"FT4", 0, 0, true},  {"FT4", 0, 7, false},  {"FT4", 0, 15, true},   {"FT4", 0, 22, false},
+      {"FT4", 1, 37, false}, {"FT4", 1, 45, true}, {"FT2", 0, 0, true},    {"FT2", 0, 3, false},
+      {"FT2", 0, 7, true},  {"FT2", 0, 11, false}, {"FT2", 0, 18, false}, {"FT2", 0, 22, true},
+      {"FT2", 0, 56, false}, {"FT2", 1, 0, true},
+  };
+  for (const auto& row : halves) {
+    if (txStampIsFirstHalf(QString::fromLatin1(row.mode), row.minute, row.second) != row.first)
+      return fail("period half is wrong");
+  }
+
   qInfo("STD self-test ok");
   return 0;
 }
@@ -330,6 +651,9 @@ int shellReady(MainWindow& window) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+  const bool selftest = qEnvironmentVariableIsSet("STD_SELFTEST");
+  WaterfallGpu::prepareProcessBackend(!selftest);
+
   QApplication app(argc, argv);
   QApplication::setOrganizationName("N8SDR");
   QApplication::setApplicationName("STD");
@@ -348,9 +672,12 @@ int main(int argc, char* argv[]) {
     qWarning("STD stylesheet is missing from the binary resources");
 
   MainWindow window;
+  if (!selftest)
+    window.primeGraphics();
+  qInfo("STD graphics backend %s", qPrintable(WaterfallGpu::processBackend()));
   window.show();
 
-  if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
+  if (selftest) {
     QTimer::singleShot(0, &app, [&app, &window] { app.exit(shellReady(window)); });
   }
 

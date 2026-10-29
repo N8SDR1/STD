@@ -9,6 +9,8 @@
 // Bottom strip: mode, dial, an on-air PTT lamp, and the radio line.
 // The lamp follows the radio. It does not key.
 class StatusStrip : public QWidget {
+  Q_OBJECT
+
 public:
   explicit StatusStrip(QWidget* parent = nullptr);
 
@@ -24,6 +26,7 @@ public:
 
 private:
   void refreshRxLevel();
+  void applyDecoderControls(const QString& mode);
 
   double rxMeanSq_ = 0.0;
   qint64 rxHeardMs_ = 0;

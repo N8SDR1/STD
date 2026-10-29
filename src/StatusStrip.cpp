@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Rick Langford (N8SDR)
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "DigitalMode.h"
 #include "StatusStrip.h"
 
 #include <algorithm>
@@ -88,7 +89,7 @@ void showDigitalMode(QPushButton* chip, const QString& mode) {
   else if (text == QLatin1String("FT4")) {
     fill = QStringLiteral("#e08a3d");
     ink = QStringLiteral("#2a1404");
-  } else if (text == QLatin1String("Hell")) {
+  } else if (text.contains(QLatin1String("Hell"))) {
     fill = QStringLiteral("#c4a35a");
     ink = QStringLiteral("#2a1404");
   } else {
@@ -111,7 +112,8 @@ QPushButton* digitalModeChip(QWidget* parent) {
   chip->setFont(font);
   chip->setFixedHeight(22);
   chip->setToolTip(QStringLiteral(
-      "Active digital mode. Click to cycle FT8, FT4, FT2, Hell, RTTY, and PSK31. This does not key."));
+      "Active digital mode. Click to cycle FT8, FT4, FT2, the Hell list, RTTY, the PSK speeds, "
+      "and WEFAX-576. This does not key."));
   showDigitalMode(chip, QStringLiteral("FT8"));
   return chip;
 }
@@ -223,9 +225,68 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
   modeGroup->layout()->addWidget(digitalModeChip(modeGroup));
   layout->addWidget(modeGroup);
   layout->addWidget(separator());
-  layout->addWidget(readout("AFC", "afcValue", "Off"));
+  auto* afcGroup = new QWidget(this);
+  auto* afcRow = new QHBoxLayout(afcGroup);
+  afcRow->setContentsMargins(0, 0, 0, 0);
+  afcRow->setSpacing(6);
+  auto* afcName = new QLabel(QStringLiteral("AFC"), afcGroup);
+  afcName->setObjectName(QStringLiteral("readoutLabel"));
+  {
+    QFont small("Inter");
+    small.setPixelSize(10);
+    small.setLetterSpacing(QFont::AbsoluteSpacing, 1.1);
+    afcName->setFont(small);
+  }
+  auto* afc = new QPushButton(QStringLiteral("Off"), afcGroup);
+  afc->setObjectName(QStringLiteral("afcToggle"));
+  afc->setCheckable(true);
+  afc->setChecked(false);
+  afc->setEnabled(false);
+  afc->setFocusPolicy(Qt::NoFocus);
+  afc->setFixedHeight(22);
+  afc->setFont(monoFont(12));
+  afcRow->addWidget(afcName);
+  afcRow->addWidget(afc);
+  layout->addWidget(afcGroup);
   layout->addWidget(separator());
-  layout->addWidget(readout("SQUELCH", "squelchValue", QString::fromUtf8("—")));
+
+  auto* sqlGroup = new QWidget(this);
+  auto* sqlRow = new QHBoxLayout(sqlGroup);
+  sqlRow->setContentsMargins(0, 0, 0, 0);
+  sqlRow->setSpacing(6);
+  auto* sqlName = new QLabel(QStringLiteral("SQL"), sqlGroup);
+  sqlName->setObjectName(QStringLiteral("readoutLabel"));
+  {
+    QFont small("Inter");
+    small.setPixelSize(10);
+    small.setLetterSpacing(QFont::AbsoluteSpacing, 1.1);
+    sqlName->setFont(small);
+  }
+  auto* sql = new QPushButton(QStringLiteral("Off"), sqlGroup);
+  sql->setObjectName(QStringLiteral("squelchToggle"));
+  sql->setCheckable(true);
+  sql->setFocusPolicy(Qt::NoFocus);
+  sql->setFixedHeight(22);
+  sql->setFont(monoFont(12));
+  auto* level = new QSpinBox(sqlGroup);
+  level->setObjectName(QStringLiteral("squelchLevel"));
+  level->setRange(0, 100);
+  level->setFixedWidth(58);
+  level->setFixedHeight(22);
+  level->setFont(monoFont(12));
+  level->setButtonSymbols(QAbstractSpinBox::PlusMinus);
+  {
+    QSettings settings;
+    const bool on = settings.value(QStringLiteral("dx/squelchOn"), false).toBool();
+    const int saved = std::clamp(settings.value(QStringLiteral("dx/squelchLevel"), 10).toInt(), 0, 100);
+    sql->setChecked(on);
+    level->setValue(saved);
+  }
+  sqlRow->addWidget(sqlName);
+  sqlRow->addWidget(sql);
+  sqlRow->addWidget(level);
+  layout->addWidget(sqlGroup);
+  applyDecoderControls(QStringLiteral("FT8"));
   layout->addWidget(separator());
   layout->addWidget(readout("DIAL", "dialValue", QString::fromUtf8("—")));
   layout->addWidget(separator());
@@ -281,6 +342,60 @@ void StatusStrip::setMode(const QString& text) {
 void StatusStrip::setDigitalMode(const QString& mode) {
   if (auto* chip = findChild<QPushButton*>(QStringLiteral("digitalModeChip")))
     showDigitalMode(chip, mode);
+  applyDecoderControls(mode);
+}
+
+void StatusStrip::applyDecoderControls(const QString& mode) {
+  const bool hell = hellFamily(mode);
+  const bool ftFamily = mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
+                        mode == QLatin1String("FT2");
+  if (auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"))) {
+    afc->setEnabled(false);
+    afc->setChecked(false);
+    afc->setText(QStringLiteral("Off"));
+    if (hell)
+      afc->setToolTip(QStringLiteral(
+          "Feld Hell has no AFC switch. Fldigi leaves AFC off for this mode. "
+          "This does not key and does not send START."));
+    else if (ftFamily)
+      afc->setToolTip(QStringLiteral(
+          "FT8, FT4, and FT2 have no AFC switch. MSHV searches the audio window. "
+          "This does not key and does not send START."));
+    else
+      afc->setToolTip(QStringLiteral(
+          "This mode has no AFC switch yet. This does not key and does not send START."));
+  }
+  auto* sql = findChild<QPushButton*>(QStringLiteral("squelchToggle"));
+  auto* level = findChild<QSpinBox*>(QStringLiteral("squelchLevel"));
+  if (!sql)
+    return;
+  if (hell) {
+    sql->setEnabled(true);
+    sql->setText(sql->isChecked() ? QStringLiteral("On") : QStringLiteral("Off"));
+    sql->setToolTip(QStringLiteral(
+        "Fldigi squelch for Feld Hell. On drops a column at or below the level. "
+        "Off prints the tape. This does not key and does not send START."));
+    if (level) {
+      level->setVisible(true);
+      level->setEnabled(true);
+      level->setToolTip(QStringLiteral(
+          "Hell squelch level, 0 to 100, same scale as Fldigi. "
+          "This does not key and does not send START."));
+    }
+    return;
+  }
+  sql->setEnabled(false);
+  sql->setText(QString::fromUtf8("—"));
+  if (ftFamily)
+    sql->setToolTip(QStringLiteral(
+        "FT8, FT4, and FT2 have no squelch slider. The decoder drops weak candidates. "
+        "This does not key and does not send START."));
+  else
+    sql->setToolTip(QStringLiteral(
+        "Squelch is the Feld Hell gate. This mode does not use it. "
+        "This does not key and does not send START."));
+  if (level)
+    level->setVisible(false);
 }
 
 void StatusStrip::setDial(const QString& text) {

@@ -8,6 +8,7 @@
 #include "ft8_api.h"
 
 #include "decoderms_ft8.h"
+#include "HvGenFt2/gen_ft2.h"
 #include "HvGenFt4/gen_ft4.h"
 #include "HvGenFt8/gen_ft8.h"
 
@@ -273,5 +274,14 @@ extern "C" __declspec(dllexport) int ft4_generate(const char* message, double to
     return 0;
   static GenFt4 gen(false);
   const int count = gen.genft4(QString::fromUtf8(message), samples, 48000.0, toneHz);
+  return bounded(count, capacity);
+}
+
+extern "C" __declspec(dllexport) int ft2_generate(const char* message, double toneHz, int* samples,
+                                                  int capacity) {
+  if (!message || !message[0] || !samples || capacity < 220000)
+    return 0;
+  static GenFt2 gen(false);
+  const int count = gen.genft2(QString::fromUtf8(message), samples, 48000.0, toneHz);
   return bounded(count, capacity);
 }
