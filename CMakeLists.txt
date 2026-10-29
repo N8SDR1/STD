@@ -103,6 +103,8 @@ qt_add_executable(std
   src/olivia/OliviaModem.h
   src/mfsk/MfskModem.cpp
   src/mfsk/MfskModem.h
+  src/dominoex/DominoModem.cpp
+  src/dominoex/DominoModem.h
   resources/resources.qrc
 )
 

@@ -113,7 +113,7 @@ QPushButton* digitalModeChip(QWidget* parent) {
   chip->setFixedHeight(22);
   chip->setToolTip(QStringLiteral(
       "Active digital mode. Click to cycle FT8, FT4, FT2, the Hell list, RTTY, the PSK speeds, "
-      "Olivia, Contestia, MFSK, and WEFAX-576. This does not key."));
+      "Olivia, Contestia, MFSK, DominoEX, and WEFAX-576. This does not key."));
   showDigitalMode(chip, QStringLiteral("FT8"));
   return chip;
 }

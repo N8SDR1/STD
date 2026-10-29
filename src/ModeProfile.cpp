@@ -3,6 +3,7 @@
 
 #include "DigitalMode.h"
 #include "ModeProfile.h"
+#include "dominoex/DominoModem.h"
 #include "mfsk/MfskModem.h"
 #include "olivia/OliviaModem.h"
 
@@ -487,7 +488,8 @@ void ModeProfile::setDigitalMode(const QString& mode) {
   const bool hell = hellFamily(mode_);
   const bool keyboard = keyboardTextMode(mode_);
   const bool keys = rttyMode(mode_) || (pskMode(mode_) && pskBaud(mode_) > 0.0) ||
-                    oliviaBandwidthHz(mode_) > 0 || mfskBandwidthHz(mode_) > 0;
+                    oliviaBandwidthHz(mode_) > 0 || mfskBandwidthHz(mode_) > 0 ||
+                    dominoBandwidthHz(mode_) > 0;
   if (auto* label = qobject_cast<QLabel*>(keyboard_)) {
     label->setText(keyboard && !hell
                        ? (keys ? QStringLiteral("%1 uses the transmit box and the receive echo. "

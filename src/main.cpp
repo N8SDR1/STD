@@ -9,6 +9,7 @@
 
 #include "QsoLog.h"
 #include "TxWave.h"
+#include "dominoex/DominoModem.h"
 #include "mfsk/MfskModem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
@@ -364,7 +365,8 @@ int shellReady(MainWindow& window) {
       !keyboardTextMode(QStringLiteral("PSK31")) || !keyboardTextMode(QStringLiteral("BPSK63")) ||
       !keyboardTextMode(QStringLiteral("QPSK31")) ||       !keyboardTextMode(QStringLiteral("Olivia 8/250")) ||
       !keyboardTextMode(QStringLiteral("Contestia 8/250")) ||
-      !keyboardTextMode(QStringLiteral("MFSK16")) || keyboardTextMode(QStringLiteral("FT8")) ||
+      !keyboardTextMode(QStringLiteral("MFSK16")) ||
+      !keyboardTextMode(QStringLiteral("DominoEX 16")) || keyboardTextMode(QStringLiteral("FT8")) ||
       keyboardTextMode(QStringLiteral("FT4")) || keyboardTextMode(QStringLiteral("FT2")) ||
       keyboardTextMode(QStringLiteral("CW")))
     return fail("keyboard text mode list is wrong");
@@ -643,6 +645,31 @@ int shellReady(MainWindow& window) {
       !mfsk16->toolTip().contains(QLatin1String("START")) ||
       mfsk16->toolTip().contains(QLatin1String("does not key yet")))
     return fail("MFSK16 is missing");
+  for (const char* name : {"DominoEX 16", "DominoEX 8"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
+      return fail("DominoEX modulator is missing");
+    const QString back =
+        dominoDecode(QString::fromLatin1(name), wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1Char('E'))) {
+      qCritical("DominoEX decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
+      return fail("DominoEX did not decode");
+    }
+  }
+  std::vector<float> dominoCq;
+  if (!buildTxWave(QStringLiteral("DominoEX 16"), QStringLiteral("CQ"), 1500, &dominoCq))
+    return fail("DominoEX modulator is missing");
+  const QString dominoCqBack =
+      dominoDecode(QStringLiteral("DominoEX 16"), dominoCq.data(), int(dominoCq.size()), 48000, 1500);
+  if (!dominoCqBack.contains(QLatin1String("CQ"))) {
+    qCritical("DominoEX CQ decode [%s]", qPrintable(dominoCqBack));
+    return fail("DominoEX did not decode");
+  }
+  const auto* domino16 = window.findChild<QAction*>(QStringLiteral("modeDominoex16"));
+  if (!domino16 || !domino16->toolTip().contains(QLatin1String("15.625")) ||
+      !domino16->toolTip().contains(QLatin1String("START")) ||
+      domino16->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("DominoEX 16 is missing");
   if (keyboardTextMode(QStringLiteral("WEFAX-576")))
     return fail("WEFAX is a keyboard mode");
   std::vector<float> faxWave;
