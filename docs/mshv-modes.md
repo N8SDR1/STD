@@ -43,12 +43,15 @@ These do not key. Do not drop them.
 
 ## Not this list
 
-Hell, RTTY, BPSK, Olivia, Contestia, and WEFAX come from Fldigi, not from
+Hell, RTTY, BPSK, Olivia, Contestia, MFSK, and WEFAX come from Fldigi, not from
 `ModeStr`. RTTY is 45.45 baud, 170 Hz, mark high on DIGU. BPSK is PSK31,
 PSK63, PSK125, PSK250, PSK500, and PSK1000. Olivia and Contestia are 4/250,
 8/250, 8/500, 16/500, 16/1000, and 32/1000, Gray-coded tones from Pawel
-Jalocha's block code. WEFAX-576 receives only (IOC 576, 120 lines per minute)
-and saves PNGs to the folder. They are still being proved on the air.
+Jalocha's block code. MFSK is MFSK4, MFSK8, MFSK11, MFSK16, MFSK22, MFSK31,
+MFSK32, MFSK64, and MFSK128: Gray-coded tones, NASA K=7, IZ8BLY varicode, and
+the fldigi diagonal interleaver. MFSK64L and MFSK128L are not in this build.
+WEFAX-576 receives only (IOC 576, 120 lines per minute) and saves PNGs to the
+folder. They are still being proved on the air.
 
-MFSK, MT63, DominoEX, Thor, and QPSK do not key yet.
+MT63, DominoEX, Thor, and QPSK do not key yet.
 CW stays in Lyra.

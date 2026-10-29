@@ -3,6 +3,8 @@
 
 #include "DigitalMode.h"
 #include "ModeProfile.h"
+#include "mfsk/MfskModem.h"
+#include "olivia/OliviaModem.h"
 
 #include <algorithm>
 
@@ -484,12 +486,18 @@ void ModeProfile::setDigitalMode(const QString& mode) {
   refreshBands();
   const bool hell = hellFamily(mode_);
   const bool keyboard = keyboardTextMode(mode_);
+  const bool keys = rttyMode(mode_) || (pskMode(mode_) && pskBaud(mode_) > 0.0) ||
+                    oliviaBandwidthHz(mode_) > 0 || mfskBandwidthHz(mode_) > 0;
   if (auto* label = qobject_cast<QLabel*>(keyboard_)) {
     label->setText(keyboard && !hell
-                       ? QStringLiteral("%1 uses the transmit box and the receive echo. "
-                                        "CLR RX and CLR TX clear those. This mode does not key yet. "
-                                        "START is never sent.")
-                             .arg(mode_)
+                       ? (keys ? QStringLiteral("%1 uses the transmit box and the receive echo. "
+                                                "CLR RX and CLR TX clear those. TX sends it. "
+                                                "START is never sent.")
+                                     .arg(mode_)
+                               : QStringLiteral("%1 uses the transmit box and the receive echo. "
+                                                "CLR RX and CLR TX clear those. This mode does not key yet. "
+                                                "START is never sent.")
+                                     .arg(mode_))
                        : QStringLiteral(
                              "Keyboard modes keep their own controls. None are loaded yet."));
   }

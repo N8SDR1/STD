@@ -20,6 +20,7 @@ class QEvent;
 
 class Ft8Decode;
 class HellEngine;
+class MfskEngine;
 class OliviaEngine;
 class PskEngine;
 class RttyEngine;
@@ -305,6 +306,7 @@ private:
   RttyEngine* rtty_ = nullptr;
   PskEngine* psk_ = nullptr;
   OliviaEngine* olivia_ = nullptr;
+  MfskEngine* mfsk_ = nullptr;
   WefaxEngine* wefax_ = nullptr;
   QVector<DecodeRow> shownDecodes_;
 };

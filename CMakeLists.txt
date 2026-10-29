@@ -101,6 +101,8 @@ qt_add_executable(std
   src/wefax/WefaxModem.h
   src/olivia/OliviaModem.cpp
   src/olivia/OliviaModem.h
+  src/mfsk/MfskModem.cpp
+  src/mfsk/MfskModem.h
   resources/resources.qrc
 )
 

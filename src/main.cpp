@@ -9,6 +9,7 @@
 
 #include "QsoLog.h"
 #include "TxWave.h"
+#include "mfsk/MfskModem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
@@ -361,8 +362,9 @@ int shellReady(MainWindow& window) {
     return fail("RTTY or PSK31 is missing");
   if (!keyboardTextMode(QStringLiteral("Feld Hell")) || !keyboardTextMode(QStringLiteral("RTTY")) ||
       !keyboardTextMode(QStringLiteral("PSK31")) || !keyboardTextMode(QStringLiteral("BPSK63")) ||
-      !keyboardTextMode(QStringLiteral("QPSK31")) || !keyboardTextMode(QStringLiteral("Olivia 8/250")) ||
-      !keyboardTextMode(QStringLiteral("Contestia 8/250")) || keyboardTextMode(QStringLiteral("FT8")) ||
+      !keyboardTextMode(QStringLiteral("QPSK31")) ||       !keyboardTextMode(QStringLiteral("Olivia 8/250")) ||
+      !keyboardTextMode(QStringLiteral("Contestia 8/250")) ||
+      !keyboardTextMode(QStringLiteral("MFSK16")) || keyboardTextMode(QStringLiteral("FT8")) ||
       keyboardTextMode(QStringLiteral("FT4")) || keyboardTextMode(QStringLiteral("FT2")) ||
       keyboardTextMode(QStringLiteral("CW")))
     return fail("keyboard text mode list is wrong");
@@ -625,6 +627,22 @@ int shellReady(MainWindow& window) {
     qCritical("Olivia CQ decode [%s]", qPrintable(cqBack));
     return fail("Olivia did not decode");
   }
+  for (const char* name : {"MFSK16", "MFSK31"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
+      return fail("MFSK modulator is missing");
+    const QString back =
+        mfskDecode(QString::fromLatin1(name), wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1Char('E'))) {
+      qCritical("MFSK decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
+      return fail("MFSK did not decode");
+    }
+  }
+  const auto* mfsk16 = window.findChild<QAction*>(QStringLiteral("modeMfsk16"));
+  if (!mfsk16 || !mfsk16->toolTip().contains(QLatin1String("15.625")) ||
+      !mfsk16->toolTip().contains(QLatin1String("START")) ||
+      mfsk16->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("MFSK16 is missing");
   if (keyboardTextMode(QStringLiteral("WEFAX-576")))
     return fail("WEFAX is a keyboard mode");
   std::vector<float> faxWave;
