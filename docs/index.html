@@ -9,6 +9,9 @@ layout: null
 <title>STD — Shift, Tone, Decode</title>
 <meta name="description" content="STD is a 64-bit Windows application. Shift, Tone, Decode, a Qt 6.11.1 MSVC digimode console in testing. Around the shack it also answers to Sending Transmittal Disease.">
 <link rel="icon" type="image/png" href="logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rubik+Wet+Paint&display=swap" rel="stylesheet">
 <style>
   :root {
     --bg: #0a0e14;
@@ -175,10 +178,18 @@ layout: null
   }
   .safe-frame { margin: 18px auto 0; max-width: 480px; }
   .untreated {
-    margin-top: 6px;
-    color: var(--gold);
-    font-weight: 700;
-    letter-spacing: 0.4px;
+    margin-top: 10px;
+    color: #ff2a2a;
+    font-family: "Rubik Wet Paint", fantasy;
+    font-size: 32px;
+    font-weight: 400;
+    letter-spacing: 0.5px;
+    line-height: 1.15;
+    text-shadow:
+      0 0 2px #4a0000,
+      0 0 8px rgba(255, 30, 30, 0.95),
+      0 0 18px rgba(160, 0, 0, 0.75),
+      1px 2px 1px rgba(40, 0, 0, 0.85);
   }
   @media (prefers-reduced-motion: reduce) {
     .marquee-track { animation: none; }
