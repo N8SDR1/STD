@@ -2,7 +2,7 @@
 
 **Shift, Tone, Decode.** Software in testing. Version 0.1.0. Around the shack it also answers to **Sending Transmittal Disease**.
 
-The real expansion is Shift, Tone, Decode. The other one is the joke. STD is a Qt 6 digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air. [Lyra](https://n8sdr1.github.io/Lyra-SDR-cpp/) is the transceiver. [SDRLogger+](https://n8sdr1.github.io/SDRLoggerPlus/) is the logbook. CW stays in Lyra.
+The real expansion is Shift, Tone, Decode. The other one is the joke. STD is a 64-bit Windows application, a Qt 6.11.1 MSVC digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air. [Lyra](https://n8sdr1.github.io/Lyra-SDR-cpp/) is the transceiver. [SDRLogger+](https://n8sdr1.github.io/SDRLoggerPlus/) is the logbook. CW stays in Lyra.
 
 **STD: Help keep the infections spreading and buy us a shot of bourbon.**
 
@@ -84,35 +84,13 @@ The text command START is never sent.
 
 ## Build
 
-Requirements: a C++17 compiler, CMake 3.21 or newer, Qt 6 Widgets, Qt 6 GuiPrivate, and Qt 6 WebSockets.
-
-On Debian and Ubuntu:
-
-```bash
-sudo apt install build-essential cmake qt6-base-dev qt6-websockets-dev
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
-
-If CMake cannot find Qt, the error names the missing piece. A custom prefix can be passed as `-DQt6_DIR=/path/to/lib/cmake/Qt6`.
-
-On Windows the kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\msvc2022_64`. CMake is `C:\Qt\Tools\CMake_64\bin\cmake.exe`. The compiler is Visual Studio 18 Community. `ft8dec.dll` is built by `src/ft8/build_ft8dec.cmd` from the sibling MSHV tree and is loaded only to decode. The MinGW kit at `C:\Qt\6.11.1\mingw_64` is not the kit this build uses.
+STD is a 64-bit Windows application. The kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\msvc2022_64`. CMake is `C:\Qt\Tools\CMake_64\bin\cmake.exe`. The compiler is Visual Studio 18 Community. It needs Qt 6 Widgets, Qt 6 GuiPrivate, and Qt 6 WebSockets. `ft8dec.dll` is built by `src/ft8/build_ft8dec.cmd` from the sibling MSHV tree and is loaded only to decode. The MinGW kit at `C:\Qt\6.11.1\mingw_64` is not the kit this build uses.
 
 ## Run
 
-```bash
-./build/std
-```
+The built program is `build\std.exe`. The window title is STD. The icon is the rounded-square mark from [`resources/std-icon.png`](resources/std-icon.png).
 
-The window title is STD. The icon is the rounded-square mark from [`resources/std-icon.png`](resources/std-icon.png).
-
-A headless check constructs the window and exits:
-
-```bash
-STD_SELFTEST=1 QT_QPA_PLATFORM=offscreen ./build/std
-```
-
-Exit status 0 prints `STD self-test ok`.
+A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_QPA_PLATFORM=offscreen`, then run `build\std.exe`. Exit status 0 prints `STD self-test ok`.
 
 ## More
 

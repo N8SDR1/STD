@@ -2,7 +2,7 @@
 title: Modes
 ---
 
-Software in testing. The rows below are what the Mode menu actually does in this tree. A mode is listed as keying only when TX builds its audio. On-air proof is still in progress.
+Software in testing. STD is a 64-bit Windows application, Qt 6.11.1 MSVC. The rows below are what the Mode menu actually does in this tree. A mode is listed as keying only when TX builds its audio. On-air proof is still in progress.
 
 Connect sends `AUDIO_START:0`. The text command START is never sent. CW stays in Lyra.
 
