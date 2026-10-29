@@ -55,19 +55,21 @@ struct Ft8Band {
   qint64 ft2Hz;
   qint64 hellHz;
   qint64 hellRegion1Hz;
+  qint64 jt65Hz;
+  qint64 q65Hz;
 };
 
 constexpr Ft8Band kBands[] = {
-    {"1.8", 1840000, 1840000, 0, 1843000, 1841500, 0},
-    {"3.5", 3573000, 3575000, 3568000, 3578000, 3576500, 0},
-    {"7", 7074000, 7047500, 0, 7052000, 7078500, 0},
-    {"10", 10136000, 10140000, 0, 10144000, 10135500, 10142500},
-    {"14", 14074000, 14080000, 0, 14084000, 14061500, 0},
-    {"18", 18100000, 18104000, 0, 18108000, 18103500, 0},
-    {"21", 21074000, 21140000, 0, 21144000, 21061500, 0},
-    {"24", 24915000, 24919000, 0, 24923000, 24922500, 0},
-    {"28", 28074000, 28180000, 0, 28184000, 28061500, 0},
-    {"50", 50313000, 50318000, 0, 50320000, 50284500, 0},
+    {"1.8", 1840000, 1840000, 0, 1843000, 1841500, 0, 1838000, 1838000},
+    {"3.5", 3573000, 3575000, 3568000, 3578000, 3576500, 0, 3570000, 3570000},
+    {"7", 7074000, 7047500, 0, 7052000, 7078500, 0, 7076000, 7076000},
+    {"10", 10136000, 10140000, 0, 10144000, 10135500, 10142500, 10138000, 10138000},
+    {"14", 14074000, 14080000, 0, 14084000, 14061500, 0, 14076000, 14076000},
+    {"18", 18100000, 18104000, 0, 18108000, 18103500, 0, 18102000, 18102000},
+    {"21", 21074000, 21140000, 0, 21144000, 21061500, 0, 21076000, 21076000},
+    {"24", 24915000, 24919000, 0, 24923000, 24922500, 0, 24917000, 24917000},
+    {"28", 28074000, 28180000, 0, 28184000, 28061500, 0, 28076000, 28076000},
+    {"50", 50313000, 50318000, 0, 50320000, 50284500, 0, 50276000, 50305000},
 };
 
 constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
@@ -475,6 +477,8 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     next = QStringLiteral("FT4");
   else if (mode == QLatin1String("FT2"))
     next = QStringLiteral("FT2");
+  else if (jt65Mode(mode) || q65Mode(mode))
+    next = mode;
   else if (keyboardTextMode(mode))
     next = mode;
   const bool same = next == mode_;
@@ -511,7 +515,7 @@ void ModeProfile::setDigitalMode(const QString& mode) {
   if (auto* box = findChild<QCheckBox*>(QStringLiteral("profileAutoDec")))
     box->setVisible(!keyboard);
   const bool ft8 = mode_ == QLatin1String("FT8");
-  const bool sequenced = !keyboard && (ft8 || mode_ == QLatin1String("FT4") || mode_ == QLatin1String("FT2"));
+  const bool sequenced = sequencedFamily(mode_);
   if (auto* hound = findChild<QCheckBox*>(QStringLiteral("profileSuperHound")))
     hound->setVisible(ft8);
   if (auto* fox = findChild<QCheckBox*>(QStringLiteral("profileSuperFox")))
@@ -666,6 +670,10 @@ qint64 ModeProfile::tableHz(int index) const {
       return band.hellRegion1Hz;
     return band.hellHz;
   }
+  if (jt65Mode(mode_))
+    return band.jt65Hz;
+  if (q65Mode(mode_))
+    return band.q65Hz;
   if (mode_ == QLatin1String("FT2"))
     return band.ft2Hz;
   if (mode_ == QLatin1String("FT4")) {

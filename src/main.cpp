@@ -375,6 +375,7 @@ int shellReady(MainWindow& window) {
       !keyboardTextMode(QStringLiteral("DominoEX 16")) ||
       !keyboardTextMode(QStringLiteral("Thor 16")) || keyboardTextMode(QStringLiteral("FT8")) ||
       keyboardTextMode(QStringLiteral("FT4")) || keyboardTextMode(QStringLiteral("FT2")) ||
+      keyboardTextMode(QStringLiteral("JT65A")) || keyboardTextMode(QStringLiteral("Q65A")) ||
       keyboardTextMode(QStringLiteral("CW")))
     return fail("keyboard text mode list is wrong");
   if (textModeSamplesPerChar(QStringLiteral("Feld Hell")) != 0 ||
@@ -616,6 +617,28 @@ int shellReady(MainWindow& window) {
   // genft2 writes 120960 tone samples (2.52 s). The 3.75 s slot unkeys 0.77 s early.
   if (ft2Tone < 110000 || ft2Tone > 130000 || ft2Tone * 1000 / 48000 > 2980)
     return fail("FT2 waveform does not fit 3.75 s");
+  const auto* jt65a = window.findChild<QAction*>(QStringLiteral("modeJt65A"));
+  const auto* q65a = window.findChild<QAction*>(QStringLiteral("modeQ65A"));
+  if (!jt65a || !jt65a->toolTip().contains(QLatin1String("1270")) ||
+      !jt65a->toolTip().contains(QLatin1String("60")) ||
+      !jt65a->toolTip().contains(QLatin1String("START")) ||
+      !jt65a->toolTip().contains(QLatin1String("does not key")) || !q65a ||
+      !q65a->toolTip().contains(QLatin1String("30")) ||
+      !q65a->toolTip().contains(QLatin1String("START")) ||
+      !q65a->toolTip().contains(QLatin1String("does not key")))
+    return fail("JT65 or Q65 is missing from the menu");
+  for (const char* name : {"JT65A", "JT65B", "JT65C"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("CQ N8SDR EM79"), 1500, &wave) ||
+        wave.size() < 48000)
+      return fail("JT65 encoder is missing");
+  }
+  for (const char* name : {"Q65A", "Q65B", "Q65C", "Q65D"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("CQ N8SDR EM79"), 1500, &wave) ||
+        wave.size() < 48000)
+      return fail("Q65 encoder is missing");
+  }
 
   auto tonePower = [](const std::vector<float>& wave, int begin, int end, double hz) {
     double si = 0.0;
@@ -837,7 +860,25 @@ int shellReady(MainWindow& window) {
       {"FT4", 1, 37, false}, {"FT4", 1, 45, true}, {"FT2", 0, 0, true},    {"FT2", 0, 3, false},
       {"FT2", 0, 7, true},  {"FT2", 0, 11, false}, {"FT2", 0, 18, false}, {"FT2", 0, 22, true},
       {"FT2", 0, 56, false}, {"FT2", 1, 0, true},
+      {"JT65A", 0, 0, true}, {"JT65A", 1, 0, false},
+      {"Q65A", 0, 0, true}, {"Q65A", 0, 30, false},
   };
+  std::vector<float> jt65;
+  if (!buildTxWave(QStringLiteral("JT65A"), QStringLiteral("CQ N8SDR EM79"), 1500, &jt65) ||
+      jt65.size() < 48000)
+    return fail("JT65 encoder is missing");
+  const QString jt65Back = decodeSequencedMessage(QStringLiteral("JT65A"), jt65);
+  qInfo("JT65A %s", qPrintable(jt65Back));
+  if (!jt65Back.contains(QLatin1String("N8SDR")))
+    return fail("JT65A did not decode");
+  std::vector<float> q65;
+  if (!buildTxWave(QStringLiteral("Q65A"), QStringLiteral("CQ N8SDR EM79"), 1500, &q65) ||
+      q65.size() < 48000)
+    return fail("Q65 encoder is missing");
+  const QString q65Back = decodeSequencedMessage(QStringLiteral("Q65A"), q65);
+  qInfo("Q65A %s", qPrintable(q65Back));
+  if (!q65Back.contains(QLatin1String("N8SDR")))
+    return fail("Q65A did not decode");
   for (const auto& row : halves) {
     if (txStampIsFirstHalf(QString::fromLatin1(row.mode), row.minute, row.second) != row.first)
       return fail("period half is wrong");

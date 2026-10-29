@@ -671,11 +671,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     if (!ft8_ || !profile_)
       return;
     const QString mode = profile_->digitalMode();
-    const bool ft4 = mode == QLatin1String("FT4");
-    const bool ft2 = mode == QLatin1String("FT2");
     const bool hell = hellFamily(mode);
-    const bool armed = autoMonitor_ && profile_->mshvFamily() &&
-                       (ft4 || ft2 || mode == QLatin1String("FT8")) && profile_->autoDecode();
+    const bool armed =
+        autoMonitor_ && profile_->mshvFamily() && sequencedFamily(mode) && profile_->autoDecode();
     if (hell_) {
       hell_->setArmed(autoMonitor_ && hell);
       if (hell && waterfall_)
@@ -683,11 +681,30 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     }
     int low = profile_->startHz();
     int high = low + profile_->bandwidthHz();
-    if (!ft4 && !ft2 && !hell && profile_->superHound()) {
+    if (mode == QLatin1String("FT8") && profile_->superHound()) {
       low = 750;
       high = 750 + 1488;
     }
-    ft8_->setMode(ft2 ? Ft8Decode::Period::Ft2 : ft4 ? Ft8Decode::Period::Ft4 : Ft8Decode::Period::Ft8);
+    Ft8Decode::Period period = Ft8Decode::Period::Ft8;
+    if (mode == QLatin1String("FT2"))
+      period = Ft8Decode::Period::Ft2;
+    else if (mode == QLatin1String("FT4"))
+      period = Ft8Decode::Period::Ft4;
+    else if (mode == QLatin1String("JT65B"))
+      period = Ft8Decode::Period::Jt65B;
+    else if (mode == QLatin1String("JT65C"))
+      period = Ft8Decode::Period::Jt65C;
+    else if (mode == QLatin1String("JT65A"))
+      period = Ft8Decode::Period::Jt65A;
+    else if (mode == QLatin1String("Q65B"))
+      period = Ft8Decode::Period::Q65B;
+    else if (mode == QLatin1String("Q65C"))
+      period = Ft8Decode::Period::Q65C;
+    else if (mode == QLatin1String("Q65D"))
+      period = Ft8Decode::Period::Q65D;
+    else if (mode == QLatin1String("Q65A"))
+      period = Ft8Decode::Period::Q65A;
+    ft8_->setMode(period);
     ft8_->setArmed(armed, low, high);
   });
   decodeClock->start(200);
@@ -1976,17 +1993,28 @@ void MainWindow::buildMenus() {
     const char* label;
     const char* objectName;
     bool checked;
-  } modeRows[] = {{"FT8", "modeFt8", true},
-                  {"FT4", "modeFt4", false},
-                  {"FT2", "modeFt2", false}};
+  } modeRows[] = {{"FT8", "modeFt8", true},     {"FT4", "modeFt4", false},
+                  {"FT2", "modeFt2", false},     {"JT65A", "modeJt65A", false},
+                  {"JT65B", "modeJt65B", false}, {"JT65C", "modeJt65C", false},
+                  {"Q65A", "modeQ65A", false},   {"Q65B", "modeQ65B", false},
+                  {"Q65C", "modeQ65C", false},   {"Q65D", "modeQ65D", false}};
   for (const auto& row : modeRows) {
     auto* action = modeMenu->addAction(row.label);
     action->setCheckable(true);
     action->setChecked(row.checked);
     action->setObjectName(QString::fromLatin1(row.objectName));
-    action->setToolTip(QStringLiteral("DIGU. This does not key and does not send START."));
-    modes->addAction(action);
     const QString modeName = QString::fromLatin1(row.label);
+    QString tip = QStringLiteral("DIGU. This does not key and does not send START.");
+    if (jt65Mode(modeName))
+      tip = QStringLiteral(
+          "DIGU. 60 second period. Tone 0 stays near 1270 Hz. TX sends it. "
+          "This does not key and does not send START.");
+    else if (q65Mode(modeName))
+      tip = QStringLiteral(
+          "DIGU. 30 second period. The tone follows the cursor. TX sends it. "
+          "This does not key and does not send START.");
+    action->setToolTip(tip);
+    modes->addAction(action);
     connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
   }
   auto* hellMenu = modeMenu->addMenu(QStringLiteral("Hell"));
@@ -2270,8 +2298,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   });
   const bool hell = hellFamily(modeName);
   const bool text = keyboardTextMode(modeName);
-  const bool sequenced = modeName == QLatin1String("FT8") || modeName == QLatin1String("FT4") ||
-                         modeName == QLatin1String("FT2");
+  const bool sequenced = sequencedFamily(modeName);
   const bool family = sequenced || hell;
   const QString layoutKey = hell ? QStringLiteral("Hell") : modeName;
   if (layoutKey != layoutMode_) {
@@ -2304,6 +2331,10 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool fax = wefaxMode(modeName);
   if ((hell || rtty || psk || olivia || mfsk || domino || thor || mt63) && waterfall_)
     waterfall_->setRxHz(1500);
+  if (jt65Mode(modeName) && waterfall_) {
+    waterfall_->setRxHz(1270);
+    waterfall_->setTxHz(1270);
+  }
   if (fax && waterfall_)
     waterfall_->setRxHz(1900);
   if (hell_) {
@@ -2452,8 +2483,9 @@ void MainWindow::showGuide() {
        "The first waiting call is worked next, or the furthest when the queue sort is Distance. "
        "Periods, or Max Time, is how long to keep calling that station before the next one in the "
        "queue. A reply from that station starts the count over. If the queue is empty, CNS calls CQ. "
-       "CNS off stops. FT8, FT4, and FT2 wait for the slot, or join the one that is still open. "
-       "FT8 transmits in a 15 second slot, FT4 in 7.5 seconds, and FT2 in 3.75 seconds. "
+       "CNS off stops. FT8, FT4, FT2, JT65, and Q65 wait for the slot, or join the one that is still open. "
+       "FT8 transmits in a 15 second slot, FT4 in 7.5 seconds, FT2 in 3.75 seconds, "
+       "JT65 in 60 seconds, and Q65 in 30 seconds. "
        "Each transmission ends 370 ms plus the mode tail before that slot ends. "
        "Standard Tx1 through Tx5 stay HIS OUR GRID, report, R+report, "
        "RR73, and 73, even before a station is clicked. Tx6 stays CQ OUR GRID. Extra is the CQ, with "
@@ -2461,12 +2493,14 @@ void MainWindow::showGuide() {
        "and the QSO pane and puts that Standard sequence back. A contest keeps its exchange on Tx1 "
        "through Tx5 and its own CQ, such as CQ FD or CQ TEST, on Tx6. The other station comes off "
        "those lines. CLR Now does not unkey. Halt only stops the transmission and leaves Tx1 through "
-       "Tx6 as they are. AFC stays off: FT8, FT4, and FT2 have no AFC switch, and they "
+       "Tx6 as they are. AFC stays off: FT8, FT4, FT2, JT65, and Q65 have no AFC switch, and they "
        "have no squelch slider. The decoder searches the audio window. START is never sent."},
       {"MSHV modes still out",
-       "FT8, FT4, and FT2 are the MSHV modes in this build. The rest of the MSHV Mode menu is not "
-       "here and does not key: MSK144, MSKMS, JTMS, FSK441, FSK315, ISCAT-A, ISCAT-B, JT6M, Q65A, "
-       "Q65B, Q65C, Q65D, JT65A, JT65B, JT65C, and PI4. That list is kept in docs/mshv-modes.md so "
+       "FT8, FT4, FT2, JT65, and Q65 are the MSHV modes in this build. JT65A, JT65B, and JT65C "
+       "are a 60 second period. Tone 0 stays near 1270 Hz. Q65A, Q65B, Q65C, and Q65D are a "
+       "30 second period and the tone follows the cursor. TX sends them. The rest of the MSHV "
+       "Mode menu is not here and does not key: MSK144, MSKMS, JTMS, FSK441, FSK315, ISCAT-A, "
+       "ISCAT-B, JT6M, and PI4. That list is kept in docs/mshv-modes.md so "
        "it is not forgotten. Hell, RTTY, BPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and WEFAX-576 are Fldigi modes, "
        "not that list. MT63 is a Fldigi mode on this menu. "
        "CW stays in Lyra. START is never sent."},
@@ -2514,7 +2548,7 @@ void MainWindow::showGuide() {
        "MT63-1000L, MT63-2000S, and MT63-2000L. Sixty-four carriers, a Walsh code, and the fldigi "
        "short or long interleaver, centered on the cursor. TX sends those. QPSK does not key yet. "
        "A macro copies into the box. TX macro also presses TX when it is on. Hell, RTTY, the "
-       "BPSK speeds, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 can key. FT8, FT4, and FT2 stay on the MSHV sequencer. "
+       "BPSK speeds, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
        "CW stays in Lyra. START is never sent."},
       {"WEFAX",
        "Mode → WEFAX-576 receives only. It does not key and it does not send START. IOC is 576 and "
@@ -3287,6 +3321,10 @@ void MainWindow::applyChannelWidth() {
     width = 90;
   else if (mode == QLatin1String("FT2"))
     width = 125;
+  else if (jt65Mode(mode))
+    width = jt65ChannelHz(mode);
+  else if (q65Mode(mode))
+    width = q65ChannelHz(mode);
   else if (hellFamily(mode))
     width = 245;
   else if (rttyMode(mode))
@@ -3447,6 +3485,8 @@ int tuneLimitMs(const QString& mode) {
     tail = 800;
   else if (mode == QLatin1String("FT2"))
     tail = 400;
+  else if (jt65Mode(mode) || q65Mode(mode))
+    tail = 600;
   return 30000 - 370 - tail;
 }
 
@@ -3697,9 +3737,7 @@ void MainWindow::enqueueCaller(const QString& call, int db, int dist, int slot) 
 bool MainWindow::queueFollows() const {
   if (!profile_ || !profile_->multiAnswer())
     return false;
-  const QString mode = profile_->digitalMode();
-  return mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
-         mode == QLatin1String("FT2");
+  return sequencedFamily(profile_->digitalMode());
 }
 
 void MainWindow::dropWorkedCall() {
@@ -3797,6 +3835,10 @@ void MainWindow::noteTheirReply(const QString& time, int db, const QString& mess
 bool MainWindow::halfIsFirst(const QString& mode) const {
   const QTime now = QDateTime::currentDateTimeUtc().time();
   const int ms = ((now.hour() * 60 + now.minute()) * 60 + now.second()) * 1000 + now.msec();
+  if (jt65Mode(mode))
+    return (now.minute() % 2) == 0;
+  if (q65Mode(mode))
+    return now.second() < 30;
   if (mode == QLatin1String("FT2"))
     return (ms % 7500) < 3750;
   if (mode == QLatin1String("FT4"))
@@ -3811,6 +3853,10 @@ int MainWindow::periodLengthMs(const QString& mode) const {
     return 7500;
   if (mode == QLatin1String("FT2"))
     return 3750;
+  if (jt65Mode(mode))
+    return 60000;
+  if (q65Mode(mode))
+    return 30000;
   return 0;
 }
 
@@ -3831,6 +3877,8 @@ int MainWindow::txGuardMs(const QString& mode) const {
     tail = 800;
   else if (mode == QLatin1String("FT2"))
     tail = 400;
+  else if (jt65Mode(mode) || q65Mode(mode))
+    tail = 600;
   return 370 + tail;
 }
 
@@ -3867,8 +3915,7 @@ bool MainWindow::slotStillOpen(const QString& mode) const {
 }
 
 bool MainWindow::sequencedMode(const QString& mode) const {
-  return mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
-         mode == QLatin1String("FT2");
+  return sequencedFamily(mode);
 }
 
 bool MainWindow::textIs73(const QString& text) const {
@@ -4040,7 +4087,7 @@ void MainWindow::refreshTxChrome() {
       widget->setVisible(true);
   }
   const bool ft8 = mode == QLatin1String("FT8");
-  const bool sequenced = ft8 || mode == QLatin1String("FT4") || mode == QLatin1String("FT2");
+  const bool sequenced = sequencedFamily(mode);
   const bool multi = sequenced && profile_ && profile_->multiAnswer();
   const bool fox = ft8 && profile_ && profile_->superFox();
   const bool hound = ft8 && profile_ && profile_->superHound();
@@ -4193,9 +4240,7 @@ void MainWindow::refreshTxFields() {
   const bool ft8 = profile_ && profile_->digitalMode() == QLatin1String("FT8");
   const bool fox = ft8 && profile_->superFox();
   const QString mode = profile_ ? profile_->digitalMode() : QString();
-  const bool multi = profile_ && profile_->multiAnswer() &&
-                     (mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
-                      mode == QLatin1String("FT2"));
+  const bool multi = profile_ && profile_->multiAnswer() && sequencedFamily(mode);
   if (fox || multi) {
     auto* cq = findChild<QComboBox*>(fox ? QStringLiteral("txFoxCq") : QStringLiteral("txCqType"));
     if (cq && cq->currentIndex() > 0) {

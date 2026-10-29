@@ -16,6 +16,10 @@
 bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
                  std::vector<int>* echoAt = nullptr);
 
+// Decimate a 48 kHz JT65 or Q65 wave to 12 kHz and run the MSHV decoder.
+// Empty when the mode is not one of those or nothing prints.
+QString decodeSequencedMessage(const QString& mode, const std::vector<float>& wave48k);
+
 // 48 kHz samples for one transmitted character. Hell, RTTY, and PSK stay
 // 0 here and pace the echo from the echoAt list buildTxWave fills. A mode
 // with no modulator stays 0 so the receive echo does not print text that

@@ -60,6 +60,26 @@ int ft8_generate(const char* message, double toneHz, int* samples, int capacity)
 int ft4_generate(const char* message, double toneHz, int* samples, int capacity);
 int ft2_generate(const char* message, double toneHz, int* samples, int capacity);
 
+/* JT65 at 48 kHz. submode is 1 A, 2 B, 4 C. The tone is fixed near
+   1270 Hz. samples must hold 60*48000 ints. Returns the sample count. */
+int jt65_generate(const char* message, int submode, int* samples, int capacity);
+
+/* Q65 at 48 kHz. submode is 1 A, 2 B, 4 C, 8 D. periodSec is 15, 30, 60,
+   or 120. samples must hold periodSec*48000 ints. Returns the sample count. */
+int q65_generate(const char* message, double toneHz, int submode, int periodSec, int* samples,
+                 int capacity);
+
+/* 12 kHz doubles, already scaled the way MSHV scales int16 audio.
+   JT65 count should be 60*12000. nfqso is the audio center (1270).
+   submode is 1, 2, or 4. fn is called as each line is found. */
+int jt65_decode_wave(double* samples, int count, int nfqso, int ntol, int submode, const char* hhmmss,
+                     Ft8LineFn fn, void* user);
+
+/* 12 kHz doubles. count should be periodSec*12000. modid is 14 A, 15 B,
+   16 C, 17 D. fn is called as each line is found. */
+int q65_decode_wave(double* samples, int count, int lowHz, int highHz, int rxHz, int modid, int periodSec,
+                    const char* hhmmss, Ft8LineFn fn, void* user);
+
 #ifdef __cplusplus
 }
 #endif

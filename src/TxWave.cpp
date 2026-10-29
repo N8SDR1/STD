@@ -3,6 +3,7 @@
 
 #include "DigitalMode.h"
 #include "TxWave.h"
+#include "ft8/ft8_api.h"
 #include "hell/HellFont.h"
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
@@ -14,6 +15,7 @@
 
 #include <QCoreApplication>
 #include <QString>
+#include <QThread>
 
 #include <algorithm>
 #include <cmath>
@@ -74,6 +76,52 @@ bool buildFt4(const QString& message, int toneHz, std::vector<float>* out) {
 
 bool buildFt2(const QString& message, int toneHz, std::vector<float>* out) {
   return buildFt("ft2_generate", 220000, message, toneHz, out);
+}
+
+using Jt65GenerateFn = int (*)(const char*, int, int*, int);
+using Q65GenerateFn = int (*)(const char*, double, int, int, int*, int);
+
+bool buildJt65(const QString& mode, const QString& message, std::vector<float>* out) {
+  const QString path = QCoreApplication::applicationDirPath() + QStringLiteral("/ft8dec.dll");
+  HMODULE module = GetModuleHandleW(reinterpret_cast<const wchar_t*>(path.utf16()));
+  if (!module)
+    module = LoadLibraryExW(reinterpret_cast<const wchar_t*>(path.utf16()), nullptr,
+                            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+  if (!module)
+    return false;
+  auto generate = reinterpret_cast<Jt65GenerateFn>(GetProcAddress(module, "jt65_generate"));
+  if (!generate)
+    return false;
+  constexpr int kCap = 60 * kRate;
+  std::vector<int> wave(static_cast<size_t>(kCap), 0);
+  const QByteArray utf8 = message.toUtf8();
+  const int n = generate(utf8.constData(), jt65Mode65(mode), wave.data(), kCap);
+  if (n <= 0)
+    return false;
+  fromInts(wave.data(), n, out);
+  return true;
+}
+
+bool buildQ65(const QString& mode, const QString& message, int toneHz, std::vector<float>* out) {
+  const QString path = QCoreApplication::applicationDirPath() + QStringLiteral("/ft8dec.dll");
+  HMODULE module = GetModuleHandleW(reinterpret_cast<const wchar_t*>(path.utf16()));
+  if (!module)
+    module = LoadLibraryExW(reinterpret_cast<const wchar_t*>(path.utf16()), nullptr,
+                            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+  if (!module)
+    return false;
+  auto generate = reinterpret_cast<Q65GenerateFn>(GetProcAddress(module, "q65_generate"));
+  if (!generate)
+    return false;
+  constexpr int kPeriod = 30;
+  constexpr int kCap = kPeriod * kRate;
+  std::vector<int> wave(static_cast<size_t>(kCap), 0);
+  const QByteArray utf8 = message.toUtf8();
+  const int n = generate(utf8.constData(), double(toneHz), q65Mq65(mode), kPeriod, wave.data(), kCap);
+  if (n <= 0)
+    return false;
+  fromInts(wave.data(), n, out);
+  return true;
 }
 
 // fldigi feld::get_font_data. -1 when this column and every column to its
@@ -253,6 +301,10 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
     return buildFt4(text, tone, out);
   if (mode == QLatin1String("FT2"))
     return buildFt2(text, tone, out);
+  if (jt65Mode(mode))
+    return buildJt65(mode, text, out);
+  if (q65Mode(mode))
+    return buildQ65(mode, text, tone, out);
   if (hellFamily(mode))
     return buildHell(mode, text, tone, out, echoAt);
   if (rttyMode(mode)) {
@@ -400,6 +452,10 @@ bool txStampIsFirstHalf(const QString& mode, int minute, int second) {
     periodCs = 750;
     if (second == 7 || second == 22 || second == 37 || second == 52)
       cs = 50;
+  } else if (jt65Mode(mode)) {
+    periodCs = 6000;
+  } else if (q65Mode(mode)) {
+    periodCs = 3000;
   }
   int pos = minute * 6000 + second * 100 + cs;
   const int pair = periodCs * 2;
@@ -442,4 +498,80 @@ bool ft8TxMatchesMshv(const std::vector<float>& wave, int toneHz) {
     }
   }
   return true;
+}
+
+namespace {
+
+struct SequencedHit {
+  QString message;
+};
+
+void takeSequencedHit(const char*, int, const char*, const char* message, int, void* user) {
+  auto* hit = static_cast<SequencedHit*>(user);
+  const QString text = QString::fromUtf8(message).trimmed();
+  if (!text.isEmpty() && hit->message.isEmpty())
+    hit->message = text;
+}
+
+// JT65 and Q65 keep large arrays on the decoder object and large frames
+// in the decode itself. That runs on this thread, not the GUI thread.
+class SequencedDecodeThread : public QThread {
+public:
+  QString mode;
+  const std::vector<float>* wave = nullptr;
+  QString message;
+
+  void run() override {
+    if (!wave || wave->size() < static_cast<size_t>(48000))
+      return;
+    const bool jt = jt65Mode(mode);
+    const int period = jt ? 60 : 30;
+    const int count12 = period * 12000;
+    std::vector<double> samples(static_cast<size_t>(count12), 0.0);
+    const int n48 = int(wave->size());
+    int out = 0;
+    for (int i = 0; i + 3 < n48 && out < count12; i += 4, ++out)
+      samples[static_cast<size_t>(out)] = double((*wave)[static_cast<size_t>(i)]) * 12.8;
+    const QString path = QCoreApplication::applicationDirPath() + QStringLiteral("/ft8dec.dll");
+    HMODULE module = GetModuleHandleW(reinterpret_cast<const wchar_t*>(path.utf16()));
+    if (!module)
+      module =
+          LoadLibraryExW(reinterpret_cast<const wchar_t*>(path.utf16()), nullptr,
+                         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!module)
+      return;
+    SequencedHit hit;
+    const char* stamp = "000000";
+    if (jt) {
+      auto decode =
+          reinterpret_cast<decltype(&jt65_decode_wave)>(GetProcAddress(module, "jt65_decode_wave"));
+      if (!decode)
+        return;
+      decode(samples.data(), count12, 1270, 400, jt65Mode65(mode), stamp, takeSequencedHit, &hit);
+    } else {
+      auto decode =
+          reinterpret_cast<decltype(&q65_decode_wave)>(GetProcAddress(module, "q65_decode_wave"));
+      if (!decode)
+        return;
+      // The self-test cursor is 1500 Hz. Q65 follows that tone.
+      decode(samples.data(), count12, 200, 4000, 1500, q65ModId(mode), period, stamp,
+             takeSequencedHit, &hit);
+    }
+    message = hit.message;
+  }
+};
+
+}  // namespace
+
+QString decodeSequencedMessage(const QString& mode, const std::vector<float>& wave48k) {
+  if (!jt65Mode(mode) && !q65Mode(mode))
+    return {};
+  SequencedDecodeThread thread;
+  thread.mode = mode;
+  thread.wave = &wave48k;
+  thread.setStackSize(64 * 1024 * 1024);
+  thread.start();
+  if (!thread.wait(180000))
+    return {};
+  return thread.message;
 }

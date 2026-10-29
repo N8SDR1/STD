@@ -134,8 +134,11 @@ if(WIN32)
       "${CMAKE_SOURCE_DIR}/src/ft8/ft8_bridge.cpp"
       "${CMAKE_SOURCE_DIR}/src/ft8/ft8_api.h"
       "${CMAKE_SOURCE_DIR}/src/ft8/decoderms_ft8.h"
+      "${CMAKE_SOURCE_DIR}/src/ft8/decoderms_jt65.h"
+      "${CMAKE_SOURCE_DIR}/src/ft8/jt65_bridge.cpp"
       "${CMAKE_SOURCE_DIR}/src/ft8/qt6_compat.h"
       "${CMAKE_SOURCE_DIR}/src/ft8/patch_qt_import.py"
+      "${CMAKE_SOURCE_DIR}/src/ft8/patch_moc_undef.py"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft8.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft8var.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft4.cpp"
@@ -143,8 +146,13 @@ if(WIN32)
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderft2.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenFt2/gen_ft2.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderpom.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderjt65.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decoderq65.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGen65/gen65.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenQ65/gen_q65.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenQ65/q65_subs.cpp"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Building the MSHV FT8, FT4, and FT2 decoder"
+    COMMENT "Building the MSHV FT8, FT4, FT2, JT65, and Q65 decoder"
     VERBATIM)
   add_custom_target(ft8dec DEPENDS "${FT8_DLL}")
   add_dependencies(std ft8dec)

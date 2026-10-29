@@ -38,7 +38,8 @@ constexpr int kAudioRate = 12000;
 // 79 FT8 symbols at 160 ms. The single pass starts once that waveform is in.
 constexpr int kDecodeSamples = 12640 * kAudioRate / 1000;
 constexpr int kMinKeep = 6 * kAudioRate;
-constexpr int kRing = 20 * kAudioRate;
+// JT65 keeps 60 s and Q65 keeps 30 s. 75 s leaves room for the clock.
+constexpr int kRing = 75 * kAudioRate;
 constexpr int kDecoderCapacity = 16 * kAudioRate;
 constexpr double kDecoderPad = 1e-8;
 constexpr qint64 kPeriodMs = 15000;
@@ -65,13 +66,16 @@ struct Job {
   int id3dec = 100;
   int kind = 0;
   int multi = 0;
+  int submode = 1;
+  int modid = 14;
+  int periodSec = 15;
   QString stamp;
 };
 
 class Worker : public QThread {
 public:
   explicit Worker(QObject* parent = nullptr) : QThread(parent) {
-    setStackSize(32 * 1024 * 1024);
+    setStackSize(64 * 1024 * 1024);
   }
 
   bool submit(Job job) {
@@ -116,6 +120,10 @@ public:
         reinterpret_cast<decltype(&ft4_session_decode)>(GetProcAddress(module, "ft4_session_decode"));
     auto decode2 =
         reinterpret_cast<decltype(&ft2_session_decode)>(GetProcAddress(module, "ft2_session_decode"));
+    auto decode65 =
+        reinterpret_cast<decltype(&jt65_decode_wave)>(GetProcAddress(module, "jt65_decode_wave"));
+    auto decode65q =
+        reinterpret_cast<decltype(&q65_decode_wave)>(GetProcAddress(module, "q65_decode_wave"));
     auto setMulti = reinterpret_cast<decltype(&ft8_session_set_multi_answer)>(
         GetProcAddress(module, "ft8_session_set_multi_answer"));
     if (!open || !close || !decode) {
@@ -140,7 +148,13 @@ public:
         job = std::move(queue_.front());
         queue_.pop_front();
       }
-      const int minimum = job.kind == 2 ? 30000 : kMinKeep;
+      int minimum = kMinKeep;
+      if (job.kind == 2)
+        minimum = 30000;
+      else if (job.kind == 3)
+        minimum = 60 * kAudioRate;
+      else if (job.kind == 4)
+        minimum = 30 * kAudioRate;
       if (job.samples.size() < static_cast<size_t>(minimum))
         continue;
       double sum = 0.0;
@@ -152,7 +166,7 @@ public:
       for (double& sample : job.samples)
         sample -= average;
       const int realCount = static_cast<int>(job.samples.size());
-      if (job.samples.size() < static_cast<size_t>(kDecoderCapacity))
+      if (job.kind < 3 && job.samples.size() < static_cast<size_t>(kDecoderCapacity))
         job.samples.resize(static_cast<size_t>(kDecoderCapacity), kDecoderPad);
       const QByteArray stamp = job.stamp.toLatin1();
       const auto take = [](const char* time, int db, const char* dt, const char* message, int freqHz,
@@ -175,6 +189,24 @@ public:
         }
         decode2(session, job.samples.data(), realCount, job.lowHz, job.highHz, job.rxHz, job.txHz,
                 job.depth, job.ap, stamp.constData(), take, this);
+        continue;
+      }
+      if (job.kind == 3) {
+        if (!decode65) {
+          emitHit(Hit{QString(), 0, QString(), QStringLiteral("JT65 decoder did not load."), 0});
+          continue;
+        }
+        decode65(job.samples.data(), realCount, job.rxHz, 2000, job.submode, stamp.constData(), take,
+                 this);
+        continue;
+      }
+      if (job.kind == 4) {
+        if (!decode65q) {
+          emitHit(Hit{QString(), 0, QString(), QStringLiteral("Q65 decoder did not load."), 0});
+          continue;
+        }
+        decode65q(job.samples.data(), realCount, job.lowHz, job.highHz, job.rxHz, job.modid,
+                  job.periodSec, stamp.constData(), take, this);
         continue;
       }
       if (job.kind == 1) {
@@ -365,10 +397,21 @@ void Ft8Decode::poll() {
     // 6100 ms. FT2 is 3.75 s and starts once the clock passes 3400 ms.
     // The three-stage timer is FT8 only.
     qint64 periodMs = kPeriodMs;
-    if (mode == Period::Ft4)
+    int kind = 0;
+    if (mode == Period::Ft4) {
       periodMs = 7500;
-    else if (mode == Period::Ft2)
+      kind = 1;
+    } else if (mode == Period::Ft2) {
       periodMs = 3750;
+      kind = 2;
+    } else if (mode == Period::Jt65A || mode == Period::Jt65B || mode == Period::Jt65C) {
+      periodMs = 60000;
+      kind = 3;
+    } else if (mode == Period::Q65A || mode == Period::Q65B || mode == Period::Q65C ||
+               mode == Period::Q65D) {
+      periodMs = 30000;
+      kind = 4;
+    }
     const qint64 periodStart = (clock / periodMs) * periodMs;
     if (periodStart != d_->stagePeriod) {
       d_->stagePeriod = periodStart;
@@ -377,7 +420,33 @@ void Ft8Decode::poll() {
     int id3dec = 100;
     int samples = kDecodeSamples;
     qint64 atMs = kDecodeAtMs;
-    if (mode == Period::Ft4 || mode == Period::Ft2) {
+    int submode = 1;
+    int modid = 14;
+    int periodSec = 15;
+    if (kind == 3 || kind == 4) {
+      if (d_->stageDone >= 1)
+        return;
+      id3dec = 0;
+      if (kind == 3) {
+        atMs = 52000;
+        samples = 60 * kAudioRate;
+        periodSec = 60;
+        if (mode == Period::Jt65C)
+          submode = 4;
+        else if (mode == Period::Jt65B)
+          submode = 2;
+      } else {
+        atMs = 27000;
+        samples = 30 * kAudioRate;
+        periodSec = 30;
+        if (mode == Period::Q65D)
+          modid = 17;
+        else if (mode == Period::Q65C)
+          modid = 16;
+        else if (mode == Period::Q65B)
+          modid = 15;
+      }
+    } else if (mode == Period::Ft4 || mode == Period::Ft2) {
       if (d_->stageDone >= 1)
         return;
       id3dec = 0;
@@ -418,7 +487,8 @@ void Ft8Decode::poll() {
       job.samples[static_cast<size_t>(n)] = d_->ring[static_cast<size_t>(index % kRing)];
       ++real;
     }
-    if (real < samples - 1200)
+    const int slack = kind >= 3 ? samples / 5 : 1200;
+    if (real < samples - slack)
       return;
     job.lowHz = d_->lowHz;
     job.highHz = d_->highHz;
@@ -428,7 +498,10 @@ void Ft8Decode::poll() {
     job.ap = d_->ap ? 1 : 0;
     job.multi = d_->multiAnswer ? 1 : 0;
     job.id3dec = id3dec;
-    job.kind = mode == Period::Ft2 ? 2 : mode == Period::Ft4 ? 1 : 0;
+    job.kind = kind;
+    job.submode = submode;
+    job.modid = modid;
+    job.periodSec = periodSec;
     job.stamp = QDateTime::fromMSecsSinceEpoch(periodStart, QTimeZone::utc()).toString(QStringLiteral("hhmmss"));
     d_->stageDone += 1;
     ready = true;

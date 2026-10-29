@@ -24,6 +24,9 @@ public:
     return match.hasMatch() && match.capturedStart() == 0 && match.capturedLength() == text.size();
   }
 
+  // QString::contains(QRegularExpression) is what HvQthLoc calls.
+  operator const QRegularExpression&() const { return re_; }
+
 private:
   QRegularExpression re_;
 };

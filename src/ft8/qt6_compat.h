@@ -22,3 +22,6 @@ inline bool operator>(int n, QChar c) { return n > int(c.unicode()); }
 // QString::midRef() was removed. mid() returns a QString, and the
 // call sites use toInt() / toDouble() on that.
 #define midRef mid
+
+// QDateTime::toTime_t() was removed. toSecsSinceEpoch() is the same clock.
+#define toTime_t toSecsSinceEpoch

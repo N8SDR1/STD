@@ -1,4 +1,4 @@
-# MSHV modes still out of STD
+# MSHV modes
 
 Working list. STD does not vendor the MSHV tree. The names are `ModeStr` in
 `MSHV/src/config_str_all.h` (`COUNT_MODE` is 19). Menu order is `pos_mods`
@@ -14,6 +14,13 @@ sent.
 | FT8 | Decode and TX. 15 s. DIGU. MSHV generator and sequencer. |
 | FT4 | Decode and TX. 7.5 s. DIGU. |
 | FT2 | Decode and TX. 3.75 s. DIGU. |
+| JT65A | Decode and TX. 60 s. Tone 0 stays near 1270 Hz. DIGU. |
+| JT65B | Decode and TX. 60 s. Wider tone spacing than JT65A. |
+| JT65C | Decode and TX. 60 s. Wider tone spacing than JT65B. |
+| Q65A | Decode and TX. 30 s. The tone follows the cursor. DIGU. |
+| Q65B | Decode and TX. 30 s. Wider tone spacing than Q65A. |
+| Q65C | Decode and TX. 30 s. Wider tone spacing than Q65B. |
+| Q65D | Decode and TX. 30 s. Wider tone spacing than Q65C. |
 
 Contest exchanges on Tx1 through Tx6 are the MSHV activity list. They are
 not extra modes.
@@ -32,13 +39,6 @@ These do not key. Do not drop them.
 | ISCAT-A | |
 | ISCAT-B | |
 | JT6M | |
-| Q65A | Submenu with Q65B, Q65C, and Q65D. |
-| Q65B | |
-| Q65C | |
-| Q65D | |
-| JT65A | Menu label adds HF/50 MHz. |
-| JT65B | Menu label adds VHF/UHF. |
-| JT65C | Menu label adds VHF/UHF. |
 | PI4 | |
 
 ## Not this list

@@ -89,7 +89,11 @@ void showDigitalMode(QPushButton* chip, const QString& mode) {
   else if (text == QLatin1String("FT4")) {
     fill = QStringLiteral("#e08a3d");
     ink = QStringLiteral("#2a1404");
-  } else if (text.contains(QLatin1String("Hell"))) {
+  } else if (text.startsWith(QLatin1String("JT65")))
+    fill = QStringLiteral("#1f7a4d");
+  else if (text.startsWith(QLatin1String("Q65")))
+    fill = QStringLiteral("#7a3e6d");
+  else if (text.contains(QLatin1String("Hell"))) {
     fill = QStringLiteral("#c4a35a");
     ink = QStringLiteral("#2a1404");
   } else {
@@ -112,7 +116,7 @@ QPushButton* digitalModeChip(QWidget* parent) {
   chip->setFont(font);
   chip->setFixedHeight(22);
   chip->setToolTip(QStringLiteral(
-      "Active digital mode. Click to cycle FT8, FT4, FT2, the Hell list, RTTY, the PSK speeds, "
+      "Active digital mode. Click to cycle FT8, FT4, FT2, JT65, Q65, the Hell list, RTTY, the PSK speeds, "
       "Olivia, Contestia, MFSK, DominoEX, Thor, and WEFAX-576. This does not key."));
   showDigitalMode(chip, QStringLiteral("FT8"));
   return chip;
@@ -347,8 +351,7 @@ void StatusStrip::setDigitalMode(const QString& mode) {
 
 void StatusStrip::applyDecoderControls(const QString& mode) {
   const bool hell = hellFamily(mode);
-  const bool ftFamily = mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
-                        mode == QLatin1String("FT2");
+  const bool ftFamily = sequencedFamily(mode);
   if (auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"))) {
     afc->setEnabled(false);
     afc->setChecked(false);
@@ -359,7 +362,7 @@ void StatusStrip::applyDecoderControls(const QString& mode) {
           "This does not key and does not send START."));
     else if (ftFamily)
       afc->setToolTip(QStringLiteral(
-          "FT8, FT4, and FT2 have no AFC switch. MSHV searches the audio window. "
+          "FT8, FT4, FT2, JT65, and Q65 have no AFC switch. MSHV searches the audio window. "
           "This does not key and does not send START."));
     else
       afc->setToolTip(QStringLiteral(
@@ -388,7 +391,7 @@ void StatusStrip::applyDecoderControls(const QString& mode) {
   sql->setText(QString::fromUtf8("—"));
   if (ftFamily)
     sql->setToolTip(QStringLiteral(
-        "FT8, FT4, and FT2 have no squelch slider. The decoder drops weak candidates. "
+        "FT8, FT4, FT2, JT65, and Q65 have no squelch slider. The decoder drops weak candidates. "
         "This does not key and does not send START."));
   else
     sql->setToolTip(QStringLiteral(

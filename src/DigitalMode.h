@@ -39,7 +39,7 @@ inline double hellFskShiftHz(const QString& mode) {
 }
 
 // Fldigi keyboard text: one transmit box, a receive echo, CLR RX, and CLR TX.
-// FT8, FT4, and FT2 stay on the MSHV sequencer. CW stays in Lyra.
+// FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. CW stays in Lyra.
 // A later menu item is covered when its name starts with one of these
 // (Olivia is not on the menu yet). Matching is case-insensitive.
 inline bool rttyMode(const QString& mode) {
@@ -77,6 +77,78 @@ inline double pskBaud(const QString& mode) {
 // HF WEFAX receive. The name is the Fldigi menu label. It does not key.
 inline bool wefaxMode(const QString& mode) {
   return mode.startsWith(QLatin1String("WEFAX"), Qt::CaseInsensitive);
+}
+
+// MSHV JT65. The generator tone stays near 1270 Hz. A is HF, B and C
+// are the wider spacings. 60 second period.
+inline bool jt65Mode(const QString& mode) {
+  return mode == QLatin1String("JT65A") || mode == QLatin1String("JT65B") ||
+         mode == QLatin1String("JT65C");
+}
+
+// MSHV mode65: A=1, B=2, C=4.
+inline int jt65Mode65(const QString& mode) {
+  if (mode.endsWith(QLatin1Char('C')))
+    return 4;
+  if (mode.endsWith(QLatin1Char('B')))
+    return 2;
+  return 1;
+}
+
+// Tone spacing times about 66 tones. A is ~178 Hz.
+inline int jt65ChannelHz(const QString& mode) {
+  if (mode == QLatin1String("JT65C"))
+    return 720;
+  if (mode == QLatin1String("JT65B"))
+    return 360;
+  if (mode == QLatin1String("JT65A"))
+    return 180;
+  return 0;
+}
+
+// MSHV Q65. Default period is 30 s. The tone follows the cursor.
+inline bool q65Mode(const QString& mode) {
+  return mode == QLatin1String("Q65A") || mode == QLatin1String("Q65B") ||
+         mode == QLatin1String("Q65C") || mode == QLatin1String("Q65D");
+}
+
+// MSHV mq65: A=1, B=2, C=4, D=8.
+inline int q65Mq65(const QString& mode) {
+  if (mode.endsWith(QLatin1Char('D')))
+    return 8;
+  if (mode.endsWith(QLatin1Char('C')))
+    return 4;
+  if (mode.endsWith(QLatin1Char('B')))
+    return 2;
+  return 1;
+}
+
+// DecoderQ65 modid: A=14, B=15, C=16, D=17.
+inline int q65ModId(const QString& mode) {
+  if (mode.endsWith(QLatin1Char('D')))
+    return 17;
+  if (mode.endsWith(QLatin1Char('C')))
+    return 16;
+  if (mode.endsWith(QLatin1Char('B')))
+    return 15;
+  return 14;
+}
+
+inline int q65ChannelHz(const QString& mode) {
+  if (mode == QLatin1String("Q65D"))
+    return 1740;
+  if (mode == QLatin1String("Q65C"))
+    return 870;
+  if (mode == QLatin1String("Q65B"))
+    return 440;
+  if (mode == QLatin1String("Q65A"))
+    return 220;
+  return 0;
+}
+
+inline bool sequencedFamily(const QString& mode) {
+  return mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
+         mode == QLatin1String("FT2") || jt65Mode(mode) || q65Mode(mode);
 }
 
 inline bool keyboardTextMode(const QString& mode) {
