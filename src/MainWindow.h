@@ -130,7 +130,10 @@ private:
   void appendQso(const QString& side, const QString& text);
   void noteTheirReply(const QString& time, int db, const QString& message);
   void applyTheirReply(const QString& time, int db, const QString& message);
-  void enqueueCaller(const QString& call, int db, int dist);
+  void enqueueCaller(const QString& call, int db, int dist, int slot = 1);
+  bool queueFollows() const;
+  void startQueueHead(const QString& time);
+  void dropWorkedFromNow();
   void addTypedQueue();
   void deleteQueueRow(bool nowList);
   void promoteNow();
@@ -214,6 +217,8 @@ private:
     QString call;
     int db = 0;
     int dist = 0;
+    // Tx slot to send when this call reaches the front. 1 is the report.
+    int slot = 1;
   };
 
   QsoLog* qsoLog_ = nullptr;
@@ -234,6 +239,12 @@ private:
   bool txJoinOpen_ = false;
   bool txRetargeted_ = false;
   bool txCqFreeLatched_ = false;
+  // True after an answer to this station has gone on the air. Further
+  // callers wait in the queue until Periods, Max Time, or 73.
+  bool txWorkStarted_ = false;
+  // Their reply arrived. The period count starts over, as MSHV resets
+  // the per-station try clock.
+  bool txAnswered_ = false;
   int txTries_ = 0;
   qint64 txSeqStartMs_ = 0;
   qint64 txPlayOriginMs_ = 0;

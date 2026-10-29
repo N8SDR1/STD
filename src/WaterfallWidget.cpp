@@ -701,14 +701,28 @@ void WaterfallWidget::stampTxTone(TraceRow* row) {
     reference = traces.at(traces.size() / 2);
   }
   reference = std::clamp(reference, floor, ceiling);
-  const float center = float(txHz_);
-  const float half = std::max(14.0f, float(pixel) * 2.0f);
+  // The red marker is the protocol channel: low edge at txHz_, high edge
+  // one width above it. The overlay fills that same channel. Its centre
+  // is the middle of the marker, not the low edge (that left the trace
+  // on the lower side of the red band). Same pixel map as xAtHz.
+  const float spanHz = float(row->hi - row->lo);
+  const float pixels = float(std::max(1, int(row->level.size()) - 1));
+  auto xOf = [&](float hz) {
+    return ((hz - float(row->lo)) / spanHz) * pixels;
+  };
+  const float x0 = xOf(float(txHz_));
+  const float x1 = xOf(float(txHz_ + std::max(1, txWidthHz_)));
+  const float left = std::min(x0, x1);
+  const float right = std::max(x0, x1);
+  const float mid = 0.5f * (left + right);
+  const float halfPx = std::max(0.5f, mid - left);
   for (int column = 0; column < row->level.size(); ++column) {
-    const float away = std::fabs(hzOf(column) - center);
-    if (away > half)
+    const float x = float(column);
+    if (x + 1.0f < left || x > right)
       continue;
-    const float taper = 1.0f - away / half;
-    const float level = floor + (reference - floor) * taper;
+    const float away = std::fabs((x + 0.5f) - mid) / halfPx;
+    const float taper = away >= 1.0f ? 0.0f : 1.0f - away;
+    const float level = floor + (reference - floor) * (0.55f + 0.45f * taper);
     if (row->level[column] < level)
       row->level[column] = level;
   }

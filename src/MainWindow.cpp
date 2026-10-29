@@ -891,8 +891,10 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       maxPeriods->setSuffix(asPeriods ? QString() : QStringLiteral(" min"));
     }
     maxPeriods->setToolTip(QStringLiteral(
-        "How many slots to keep calling, or how many minutes in Max Time. "
-        "Double-click to switch. CNS ignores this. Changing it does not key."));
+        "How many tries, or how many minutes, to keep calling this station. "
+        "Then the next queued station is worked. If the queue is empty, CNS calls CQ "
+        "and CNS off stops. A reply from the station starts the count over. "
+        "Double-click to switch tries and minutes. Changing it does not key."));
     maxPeriods->installEventFilter(this);
     if (auto* inner = maxPeriods->findChild<QLineEdit*>()) {
       inner->setObjectName(QStringLiteral("txMaxPeriodsEdit"));
@@ -914,7 +916,10 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     cns->setObjectName(QStringLiteral("txCns"));
     cns->setFont(interfaceFont(11));
     cns->setChecked(QSettings().value(QStringLiteral("tx/cns"), false).toBool());
-    cns->setToolTip(QStringLiteral("Continue non-stop. Checking it does not key."));
+    cns->setToolTip(QStringLiteral(
+        "Continue non-stop. Periods still end the station you are calling. "
+        "If the queue is empty after that, or after 73, CNS calls CQ. "
+        "CNS off stops instead. Checking it does not key."));
     auto* limitRow = new QHBoxLayout();
     limitRow->setSpacing(4);
     limitRow->addWidget(queueLimit, 1);
@@ -1780,7 +1785,11 @@ void MainWindow::showGuide() {
        "Each line is painted as soon as the decoder finds it. Columns are Time, dB, DT, Dist, Message, "
        "and Freq. A click on a CQ or a reply moves TX to that audio frequency, and RX as well while "
        "Lock is on. That click does not key. A double-click fills Tx1 through Tx5 for that station and "
-       "Tx6 as CQ, then arms TX. FT8 and FT4 wait for the slot, or join the one that is still open. "
+       "Tx6 as CQ, then arms TX. With Multi on, a station that answers your CQ waits in the queue. "
+       "The first waiting call is worked next, or the furthest when the queue sort is Distance. "
+       "Periods, or Max Time, is how long to keep calling that station before the next one in the "
+       "queue. A reply from that station starts the count over. If the queue is empty, CNS calls CQ. "
+       "CNS off stops. FT8 and FT4 wait for the slot, or join the one that is still open. "
        "FT2 decodes and does not key. Tx1 through Tx5 stay HIS OUR GRID, report, R+report, RR73, and "
        "73. Tx6 stays CQ OUR GRID. GRID is the locator from Options → User. CLR Now clears the now list "
        "and the QSO pane, and puts CQ YOURCALL GRID back on Tx1 through Tx6. A contest uses that "
@@ -1828,8 +1837,8 @@ void MainWindow::showGuide() {
        "once. START is never sent."},
       {"Waterfall transmit",
        "While Tune or TX is on the air, the waterfall keeps the receive audio. The transmit waveform "
-       "is not mixed into that picture. A short trace is drawn at the TX audio frequency, visible "
-       "there, about as high as the other stations, split or locked. If the radio sends the transmission back on the "
+       "is not mixed into that picture. A short trace, one protocol width wide, is drawn on the "
+       "TX marker. Its centre is the middle of that marker, split or locked. If the radio sends the transmission back on the "
        "receive stream, that is what you see. The notice TX gain is too hot means the audio going to "
        "the radio is past full scale, before this display. Receive audio does not raise the notice. "
        "None of this keys the radio or sends START."},
@@ -2657,15 +2666,14 @@ void MainWindow::deleteQueueRow(bool nowList) {
   setTxStatus(QStringLiteral("%1 removed. Nothing was unkeyed. START was not sent.").arg(call));
 }
 
-void MainWindow::enqueueCaller(const QString& call, int db, int dist) {
-  if (!profile_ || !profile_->multiAnswer())
-    return;
-  const QString mode = profile_->digitalMode();
-  if (mode != QLatin1String("FT8") && mode != QLatin1String("FT4") && mode != QLatin1String("FT2"))
+void MainWindow::enqueueCaller(const QString& call, int db, int dist, int slot) {
+  if (!queueFollows())
     return;
   const QString his = call.trimmed().toUpper();
   if (his.isEmpty())
     return;
+  if (slot < 0 || slot > 4)
+    slot = 1;
   int limit = 5;
   if (const auto* spin = findChild<QSpinBox*>(QStringLiteral("txQueueLimit")))
     limit = spin->value();
@@ -2674,6 +2682,8 @@ void MainWindow::enqueueCaller(const QString& call, int db, int dist) {
       continue;
     row.db = db;
     row.dist = dist;
+    if (slot > row.slot)
+      row.slot = slot;
     sortQueue();
     return;
   }
@@ -2681,10 +2691,52 @@ void MainWindow::enqueueCaller(const QString& call, int db, int dist) {
     if (row.call == his)
       return;
   }
-  if (txQueue_.size() >= limit)
+  if (limit <= 0 || txQueue_.size() >= limit)
     return;
-  txQueue_.push_back(QueuedCall{his, db, dist});
+  QueuedCall next{his, db, dist};
+  next.slot = slot;
+  txQueue_.push_back(next);
   sortQueue();
+}
+
+bool MainWindow::queueFollows() const {
+  if (!profile_ || !profile_->multiAnswer())
+    return false;
+  const QString mode = profile_->digitalMode();
+  return mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
+         mode == QLatin1String("FT2");
+}
+
+void MainWindow::dropWorkedFromNow() {
+  const QString call = txHisCall_.trimmed().toUpper();
+  if (call.isEmpty())
+    return;
+  for (int i = 0; i < txNow_.size(); ++i) {
+    if (txNow_.at(i).call != call)
+      continue;
+    txNow_.removeAt(i);
+    paintMultiLists();
+    return;
+  }
+}
+
+void MainWindow::startQueueHead(const QString& time) {
+  if (!queueFollows() || txQueue_.isEmpty())
+    return;
+  sortQueue();
+  const QueuedCall head = txQueue_.first();
+  int slot = head.slot;
+  if (slot < 0 || slot > 4)
+    slot = 1;
+  if (head.call == txHisCall_.trimmed().toUpper() && selectedTxSlot() == slot && slot < 5)
+    return;
+  txWorkStarted_ = false;
+  txHisCall_ = head.call;
+  txReport_ = reportText(head.db);
+  refreshTxFields();
+  selectTxSlot(slot);
+  armAnswerSlot(time, slot > 0 ? 1 : 0);
+  retargetLiveTx();
 }
 
 void MainWindow::promoteNow() {
@@ -3650,6 +3702,8 @@ void MainWindow::pumpUserTx() {
     }
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     txKeySent_ = true;
+    if (selectedTxSlot() < 5)
+      txWorkStarted_ = true;
     markWaterfallTx();
     txHold_ = 0;
     txJoinOpen_ = false;
@@ -3713,8 +3767,12 @@ void MainWindow::finishTxPass() {
   txGuardDeadlineMs_ = 0;
   txPeriodEndMs_ = 0;
   txSymbolSamples_ = 0;
-  if (!retargeted)
+  // Their reply restarts the count. Otherwise this transmission is one try.
+  if (txAnswered_)
+    txTries_ = 0;
+  else if (!retargeted)
     ++txTries_;
+  txAnswered_ = false;
 
   auto* button = findChild<QPushButton*>(QStringLiteral("txSend"));
   const QString mode = profile_ ? profile_->digitalMode() : QString();
@@ -3746,6 +3804,7 @@ void MainWindow::finishTxPass() {
     // Tx6 is the next send. Tx1–Tx5 keep the worked station:
     // HIS OUR GRID, report, R+report, RR73, 73. GRID is the User
     // locator from Options, not the other station's grid.
+    txWorkStarted_ = false;
     refreshTxFields();
     txTries_ = 0;
     txSeqStartMs_ = QDateTime::currentMSecsSinceEpoch();
@@ -3760,23 +3819,43 @@ void MainWindow::finishTxPass() {
                 : status);
   };
 
-  if (!retargeted && textIs73(sent)) {
-    if (!cns) {
+  // MSHV SetTxRxMsg drops a station when Periods or Max Time runs out,
+  // whether or not CNS is on. gen_msg then works the next queued call.
+  // An empty queue calls CQ only while CNS is on. CNS off stops.
+  // 73 removes the station the same way. Their reply restarts the clock.
+  auto moveOn = [&](bool fromSignOff) {
+    const bool callingCq = selectedTxSlot() >= 5;
+    if (!callingCq)
+      dropWorkedFromNow();
+    if (queueFollows() && !txQueue_.isEmpty()) {
+      sortQueue();
+      startQueueHead(QString());
+      if (!txSequence_)
+        return;
+      setTxStatus(QStringLiteral(
+                      "%1 is next from the queue. Waiting for the %2 slot. TRX is off. START was not sent.")
+                      .arg(txHisCall_, txSlotName()));
+      return;
+    }
+    if (cns) {
+      const QString status =
+          fromSignOff
+              ? QStringLiteral(
+                    "73 sent. The queue is empty. CNS calls CQ on the next slot. TRX is off. START was not sent.")
+              : QStringLiteral(
+                    "Try limit reached. The queue is empty. CNS calls CQ on the next slot. TRX is off. "
+                    "START was not sent.");
+      startCq(false, logNote.isEmpty() ? status : logNote);
+      return;
+    }
+    if (!fromSignOff && !callingCq && cqOnFreeOn() && !txCqFreeLatched_) {
+      startCq(true, QString());
+      return;
+    }
+    if (fromSignOff) {
       fail(logNote.isEmpty()
                ? QStringLiteral("73 sent. Sequence stopped. TRX is off. START was not sent.")
                : logNote);
-      return;
-    }
-    startCq(false, logNote.isEmpty()
-                       ? QStringLiteral(
-                             "73 sent. CNS is on, so the next slot is CQ. TRX is off. START was not sent.")
-                       : logNote);
-    return;
-  }
-
-  if (!retargeted && !cns && triesExhausted()) {
-    if (cqOnFreeOn() && !txCqFreeLatched_ && selectedTxSlot() != 5) {
-      startCq(true, QString());
       return;
     }
     const auto* spin = findChild<QSpinBox*>(QStringLiteral("txMaxPeriods"));
@@ -3786,6 +3865,15 @@ void MainWindow::finishTxPass() {
                .arg(txTries_));
     else
       fail(QStringLiteral("Max Time reached. Sequence stopped. TRX is off. START was not sent."));
+  };
+
+  if (!retargeted && textIs73(sent)) {
+    moveOn(true);
+    return;
+  }
+
+  if (!retargeted && triesExhausted()) {
+    moveOn(false);
     return;
   }
 
@@ -3848,7 +3936,12 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
   const QString worked = txHisCall_.trimmed().toUpper();
   const bool same = !worked.isEmpty() && sender == worked;
   const int slot = selectedTxSlot();
-  if (!same && slot >= 3)
+  // Slots 3 and 4 are RR73 and 73. A different station does not steal
+  // that ending. Slot 5 is CQ, and callers are accepted there.
+  if (!same && !worked.isEmpty() && slot >= 3 && slot < 5)
+    return;
+  // A new station's 73 is not the start of a QSO.
+  if (!same && (seventy || rr73 || rrr))
     return;
 
   QString hisGrid;
@@ -3861,23 +3954,30 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
   rememberQso(sender, hisGrid, report, !same || !(seventy || rr73));
 
   if (!same) {
-    txHisCall_ = sender;
-    txReport_ = reportText(db);
     int selected = 1;
-    if (seventy || rr73 || rrr)
-      selected = 4;
-    else if (roger)
+    if (roger)
       selected = 3;
     else if (!report.isEmpty())
       selected = 2;
+    if (queueFollows()) {
+      enqueueCaller(sender, db, distanceText(message).toInt(), selected);
+      const bool callingCq = worked.isEmpty() || slot >= 5;
+      if (callingCq || !txWorkStarted_)
+        startQueueHead(time);
+      return;
+    }
+    txHisCall_ = sender;
+    txReport_ = reportText(db);
     refreshTxFields();
     selectTxSlot(selected);
-    enqueueCaller(sender, db, distanceText(message).toInt());
     armAnswerSlot(time, senderPos);
     retargetLiveTx();
     return;
   }
 
+  txAnswered_ = true;
+  txTries_ = 0;
+  txSeqStartMs_ = QDateTime::currentMSecsSinceEpoch();
   txReport_ = reportText(db);
   int next = slot;
   if (seventy || rr73 || rrr)
@@ -3927,6 +4027,8 @@ void MainWindow::stopUserTx(bool uncheck) {
   txJoinOpen_ = false;
   txRetargeted_ = false;
   txCqFreeLatched_ = false;
+  txWorkStarted_ = false;
+  txAnswered_ = false;
   txTries_ = 0;
   txSeqStartMs_ = 0;
   txSentText_.clear();
