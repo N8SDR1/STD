@@ -1,0 +1,4 @@
+// STD — Windows resource. Embeds the purple capsule so Explorer, the
+// taskbar, and the installer shortcuts show that icon. The first ICON
+// entry is the executable icon. Path is relative to this file (src/).
+IDI_ICON1 ICON "../resources/std.ico"
