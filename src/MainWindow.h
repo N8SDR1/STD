@@ -23,6 +23,7 @@ class HellEngine;
 class DominoEngine;
 class ThorEngine;
 class MfskEngine;
+class Mt63Engine;
 class OliviaEngine;
 class PskEngine;
 class RttyEngine;
@@ -308,6 +309,7 @@ private:
   RttyEngine* rtty_ = nullptr;
   PskEngine* psk_ = nullptr;
   OliviaEngine* olivia_ = nullptr;
+  Mt63Engine* mt63_ = nullptr;
   MfskEngine* mfsk_ = nullptr;
   DominoEngine* domino_ = nullptr;
   ThorEngine* thor_ = nullptr;

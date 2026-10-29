@@ -7,6 +7,7 @@
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
+#include "mt63/Mt63Modem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
@@ -301,6 +302,15 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
   }
   if (oliviaBandwidthHz(mode) > 0) {
     const OliviaPlan plan = planOlivia(mode, text, tone);
+    if (plan.samples.empty())
+      return false;
+    *out = plan.samples;
+    if (echoAt)
+      *echoAt = plan.echoAt;
+    return true;
+  }
+  if (mt63BandwidthHz(mode) > 0) {
+    const Mt63Plan plan = planMt63(mode, text, tone);
     if (plan.samples.empty())
       return false;
     *out = plan.samples;

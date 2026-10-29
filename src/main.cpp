@@ -13,6 +13,7 @@
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
+#include "mt63/Mt63Modem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
@@ -773,6 +774,26 @@ int shellReady(MainWindow& window) {
       !thor16->toolTip().contains(QLatin1String("START")) ||
       thor16->toolTip().contains(QLatin1String("does not key yet")))
     return fail("Thor 16 is missing");
+  const auto* mt63Menu = window.findChild<QMenu*>(QStringLiteral("modeMt63Menu"));
+  if (!mt63Menu || mt63Menu->actions().size() != 6)
+    return fail("MT63 submenu is missing");
+  for (const char* name : {"MT63-500S", "MT63-500L", "MT63-1000S", "MT63-1000L", "MT63-2000S",
+                           "MT63-2000L"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("CQE"), 1500, &wave) || wave.size() < 1000)
+      return fail("MT63 modulator is missing");
+    const QString back =
+        mt63Decode(QString::fromLatin1(name), wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1String("CQE"))) {
+      qCritical("MT63 decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
+      return fail("MT63 did not decode");
+    }
+  }
+  const auto* mt63 = window.findChild<QAction*>(QStringLiteral("modeMt631000S"));
+  if (!mt63 || !mt63->toolTip().contains(QLatin1String("1000 Hz")) ||
+      !mt63->toolTip().contains(QLatin1String("START")) ||
+      mt63->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("MT63-1000S is missing");
   if (keyboardTextMode(QStringLiteral("WEFAX-576")))
     return fail("WEFAX is a keyboard mode");
   std::vector<float> faxWave;

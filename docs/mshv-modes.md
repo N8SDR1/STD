@@ -61,5 +61,6 @@ use a K=15 code and do not key yet. Thor Micro is not in this build.
 WEFAX-576 receives only (IOC 576, 120 lines per minute) and saves PNGs to the
 folder. They are still being proved on the air.
 
-MT63 and QPSK do not key yet.
+MT63-500S, MT63-500L, MT63-1000S, MT63-1000L, MT63-2000S, and MT63-2000L key.
+QPSK does not key yet.
 CW stays in Lyra.

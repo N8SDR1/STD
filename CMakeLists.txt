@@ -107,13 +107,18 @@ qt_add_executable(std
   src/dominoex/DominoModem.h
   src/thor/ThorModem.cpp
   src/thor/ThorModem.h
+  src/mt63/Mt63Modem.cpp
+  src/mt63/Mt63Modem.h
+  src/mt63/fldigi/dsp.cxx
+  src/mt63/fldigi/mt63base.cxx
   resources/resources.qrc
 )
 
 target_compile_definitions(std PRIVATE STD_VERSION="${PROJECT_VERSION}")
 target_include_directories(std PRIVATE
   "${CMAKE_SOURCE_DIR}/src"
-  "${CMAKE_SOURCE_DIR}/src/hell/fldigi")
+  "${CMAKE_SOURCE_DIR}/src/hell/fldigi"
+  "${CMAKE_SOURCE_DIR}/src/mt63/fldigi")
 
 target_link_libraries(std PRIVATE Qt6::Widgets Qt6::GuiPrivate Qt6::Network Qt6::WebSockets)
 
@@ -150,6 +155,8 @@ if(MSVC)
   set_source_files_properties(
     src/hell/fldigi/filters.cxx
     src/hell/fldigi/fftfilt.cxx
+    src/mt63/fldigi/dsp.cxx
+    src/mt63/fldigi/mt63base.cxx
     PROPERTIES COMPILE_OPTIONS "/W1")
 else()
   target_compile_options(std PRIVATE -Wall -Wextra -Wpedantic)

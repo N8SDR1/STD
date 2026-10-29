@@ -47,6 +47,7 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | MFSK | MFSK4, 8, 11, 16, 22, 31, 32, 64, 128. NASA K=7. MFSK64L and MFSK128L are absent. |
 | DominoEX | 4, 5, 8, 11, 16, 22. 18-tone incremental keying. FEC is off. Micro is absent. |
 | Thor | 4, 5, 8, 11, 16, 22. NASA K=7. Thor Micro and the K=15 speeds stay off the menu. |
+| MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L. 64 carriers, Walsh code, short or long interleave. |
 
 ## Receive only
 
@@ -56,7 +57,6 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 
 These are not on the Mode menu. They do not key.
 
-- **MT63**, short and long, at 500, 1000, and 2000 Hz. The Walsh code checks out. A character has not yet come back out of the audio.
 - **QPSK and 8PSK.** When they are written they will use Fldigi's convolutional code.
 - **JS8Call** is later ([JS8Call-improved](https://js8call.com/JS8Call-improved/)). **FLD-88** is queued.
 - MSHV modes still outside STD are listed in [`docs/mshv-modes.md`](docs/mshv-modes.md).

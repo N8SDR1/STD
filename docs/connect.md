@@ -36,6 +36,6 @@ The text command START is never sent.
 
 CW stays in Lyra. STD does not send CW.
 
-MT63 and QPSK do not key. WEFAX-576 receives and does not key.
+QPSK does not key. WEFAX-576 receives and does not key.
 
 Audio inside STD is 48 kHz. STD is a 64-bit Windows application, built with Qt 6.11.1 MSVC at `C:\Qt\6.11.1\msvc2022_64`.

@@ -19,6 +19,7 @@ Connect sends `AUDIO_START:0`. The text command START is never sent. CW stays in
 | MFSK | MFSK4, 8, 11, 16, 22, 31, 32, 64, 128 | NASA K=7, varicode, diagonal interleaver. |
 | DominoEX | 4, 5, 8, 11, 16, 22 | 18-tone incremental keying. FEC is off. |
 | Thor | 4, 5, 8, 11, 16, 22 | NASA K=7, varicode, 4 by 10 interleaver, 18-tone incremental keying. |
+| MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L | 64 carriers, Walsh code, short or long interleave. Centered on the cursor. |
 
 TX or Tune is what sends `trx`. An empty line does not key.
 
@@ -30,7 +31,6 @@ TX or Tune is what sends `trx`. An empty line does not key.
 
 These do not key.
 
-- **MT63-500S, MT63-500L, MT63-1000S, MT63-1000L, MT63-2000S, MT63-2000L.** Walsh and the interleaver are checked in the bit domain. A transmitted character has not yet been read back from the audio, so the menu stays empty of MT63.
 - **QPSK and 8PSK.** Not written. They will use Fldigi's convolutional code.
 - **MFSK64L, MFSK128L, DominoEX Micro, Thor Micro.** Absent on purpose.
 - **Thor 25x4, Thor 50x1, Thor 50x2, Thor 100.** Those speeds use a K=15 code and stay off until a character round-trips.

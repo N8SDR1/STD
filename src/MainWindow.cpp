@@ -11,6 +11,7 @@
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
+#include "mt63/Mt63Modem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
@@ -516,6 +517,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         domino_->pushAudio(gained, count, rate);
       if (thor_)
         thor_->pushAudio(gained, count, rate);
+      if (mt63_)
+        mt63_->pushAudio(gained, count, rate);
       if (wefax_)
         wefax_->pushAudio(gained, count, rate);
     }
@@ -559,6 +562,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(psk_, &PskEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   olivia_ = new OliviaEngine(this);
   connect(olivia_, &OliviaEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
+  mt63_ = new Mt63Engine(this);
+  connect(mt63_, &Mt63Engine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   mfsk_ = new MfskEngine(this);
   connect(mfsk_, &MfskEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   domino_ = new DominoEngine(this);
@@ -594,6 +599,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         domino_->setCenterHz(rxHz);
       if (thor_)
         thor_->setCenterHz(rxHz);
+      if (mt63_)
+        mt63_->setCenterHz(rxHz);
       if (wefax_)
         wefax_->setCenterHz(rxHz);
     });
@@ -1442,6 +1449,8 @@ QWidget* MainWindow::makeReceivePanel() {
       domino_->clear();
     if (thor_)
       thor_->clear();
+    if (mt63_)
+      mt63_->clear();
     if (wefax_)
       wefax_->clear();
     if (auto* view = findChild<QLabel*>(QStringLiteral("wefaxView")))
@@ -1591,8 +1600,8 @@ QWidget* MainWindow::makeMacroRow() {
                       QSettings().value(QStringLiteral("dx/macroTx"), false).toBool());
   macroTx->setToolTip(QStringLiteral(
       "Off copies a macro into the transmit box. That does not key. "
-      "On also presses TX. Hell, RTTY, the BPSK speeds, Olivia, Contestia, MFSK, DominoEX, and Thor can key. "
-      "MT63 and QPSK do not key yet. "
+      "On also presses TX. Hell, RTTY, the BPSK speeds, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 can key. "
+      "QPSK does not key yet. "
       "START is never sent."));
   connect(macroTx, &QPushButton::toggled, this, [](bool on) {
     QSettings().setValue(QStringLiteral("dx/macroTx"), on);
@@ -2146,6 +2155,30 @@ void MainWindow::buildMenus() {
     const QString modeName = QString::fromLatin1(row.label);
     connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
   }
+  auto* mt63Menu = modeMenu->addMenu(QStringLiteral("MT63"));
+  mt63Menu->setObjectName(QStringLiteral("modeMt63Menu"));
+  mt63Menu->setToolTip(QStringLiteral(
+      "Fldigi MT63 on DIGU. 64 carriers and a Walsh code. TX sends it. START is never sent."));
+  const struct {
+    const char* label;
+    const char* objectName;
+    const char* detail;
+  } mt63Rows[] = {{"MT63-500S", "modeMt63500S", "500 Hz, short interleave"},
+                  {"MT63-500L", "modeMt63500L", "500 Hz, long interleave"},
+                  {"MT63-1000S", "modeMt631000S", "1000 Hz, short interleave"},
+                  {"MT63-1000L", "modeMt631000L", "1000 Hz, long interleave"},
+                  {"MT63-2000S", "modeMt632000S", "2000 Hz, short interleave"},
+                  {"MT63-2000L", "modeMt632000L", "2000 Hz, long interleave"}};
+  for (const auto& row : mt63Rows) {
+    auto* action = mt63Menu->addAction(QString::fromLatin1(row.label));
+    action->setCheckable(true);
+    action->setObjectName(QString::fromLatin1(row.objectName));
+    action->setToolTip(QStringLiteral("Fldigi %1 on DIGU. %2. TX sends it. START is never sent.")
+                           .arg(QLatin1String(row.label), QLatin1String(row.detail)));
+    modes->addAction(action);
+    const QString modeName = QString::fromLatin1(row.label);
+    connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
+  }
   auto* faxAction = modeMenu->addAction(QStringLiteral("WEFAX-576"));
   faxAction->setCheckable(true);
   faxAction->setObjectName(QStringLiteral("modeWefax576"));
@@ -2267,8 +2300,9 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool mfsk = mfskBandwidthHz(modeName) > 0;
   const bool domino = dominoBandwidthHz(modeName) > 0;
   const bool thor = thorBandwidthHz(modeName) > 0;
+  const bool mt63 = mt63BandwidthHz(modeName) > 0;
   const bool fax = wefaxMode(modeName);
-  if ((hell || rtty || psk || olivia || mfsk || domino || thor) && waterfall_)
+  if ((hell || rtty || psk || olivia || mfsk || domino || thor || mt63) && waterfall_)
     waterfall_->setRxHz(1500);
   if (fax && waterfall_)
     waterfall_->setRxHz(1900);
@@ -2306,13 +2340,18 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     thor_->setCenterHz(waterfall_ ? waterfall_->rxHz() : 1500);
     thor_->setArmed(autoMonitor_ && thor);
   }
+  if (mt63_) {
+    mt63_->setMode(modeName);
+    mt63_->setCenterHz(waterfall_ ? waterfall_->rxHz() : 1500);
+    mt63_->setArmed(autoMonitor_ && mt63);
+  }
   if (wefax_) {
     wefax_->setCenterHz(waterfall_ ? waterfall_->rxHz() : 1900);
     if (fax)
       wefax_->clear();
     wefax_->setArmed(autoMonitor_ && fax);
   }
-  if ((rtty || psk || olivia || mfsk || domino || thor || fax) && tci_ && tci_->isOpen())
+  if ((rtty || psk || olivia || mfsk || domino || thor || mt63 || fax) && tci_ && tci_->isOpen())
     tci_->setSideband(QStringLiteral("DIGU"));
   applyChannelWidth();
   refreshTxChrome();
@@ -2429,7 +2468,7 @@ void MainWindow::showGuide() {
        "here and does not key: MSK144, MSKMS, JTMS, FSK441, FSK315, ISCAT-A, ISCAT-B, JT6M, Q65A, "
        "Q65B, Q65C, Q65D, JT65A, JT65B, JT65C, and PI4. That list is kept in docs/mshv-modes.md so "
        "it is not forgotten. Hell, RTTY, BPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and WEFAX-576 are Fldigi modes, "
-       "not that list. "
+       "not that list. MT63 is a Fldigi mode on this menu. "
        "CW stays in Lyra. START is never sent."},
       {"Feld Hell",
        "Mode → Hell is the Fldigi 4.2.06 list: Feld Hell, Slow Hell, Feld Hell X5, Feld Hell X9, "
@@ -2471,9 +2510,11 @@ void MainWindow::showGuide() {
        "TX sends those. Mode → Thor is Thor 4, 5, 8, 11, 16, and 22. Each character is the IZ8BLY "
        "varicode, a NASA K=7 convolutional code, and a 4 by 10 interleaver, sent as 18-tone "
        "incremental keying centered on the cursor. TX sends those. Thor 25x4, 50x1, 50x2, and 100 "
-       "use a K=15 code and do not key yet. MT63 and QPSK do not key yet. "
+       "use a K=15 code and do not key yet. Mode → MT63 is MT63-500S, MT63-500L, MT63-1000S, "
+       "MT63-1000L, MT63-2000S, and MT63-2000L. Sixty-four carriers, a Walsh code, and the fldigi "
+       "short or long interleaver, centered on the cursor. TX sends those. QPSK does not key yet. "
        "A macro copies into the box. TX macro also presses TX when it is on. Hell, RTTY, the "
-       "BPSK speeds, Olivia, Contestia, MFSK, DominoEX, and Thor can key. FT8, FT4, and FT2 stay on the MSHV sequencer. "
+       "BPSK speeds, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 can key. FT8, FT4, and FT2 stay on the MSHV sequencer. "
        "CW stays in Lyra. START is never sent."},
       {"WEFAX",
        "Mode → WEFAX-576 receives only. It does not key and it does not send START. IOC is 576 and "
@@ -2482,15 +2523,15 @@ void MainWindow::showGuide() {
        "and white is 2300 Hz until you move it. Folder picks the directory. Until you pick one, pictures "
        "save under Documents\\STD\\wefax. Save writes the picture received so far as a PNG. A stop tone "
        "also writes that file. CLR RX clears the picture and does not unkey. TX and Tune do not key "
-       "in this mode. Olivia, Contestia, MFSK, DominoEX, and Thor are on the mode menu and they do key. "
-       "MT63 and QPSK do not key yet. CW stays in Lyra."},
+       "in this mode. Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 are on the mode menu and they do key. "
+       "QPSK does not key yet. CW stays in Lyra."},
       {"Macros",
        "File → Macros → Open loads one Fldigi .mdf, and that file is the set in use. Save writes "
        "the names and the text back as a .mdf. Options → Macros can Open that file, start a New "
        "set, and Save it. The bank button 1 through 4 shows which 12 are on the bar. The name and "
        "the text stay editable. A filled button copies its text into the transmit box. TX macro, "
        "off unless you turn it on, also presses TX. Hell, RTTY, the BPSK speeds, Olivia, Contestia, "
-       "MFSK, DominoEX, and Thor can key. MT63 and QPSK do not key yet. Opening or saving a .mdf does "
+       "MFSK, DominoEX, Thor, and MT63 can key. QPSK does not key yet. Opening or saving a .mdf does "
        "not key and does not send START."},
       {"Contest tags",
        "The list above Tx1 is Standard or a contest, the same set MSHV uses. Choosing one writes "
@@ -3233,6 +3274,8 @@ void MainWindow::applyHellSquelch() {
     domino_->setSquelch(on, level);
   if (thor_)
     thor_->setSquelch(on, level);
+  if (mt63_)
+    mt63_->setSquelch(on, level);
 }
 
 void MainWindow::applyChannelWidth() {
@@ -4533,8 +4576,8 @@ void MainWindow::setUserTx(bool on) {
     txEchoAt_.clear();
     release();
     setTxStatus(QStringLiteral(
-        "%1 did not build a transmission. MT63 and QPSK "
-        "do not key yet. START was not sent.")
+        "%1 did not build a transmission. QPSK "
+        "does not key yet. START was not sent.")
                     .arg(mode));
     return;
   }
