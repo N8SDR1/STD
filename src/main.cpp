@@ -9,6 +9,7 @@
 
 #include "QsoLog.h"
 #include "TxWave.h"
+#include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
 #include "wefax/WefaxModem.h"
@@ -595,6 +596,35 @@ int shellReady(MainWindow& window) {
       !fax->toolTip().contains(QLatin1String("START")) ||
       !fax->toolTip().contains(QLatin1String("576")))
     return fail("PSK63 or WEFAX is missing");
+  const auto* olivia = window.findChild<QAction*>(QStringLiteral("modeOlivia8250"));
+  const auto* contestia = window.findChild<QAction*>(QStringLiteral("modeContestia8250"));
+  if (!olivia || !contestia || !olivia->toolTip().contains(QLatin1String("31.25")) ||
+      !olivia->toolTip().contains(QLatin1String("START")) ||
+      olivia->toolTip().contains(QLatin1String("does not key yet")) ||
+      !contestia->toolTip().contains(QLatin1String("31.25")) ||
+      !contestia->toolTip().contains(QLatin1String("START")) ||
+      contestia->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("Olivia or Contestia is missing");
+  for (const char* name : {"Olivia 8/250", "Contestia 8/250", "Olivia 16/500", "Contestia 4/250"}) {
+    std::vector<float> wave;
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
+      return fail("Olivia modulator is missing");
+    const QString back =
+        oliviaDecode(QString::fromLatin1(name), wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1Char('E'))) {
+      qCritical("Olivia decode %s [%s]", name, qPrintable(back));
+      return fail("Olivia did not decode");
+    }
+  }
+  std::vector<float> oliviaCq;
+  if (!buildTxWave(QStringLiteral("Olivia 8/250"), QStringLiteral("CQ"), 1500, &oliviaCq))
+    return fail("Olivia modulator is missing");
+  const QString cqBack = oliviaDecode(QStringLiteral("Olivia 8/250"), oliviaCq.data(),
+                                      int(oliviaCq.size()), 48000, 1500);
+  if (!cqBack.contains(QLatin1String("CQ"))) {
+    qCritical("Olivia CQ decode [%s]", qPrintable(cqBack));
+    return fail("Olivia did not decode");
+  }
   if (keyboardTextMode(QStringLiteral("WEFAX-576")))
     return fail("WEFAX is a keyboard mode");
   std::vector<float> faxWave;

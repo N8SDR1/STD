@@ -99,6 +99,8 @@ qt_add_executable(std
   src/psk/PskModem.h
   src/wefax/WefaxModem.cpp
   src/wefax/WefaxModem.h
+  src/olivia/OliviaModem.cpp
+  src/olivia/OliviaModem.h
   resources/resources.qrc
 )
 

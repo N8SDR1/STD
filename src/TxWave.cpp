@@ -3,6 +3,7 @@
 
 #include "DigitalMode.h"
 #include "TxWave.h"
+#include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
 
@@ -193,6 +194,15 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
   }
   if (pskMode(mode) && pskBaud(mode) > 0.0) {
     const PskPlan plan = planPsk(mode, text, tone);
+    if (plan.samples.empty())
+      return false;
+    *out = plan.samples;
+    if (echoAt)
+      *echoAt = plan.echoAt;
+    return true;
+  }
+  if (oliviaBandwidthHz(mode) > 0) {
+    const OliviaPlan plan = planOlivia(mode, text, tone);
     if (plan.samples.empty())
       return false;
     *out = plan.samples;

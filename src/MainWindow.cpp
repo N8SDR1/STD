@@ -8,6 +8,7 @@
 #include "MacroFile.h"
 #include "hell/HellEngine.h"
 #include "hell/HellRaster.h"
+#include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
 #include "wefax/WefaxModem.h"
@@ -504,6 +505,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         rtty_->pushAudio(gained, count, rate);
       if (psk_)
         psk_->pushAudio(gained, count, rate);
+      if (olivia_)
+        olivia_->pushAudio(gained, count, rate);
       if (wefax_)
         wefax_->pushAudio(gained, count, rate);
     }
@@ -545,6 +548,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   psk_ = new PskEngine(this);
   connect(rtty_, &RttyEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   connect(psk_, &PskEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
+  olivia_ = new OliviaEngine(this);
+  connect(olivia_, &OliviaEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   wefax_ = new WefaxEngine(this);
   connect(wefax_, &WefaxEngine::imageChanged, this, [this] {
     auto* view = findChild<QLabel*>(QStringLiteral("wefaxView"));
@@ -566,6 +571,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         rtty_->setToneHz(rxHz);
       if (psk_)
         psk_->setToneHz(rxHz);
+      if (olivia_)
+        olivia_->setCenterHz(rxHz);
       if (wefax_)
         wefax_->setCenterHz(rxHz);
     });
@@ -1406,6 +1413,8 @@ QWidget* MainWindow::makeReceivePanel() {
       rtty_->clear();
     if (psk_)
       psk_->clear();
+    if (olivia_)
+      olivia_->clear();
     if (wefax_)
       wefax_->clear();
     if (auto* view = findChild<QLabel*>(QStringLiteral("wefaxView")))
@@ -1439,7 +1448,7 @@ QWidget* MainWindow::makeReceivePanel() {
       "Sent text prints here in red as it goes out."));
   echo->setToolTip(QStringLiteral(
       "Fldigi transmit echo. Characters print in red as the audio goes out. "
-      "Hell keeps the tape. RTTY and the BPSK speeds print received text here too. "
+      "Hell keeps the tape. RTTY, BPSK, Olivia, and Contestia print received text here too. "
       "This does not key and does not send START."));
   echo->setLineWrapMode(QTextEdit::WidgetWidth);
   echo->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
@@ -1555,7 +1564,8 @@ QWidget* MainWindow::makeMacroRow() {
                       QSettings().value(QStringLiteral("dx/macroTx"), false).toBool());
   macroTx->setToolTip(QStringLiteral(
       "Off copies a macro into the transmit box. That does not key. "
-      "On also presses TX. Hell, RTTY, and the BPSK speeds can key. Olivia does not key yet. "
+      "On also presses TX. Hell, RTTY, the BPSK speeds, Olivia, and Contestia can key. "
+      "MFSK, MT63, DominoEX, Thor, and QPSK do not key yet. "
       "START is never sent."));
   connect(macroTx, &QPushButton::toggled, this, [](bool on) {
     QSettings().setValue(QStringLiteral("dx/macroTx"), on);
@@ -1997,6 +2007,39 @@ void MainWindow::buildMenus() {
     const QString modeName = QString::fromLatin1(row.label);
     connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
   }
+  const struct {
+    const char* menu;
+    const char* objectMenu;
+  } textFamilies[] = {{"Olivia", "modeOliviaMenu"}, {"Contestia", "modeContestiaMenu"}};
+  const struct {
+    const char* tones;
+    const char* bandwidth;
+    const char* baud;
+  } textRows[] = {{"4", "250", "62.5"},   {"8", "250", "31.25"},  {"8", "500", "62.5"},
+                  {"16", "500", "31.25"}, {"16", "1000", "62.5"}, {"32", "1000", "31.25"}};
+  for (const auto& family : textFamilies) {
+    auto* familyMenu = modeMenu->addMenu(QString::fromLatin1(family.menu));
+    familyMenu->setObjectName(QString::fromLatin1(family.objectMenu));
+    familyMenu->setToolTip(QStringLiteral(
+        "Fldigi %1 on DIGU. Tones are Gray coded. TX sends it. START is never sent.")
+                             .arg(QLatin1String(family.menu)));
+    for (const auto& row : textRows) {
+      const QString modeName = QStringLiteral("%1 %2/%3")
+                                   .arg(QLatin1String(family.menu), QLatin1String(row.tones),
+                                        QLatin1String(row.bandwidth));
+      auto* action = familyMenu->addAction(modeName);
+      action->setCheckable(true);
+      action->setObjectName(QStringLiteral("mode%1%2%3")
+                                .arg(QLatin1String(family.menu), QLatin1String(row.tones),
+                                     QLatin1String(row.bandwidth)));
+      action->setToolTip(QStringLiteral(
+          "Fldigi %1 on DIGU. %2 tones in %3 Hz, %4 baud. TX sends it. START is never sent.")
+                             .arg(modeName, QLatin1String(row.tones), QLatin1String(row.bandwidth),
+                                  QLatin1String(row.baud)));
+      modes->addAction(action);
+      connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
+    }
+  }
   auto* faxAction = modeMenu->addAction(QStringLiteral("WEFAX-576"));
   faxAction->setCheckable(true);
   faxAction->setObjectName(QStringLiteral("modeWefax576"));
@@ -2114,8 +2157,9 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   showKeyboardReceive(modeName);
   const bool rtty = rttyMode(modeName);
   const bool psk = pskMode(modeName) && pskBaud(modeName) > 0.0;
+  const bool olivia = oliviaBandwidthHz(modeName) > 0;
   const bool fax = wefaxMode(modeName);
-  if ((hell || rtty || psk) && waterfall_)
+  if ((hell || rtty || psk || olivia) && waterfall_)
     waterfall_->setRxHz(1500);
   if (fax && waterfall_)
     waterfall_->setRxHz(1900);
@@ -2130,13 +2174,18 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     psk_->setToneHz(waterfall_ ? waterfall_->rxHz() : 1500);
     psk_->setArmed(autoMonitor_ && psk);
   }
+  if (olivia_) {
+    olivia_->setMode(modeName);
+    olivia_->setCenterHz(waterfall_ ? waterfall_->rxHz() : 1500);
+    olivia_->setArmed(autoMonitor_ && olivia);
+  }
   if (wefax_) {
     wefax_->setCenterHz(waterfall_ ? waterfall_->rxHz() : 1900);
     if (fax)
       wefax_->clear();
     wefax_->setArmed(autoMonitor_ && fax);
   }
-  if ((rtty || psk || fax) && tci_ && tci_->isOpen())
+  if ((rtty || psk || olivia || fax) && tci_ && tci_->isOpen())
     tci_->setSideband(QStringLiteral("DIGU"));
   applyChannelWidth();
   refreshTxChrome();
@@ -2207,7 +2256,8 @@ void MainWindow::showGuide() {
       {"About and sources",
        "Help → About STD names the version and the GPL version 3 license. MSHV supplies the FT8, "
        "FT4, and FT2 decoder and the contest messages. Fldigi supplies the Feld Hell tape, the .mdf "
-       "macros, and the RTTY mark and space tones. TCIdigi was read for a TCI keyboard over audio. "
+       "macros, the RTTY mark and space tones, BPSK varicode, Olivia, Contestia, and WEFAX-576. "
+       "TCIdigi was read for a TCI keyboard over audio. "
        "STD does not include that tree. Lyra is the TCI client this socket follows, and CW stays in "
        "Lyra. The same About box has the PayPal button. The line on it is STD: Help keep the "
        "infections spreading and buy us a shot of bourbon. Opening About does not key and does not "
@@ -2251,7 +2301,8 @@ void MainWindow::showGuide() {
        "FT8, FT4, and FT2 are the MSHV modes in this build. The rest of the MSHV Mode menu is not "
        "here and does not key: MSK144, MSKMS, JTMS, FSK441, FSK315, ISCAT-A, ISCAT-B, JT6M, Q65A, "
        "Q65B, Q65C, Q65D, JT65A, JT65B, JT65C, and PI4. That list is kept in docs/mshv-modes.md so "
-       "it is not forgotten. Hell, RTTY, BPSK, and WEFAX-576 are Fldigi modes, not that list. "
+       "it is not forgotten. Hell, RTTY, BPSK, Olivia, Contestia, and WEFAX-576 are Fldigi modes, "
+       "not that list. "
        "CW stays in Lyra. START is never sent."},
       {"Feld Hell",
        "Mode → Hell is the Fldigi 4.2.06 list: Feld Hell, Slow Hell, Feld Hell X5, Feld Hell X9, "
@@ -2275,10 +2326,13 @@ void MainWindow::showGuide() {
        "LTRS and then the space code. TX sends RTTY. Received text prints in the echo. "
        "Mode → PSK is PSK31, PSK63, PSK125, PSK250, PSK500, and PSK1000. The baud is 31.25, 62.5, "
        "125, 250, 500, or 1000. A zero reverses the phase. Two zeros separate characters. TX sends "
-       "those speeds. Olivia, Contestia, MFSK, MT63, DominoEX, Thor, and QPSK do not key yet. "
-       "A macro copies into the box. TX macro also presses TX when it is on. Hell, RTTY, and the "
-       "BPSK speeds can key. FT8, FT4, and FT2 stay on the MSHV sequencer. CW stays in Lyra. "
-       "START is never sent."},
+       "those speeds. Mode → Olivia and Mode → Contestia are the Fldigi tone sets 4/250, 8/250, "
+       "8/500, 16/500, 16/1000, and 32/1000. Each character is one block-code impulse, scrambled "
+       "and sent as Gray-coded tones centered on the cursor. Contestia uses a 6-bit set and "
+       "prints capitals. TX sends those. MFSK, MT63, DominoEX, Thor, and QPSK do not key yet. "
+       "A macro copies into the box. TX macro also presses TX when it is on. Hell, RTTY, the "
+       "BPSK speeds, Olivia, and Contestia can key. FT8, FT4, and FT2 stay on the MSHV sequencer. "
+       "CW stays in Lyra. START is never sent."},
       {"WEFAX",
        "Mode → WEFAX-576 receives only. It does not key and it does not send START. IOC is 576 and "
        "the rate is 120 lines per minute, the Fldigi WEFAX-576 numbers. Black is 400 Hz below the "
@@ -2286,15 +2340,16 @@ void MainWindow::showGuide() {
        "and white is 2300 Hz until you move it. Folder picks the directory. Until you pick one, pictures "
        "save under Documents\\STD\\wefax. Save writes the picture received so far as a PNG. A stop tone "
        "also writes that file. CLR RX clears the picture and does not unkey. TX and Tune do not key "
-       "in this mode. Olivia, Contestia, MFSK, MT63, DominoEX, Thor, and QPSK are still not in the "
-       "menu. CW stays in Lyra."},
+       "in this mode. Olivia and Contestia are on the mode menu and they do key. MFSK, MT63, "
+       "DominoEX, Thor, and QPSK do not key yet. CW stays in Lyra."},
       {"Macros",
        "File → Macros → Open loads one Fldigi .mdf, and that file is the set in use. Save writes "
        "the names and the text back as a .mdf. Options → Macros can Open that file, start a New "
        "set, and Save it. The bank button 1 through 4 shows which 12 are on the bar. The name and "
        "the text stay editable. A filled button copies its text into the transmit box. TX macro, "
-       "off unless you turn it on, also presses TX. Hell, RTTY, and the BPSK speeds can key. Olivia does "
-       "not key yet. Opening or saving a .mdf does not key and does not send START."},
+       "off unless you turn it on, also presses TX. Hell, RTTY, the BPSK speeds, Olivia, and Contestia "
+       "can key. MFSK, MT63, DominoEX, Thor, and QPSK do not key yet. Opening or saving a .mdf does "
+       "not key and does not send START."},
       {"Contest tags",
        "The list above Tx1 is Standard or a contest, the same set MSHV uses. Choosing one writes "
        "the exchange into Tx1 through Tx5 and the contest CQ, such as CQ FD or CQ TEST, onto Tx6. "
@@ -3028,6 +3083,8 @@ void MainWindow::applyHellSquelch() {
   }
   if (hell_)
     hell_->setSquelch(on, level);
+  if (olivia_)
+    olivia_->setSquelch(on, level);
 }
 
 void MainWindow::applyChannelWidth() {
@@ -3045,6 +3102,8 @@ void MainWindow::applyChannelWidth() {
     width = 200;
   else if (pskMode(mode) && pskBaud(mode) > 0.0)
     width = std::max(80, int(std::lround(pskBaud(mode) * 1.5)));
+  else if (oliviaBandwidthHz(mode) > 0)
+    width = oliviaBandwidthHz(mode);
   else if (wefaxMode(mode))
     width = 900;
   int rx = width;
@@ -3749,7 +3808,7 @@ void MainWindow::refreshTxChrome() {
         hell ? QStringLiteral(
                    "Transmit text. A macro copies into this box. TX sends it as Feld Hell. "
                    "Sent characters print in the receive pane.")
-        : (rttyMode(mode) || (pskMode(mode) && pskBaud(mode) > 0.0))
+        : (rttyMode(mode) || (pskMode(mode) && pskBaud(mode) > 0.0) || oliviaBandwidthHz(mode) > 0)
             ? QStringLiteral(
                   "Transmit text. A macro copies into this box. TX sends it. "
                   "Sent characters print in the receive pane as the audio goes out.")
@@ -4319,7 +4378,7 @@ void MainWindow::setUserTx(bool on) {
     txEchoAt_.clear();
     release();
     setTxStatus(QStringLiteral(
-        "%1 did not build a transmission. Olivia and the other keyboard modes "
+        "%1 did not build a transmission. MFSK, MT63, DominoEX, Thor, and QPSK "
         "do not key yet. START was not sent.")
                     .arg(mode));
     return;
@@ -6217,12 +6276,12 @@ void MainWindow::showAbout() {
 <p><b>STD</b> — Shift, Tone, Decode<br>Version %1</p>
 <p>Copyright (C) 2026 Rick Langford (N8SDR)<br>
 Licensed under the <b>GNU General Public License, version 3</b> or any later version. See the file COPYING.</p>
-<p>STD speaks TCI. Connect sends <b>AUDIO_START</b> for receiver 0. The text command START is never sent. FT8, FT4, FT2, Feld Hell, RTTY, and the BPSK speeds transmit when TX is pressed. WEFAX-576 receives only. CW stays in Lyra.</p>
+<p>STD speaks TCI. Connect sends <b>AUDIO_START</b> for receiver 0. The text command START is never sent. FT8, FT4, FT2, Feld Hell, RTTY, the BPSK speeds, Olivia, and Contestia transmit when TX is pressed. WEFAX-576 receives only. CW stays in Lyra.</p>
 <p style='color:#e8c477'><b>STD: Help keep the infections spreading and buy us a shot of bourbon.</b></p>
 <p><b>Sources and references.</b> These projects were read for conventions. Each stays under its own license.</p>
 <ul>
 <li><b>MSHV</b> (Christo, LZ2HV) — FT8, FT4, and FT2 decoder, periods, and contest messages.</li>
-<li><b>Fldigi</b> (Dave Freese, W1HKJ, GPL-3) — Feld Hell tape, macro files (.mdf), RTTY mark/space (45.45 baud, 170 Hz, mark high on DIGU), BPSK varicode, and WEFAX-576 receive.</li>
+<li><b>Fldigi</b> (Dave Freese, W1HKJ, GPL-3) — Feld Hell tape, macro files (.mdf), RTTY mark/space (45.45 baud, 170 Hz, mark high on DIGU), BPSK varicode, Olivia and Contestia (Pawel Jalocha's block code), and WEFAX-576 receive.</li>
 <li><b>TCIdigi</b> — TCI audio for a Fldigi-style keyboard. STD does not include that tree.</li>
 <li><b>Lyra</b> (N8SDR, GPL-3) — the TCI client this socket follows. CW stays there.</li>
 </ul>
