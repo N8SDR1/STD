@@ -166,6 +166,14 @@ layout: null
     border-top: 1px solid var(--line); letter-spacing: 0.2px;
   }
   .shot .cap b { color: var(--head); font-weight: 600; }
+  .safe {
+    text-align: center;
+    font-size: clamp(18px, 3vw, 26px);
+    font-weight: 700;
+    color: var(--gold);
+    letter-spacing: 0.3px;
+  }
+  .safe-frame { margin-top: 18px; }
   @media (prefers-reduced-motion: reduce) {
     .marquee-track { animation: none; }
     .marquee { overflow-x: auto; -webkit-mask-image: none; mask-image: none; }
@@ -275,6 +283,14 @@ layout: null
         <div class="divider"></div>
         <p style="margin-top:14px; color: var(--muted);">Modem math rewritten from <strong style="color:var(--text)">Fldigi</strong> (Dave Freese, W1HKJ, GPL-3). FT8, FT4, and FT2 from <strong style="color:var(--text)">MSHV</strong> (Christo, LZ2HV). TCI ideas from TCIdigi, without vendoring that tree. CW stays in <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a>.</p>
         <p style="margin-top:14px; color: var(--muted);">STD is GPL&nbsp;v3.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Safe radio</h2>
+      <p class="safe">Practice safe radio. Wrap your connectors.</p>
+      <div class="frame safe-frame">
+        <img src="screenshots/hermes-lite-std.png" alt="A Hermes-Lite 2+ on the bench, wrapped. The board reads Safe radio, happy radio, and Protection for your frequencies.">
       </div>
     </section>
   </div>
