@@ -35,7 +35,12 @@ public:
   void setTxFirst(bool first);
   // Super Hound answers on TX SECOND. Does not key.
   void setTxFirstLocked(bool locked);
+  // MSHV Multi Answering Auto Seq Protocol. 0 off, 1 Standard (Ctrl+Q,
+  // callers queue and are worked from the queue), 2 DXpedition (Ctrl+`,
+  // several QSOs in one transmission).
+  int multiAnswerMode() const { return multiMode_; }
   bool multiAnswer() const;
+  bool multiAnswerDx() const { return multiMode_ == 2; }
   QSpinBox* speedBox() const { return speed_; }
   QSpinBox* startBox() const { return start_; }
   QSpinBox* bandwidthBox() const { return bandwidth_; }
@@ -81,7 +86,7 @@ private:
   bool hound_ = false;
   bool fox_ = false;
   bool txFirst_ = false;
-  bool multiAnswer_ = false;
+  int multiMode_ = 0;
   QList<qint64> extras_;
   int cycle_ = 0;
 };

@@ -583,9 +583,25 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     noteDecodeSpot(QStringLiteral("JS8"), text, 0, waterfall_ ? waterfall_->rxHz() : 1500);
   });
   wspr_ = new WsprEngine(this);
-  connect(wspr_, &WsprEngine::textReady, this, [this](const QString& text) {
-    appendRxEcho(text + QLatin1Char('\n'));
-    noteDecodeSpot(QStringLiteral("WSPR"), text, 0, waterfall_ ? waterfall_->rxHz() : 1500);
+  connect(wspr_, &WsprEngine::spotDecoded, this, [this](const WsprSpot& spot, qint64 periodStartMs) {
+    // WSJT-X WSPR column order: UTC, dB, DT, Freq (MHz), Drift, message.
+    qint64 dial = liveDialHz_;
+    if (dial < 100000 && profile_)
+      dial = profile_->dialHz();
+    const QString utc =
+        QDateTime::fromMSecsSinceEpoch(periodStartMs, QTimeZone::utc()).toString(QStringLiteral("HHmm"));
+    const QString freq = dial >= 100000
+                             ? QString::number((double(dial) + spot.audioHz) / 1.0e6, 'f', 6)
+                             : QStringLiteral("%1 Hz").arg(spot.audioHz, 0, 'f', 1);
+    const QString line = QStringLiteral("%1 %2 %3 %4 %5  %6\n")
+                             .arg(utc)
+                             .arg(spot.snrDb, 3)
+                             .arg(spot.dtSec, 4, 'f', 1)
+                             .arg(freq, 10)
+                             .arg(spot.drift, 2)
+                             .arg(spot.message);
+    appendRxEcho(line);
+    noteDecodeSpot(QStringLiteral("WSPR"), spot.message, spot.snrDb, int(std::lround(spot.audioHz)));
   });
   wefax_ = new WefaxEngine(this);
   connect(wefax_, &WefaxEngine::imageChanged, this, [this] {
@@ -603,6 +619,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setTxStatus(QStringLiteral("WEFAX saved %1. Nothing was keyed. START was not sent.").arg(path));
   });
   if (waterfall_) {
+    connect(waterfall_, &WaterfallWidget::frequenciesChanged, this, [this](int, int txHz) {
+      // WSJT-X and JTDX keep the WSPR Tx frequency inside 1400 to 1600 Hz.
+      if (profile_ && wsprMode(profile_->digitalMode()) && wsprClampTxHz(txHz) != txHz)
+        QMetaObject::invokeMethod(
+            this,
+            [this] {
+              if (waterfall_ && profile_ && wsprMode(profile_->digitalMode()))
+                waterfall_->setTxHz(wsprClampTxHz(waterfall_->txHz()));
+            },
+            Qt::QueuedConnection);
+    });
     connect(waterfall_, &WaterfallWidget::frequenciesChanged, this, [this](int rxHz, int) {
       if (rtty_)
         rtty_->setToneHz(rxHz);
@@ -618,8 +645,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         thor_->setCenterHz(rxHz);
       if (js8_)
         js8_->setToneHz(rxHz);
-      if (wspr_)
-        wspr_->setToneHz(rxHz);
       if (mt63_)
         mt63_->setCenterHz(rxHz);
       if (wefax_)
@@ -671,8 +696,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(waterfall_, &WaterfallWidget::frequenciesChanged, ft8_, &Ft8Decode::setSpot);
   }
   if (profile_) {
-    ft8_->setMultiAnswer(profile_->multiAnswer());
-    connect(profile_, &ModeProfile::multiAnswerChanged, ft8_, &Ft8Decode::setMultiAnswer);
+    // MSHV TDecoderMs->SetMultiAnswerMod follows MA DX only, not MA Std.
+    ft8_->setMultiAnswer(profile_->multiAnswerDx());
+    connect(profile_, &ModeProfile::multiAnswerChanged, ft8_,
+            [this](bool) { ft8_->setMultiAnswer(profile_ && profile_->multiAnswerDx()); });
     connect(profile_, &ModeProfile::houndChanged, this, [this](bool on) {
       if (on && waterfall_)
         waterfall_->setRxHz(750);
@@ -1175,6 +1202,21 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "Tx Pct. Share of the 2-minute sequences that transmit, as in WSJT-X and JTDX. "
         "Even UTC minutes only. This does not key. START is never sent."));
     wsprForm->addRow(QStringLiteral("Tx Pct"), pct);
+    auto* depth = new QComboBox(wspr);
+    depth->setObjectName(QStringLiteral("wsprDepth"));
+    depth->addItem(QStringLiteral("Fast"), 1);
+    depth->addItem(QStringLiteral("Normal"), 2);
+    depth->addItem(QStringLiteral("Deep"), 3);
+    depth->setCurrentIndex(
+        std::max(0, depth->findData(std::clamp(QSettings().value(QStringLiteral("wspr/depth"), 2).toInt(), 1, 3))));
+    depth->setToolTip(QStringLiteral(
+        "WSJT-X WSPR decode depth. Fast: two passes, no block detection. "
+        "Normal: three passes, block detection, and the ordered-statistics decoder. "
+        "Deep: Normal plus more candidates, slower. This does not key."));
+    wsprForm->addRow(QStringLiteral("Decode"), depth);
+    connect(depth, qOverload<int>(&QComboBox::currentIndexChanged), this, [depth](int) {
+      QSettings().setValue(QStringLiteral("wspr/depth"), depth->currentData().toInt());
+    });
     auto* hopRow = new QWidget(wspr);
     auto* hopLayout = new QHBoxLayout(hopRow);
     hopLayout->setContentsMargins(0, 0, 0, 0);
@@ -1409,6 +1451,25 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     cqRow->addWidget(useFree);
     cqRow->addWidget(sort);
     settingsLayout->addLayout(cqRow);
+    auto* txSm = new QCheckBox(QStringLiteral("TX RR73; next"), settings);
+    txSm->setObjectName(QStringLiteral("txSm"));
+    txSm->setFont(interfaceFont(11));
+    txSm->setChecked(QSettings().value(QStringLiteral("tx/maTxSm"), false).toBool());
+    txSm->setToolTip(QStringLiteral(
+        "MA DX, as MSHV: when every slot is busy, the RR73 to one station also carries the "
+        "report to the next queued caller, \"A RR73; B <MY> -10\". This does not key."));
+    settingsLayout->addWidget(txSm);
+    connect(txSm, &QCheckBox::toggled, this, [this](bool on) {
+      QSettings().setValue(QStringLiteral("tx/maTxSm"), on);
+      syncMaEngine();
+    });
+    for (auto* spin : {queueLimit, slotCount, maxPeriods})
+      connect(spin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { syncMaEngine(); });
+    for (auto* box : {cns, cqFree})
+      connect(box, &QCheckBox::toggled, this, [this](bool) { syncMaEngine(); });
+    for (auto* combo : {sort, cqType})
+      connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) { syncMaEngine(); });
+    connect(freeCq, &QLineEdit::textChanged, this, [this](const QString&) { syncMaEngine(); });
     auto* clrQueue = new QPushButton(QStringLiteral("CLR Queue"), panel);
     clrQueue->setObjectName(QStringLiteral("txClrQueue"));
     clrQueue->setFont(interfaceFont(11));
@@ -1478,6 +1539,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     connect(clrQueue, &QPushButton::clicked, this, [this] {
       txFinishedCalls_.clear();
       txQueue_.clear();
+      ma_.clearQueue();
       if (auto* entry = findChild<QLineEdit*>(QStringLiteral("txQueueEntry")))
         entry->clear();
       paintMultiLists();
@@ -1488,6 +1550,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     connect(clrNow, &QPushButton::clicked, this, [this] {
       txFinishedCalls_.clear();
       txNow_.clear();
+      ma_.clearNow();
       txHisCall_.clear();
       txReport_.clear();
       txFreeArmed_ = false;
@@ -1603,7 +1666,7 @@ void MainWindow::beginWsprTune() {
     return;
   if (qEnvironmentVariableIsSet("STD_SELFTEST"))
     return;
-  txTuneHz_ = std::clamp(waterfall_ ? waterfall_->txHz() : 1500, 200, 3000);
+  txTuneHz_ = wsprClampTxHz(waterfall_ ? waterfall_->txHz() : 1500);
   txTunePhase_ = 0.0;
   txTuneSent_ = 0;
   txLastPullMs_ = 0;
@@ -2871,10 +2934,8 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     js8_->setToneHz(waterfall_ ? waterfall_->rxHz() : 1500);
     js8_->setArmed(autoMonitor_ && js8);
   }
-  if (wspr_) {
-    wspr_->setToneHz(waterfall_ ? waterfall_->txHz() : 1500);
+  if (wspr_)
     wspr_->setArmed(autoMonitor_ && wspr);
-  }
   if (wspr && waterfall_)
     waterfall_->setTxHz(1500);
   if (wefax_) {
@@ -2895,6 +2956,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   if (wspr)
     setTxStatus(QStringLiteral(
         "WSPR. Band buttons move the radio to that WSPR dial. "
+        "Decodes 1390-1610 Hz after each 2-minute period. TX stays inside 1400-1600 Hz. "
         "No macros. Locator is Options → User. This does not key. START was not sent."));
   else if (js8)
     setTxStatus(QStringLiteral(
@@ -4048,6 +4110,8 @@ QString MainWindow::transmitMessage() const {
     const auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
     return edit ? edit->toPlainText().trimmed() : QString();
   }
+  if (maActive())
+    return ma_.message();
   const int slot = selectedTxSlot();
   const QString name =
       slot == 6 ? QStringLiteral("txExtra") : QStringLiteral("tx%1").arg(slot + 1);
@@ -4171,6 +4235,32 @@ void MainWindow::paintMultiLists() {
     if (current >= 0 && current < list->count())
       list->setCurrentRow(current);
   };
+  if (maActive()) {
+    auto paintMa = [](QListWidget* list, const QVector<MaEngine::Row>& rows) {
+      if (!list)
+        return;
+      const int current = list->currentRow();
+      const QSignalBlocker block(list);
+      list->clear();
+      for (const MaEngine::Row& row : rows) {
+        list->addItem(QStringLiteral("%1  %2  %3  %4")
+                          .arg(row.call, -10)
+                          .arg(row.txRpt.isEmpty() ? QStringLiteral("   ") : row.txRpt)
+                          .arg(row.grid.isEmpty() ? QStringLiteral("    ") : row.grid)
+                          .arg(row.dist.isEmpty() || row.dist == QLatin1String("?") ? QString()
+                                                                                   : row.dist + QStringLiteral(" km")));
+      }
+      if (current >= 0 && current < list->count())
+        list->setCurrentRow(current);
+    };
+    paintMa(findChild<QListWidget*>(QStringLiteral("txQueueList")), ma_.queue());
+    paintMa(findChild<QListWidget*>(QStringLiteral("txNowList")), ma_.now());
+    if (tabs) {
+      tabs->setTabText(0, QStringLiteral("Queue %1").arg(ma_.queue().size()));
+      tabs->setTabText(1, QStringLiteral("Now %1").arg(ma_.now().size()));
+    }
+    return;
+  }
   paint(findChild<QListWidget*>(QStringLiteral("txQueueList")), txQueue_);
   paint(findChild<QListWidget*>(QStringLiteral("txNowList")), txNow_);
   if (!tabs)
@@ -4198,6 +4288,17 @@ void MainWindow::addTypedQueue() {
   if (!entry)
     return;
   const QString call = entry->text().trimmed().toUpper().section(QLatin1Char(' '), 0, 0);
+  if (maActive()) {
+    if (!ma_.addManual(call)) {
+      setTxStatus(QStringLiteral("%1 was not added. It is not a call, or it is already listed. Nothing was keyed.")
+                      .arg(call));
+      return;
+    }
+    entry->clear();
+    paintMultiLists();
+    setTxStatus(QStringLiteral("%1 added. Nothing was keyed. START was not sent.").arg(call));
+    return;
+  }
   if (!isCall(call)) {
     setTxStatus(QStringLiteral(
         "That is not a callsign. Nothing was added and nothing was keyed. START was not sent."));
@@ -4237,6 +4338,15 @@ void MainWindow::deleteQueueRow(bool nowList) {
   if (!list)
     return;
   const int row = list->currentRow();
+  if (maActive()) {
+    if (nowList)
+      ma_.removeNow(row);
+    else
+      ma_.removeQueue(row);
+    paintMultiLists();
+    setTxStatus(QStringLiteral("Row removed. Nothing was unkeyed. START was not sent."));
+    return;
+  }
   if (row < 0 || row >= rows.size()) {
     setTxStatus(QStringLiteral("Select a row to delete. Nothing was unkeyed. START was not sent."));
     return;
@@ -4281,7 +4391,7 @@ void MainWindow::enqueueCaller(const QString& call, int db, int dist, int slot) 
 }
 
 bool MainWindow::queueFollows() const {
-  if (!profile_ || !profile_->multiAnswer())
+  if (!profile_ || !profile_->multiAnswer() || maActive())
     return false;
   return sequencedFamily(profile_->digitalMode());
 }
@@ -4327,7 +4437,7 @@ void MainWindow::startQueueHead(const QString& time) {
 }
 
 void MainWindow::promoteNow() {
-  if (!profile_ || !profile_->multiAnswer())
+  if (!profile_ || !profile_->multiAnswer() || maActive())
     return;
   const QString call = txHisCall_.trimmed().toUpper();
   if (call.isEmpty())
@@ -4350,6 +4460,142 @@ void MainWindow::promoteNow() {
   }
   txNow_.push_back(QueuedCall{call, db, dist});
   paintMultiLists();
+}
+
+bool MainWindow::maRestrictedDial() const {
+  // MSHV HvTxW::RefreshLRestrict: within 3 kHz of a standard FT8 or FT4
+  // dial (1.8 through 28 MHz), or on a WSPR dial, MA uses one TX slot.
+  static const qint64 kFt[] = {1840000,  3573000,  7074000,  10136000, 14074000, 18100000, 21074000,
+                               24915000, 28074000, 3575000,  7047000,  10140000, 14080000, 18104000,
+                               21140000, 24919000, 28180000};
+  static const qint64 kWspr[] = {1836600,  5364700,  3568600,  7038600,  10138700,
+                                 14095600, 18104600, 21094600, 24924600, 28124600};
+  qint64 dial = liveDialHz_;
+  if (dial < 100000 && profile_)
+    dial = profile_->dialHz();
+  if (dial < 1000000)
+    return false;
+  for (qint64 f : kFt) {
+    if (std::llabs(dial - f) < 3000)
+      return true;
+  }
+  for (qint64 f : kWspr) {
+    const qint64 d = dial - f;
+    if (d > -3500 && d < 300)
+      return true;
+  }
+  return false;
+}
+
+void MainWindow::syncMaEngine() {
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  const bool ftFamily = mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
+                        mode == QLatin1String("FT2") || q65Mode(mode);
+  MaEngine::Mode want = MaEngine::Mode::Off;
+  // MSHV enables both modes only in the Standard activity type, and not
+  // with Super Fox or Super Hound.
+  if (profile_ && ftFamily && txActivityId() == 0 && !profile_->superFox() && !profile_->superHound()) {
+    if (profile_->multiAnswerMode() == 1)
+      want = MaEngine::Mode::Standard;
+    else if (profile_->multiAnswerMode() == 2)
+      want = MaEngine::Mode::Dxpedition;
+  }
+  ma_.setDigitalMode(mode);
+  ma_.setRestricted(maRestrictedDial());
+  ma_.setStation(stationCall(), stationGrid());
+  const bool wasActive = ma_.active();
+  ma_.setMode(want);
+  if (!ma_.active()) {
+    if (wasActive)
+      paintMultiLists();
+    if (auto* sm = findChild<QCheckBox*>(QStringLiteral("txSm")))
+      sm->setVisible(false);
+    return;
+  }
+  if (auto* spin = findChild<QSpinBox*>(QStringLiteral("txSlots"))) {
+    const QSignalBlocker block(spin);
+    spin->setRange(1, ma_.maxSlots());
+    spin->setEnabled(ma_.maxSlots() > 1);
+    ma_.setSlotCount(spin->value());
+  }
+  if (const auto* limit = findChild<QSpinBox*>(QStringLiteral("txQueueLimit")))
+    ma_.setQueueLimit(limit->value());
+  if (const auto* spin = findChild<QSpinBox*>(QStringLiteral("txMaxPeriods"))) {
+    const bool periods = spin->prefix().startsWith(QLatin1String("Periods"));
+    ma_.setMaxTry(spin->value(), periods, periodLengthMs(mode) / 1000.0);
+  }
+  if (const auto* sort = findChild<QComboBox*>(QStringLiteral("txSort")))
+    ma_.setSort(sort->currentIndex());
+  ma_.setCns(cnsOn());
+  ma_.setCqOnFreeSlot(cqOnFreeOn());
+  if (auto* sm = findChild<QCheckBox*>(QStringLiteral("txSm"))) {
+    sm->setVisible(ma_.mode() == MaEngine::Mode::Dxpedition);
+    ma_.setTxSm(sm->isChecked());
+  }
+  // The CQ the engine sends is the Tx6 line, CQ type and free CQ included.
+  if (const auto* tx6 = findChild<QLineEdit*>(QStringLiteral("tx6")))
+    ma_.setCqLine(tx6->text());
+  if (!ma_.dupeCheckSet()) {
+    // MSHV Cb_dupes: No Limit lets a worked call back in.
+    ma_.setDupeCheck([this](const QString& call) {
+      const auto* dupes = findChild<QComboBox*>(QStringLiteral("txDupes"));
+      return dupes && dupes->currentIndex() > 0 && txFinishedCalls_.contains(call);
+    });
+  }
+  paintMultiLists();
+}
+
+void MainWindow::logMaQsos(const QVector<MaEngine::Logged>& done) {
+  const QString mine = stationCall().trimmed().toUpper();
+  QStringList notes;
+  for (const MaEngine::Logged& q : done) {
+    if (!txFinishedCalls_.contains(q.call))
+      txFinishedCalls_.push_back(q.call);
+    rememberQso(q.call, q.grid, q.rxRpt, true);
+    const QDateTime started = QDateTime::fromString(q.started, QStringLiteral("yyyyMMdd hh:mm"));
+    if (started.isValid()) {
+      QDateTime utc = started;
+      utc.setTimeZone(QTimeZone::utc());
+      qsoStartedMs_ = utc.toMSecsSinceEpoch();
+    }
+    const QString keep = txReport_;
+    txReport_ = q.txRpt;
+    const QString note = maybeLogQso(q.call + QLatin1Char(' ') + mine + QStringLiteral(" RR73"));
+    txReport_ = keep;
+    if (!note.isEmpty())
+      notes << q.call;
+  }
+  if (!notes.isEmpty())
+    setTxStatus(QStringLiteral("Logged %1. START was not sent.").arg(notes.join(QStringLiteral(", "))));
+}
+
+int MainWindow::txStartLeadMs(const QString& mode) const {
+  // MSHV MsPlayerHV::xplaymessage. Inside the first second of a period the
+  // audio starts at a fixed offset; any later start waits 200 ms.
+  const int period = periodLengthMs(mode);
+  if (period <= 0)
+    return 0;
+  if (jt65Mode(mode))
+    return 700;
+  int target = 0;
+  if (mode == QLatin1String("FT8"))
+    target = 450;
+  else if (mode == QLatin1String("FT4") || mode == QLatin1String("FT2"))
+    target = 350;
+  else if (q65Mode(mode))
+    target = period >= 60000 ? 950 : 450;
+  else
+    return 0;
+  const int into = utcIntoPeriodMs(period);
+  int lead = 200;
+  if (into < 1000) {
+    const int x = target - into;
+    if (x > 50)
+      lead = x;
+    if (mode == QLatin1String("FT2") && lead > 700)
+      lead = 200;
+  }
+  return lead;
 }
 
 void MainWindow::appendQso(const QString& side, const QString& text) {
@@ -4375,6 +4621,13 @@ void MainWindow::noteTheirReply(const QString& time, int db, const QString& mess
   appendQso(QStringLiteral("RX"), message);
   if (!txSequence_ || qEnvironmentVariableIsSet("STD_SELFTEST"))
     return;
+  if (maActive()) {
+    // MSHV SetTextForAutoSeq: with TX on, every decode to us feeds the engine.
+    ma_.decoded(message, db, 0, false);
+    logMaQsos(ma_.takeLogged());
+    paintMultiLists();
+    return;
+  }
   applyTheirReply(time, db, message);
 }
 
@@ -4668,6 +4921,7 @@ void MainWindow::refreshTxChrome() {
     qrg->setVisible(activity == 0 || activity == 1);
   syncCqEditor(false);
   refreshTxFields();
+  syncMaEngine();
 }
 
 void MainWindow::primeGraphics() {
@@ -4971,6 +5225,30 @@ void MainWindow::loadReplyFromLine(int line) {
       row.message.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
   if (words.isEmpty()) {
     setTxStatus(QStringLiteral("That decode has no call to answer. Nothing was keyed."));
+    return;
+  }
+  if (maActive()) {
+    // MSHV DecListTextAll with f_double_click. MA Std starts a QSO with
+    // anyone; MA DX only takes stations calling us.
+    const QString mine = stationCall().trimmed().toUpper();
+    const bool toMe = row.message.contains(mine, Qt::CaseInsensitive);
+    if (ma_.mode() == MaEngine::Mode::Dxpedition && !toMe) {
+      setTxStatus(QStringLiteral(
+          "MA DX works stations that call you. Double-click a line with your call. Nothing was keyed."));
+      return;
+    }
+    ma_.decoded(row.message, row.db, row.freqHz, true);
+    logMaQsos(ma_.takeLogged());
+    paintMultiLists();
+    int msgPos = 0;
+    for (int i = 0; i < words.size(); ++i) {
+      if (isCall(words.at(i)) && words.at(i).compare(mine, Qt::CaseInsensitive) != 0) {
+        msgPos = i;
+        break;
+      }
+    }
+    armAnswerSlot(row.time, msgPos);
+    armUserTx();
     return;
   }
   const bool cq = words.at(0).compare(QLatin1String("CQ"), Qt::CaseInsensitive) == 0;
@@ -5400,7 +5678,7 @@ void MainWindow::pushRealtimeTx() {
   constexpr int kRate = 48000;
   constexpr int kChunk = 960;
   const qint64 origin = txTune_ ? txTuneStartMs_ : txPlayOriginMs_;
-  if (origin <= 0)
+  if (origin <= 0 || now < origin)
     return;
   const int sent = txTune_ ? txTuneSent_ : txCursor_;
   const int allowed = int((now - origin) * kRate / 1000) + kChunk;
@@ -5453,6 +5731,18 @@ void MainWindow::pumpUserTx() {
   if (!txKeySent_) {
     if (!periodReady(mode))
       return;
+    // MSHV builds the message when the period opens (SetTxRxMsg, then the
+    // generator), so what goes out is the line as it stands now.
+    if (maActive()) {
+      syncMaEngine();
+      ma_.txStarted();
+      paintMultiLists();
+    }
+    if (!rebuildTxWave()) {
+      setTxStatus(QStringLiteral("The selected line is empty. Nothing was keyed. START was not sent."));
+      stopUserTx(true);
+      return;
+    }
     if (!tci_->setTransmit(true)) {
       setTxStatus(QStringLiteral("Radio is not connected. TX did not key. START was not sent."));
       stopUserTx(true);
@@ -5467,7 +5757,9 @@ void MainWindow::pumpUserTx() {
     txJoinOpen_ = false;
     txCursor_ = 0;
     txLastPullMs_ = 0;
-    txPlayOriginMs_ = now;
+    // MSHV MsPlayerHV::xplaymessage: first symbol 450 ms into an FT8
+    // period (350 ms FT4 / FT2), 200 ms after a late start.
+    txPlayOriginMs_ = now + txStartLeadMs(mode);
     txSentText_ = txEchoAt_.empty() ? transmitMessage() : transmitMessage().trimmed();
     txEchoCount_ = 0;
     txEchoSamples_ = textModeSamplesPerChar(mode);
@@ -5522,7 +5814,7 @@ void MainWindow::finishTxPass() {
     tci_->setTransmit(false);
   txKeySent_ = false;
   markWaterfallTx();
-  const QString logNote = (!retargeted && keyed) ? maybeLogQso(sent) : QString();
+  const QString logNote = (!retargeted && keyed && !maActive()) ? maybeLogQso(sent) : QString();
   txHold_ = 0;
   txLoggedThisPass_ = false;
   txSamples_.clear();
@@ -5558,6 +5850,33 @@ void MainWindow::finishTxPass() {
     setTxStatus(QStringLiteral(
         "WSPR cycle ended. Waiting for the next even minute. Tx Pct decides that slot. "
         "TRX is off. START was not sent."));
+    return;
+  }
+  if (maActive() && txSequence_ && sequencedMode(mode) && !qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    // MSHV SetTxRxMsg(false) / SetTxMsgEnd: RR73 and 73 rows that went out
+    // are logged and leave Now; the Queue tops Now back up.
+    logMaQsos(ma_.txEnded());
+    paintMultiLists();
+    if (ma_.takeStop()) {
+      setTxStatus(QStringLiteral(
+          "MA Std: Now and the Queue are empty and CNS is off. Stopped. TRX is off. START was not sent."));
+      stopUserTx(true);
+      return;
+    }
+    if (button)
+      button->setText(QStringLiteral("WAIT"));
+    if (txTimer_ && !txTimer_->isActive())
+      txTimer_->start(20);
+    const int working = ma_.now().size();
+    setTxStatus(working > 0
+                    ? QStringLiteral("%1 working %2, %3 waiting. Next %4 slot. TRX is off. START was not sent.")
+                          .arg(ma_.mode() == MaEngine::Mode::Dxpedition ? QStringLiteral("MA DX")
+                                                                         : QStringLiteral("MA Std"))
+                          .arg(working)
+                          .arg(ma_.queue().size())
+                          .arg(txSlotName())
+                    : QStringLiteral("Calling CQ on the next %1 slot. TRX is off. START was not sent.")
+                          .arg(txSlotName()));
     return;
   }
   if (!txSequence_ || !sequencedMode(mode) || qEnvironmentVariableIsSet("STD_SELFTEST")) {

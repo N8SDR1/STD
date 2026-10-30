@@ -68,6 +68,8 @@ qt_add_executable(std
   WIN32
   src/main.cpp
   src/MainWindow.cpp
+  src/MaEngine.cpp
+  src/MaEngine.h
   src/MainWindow.h
   src/WaterfallWidget.cpp
   src/WaterfallWidget.h

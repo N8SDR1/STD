@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "MaEngine.h"
 #include "MacroFile.h"
 
 #include <QByteArray>
@@ -162,6 +163,13 @@ private:
   void applyTheirReply(const QString& time, int db, const QString& message);
   void enqueueCaller(const QString& call, int db, int dist, int slot = 1);
   bool queueFollows() const;
+  // MSHV Multi Answering engine (MA Std / MA DX) for FT8, FT4, FT2, Q65.
+  bool maActive() const { return ma_.active(); }
+  void syncMaEngine();
+  bool maRestrictedDial() const;
+  void logMaQsos(const QVector<MaEngine::Logged>& done);
+  // MSHV xplaymessage delay before the first symbol, in ms.
+  int txStartLeadMs(const QString& mode) const;
   void startQueueHead(const QString& time);
   // Removes the station just finished from Queue and Now. A later decode
   // does not put that call back; CLR Queue, CLR Now, or a clicked answer does.
@@ -258,6 +266,7 @@ private:
   QVector<DecodeRow> decodes_;
   QString dialText_ = QString::fromUtf8("—");
   qint64 liveDialHz_ = 0;
+  MaEngine ma_;
   QDockWidget* waterfallDock_ = nullptr;
   QDockWidget* receiveDock_ = nullptr;
   QDockWidget* transmitDock_ = nullptr;

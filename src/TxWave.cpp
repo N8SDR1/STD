@@ -213,8 +213,15 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
   double counter = 0.0;
   int previous = 0;
   const double step = timing.columnsPerSec * double(kHellFontRows) / double(kRate);
+  // Fldigi's OffShape is 32 samples at 8 kHz from the start of the pixel,
+  // which is the whole Feld Hell pixel. A Slow Hell pixel is 261 samples,
+  // so Fldigi keys the last ink pixel of a stroke for 4 ms and leaves the
+  // rest blank. Pixels longer than the shape put the 2 ms fall at the end
+  // of the pixel instead. Feld Hell keeps the Fldigi shape sample for sample.
+  const bool longPixel = 8000.0 / (timing.columnsPerSec * double(kHellFontRows)) > 40.0;
   auto sendPixel = [&](int current, int next) {
     int n = 0;
+    const int length = std::max(1, int(std::ceil((1.0 - counter) / step - 1e-9)));
     for (;;) {
       double amp = 1.0;
       double freq = double(tone);
@@ -222,6 +229,14 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
         freq += (current ? -1.0 : 1.0) * timing.shiftHz / 2.0;
       } else if (!timing.shaped) {
         amp = current ? 1.0 : 0.0;
+      } else if (longPixel && current == 1) {
+        // Rise over the first 2 ms after a gap, fall over the last 2 ms
+        // before one. A lone pixel gets both.
+        amp = 1.0;
+        if (previous == 0)
+          amp = std::min(amp, hellEdge(n, true));
+        if (next == 0)
+          amp = std::min(amp, hellEdge(length - 1 - n, true));
       } else if (previous == 0 && current == 1) {
         amp = hellEdge(n, true);
       } else if (current == 1 && next == 0) {
@@ -271,12 +286,16 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
   for (const QChar ch : message) {
     if (echoAt)
       echoAt->push_back(int(out->size()));
-    unsigned char c = ' ';
-    if (ch.unicode() >= ' ' && ch.unicode() <= '~')
-      c = static_cast<unsigned char>(ch.unicode());
-    else if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n'))
-      c = ' ';
-    sendChar(c);
+    // feld::tx_process maps CR and LF to a space. Any other character
+    // outside the font sends only the two blank columns of tx_char.
+    if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n')) {
+      sendChar(' ');
+    } else if (ch.unicode() >= ' ' && ch.unicode() <= '~') {
+      sendChar(static_cast<unsigned char>(ch.unicode()));
+    } else {
+      sendColumn(0);
+      sendColumn(0);
+    }
   }
   for (int i = 0; i < 3; ++i)
     sendChar('.');
@@ -373,7 +392,7 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
     return true;
   }
   if (wsprMode(mode)) {
-    const std::vector<float> wave = wsprModulate(text, tone);
+    const std::vector<float> wave = wsprModulate(text, wsprClampTxHz(tone));
     if (wave.empty())
       return false;
     *out = wave;

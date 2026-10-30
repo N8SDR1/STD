@@ -6,8 +6,9 @@
 #include <QByteArray>
 #include <QObject>
 
-// Receive-only Feld Hell. The column detector is fldigi 4.2.06
-// feld::rx / feld::rx_process (tag v4.2.06). Transmit is not built.
+// Hell receive. The column detector is fldigi 4.2.06 feld::rx,
+// feld::FSKH_rx, and feld::rx_process (TCIdigi carries the same file).
+// Transmit is buildHell() in TxWave.cpp.
 class HellEngine : public QObject {
   Q_OBJECT
 

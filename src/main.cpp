@@ -4,6 +4,7 @@
 #include "DigitalMode.h"
 #include "hell/HellRaster.h"
 #include "MacroFile.h"
+#include "MaEngine.h"
 #include "MainWindow.h"
 #include "StatusStrip.h"
 
@@ -27,6 +28,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <random>
 #include <utility>
 #include <vector>
 
@@ -434,6 +436,60 @@ int shellReady(MainWindow& window) {
   const double fastRatio = double(feldWave.size()) / double(fastWave.size());
   if (slowRatio < 7.9 || slowRatio > 8.1 || fastRatio < 4.9 || fastRatio > 5.1)
     return fail("Hell family rates do not match Fldigi");
+  {
+    // Slow Hell is Feld Hell at one eighth the speed. With full trailing
+    // pixels the same text carries about 10 times the keyed energy (the
+    // 2 ms edges cost Feld Hell more). Fldigi's 4 ms trailing pixel gives 6.9.
+    double feldEnergy = 0.0;
+    double slowEnergy = 0.0;
+    for (float v : feldWave)
+      feldEnergy += double(v) * v;
+    for (float v : slowWave)
+      slowEnergy += double(v) * v;
+    const double energyRatio = feldEnergy > 0.0 ? slowEnergy / feldEnergy : 0.0;
+    if (energyRatio < 9.5 || energyRatio > 10.8) {
+      qCritical("Slow Hell energy ratio %.2f", energyRatio);
+      return fail("Slow Hell trailing pixels are cut short");
+    }
+  }
+  // Loopback: every Hell mode, transmitted at 48 kHz, prints with clear ink
+  // and paper through the receive path at that mode's Fldigi filter width.
+  for (const char* name : hellNames) {
+    const QString mode = QString::fromLatin1(name);
+    std::vector<float> wave;
+    if (!buildTxWave(mode, QStringLiteral("HI HI"), 1500, &wave, nullptr))
+      return fail("Hell loopback did not build");
+    HellEngine engine;
+    engine.setColumnRate(hellColumnRate(mode));
+    engine.setFskShiftHz(hellFskShiftHz(mode));
+    engine.setToneHz(1500);
+    engine.setArmed(true);
+    int crisp = 0;
+    long gray = 0;
+    long total = 0;
+    QObject::connect(&engine, &HellEngine::columnReady, [&crisp, &gray, &total](const QByteArray& column) {
+      int lo = 255;
+      int hi = 0;
+      for (int i = column.size() / 2; i < column.size(); ++i) {
+        const int v = static_cast<unsigned char>(column.at(i));
+        lo = std::min(lo, v);
+        hi = std::max(hi, v);
+        if (v > 64 && v < 192) ++gray;
+        ++total;
+      }
+      if (lo < 64 && hi > 192)
+        ++crisp;
+    });
+    for (size_t at = 0; at < wave.size(); at += 4800) {
+      const int n = int(std::min<size_t>(4800, wave.size() - at));
+      engine.pushAudio(wave.data() + at, n, 48000);
+    }
+    // X5 and X9 smear to about 23% gray through a 245 Hz filter.
+    if (crisp < 25 || gray * 100 > total * 12) {
+      qCritical("Hell loopback %s crisp columns %d gray %ld of %ld", name, crisp, gray, total);
+      return fail("Hell loopback does not print");
+    }
+  }
   for (int i = 0; i + 64 < int(fskWave.size()); i += 64) {
     float peak = 0.0f;
     for (int j = 0; j < 64; ++j)
@@ -878,11 +934,105 @@ int shellReady(MainWindow& window) {
     if (!buildTxWave(QStringLiteral("WSPR"), QStringLiteral("N8SDR EM79 37"), 1500, &wave) ||
         wave.size() < 1000000)
       return fail("WSPR modulator is missing");
-    const QString back = wsprDecode(wave.data(), int(wave.size()), 48000, 1500);
-    if (!back.contains(QLatin1String("N8SDR")) || !back.contains(QLatin1String("EM79")) ||
-        !back.contains(QLatin1String("37"))) {
+    const QString back = wsprDecode(wave.data(), int(wave.size()), 48000);
+    if (back != QLatin1String("N8SDR EM79 37")) {
       qCritical("WSPR decode [%s] samples %d", qPrintable(back), int(wave.size()));
       return fail("WSPR did not decode");
+    }
+  }
+  {
+    // MSHV Multi Answering engine, both modes.
+    MaEngine stdMa;
+    stdMa.setStation(QStringLiteral("N8SDR"), QStringLiteral("EM79"));
+    stdMa.setMode(MaEngine::Mode::Standard);
+    stdMa.setSlotCount(1);
+    stdMa.setQueueLimit(5);
+    if (stdMa.message() != QLatin1String("CQ N8SDR EM79"))
+      return fail("MA Std does not call CQ with an empty Now");
+    stdMa.decoded(QStringLiteral("N8SDR K1ABC FN42"), -5, 1200, false);
+    stdMa.decoded(QStringLiteral("N8SDR W9XYZ EN52"), -7, 1400, false);
+    if (stdMa.now().size() != 1 || stdMa.queue().size() != 1 ||
+        stdMa.message() != QLatin1String("K1ABC N8SDR -05"))
+      return fail("MA Std did not work the first caller and queue the second");
+    stdMa.decoded(QStringLiteral("N8SDR K1ABC R-10"), -5, 1200, false);
+    if (stdMa.message() != QLatin1String("K1ABC N8SDR RR73"))
+      return fail("MA Std did not answer R-report with RR73");
+    stdMa.txStarted();
+    const QVector<MaEngine::Logged> done = stdMa.txEnded();
+    if (done.size() != 1 || done.front().call != QLatin1String("K1ABC") || done.front().rxRpt != QLatin1String("-10") ||
+        stdMa.message() != QLatin1String("W9XYZ N8SDR -07") || !stdMa.queue().isEmpty())
+      return fail("MA Std did not log the QSO and take the next caller from the queue");
+    stdMa.decoded(QStringLiteral("N8SDR W9XYZ RR73"), -7, 1400, false);
+    stdMa.txStarted();
+    stdMa.txEnded();
+    if (!stdMa.takeStop())
+      return fail("MA Std with CNS off did not stop when Now emptied");
+
+    MaEngine dx;
+    dx.setStation(QStringLiteral("N8SDR"), QStringLiteral("EM79"));
+    dx.setDigitalMode(QStringLiteral("FT8"));
+    dx.setMode(MaEngine::Mode::Dxpedition);
+    if (dx.maxSlots() != 6)
+      return fail("MA DX FT8 is not six slots");
+    dx.setRestricted(true);
+    if (dx.maxSlots() != 1)
+      return fail("MA DX is not one slot on a standard FT8 frequency");
+    dx.setRestricted(false);
+    dx.setSlotCount(3);
+    dx.setQueueLimit(5);
+    dx.setCqOnFreeSlot(true);
+    dx.decoded(QStringLiteral("N8SDR K1ABC FN42"), -5, 1200, false);
+    if (dx.message() != QLatin1String("K1ABC N8SDR -05#CQ N8SDR EM79"))
+      return fail("MA DX did not put CQ on the free slot");
+    dx.decoded(QStringLiteral("N8SDR W9XYZ EN52"), -7, 1400, false);
+    if (dx.message() != QLatin1String("K1ABC N8SDR -05#W9XYZ N8SDR -07"))
+      return fail("MA DX did not send one message per slot");
+    std::vector<float> both;
+    if (!buildTxWave(QStringLiteral("FT8"), dx.message(), 1500, &both) || both.size() < 600000)
+      return fail("MA DX two-slot FT8 did not generate");
+
+    MaEngine sm;
+    sm.setStation(QStringLiteral("N8SDR"), QStringLiteral("EM79"));
+    sm.setDigitalMode(QStringLiteral("FT8"));
+    sm.setMode(MaEngine::Mode::Dxpedition);
+    sm.setSlotCount(1);
+    sm.setQueueLimit(5);
+    sm.setTxSm(true);
+    sm.decoded(QStringLiteral("N8SDR K1ABC FN42"), -5, 1200, false);
+    sm.decoded(QStringLiteral("N8SDR W9XYZ EN52"), -7, 1400, false);
+    sm.decoded(QStringLiteral("N8SDR K1ABC R-10"), -5, 1200, false);
+    if (sm.message() != QLatin1String("K1ABC RR73; W9XYZ <N8SDR> -07"))
+      return fail("MA DX TX RR73; next did not fold the next caller");
+  }
+  {
+    // Hash values from the WSJT-X nhash.c, initval 146.
+    if (wsprCallHash(QStringLiteral("K1ABC")) != 6521 || wsprCallHash(QStringLiteral("N8SDR")) != 7430 ||
+        wsprCallHash(QStringLiteral("PJ4/K1ABC")) != 19735 || wsprCallHash(QStringLiteral("G4ABC/P")) != 587 ||
+        wsprCallHash(QStringLiteral("ABCDEFGHIJKLM")) != 19339)
+      return fail("WSPR callsign hash does not match WSJT-X");
+    if (!wsprOsdSelfTest())
+      return fail("WSPR OSD decoder did not repair the codeword");
+    // WSPR Tx stays inside 1400 to 1600 Hz, as in WSJT-X and JTDX.
+    if (wsprClampTxHz(1000) != 1400 || wsprClampTxHz(2500) != 1600 || wsprClampTxHz(1453) != 1453)
+      return fail("WSPR Tx frequency is not held to 1400-1600 Hz");
+    std::vector<float> wave;
+    if (!buildTxWave(QStringLiteral("WSPR"), QStringLiteral("K1JT FN20 30"), 1453, &wave) ||
+        wave.size() < 1000000)
+      return fail("WSPR modulator is missing");
+    // About -22 dB in 2500 Hz, the way wsprd reports SNR.
+    std::mt19937 rng(20260502u);
+    std::normal_distribution<float> gauss(0.0f, 22.0f);
+    std::vector<float> noisy(size_t(48000) * 114, 0.0f);
+    for (size_t i = 0; i < noisy.size(); ++i)
+      noisy[i] = (i < wave.size() ? wave[i] : 0.0f) + gauss(rng);
+    const std::vector<WsprSpot> spots = wsprDecodePeriod(noisy.data(), int(noisy.size()), 48000);
+    if (spots.empty() || spots.front().message != QLatin1String("K1JT FN20 30") ||
+        std::fabs(spots.front().audioHz - 1453.0) > 1.0 || spots.front().snrDb > -16 ||
+        spots.front().snrDb < -28) {
+      qCritical("WSPR noisy decode count %d [%s] %.1f Hz %d dB", int(spots.size()),
+                spots.empty() ? "" : qPrintable(spots.front().message),
+                spots.empty() ? 0.0 : spots.front().audioHz, spots.empty() ? 0 : spots.front().snrDb);
+      return fail("WSPR did not decode a weak signal");
     }
   }
   const auto* wspr = window.findChild<QAction*>(QStringLiteral("modeWspr"));
