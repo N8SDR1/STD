@@ -65,5 +65,5 @@ folder. They are still being proved on the air.
 MT63-500S, MT63-500L, MT63-1000S, MT63-1000L, MT63-2000S, and MT63-2000L key.
 QPSK31, QPSK63, QPSK125, QPSK250, and QPSK500 key. 8PSK is not in this build.
 JS8 Normal keys. It is the JS8Call-improved 15 second frame. Fast, Turbo, Slow, and Ultra are not in this build.
-WSPR-2 keys. It is the WSJT-X / JTDX-improved frame, not an MSHV generator. PSK Reporter upload is off until Options → Network Configuration enables it. The map uses the callsign already saved under Options → User. WSPRnet upload of stations STD decodes is also off until Enable WSPRnet is checked. WSPRnet does not ask for a password. Callsign and locator stay in Options → User.
+WSPR-2 keys. It is the WSJT-X / JTDX-improved frame, not an MSHV generator. PSK Reporter upload is off until Options → Network Configuration enables it. The map uses the callsign already saved under Options → User. WSPRnet upload of stations STD decodes is also off until WSPRnet is set to On. WSPRnet does not ask for a password. Callsign and locator stay in Options → User.
 CW stays in Lyra.

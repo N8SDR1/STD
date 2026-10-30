@@ -2361,7 +2361,8 @@ void MainWindow::buildMenus() {
   auto* networkConfig = optionsMenu->addAction(QStringLiteral("Network Configuration"));
   networkConfig->setObjectName(QStringLiteral("networkConfig"));
   networkConfig->setToolTip(QStringLiteral(
-      "PSK Reporter and WSPRnet. Each upload stays off until its Enable is checked. "
+      "PSK Reporter and WSPRnet. PSK Reporter stays off until Enable is checked. "
+      "WSPRnet stays off until On is selected. "
       "WSPRnet does not ask for a password. Does not key and does not send START."));
   connect(networkConfig, &QAction::triggered, this, [this] { openNetworkDialog(); });
 
@@ -3259,8 +3260,8 @@ void MainWindow::showGuide() {
        "and Band Hopping. The locator is the one in Options → User. TX sends that message. "
        "Receive titles Time, dB, DT, Frequency, Drift, Call, Locator, and Report stay on screen "
        "while the rows scroll. DT is the time offset. Report is the dBm the other station sent. "
-       "Options → Network can post those heard stations to WSPRnet. That post is off until Enable "
-       "WSPRnet is checked. There is no password. The callsign and locator stay in Options → User. "
+       "Options → Network can post those heard stations to WSPRnet. That post stays off until "
+       "WSPRnet is set to On. There is no password. The callsign and locator stay in Options → User. "
        "A macro copies into the transmit box on the keyboard modes. WSPR has no macro bar. "
        "TX macro also presses TX when it is on. Hell, RTTY, BPSK, QPSK, "
        "Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
@@ -3379,11 +3380,11 @@ void MainWindow::showGuide() {
        "Configuration can upload a PSK Reporter spot after a decode. That upload is off until Enable "
        "is checked. Antenna is the description sent with the spot. The status line says when a "
        "spot packet is sent or when the send fails. PSK Reporter map opens the map for the saved "
-       "callsign and does not upload. Enable WSPRnet, in that same dialog, posts each WSPR station "
+       "callsign and does not upload. WSPRnet On, in that same dialog, posts each WSPR station "
        "STD decodes. It does not post your own transmission. WSPRnet does not ask for a password or "
        "a key. WSPRnet reports opens the page of stations reported by the callsign saved under "
-       "Options → User. Both stay "
-       "off until their Enable line is checked. A UDP option under Log Options also sends live decode packets "
+       "Options → User. PSK Reporter stays off until Enable is checked. WSPRnet stays off until On "
+       "is selected. A UDP option under Log Options also sends live decode packets "
        "for GridTracker. Decode List Options "
        "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
        "decode is on by default. Log options, the ADIF path, the logger addresses, ASeq, TX "
@@ -7193,17 +7194,45 @@ void MainWindow::openNetworkDialog() {
                      "the same packets GridTracker reads. This does not send START and does not key."),
       &dialog);
   note->setWordWrap(true);
-  auto* wsprEnable = new QCheckBox(QStringLiteral("Enable WSPRnet spots"), &dialog);
-  wsprEnable->setObjectName(QStringLiteral("wsprnetEnable"));
-  wsprEnable->setChecked(settings.value(QStringLiteral("dx/wsprnetEnabled"), false).toBool());
-  wsprEnable->setToolTip(QStringLiteral(
-      "Post each WSPR station STD decodes to wsprnet.org. Off until checked. "
-      "WSPRnet does not ask for a password or a key. Does not key. START is never sent."));
+  auto* wsprChoice = new QWidget(&dialog);
+  wsprChoice->setObjectName(QStringLiteral("wsprnetChoice"));
+  auto* wsprOff = new QRadioButton(QStringLiteral("Off"), wsprChoice);
+  auto* wsprOn = new QRadioButton(QStringLiteral("On"), wsprChoice);
+  wsprOff->setObjectName(QStringLiteral("wsprnetOff"));
+  wsprOn->setObjectName(QStringLiteral("wsprnetOn"));
+  const QString wsprRadioStyle = QStringLiteral(
+      "QRadioButton { color: #f7ffff; font-size: 14px; spacing: 8px; }"
+      "QRadioButton::indicator { width: 18px; height: 18px; border: 2px solid #00e5ff; "
+      "border-radius: 11px; background: #071018; }"
+      "QRadioButton::indicator:checked { background: #00e5ff; border: 2px solid #f7ffff; }");
+  wsprOff->setStyleSheet(wsprRadioStyle);
+  wsprOn->setStyleSheet(wsprRadioStyle);
+  auto* wsprGroup = new QButtonGroup(wsprChoice);
+  wsprGroup->setExclusive(true);
+  wsprGroup->addButton(wsprOff);
+  wsprGroup->addButton(wsprOn);
+  const bool wsprSaved = settings.value(QStringLiteral("dx/wsprnetEnabled"), false).toBool();
+  wsprOn->setChecked(wsprSaved);
+  wsprOff->setChecked(!wsprSaved);
+  const QString wsprTip = QStringLiteral(
+      "On posts each WSPR station STD decodes to wsprnet.org. Off posts nothing. "
+      "WSPRnet does not ask for a password or a key. Does not key. START is never sent.");
+  wsprOff->setToolTip(wsprTip);
+  wsprOn->setToolTip(wsprTip);
+  auto* wsprLabel = new QLabel(QStringLiteral("WSPRnet"), wsprChoice);
+  wsprLabel->setStyleSheet(QStringLiteral("color: #f7ffff; font-size: 14px;"));
+  auto* wsprRow = new QHBoxLayout(wsprChoice);
+  wsprRow->setContentsMargins(0, 6, 0, 0);
+  wsprRow->setSpacing(14);
+  wsprRow->addWidget(wsprLabel);
+  wsprRow->addWidget(wsprOff);
+  wsprRow->addWidget(wsprOn);
+  wsprRow->addStretch(1);
   auto* wsprNote = new QLabel(
       QStringLiteral("WSPRnet posts the station STD heard, not your own transmission. "
                      "There is no password and no key. The receiver callsign and locator are the ones "
                      "in Options → User. View reports opens the page of stations reported by that callsign. "
-                     "Leave Enable off and nothing is posted. This does not send START and does not key."),
+                     "Choose Off and nothing is posted. This does not send START and does not key."),
       &dialog);
   wsprNote->setWordWrap(true);
   auto* map = new QPushButton(QStringLiteral("View spots"), &dialog);
@@ -7230,7 +7259,7 @@ void MainWindow::openNetworkDialog() {
   layout->addWidget(enable);
   layout->addLayout(form);
   layout->addWidget(note);
-  layout->addWidget(wsprEnable);
+  layout->addWidget(wsprChoice);
   layout->addWidget(wsprNote);
   layout->addLayout(buttons);
   connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
@@ -7239,7 +7268,7 @@ void MainWindow::openNetworkDialog() {
     return;
   QSettings store;
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
-  store.setValue(QStringLiteral("dx/wsprnetEnabled"), wsprEnable->isChecked());
+  store.setValue(QStringLiteral("dx/wsprnetEnabled"), wsprOn->isChecked());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
   store.setValue(QStringLiteral("dx/reportAntenna"), antenna->text().trimmed());
