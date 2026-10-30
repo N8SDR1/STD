@@ -638,6 +638,16 @@ int shellReady(MainWindow& window) {
         !afc->toolTip().contains(QLatin1String("Feld Hell")) ||
         !squelch->toolTip().contains(QLatin1String("does not key")))
       return fail("Hell squelch is not available");
+    strip->setDigitalMode(QStringLiteral("RTTY"));
+    if (!afc->isEnabled() || !squelch->isEnabled() || squelchLevel->isHidden() ||
+        !afc->toolTip().contains(QLatin1String("does not key")) ||
+        !afc->toolTip().contains(QLatin1String("START")) ||
+        !squelch->toolTip().contains(QLatin1String("RTTY")))
+      return fail("RTTY AFC or squelch is not available");
+    strip->setDigitalMode(QStringLiteral("PSK31"));
+    if (!afc->isEnabled() || !squelch->isEnabled() ||
+        !squelch->toolTip().contains(QLatin1String("PSK")))
+      return fail("PSK AFC or squelch is not available");
     strip->setDigitalMode(QStringLiteral("FT8"));
     if (squelch->isEnabled() || !squelchLevel->isHidden() ||
         !window.findChild<QPushButton*>(QStringLiteral("digitalModeChip")) ||
@@ -827,8 +837,34 @@ int shellReady(MainWindow& window) {
   if (!(spaceLo > spaceHi * 4.0))
     return fail("RTTY space is not the lower tone");
   const QString rttyBack = rttyDecode(rttyWave.data(), int(rttyWave.size()), 48000, 1500);
-  if (!rttyBack.contains(QLatin1Char('E')))
+  if (!rttyBack.contains(QLatin1Char('E'))) {
+    qCritical("RTTY decode [%s]", qPrintable(rttyBack));
     return fail("RTTY did not decode");
+  }
+  {
+    // Item 4: squelch on, noise only, must not print. The real wave still must.
+    std::vector<float> noise(48000 * 10);
+    unsigned noiseState = 1;
+    for (float& noiseSample : noise) {
+      noiseState = noiseState * 1664525u + 1013904223u;
+      noiseSample = (float((noiseState >> 16) & 65535u) / 32768.0f - 1.0f) * 0.25f;
+    }
+    const QString junk = rttyDecode(noise.data(), int(noise.size()), 48000, 1500, true, 10);
+    if (!junk.isEmpty()) {
+      qCritical("RTTY noise [%s]", qPrintable(junk));
+      return fail("RTTY squelch printed noise");
+    }
+    const QString heard =
+        rttyDecode(rttyWave.data(), int(rttyWave.size()), 48000, 1500, true, 10);
+    if (!heard.contains(QLatin1Char('E')))
+      return fail("RTTY squelch blocked a signal");
+    const QString tracked =
+        rttyDecode(rttyWave.data(), int(rttyWave.size()), 48000, 1500, false, 10, true);
+    if (!tracked.contains(QLatin1Char('E'))) {
+      qCritical("RTTY AFC [%s]", qPrintable(tracked));
+      return fail("RTTY AFC walked off the signal");
+    }
+  }
   std::vector<float> pskWave;
   if (!buildTxWave(QStringLiteral("PSK31"), QStringLiteral("E"), 1500, &pskWave) || pskWave.size() < 1000)
     return fail("PSK31 modulator is missing");
@@ -840,6 +876,41 @@ int shellReady(MainWindow& window) {
       pskDecode(QStringLiteral("PSK31"), pskWave.data(), int(pskWave.size()), 48000, 1500);
   if (!pskBack.contains(QLatin1Char('E')))
     return fail("PSK31 did not decode");
+  {
+    // Item 11: squelch on, noise only, must not print. The real wave still must.
+    std::vector<float> noise(48000 * 10);
+    unsigned noiseState = 1;
+    for (float& noiseSample : noise) {
+      noiseState = noiseState * 1664525u + 1013904223u;
+      noiseSample = (float((noiseState >> 16) & 65535u) / 32768.0f - 1.0f) * 0.25f;
+    }
+    const QString junk =
+        pskDecode(QStringLiteral("PSK31"), noise.data(), int(noise.size()), 48000, 1500, true, 10);
+    if (!junk.isEmpty()) {
+      qCritical("PSK noise [%s]", qPrintable(junk));
+      return fail("PSK squelch printed noise");
+    }
+    const QString heard =
+        pskDecode(QStringLiteral("PSK31"), pskWave.data(), int(pskWave.size()), 48000, 1500, true, 10);
+    if (!heard.contains(QLatin1Char('E')))
+      return fail("PSK squelch blocked a signal");
+    const QString tracked = pskDecode(QStringLiteral("PSK31"), pskWave.data(), int(pskWave.size()),
+                                      48000, 1500, false, 10, true);
+    if (!tracked.contains(QLatin1Char('E'))) {
+      qCritical("PSK AFC [%s]", qPrintable(tracked));
+      return fail("PSK AFC walked off the signal");
+    }
+    const QString accent = QString(QChar(0x00E9));
+    std::vector<float> accentWave;
+    if (!buildTxWave(QStringLiteral("PSK31"), accent, 1500, &accentWave) || accentWave.size() < 1000)
+      return fail("PSK extended character was dropped");
+    const QString accentBack =
+        pskDecode(QStringLiteral("PSK31"), accentWave.data(), int(accentWave.size()), 48000, 1500);
+    if (!accentBack.contains(QChar(0x00E9))) {
+      qCritical("PSK latin1 [%s]", qPrintable(accentBack));
+      return fail("PSK extended character did not decode");
+    }
+  }
   for (const char* baudName : {"PSK63", "PSK125", "PSK250", "PSK500", "PSK1000"}) {
     std::vector<float> faster;
     if (!buildTxWave(QString::fromLatin1(baudName), QStringLiteral("E"), 1500, &faster) ||

@@ -16,7 +16,7 @@
 
 namespace {
 
-const char* kCode[128] = {
+const char* kCode[256] = {
     "1010101011", "1011011011", "1011101101", "1101110111", "1011101011", "1101011111", "1011101111",
     "1011111101", "1011111111", "11101111",   "11101",      "1101101111", "1011011101", "11111",
     "1101110101", "1110101011", "1011110111", "1011110101", "1110101101", "1110101111", "1101011011",
@@ -35,7 +35,26 @@ const char* kCode[128] = {
     "1101",       "111101011",  "10111111",   "11011",      "111011",     "1111",       "111",
     "111111",     "110111111",  "10101",      "10111",      "101",        "110111",     "1111011",
     "1101011",    "11011111",   "1011101",    "111010101",  "1010110111", "110111011",  "1010110101",
-    "1011010111", "1110110101",
+    "1011010111", "1110110101", "1110111101", "1110111111", "1111010101", "1111010111", "1111011011",
+    "1111011101", "1111011111", "1111101011", "1111101101", "1111101111", "1111110101", "1111110111",
+    "1111111011", "1111111101", "1111111111", "10101010101", "10101010111", "10101011011", "10101011101",
+    "10101011111", "10101101011", "10101101101", "10101101111", "10101110101", "10101110111", "10101111011",
+    "10101111101", "10101111111", "10110101011", "10110101101", "10110101111", "10110110101", "10110110111",
+    "10110111011", "10110111101", "10110111111", "10111010101", "10111010111", "10111011011", "10111011101",
+    "10111011111", "10111101011", "10111101101", "10111101111", "10111110101", "10111110111", "10111111011",
+    "10111111101", "10111111111", "11010101011", "11010101101", "11010101111", "11010110101", "11010110111",
+    "11010111011", "11010111101", "11010111111", "11011010101", "11011010111", "11011011011", "11011011101",
+    "11011011111", "11011101011", "11011101101", "11011101111", "11011110101", "11011110111", "11011111011",
+    "11011111101", "11011111111", "11101010101", "11101010111", "11101011011", "11101011101", "11101011111",
+    "11101101011", "11101101101", "11101101111", "11101110101", "11101110111", "11101111011", "11101111101",
+    "11101111111", "11110101011", "11110101101", "11110101111", "11110110101", "11110110111", "11110111011",
+    "11110111101", "11110111111", "11111010101", "11111010111", "11111011011", "11111011101", "11111011111",
+    "11111101011", "11111101101", "11111101111", "11111110101", "11111110111", "11111111011", "11111111101",
+    "11111111111", "101010101011", "101010101101", "101010101111", "101010110101", "101010110111",
+    "101010111011", "101010111101", "101010111111", "101011010101", "101011010111", "101011011011",
+    "101011011101", "101011011111", "101011101011", "101011101101", "101011101111", "101011110101",
+    "101011110111", "101011111011", "101011111101", "101011111111", "101101010101", "101101010111",
+    "101101011011",
 };
 
 const char* codeFor(unsigned char c) {
@@ -45,12 +64,12 @@ const char* codeFor(unsigned char c) {
 QString lookup(const QString& bits) {
   if (bits.isEmpty())
     return {};
-  for (int i = 0; i < 128; ++i) {
+  for (int i = 0; i < 256; ++i) {
     if (bits == QLatin1String(kCode[i])) {
-      const char glyph = char(i);
-      if (glyph == '\0' || glyph < 32 && glyph != '\n' && glyph != '\r')
+      const unsigned char glyph = static_cast<unsigned char>(i);
+      if (glyph == 0 || (glyph < 32 && glyph != '\n' && glyph != '\r'))
         return {};
-      return QString(QChar::fromLatin1(glyph));
+      return QString(QChar::fromLatin1(char(glyph)));
     }
   }
   return {};
@@ -215,6 +234,21 @@ int qpskPreamble(double baud) {
   return std::max(32, int(std::lround(baud * 32.0 / 31.25)));
 }
 
+// fldigi psk::psk() dcdbits. PSK1000 is 128, not a straight doubling.
+int bpskDcdBits(double baud) {
+  if (baud >= 900.0)
+    return 128;
+  if (baud >= 400.0)
+    return 512;
+  if (baud >= 200.0)
+    return 256;
+  if (baud >= 100.0)
+    return 128;
+  if (baud >= 50.0)
+    return 64;
+  return 32;
+}
+
 void rotateQpsk(int sym, double* ui, double* uq) {
   // fldigi maps the dibit through (4 - sym) & 3 onto 180, 90, 0, 270.
   static const double rotI[4] = {-1.0, 0.0, 1.0, 0.0};
@@ -243,7 +277,7 @@ PskPlan planQpsk(const QString& mode, const QString& text, int centerHz) {
   plan.echoAt.assign(static_cast<size_t>(text.size()), -1);
   for (int i = 0; i < text.size(); ++i) {
     const ushort u = text.at(i).unicode();
-    if (u > 127)
+    if (u > 255)
       continue;
     plan.echoAt[static_cast<size_t>(i)] = int(syms.size()) * symbol;
     const char* code = codeFor(static_cast<unsigned char>(u));
@@ -269,15 +303,14 @@ PskPlan planQpsk(const QString& mode, const QString& text, int centerHz) {
     const double fromI = ui;
     const double fromQ = uq;
     rotateQpsk(sym, &ui, &uq);
-    const int edge = std::max(1, symbol / 8);
+    // fldigi tx_carriers: shapeA = 0.5*cos(i*pi/symbollen)+0.5 over the
+    // whole symbol, then I = shapeA*previous + (1-shapeA)*next.
     for (int k = 0; k < symbol; ++k) {
-      // Settle on the new phase for most of the symbol. The center of a
-      // full-symbol blend is the zero crossing of a 180 degree step.
-      double w = 1.0;
-      if (k < edge)
-        w = 0.5 - 0.5 * std::cos(3.141592653589793 * double(k) / double(edge));
-      const double ii = (1.0 - w) * fromI + w * ui;
-      const double qq = (1.0 - w) * fromQ + w * uq;
+      const double shapeA =
+          0.5 * std::cos(3.141592653589793 * double(k) / double(symbol)) + 0.5;
+      const double shapeB = 1.0 - shapeA;
+      const double ii = shapeA * fromI + shapeB * ui;
+      const double qq = shapeA * fromQ + shapeB * uq;
       plan.samples[static_cast<size_t>(at)] = float(0.6 * (ii * std::cos(carrier) + qq * std::sin(carrier)));
       carrier += step;
       if (carrier > 6.283185307179586)
@@ -288,101 +321,7 @@ PskPlan planQpsk(const QString& mode, const QString& text, int centerHz) {
   return plan;
 }
 
-QString qpskDecode(const QString& mode, const float* samples, int count, int sampleRateHz, int centerHz) {
-  const double baud = qpskBaud(mode);
-  if (!samples || count < 32 || sampleRateHz < 1000 || baud <= 0.0)
-    return {};
-  const int symbol = std::max(8, int(std::lround(double(sampleRateHz) / baud)));
-  const int center = std::clamp(centerHz, 200, 3000);
-  const double a = 1.0 - std::exp(-2.0 * 3.141592653589793 * baud * 8.0 / double(sampleRateHz));
-  std::vector<double> iAcc(static_cast<size_t>(count));
-  std::vector<double> qAcc(static_cast<size_t>(count));
-  double ii = 0.0;
-  double qq = 0.0;
-  double phase = 0.0;
-  const double step = 2.0 * 3.141592653589793 * double(center) / double(sampleRateHz);
-  for (int n = 0; n < count; ++n) {
-    ii += a * (samples[n] * std::cos(phase) - ii);
-    qq += a * (samples[n] * std::sin(phase) - qq);
-    iAcc[static_cast<size_t>(n)] = ii;
-    qAcc[static_cast<size_t>(n)] = qq;
-    phase += step;
-    if (phase > 6.283185307179586)
-      phase -= 6.283185307179586;
-  }
-
-  auto turn = [](double prevI, double prevQ, double nowI, double nowQ) {
-    const double dot = prevI * nowI + prevQ * nowQ;
-    const double cross = prevI * nowQ - prevQ * nowI;
-    double ang = std::atan2(cross, dot);
-    if (ang < 0.0)
-      ang += 6.283185307179586;
-    return ang;
-  };
-
-  int bestOff = (3 * symbol) / 4;
-  double bestScore = -1.0e300;
-  const int probe = std::min(64, (count - symbol) / symbol);
-  for (int off = 0; off < symbol; ++off) {
-    double score = 0.0;
-    double prevI = 0.0;
-    double prevQ = 0.0;
-    bool have = false;
-    for (int s = 0; s < probe; ++s) {
-      const int c = off + s * symbol;
-      if (c < 0 || c >= count)
-        break;
-      const double nowI = iAcc[static_cast<size_t>(c)];
-      const double nowQ = qAcc[static_cast<size_t>(c)];
-      if (!have) {
-        prevI = nowI;
-        prevQ = nowQ;
-        have = true;
-        continue;
-      }
-      const double ang = turn(prevI, prevQ, nowI, nowQ);
-      const double bins = ang / 1.5707963267948966;
-      const double nearest = std::round(bins);
-      const double amp = std::sqrt(nowI * nowI + nowQ * nowQ);
-      score += amp * (1.0 - std::fabs(bins - nearest));
-      prevI = nowI;
-      prevQ = nowQ;
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      bestOff = off;
-    }
-  }
-
-  QpskViterbi dec;
-  QString bits;
-  double prevI = 0.0;
-  double prevQ = 0.0;
-  bool have = false;
-  for (int c = bestOff; c < count; c += symbol) {
-    const double nowI = iAcc[static_cast<size_t>(c)];
-    const double nowQ = qAcc[static_cast<size_t>(c)];
-    if (!have) {
-      prevI = nowI;
-      prevQ = nowQ;
-      have = true;
-      continue;
-    }
-    const double ang = turn(prevI, prevQ, nowI, nowQ);
-    prevI = nowI;
-    prevQ = nowQ;
-    const int raw = int(std::floor(ang / 1.5707963267948966 + 0.5)) & 3;
-    const int dibit = (4 - raw) & 3;
-    const unsigned char sym0 = (dibit & 1) ? 255 : 0;
-    const unsigned char sym1 = (dibit & 2) ? 0 : 255;
-    const int packed = dec.decode(sym0, sym1);
-    if (packed < 0)
-      continue;
-    for (int mask = 0x80; mask != 0; mask >>= 1)
-      bits.append((packed & mask) ? QLatin1Char('1') : QLatin1Char('0'));
-  }
-  return codesFromBits(bits);
-}
+#include "PskStream.inc"
 
 }  // namespace
 
@@ -396,20 +335,22 @@ PskPlan planPsk(const QString& mode, const QString& text, int centerHz) {
   const int rate = 48000;
   const int symbol = std::max(8, int(std::lround(double(rate) / baud)));
   const int center = std::clamp(centerHz, 200, 3000);
-  // Symbol 0 is unmodulated carrier. The decoder uses it as the phase
-  // reference and does not turn it into a varicode bit. Without it the
-  // first preamble zero is eaten and an odd zero sticks to the character.
-  QString bits(32, QLatin1Char('0'));
+  // The painter's symbol 0 is the phase reference, not a varicode bit.
+  // Each '0' is a reversal (fldigi tx_symbol(0)). Each '1' holds phase
+  // (tx_symbol(2)), which is the unmodulated carrier the far end uses to
+  // drop DCD. Preamble and postamble are both dcdbits long.
+  const int dcd = bpskDcdBits(baud);
+  QString bits(dcd, QLatin1Char('0'));
   plan.echoAt.assign(static_cast<size_t>(text.size()), -1);
   for (int i = 0; i < text.size(); ++i) {
     const ushort u = text.at(i).unicode();
-    if (u > 127)
+    if (u > 255)
       continue;
     plan.echoAt[static_cast<size_t>(i)] = (bits.size() + 1) * symbol;
     bits.append(QLatin1String(codeFor(static_cast<unsigned char>(u))));
     bits.append(QLatin1String("00"));
   }
-  bits.append(QString(16, QLatin1Char('0')));
+  bits.append(QString(dcd, QLatin1Char('1')));
 
   const int count = (bits.size() + 1) * symbol + symbol;
   std::vector<double> acc(static_cast<size_t>(count), 0.0);
@@ -442,98 +383,45 @@ PskPlan planPsk(const QString& mode, const QString& text, int centerHz) {
   return plan;
 }
 
-QString pskDecode(const QString& mode, const float* samples, int count, int sampleRateHz, int centerHz) {
-  if (qpskBaud(mode) > 0.0)
-    return qpskDecode(mode, samples, count, sampleRateHz, centerHz);
-  const double baud = pskBaud(mode);
-  if (!samples || count < 32 || sampleRateHz < 1000 || baud <= 0.0)
+QString pskDecode(const QString& mode, const float* samples, int count, int sampleRateHz,
+                  int centerHz, bool squelchOn, int squelchLevel, bool afcOn) {
+  PskStream rx;
+  if (!rx.configure(mode, sampleRateHz, centerHz))
     return {};
-  const int symbol = std::max(8, int(std::lround(double(sampleRateHz) / baud)));
-  const int center = std::clamp(centerHz, 200, 3000);
-  const double a = 1.0 - std::exp(-2.0 * 3.141592653589793 * baud / double(sampleRateHz));
-  std::vector<double> iAcc(static_cast<size_t>(count));
-  std::vector<double> qAcc(static_cast<size_t>(count));
-  double ii = 0.0;
-  double qq = 0.0;
-  double phase = 0.0;
-  const double step = 2.0 * 3.141592653589793 * double(center) / double(sampleRateHz);
-  for (int n = 0; n < count; ++n) {
-    ii += a * (samples[n] * std::cos(phase) - ii);
-    qq += a * (samples[n] * std::sin(phase) - qq);
-    iAcc[static_cast<size_t>(n)] = ii;
-    qAcc[static_cast<size_t>(n)] = qq;
-    phase += step;
-    if (phase > 6.283185307179586)
-      phase -= 6.283185307179586;
-  }
-
-  int bestOff = symbol / 2;
-  int bestScore = -1;
-  double bestAmp = -1.0;
-  const int probe = std::min(24, (count - symbol) / symbol);
-  for (int off = 0; off < symbol; ++off) {
-    int score = 0;
-    double amp = 0.0;
-    double prevI = 0.0;
-    double prevQ = 0.0;
-    bool have = false;
-    for (int s = 0; s < probe; ++s) {
-      const int c = off + s * symbol;
-      if (c < 0 || c >= count)
-        break;
-      const double iiNow = iAcc[static_cast<size_t>(c)];
-      const double qqNow = qAcc[static_cast<size_t>(c)];
-      amp += iiNow * iiNow + qqNow * qqNow;
-      if (have) {
-        const double dot = prevI * iiNow + prevQ * qqNow;
-        if (dot < 0.0)
-          ++score;
-      }
-      prevI = iiNow;
-      prevQ = qqNow;
-      have = true;
-    }
-    if (score > bestScore || (score == bestScore && amp > bestAmp)) {
-      bestScore = score;
-      bestAmp = amp;
-      bestOff = off;
-    }
-  }
-
-  QString bits;
-  double prevI = 0.0;
-  double prevQ = 0.0;
-  bool have = false;
-  for (int c = bestOff; c < count; c += symbol) {
-    const double iiNow = iAcc[static_cast<size_t>(c)];
-    const double qqNow = qAcc[static_cast<size_t>(c)];
-    if (!have) {
-      prevI = iiNow;
-      prevQ = qqNow;
-      have = true;
-      continue;
-    }
-    const double dot = prevI * iiNow + prevQ * qqNow;
-    bits.append(dot < 0.0 ? QLatin1Char('0') : QLatin1Char('1'));
-    prevI = iiNow;
-    prevQ = qqNow;
-  }
-  return codesFromBits(bits);
+  rx.setSquelch(squelchOn, squelchLevel);
+  rx.afcOn = afcOn;
+  return rx.push(samples, count);
 }
 
 struct PskEngine::Private {
   bool armed = false;
-  bool squelchOn = false;
-  int squelch = 10;
   QString mode = QStringLiteral("PSK31");
   int center = 1500;
-  int rate = 48000;
-  std::vector<float> pending;
-  QString shown;
+  int rate = 0;
+  PskStream rx;
+
+  void retune(int sampleRateHz) {
+    if (rate == sampleRateHz && rx.ready && rx.center == center)
+      return;
+    rate = sampleRateHz;
+    const bool on = rx.squelchOn;
+    const int level = rx.squelch;
+    const bool afc = rx.afcOn;
+    rx.configure(mode, sampleRateHz, center);
+    rx.setSquelch(on, level);
+    rx.afcOn = afc;
+  }
 
   void reset() {
-    pending.clear();
-    shown.clear();
+    const bool on = rx.squelchOn;
+    const int level = rx.squelch;
+    const bool afc = rx.afcOn;
+    if (rate >= 1000)
+      rx.configure(mode, rate, center);
+    else
+      rx.resetState();
+    rx.setSquelch(on, level);
+    rx.afcOn = afc;
   }
 };
 
@@ -558,16 +446,19 @@ void PskEngine::setMode(const QString& mode) {
 }
 
 void PskEngine::setToneHz(int hz) {
-  d_->center = std::clamp(hz, 200, 3000);
+  hz = std::clamp(hz, 200, 3000);
+  if (hz == d_->center && std::abs(d_->rx.tuneHz - double(hz)) < 1.0)
+    return;
+  d_->center = hz;
+  d_->rx.setCenter(d_->center);
 }
 
 void PskEngine::setSquelch(bool on, int level) {
-  if (level < 0)
-    level = 0;
-  if (level > 100)
-    level = 100;
-  d_->squelchOn = on;
-  d_->squelch = level;
+  d_->rx.setSquelch(on, level);
+}
+
+void PskEngine::setAfc(bool on) {
+  d_->rx.afcOn = on;
 }
 
 void PskEngine::clear() {
@@ -578,32 +469,13 @@ void PskEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
   const double baud = pskBaud(d_->mode) > 0.0 ? pskBaud(d_->mode) : qpskBaud(d_->mode);
   if (!d_->armed || !samples || count < 1 || sampleRateHz < 1000 || baud <= 0.0)
     return;
-  if (d_->squelchOn && d_->squelch >= 90)
-    return;
-  d_->rate = sampleRateHz;
-  d_->pending.insert(d_->pending.end(), samples, samples + count);
-  const int symbol = std::max(8, int(std::lround(double(sampleRateHz) / baud)));
-  const int keep = symbol * 80;
-  if (int(d_->pending.size()) < keep)
-    return;
-  const QString text = pskDecode(d_->mode, d_->pending.data(), int(d_->pending.size()), sampleRateHz,
-                                 d_->center);
-  if (int(d_->pending.size()) > keep * 2)
-    d_->pending.erase(d_->pending.begin(), d_->pending.end() - keep);
-  if (text.isEmpty())
-    return;
-  if (d_->shown.isEmpty()) {
+  d_->retune(sampleRateHz);
+  const QString text = d_->rx.push(samples, count);
+  if (!text.isEmpty())
     emit textReady(text);
-    d_->shown = text;
-    return;
+  if (d_->rx.trackHz >= 0) {
+    const int hz = d_->rx.trackHz;
+    d_->rx.trackHz = -1;
+    emit toneTracked(hz);
   }
-  if (text.startsWith(d_->shown)) {
-    const QString extra = text.mid(d_->shown.size());
-    if (!extra.isEmpty())
-      emit textReady(extra);
-    d_->shown = text;
-    return;
-  }
-  // The buffer slid. The new decode overlaps what was already shown.
-  d_->shown = text;
 }

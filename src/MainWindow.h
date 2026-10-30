@@ -123,6 +123,7 @@ private:
   void refreshDecodes();
   void applyChannelWidth();
   void applyHellSquelch();
+  void applyAfc();
   void syncWfHellControls();
   void alignDecodeHeader();
   void alignWsprHeader();

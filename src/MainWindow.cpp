@@ -568,6 +568,23 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         applyHellSquelch();
       });
     }
+    if (auto* afc = statusStrip_->findChild<QPushButton*>(QStringLiteral("afcToggle"))) {
+      connect(afc, &QPushButton::toggled, this, [this](bool on) {
+        QSettings().setValue(QStringLiteral("dx/afcOn"), on);
+        if (auto* button = findChild<QPushButton*>(QStringLiteral("afcToggle")))
+          button->setText(on ? QStringLiteral("On") : QStringLiteral("Off"));
+        applyAfc();
+        syncWfHellControls();
+      });
+    }
+    if (auto* wfAfc = findChild<QPushButton*>(QStringLiteral("wfAfc"))) {
+      connect(wfAfc, &QPushButton::toggled, this, [this](bool on) {
+        if (auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"))) {
+          if (afc->isChecked() != on)
+            afc->setChecked(on);
+        }
+      });
+    }
   }
   applyHellSquelch();
   syncWfHellControls();
@@ -579,6 +596,20 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   psk_ = new PskEngine(this);
   connect(rtty_, &RttyEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   connect(psk_, &PskEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
+  auto followTone = [this](int hz) {
+    if (!waterfall_ || !profile_)
+      return;
+    const QString mode = profile_->digitalMode();
+    if (!rttyMode(mode) && !keyedPsk(mode))
+      return;
+    const auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"));
+    if (!afc || !afc->isChecked() || waterfall_->rxHz() == hz)
+      return;
+    waterfall_->setRxHz(hz);
+  };
+  connect(rtty_, &RttyEngine::toneTracked, this, followTone);
+  connect(psk_, &PskEngine::toneTracked, this, followTone);
+  applyAfc();
   olivia_ = new OliviaEngine(this);
   connect(olivia_, &OliviaEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   mt63_ = new Mt63Engine(this);
@@ -3052,6 +3083,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   refreshTxChrome();
   applyMacroBar();
   syncWfHellControls();
+  applyAfc();
   if (family)
     tuneActiveBand();
   if (wspr)
@@ -3464,32 +3496,57 @@ void MainWindow::applyMacroBar() {
 }
 
 void MainWindow::syncWfHellControls() {
-  const bool hell = profile_ && hellFamily(profile_->digitalMode());
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  const bool hell = hellFamily(mode);
+  const bool track = rttyMode(mode) || keyedPsk(mode);
   const bool sqlOn = [&] {
     const auto* sql = findChild<QPushButton*>(QStringLiteral("squelchToggle"));
     return sql && sql->isChecked();
   }();
+  const bool afcOn = [&] {
+    const auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"));
+    return afc && afc->isChecked();
+  }();
   if (auto* afc = findChild<QPushButton*>(QStringLiteral("wfAfc"))) {
-    afc->setEnabled(false);
-    afc->setChecked(false);
+    const QSignalBlocker block(afc);
+    afc->setEnabled(track);
+    afc->setChecked(track && afcOn);
     afc->setToolTip(hell ? QStringLiteral(
                                "Feld Hell has no AFC switch. Fldigi leaves AFC off. "
                                "This does not key and does not send START.")
-                         : QStringLiteral(
-                               "FT8, FT4, and FT2 have no AFC switch. "
-                               "This does not key and does not send START."));
+                    : track ? QStringLiteral(
+                                  "AFC follows the RTTY or PSK signal and moves this cursor. "
+                                  "This does not key and does not send START.")
+                            : QStringLiteral(
+                                  "FT8, FT4, and FT2 have no AFC switch. "
+                                  "This does not key and does not send START."));
   }
   if (auto* sql = findChild<QPushButton*>(QStringLiteral("wfSql"))) {
     const QSignalBlocker block(sql);
-    sql->setEnabled(hell);
-    sql->setChecked(hell && sqlOn);
+    sql->setEnabled(hell || track);
+    sql->setChecked((hell || track) && sqlOn);
     sql->setToolTip(hell ? QStringLiteral(
                                "Fldigi squelch. On drops a Hell column at or below the level. "
                                "Off prints the tape. This does not key and does not send START.")
-                         : QStringLiteral(
-                               "Squelch is for Feld Hell. This mode has no squelch slider. "
-                               "This does not key and does not send START."));
+                    : track ? QStringLiteral(
+                                  "Squelch for RTTY and PSK. On drops a character at or below the level. "
+                                  "This does not key and does not send START.")
+                            : QStringLiteral(
+                                  "Squelch is for Feld Hell, RTTY, and PSK. This mode has no squelch slider. "
+                                  "This does not key and does not send START."));
   }
+}
+
+void MainWindow::applyAfc() {
+  bool on = false;
+  if (statusStrip_) {
+    if (const auto* afc = statusStrip_->findChild<QPushButton*>(QStringLiteral("afcToggle")))
+      on = afc->isEnabled() && afc->isChecked();
+  }
+  if (rtty_)
+    rtty_->setAfc(on);
+  if (psk_)
+    psk_->setAfc(on);
 }
 
 void MainWindow::arrangeDefault() {
@@ -4038,6 +4095,10 @@ void MainWindow::applyHellSquelch() {
     thor_->setSquelch(on, level);
   if (mt63_)
     mt63_->setSquelch(on, level);
+  if (rtty_)
+    rtty_->setSquelch(on, level);
+  if (psk_)
+    psk_->setSquelch(on, level);
 }
 
 void MainWindow::applyChannelWidth() {

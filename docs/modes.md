@@ -12,9 +12,9 @@ Connect sends `AUDIO_START:0`. The text command START is never sent. CW stays in
 | --- | --- | --- |
 | FT8, FT4, FT2 | one each | MSHV generator. 15 s, 7.5 s, 3.75 s. DIGU. |
 | Hell | Feld Hell, Slow Hell, Feld Hell X5, Feld Hell X9, FSK Hell, FSK Hell-105, Hell 80 | Fldigi column rates. [Hell notes](hell.html). |
-| RTTY | one row, labeled RTTY | 45.45 baud, 170 Hz, 5 bits, 1.5 stop, mark high, reverse off. USOS: a space sends LTRS, then the space. There is no baud or shift submenu. |
-| PSK | PSK31, PSK63, PSK125, PSK250, PSK500, PSK1000 | BPSK. Symbol rates 31.25, 62.5, 125, 250, 500, 1000 baud. A zero reverses the phase. |
-| QPSK | QPSK31, QPSK63, QPSK125, QPSK250, QPSK500 | K=5 convolutional code. One dibit per varicode bit. 8PSK is not on the menu. |
+| RTTY | one row, labeled RTTY | 45.45 baud, 170 Hz, 5 bits, 1.5 stop, mark high, reverse off. USOS: a space sends LTRS, then the space. There is no baud or shift submenu. Squelch gates the print on the signal-to-noise meter. AFC, off until you turn it on, moves the waterfall cursor. |
+| PSK | PSK31, PSK63, PSK125, PSK250, PSK500, PSK1000 | BPSK. Symbol rates 31.25, 62.5, 125, 250, 500, 1000 baud. A zero reverses the phase. The preamble is reversals and the tail is steady carrier, so the other station can open and close DCD. Latin-1 characters above ASCII 127 are sent. Squelch and AFC are the same switches as RTTY. |
+| QPSK | QPSK31, QPSK63, QPSK125, QPSK250, QPSK500 | K=5 convolutional code. One dibit per varicode bit. The phase blend covers the whole symbol. 8PSK is not on the menu. |
 | Olivia | 4/250, 8/250, 8/500, 16/500, 16/1000, 32/1000 | Gray-coded tones. Baud 62.5, 31.25, 62.5, 31.25, 62.5, 31.25. |
 | Contestia | the same six | Same shape as Olivia, Contestia scramble. |
 | MFSK | MFSK4, 8, 11, 16, 22, 31, 32, 64, 64L, 128, 128L | NASA K=7, varicode, diagonal interleaver. The L rows use the long interleaver. |

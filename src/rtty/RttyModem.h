@@ -24,7 +24,8 @@ struct RttyPlan {
 RttyPlan planRtty(const QString& text, int centerHz);
 
 // One-shot decode of a buffer. Used by the live engine and the self-test.
-QString rttyDecode(const float* samples, int count, int sampleRateHz, int centerHz);
+QString rttyDecode(const float* samples, int count, int sampleRateHz, int centerHz,
+                   bool squelchOn = false, int squelchLevel = 10, bool afcOn = false);
 
 class RttyEngine : public QObject {
   Q_OBJECT
@@ -36,11 +37,14 @@ public:
   void setArmed(bool armed);
   void setToneHz(int hz);
   void setSquelch(bool on, int level);
+  void setAfc(bool on);
   void clear();
   void pushAudio(const float* samples, int count, int sampleRateHz);
 
 signals:
   void textReady(const QString& text);
+  // Waterfall cursor, Hz. Emitted only while AFC is on and the tone moved.
+  void toneTracked(int hz);
 
 private:
   struct Private;

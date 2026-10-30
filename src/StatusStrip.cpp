@@ -17,6 +17,7 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTimer>
 
@@ -352,13 +353,26 @@ void StatusStrip::setDigitalMode(const QString& mode) {
 void StatusStrip::applyDecoderControls(const QString& mode) {
   const bool hell = hellFamily(mode);
   const bool ftFamily = sequencedFamily(mode);
+  const bool track = rttyMode(mode) || keyedPsk(mode);
   if (auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"))) {
-    afc->setEnabled(false);
-    afc->setChecked(false);
-    afc->setText(QStringLiteral("Off"));
+    const QSignalBlocker block(afc);
+    afc->setEnabled(track);
+    if (!track) {
+      afc->setChecked(false);
+      afc->setText(QStringLiteral("Off"));
+    } else {
+      const bool saved = QSettings().value(QStringLiteral("dx/afcOn"), false).toBool();
+      afc->setChecked(saved);
+      afc->setText(saved ? QStringLiteral("On") : QStringLiteral("Off"));
+    }
     if (hell)
       afc->setToolTip(QStringLiteral(
           "Feld Hell has no AFC switch. Fldigi leaves AFC off for this mode. "
+          "This does not key and does not send START."));
+    else if (track)
+      afc->setToolTip(QStringLiteral(
+          "AFC follows the RTTY or PSK signal and moves the waterfall cursor. "
+          "Off leaves the cursor where you clicked. "
           "This does not key and does not send START."));
     else if (ftFamily)
       afc->setToolTip(QStringLiteral(
@@ -384,6 +398,21 @@ void StatusStrip::applyDecoderControls(const QString& mode) {
       level->setToolTip(QStringLiteral(
           "Hell squelch level, 0 to 100, same scale as Fldigi. "
           "This does not key and does not send START."));
+    }
+    return;
+  }
+  if (rttyMode(mode) || keyedPsk(mode)) {
+    sql->setEnabled(true);
+    sql->setText(sql->isChecked() ? QStringLiteral("On") : QStringLiteral("Off"));
+    sql->setToolTip(QStringLiteral(
+        "Squelch for RTTY and PSK. On drops a character at or below the level. "
+        "Off prints. This does not key and does not send START."));
+    if (level) {
+      level->setVisible(true);
+      level->setEnabled(true);
+      level->setToolTip(QStringLiteral(
+          "Squelch level, 0 to 100. RTTY uses the signal-to-noise meter. "
+          "PSK uses the quality meter. This does not key and does not send START."));
     }
     return;
   }
