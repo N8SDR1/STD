@@ -201,7 +201,8 @@ private:
   QString stationCall() const;
   QString stationGrid() const;
   void openPskReporterMap() const;
-  void noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz);
+  void noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz,
+                      const QString& dt = QString(), const QString& utc = QString());
   void checkForUpdates(bool manual);
   void onUpdateAvailable(const QString& tag, const QString& url, const QString& body);
   void onNoUpdate();

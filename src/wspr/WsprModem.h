@@ -32,6 +32,17 @@ constexpr int kWsprTxLowHz = 1400;
 constexpr int kWsprTxHighHz = 1600;
 int wsprClampTxHz(int hz);
 
+// "37 dBm (5 W)". The watt figure is the WSJT-X approximation.
+QString wsprPowerLabel(int dbm);
+
+// Receive columns: Time, dB, DT, Frequency, Drift, Call, Locator, Report.
+// Report is the dBm in the WSPR message. Call and locator are split out of it.
+QString wsprActivityHeader();
+QString wsprActivityLine(const QString& time, int snrDb, double dtSec, const QString& freqMhz, int drift,
+                         const QString& message);
+// call keeps angle brackets when the message used a hash. dbm is the report.
+bool wsprSplitMessage(const QString& message, QString* call, QString* grid, int* dbm);
+
 // "CALL GRID POWER" at 48 kHz. One second of silence, then 162 symbols.
 // Empty when the call or the 4-character locator will not pack.
 // toneHz is the centre of the four tones. Callers clamp it with wsprClampTxHz.

@@ -30,7 +30,9 @@ QString js8SuggestedBandName(int bandIndex);
 QString js8SuggestedPlace(int bandIndex);
 
 Js8Plan planJs8(const QString& text, int toneHz);
-QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz);
+// snrDb, when set, receives the frame SNR in a 2500 Hz bandwidth, the
+// same reference WSJT-X and JS8Call print. A clean local frame is positive.
+QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz, int* snrDb = nullptr);
 
 class Js8Engine : public QObject {
   Q_OBJECT
@@ -44,7 +46,7 @@ public:
   void pushAudio(const float* samples, int count, int sampleRateHz);
 
 signals:
-  void textReady(const QString& text);
+  void textReady(const QString& text, int snrDb);
 
 private:
   bool armed_ = false;

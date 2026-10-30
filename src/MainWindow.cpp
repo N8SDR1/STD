@@ -78,6 +78,7 @@
 #include <QTextBrowser>
 #include <QTextCharFormat>
 #include <QTextEdit>
+#include <QTime>
 #include <QTimeZone>
 #include <QPushButton>
 #include <QSettings>
@@ -580,13 +581,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   thor_ = new ThorEngine(this);
   connect(thor_, &ThorEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   js8_ = new Js8Engine(this);
-  connect(js8_, &Js8Engine::textReady, this, [this](const QString& text) {
+  connect(js8_, &Js8Engine::textReady, this, [this](const QString& text, int snrDb) {
     appendRxEcho(text);
-    noteDecodeSpot(QStringLiteral("JS8"), text, 0, waterfall_ ? waterfall_->rxHz() : 1500);
+    noteDecodeSpot(QStringLiteral("JS8"), text, snrDb, waterfall_ ? waterfall_->rxHz() : 1500);
   });
   wspr_ = new WsprEngine(this);
   connect(wspr_, &WsprEngine::spotDecoded, this, [this](const WsprSpot& spot, qint64 periodStartMs) {
-    // WSJT-X WSPR column order: UTC, dB, DT, Freq (MHz), Drift, message.
+    // Time, dB, DT, Frequency, Drift, Call, Locator, Report (the dBm).
     qint64 dial = liveDialHz_;
     if (dial < 100000 && profile_)
       dial = profile_->dialHz();
@@ -595,15 +596,28 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const QString freq = dial >= 100000
                              ? QString::number((double(dial) + spot.audioHz) / 1.0e6, 'f', 6)
                              : QStringLiteral("%1 Hz").arg(spot.audioHz, 0, 'f', 1);
-    const QString line = QStringLiteral("%1 %2 %3 %4 %5  %6\n")
-                             .arg(utc)
-                             .arg(spot.snrDb, 3)
-                             .arg(spot.dtSec, 4, 'f', 1)
-                             .arg(freq, 10)
-                             .arg(spot.drift, 2)
-                             .arg(spot.message);
-    appendRxEcho(line);
-    noteDecodeSpot(QStringLiteral("WSPR"), spot.message, spot.snrDb, int(std::lround(spot.audioHz)));
+    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
+      const QString header = wsprActivityHeader();
+      if (!echo->toPlainText().startsWith(QLatin1String("Time")))
+        echo->setPlainText(header);
+      echo->append(wsprActivityLine(utc, spot.snrDb, spot.dtSec, freq.trimmed(), spot.drift, spot.message));
+    }
+    noteDecodeSpot(QStringLiteral("WSPR"), spot.message, spot.snrDb, int(std::lround(spot.audioHz)),
+                   QString::number(spot.dtSec, 'f', 1), utc);
+    if (qsoLog_) {
+      QString call;
+      QString grid;
+      int dbm = 0;
+      if (wsprSplitMessage(spot.message, &call, &grid, &dbm)) {
+        qint64 base = dial;
+        const qint64 hz = base >= 100000 ? base + qint64(std::llround(spot.audioHz)) : 0;
+        QTime clock = QTime::fromString(utc, QStringLiteral("HHmm"));
+        if (!clock.isValid())
+          clock = QTime::fromString(utc, QStringLiteral("hhmm"));
+        qsoLog_->sendWsprDecode(spot.snrDb, float(spot.dtSec), quint64(std::max<qint64>(0, hz)), spot.drift,
+                                call, grid, dbm, clock);
+      }
+    }
   });
   wefax_ = new WefaxEngine(this);
   connect(wefax_, &WefaxEngine::imageChanged, this, [this] {
@@ -689,7 +703,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
               decodes_.remove(0, decodes_.size() - 499);
             decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
             noteTheirReply(time, db, message);
-            noteDecodeSpot(profile_ ? profile_->digitalMode() : QString(), message, db, freqHz);
+            noteDecodeSpot(profile_ ? profile_->digitalMode() : QString(), message, db, freqHz, dt, time);
             refreshDecodes();
           },
           Qt::QueuedConnection);
@@ -767,6 +781,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
   applyDxOptions();
   spots_ = new PskUploader(this);
+  connect(spots_, &PskUploader::status, this, [this](const QString& text) { setTxStatus(text); });
   updates_ = new UpdateChecker(this);
   connect(updates_, &UpdateChecker::updateAvailable, this, [this](const QString& tag, const QString& url,
                                                                   const QString& body) {
@@ -1183,11 +1198,11 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     power->setFont(interfaceFont(12));
     power->setFocusPolicy(Qt::NoFocus);
     power->setToolTip(QStringLiteral(
-        "Tx power in dBm. The same list as WSJT-X and JTDX. "
-        "Changing it does not key. START is never sent."));
+        "Tx power in dBm, with the approximate RF watts WSJT-X uses. "
+        "37 dBm is about 5 W. Changing it does not key. START is never sent."));
     const int powers[] = {0, 3, 7, 10, 13, 17, 20, 23, 27, 30, 33, 37, 40, 43, 47, 50, 53, 57, 60};
     for (int dbm : powers)
-      power->addItem(QStringLiteral("%1 dBm").arg(dbm), dbm);
+      power->addItem(wsprPowerLabel(dbm), dbm);
     {
       const int saved = QSettings().value(QStringLiteral("wspr/power"), 37).toInt();
       const int index = power->findData(saved);
@@ -1746,7 +1761,18 @@ void MainWindow::openPskReporterMap() const {
   QDesktopServices::openUrl(QUrl(pskReporterMapUrl(stationCall())));
 }
 
-void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz) {
+void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz,
+                                const QString& dt, const QString& utc) {
+  QTime clock = QTime::fromString(utc, QStringLiteral("HHmmss"));
+  if (!clock.isValid())
+    clock = QTime::fromString(utc, QStringLiteral("hhmmss"));
+  if (!clock.isValid())
+    clock = QTime::fromString(utc, QStringLiteral("HHmm"));
+  if (!clock.isValid())
+    clock = QDateTime::currentDateTimeUtc().time();
+  if (qsoLog_ && mode.compare(QLatin1String("WSPR"), Qt::CaseInsensitive) != 0)
+    qsoLog_->sendDecode(pskReporterModeName(mode), db, dt.toFloat(), quint32(std::max(0, audioHz)), message,
+                        clock);
   if (!spots_ || mode.trimmed().isEmpty())
     return;
   QString call;
@@ -1934,8 +1960,11 @@ QWidget* MainWindow::makeReceivePanel() {
       setTxStatus(QStringLiteral("No WEFAX picture yet. Nothing was keyed. START was not sent."));
   });
   connect(clrRx, &QPushButton::clicked, this, [this] {
-    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
+    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
       echo->clear();
+      if (profile_ && wsprMode(profile_->digitalMode()))
+        echo->setPlainText(wsprActivityHeader());
+    }
     if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
       tape->clear();
     if (rtty_)
@@ -2489,6 +2518,7 @@ void MainWindow::buildMenus() {
   logFile->setObjectName(QStringLiteral("logFileDialog"));
   logFile->setToolTip(QStringLiteral(
       "Choose the ADIF file and the WSJT-X UDP or DXKeeper TCP logger. "
+      "When a UDP option is on, live decodes go to that address as GridTracker reads them. "
       "The path is saved. This does not key and does not send START."));
   connect(logFile, &QAction::triggered, this, [this] { openLogDialog(); });
 
@@ -3007,13 +3037,26 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
     echo->setVisible(text || wspr);
     if (wspr) {
+      echo->setLineWrapMode(QTextEdit::NoWrap);
       echo->setPlaceholderText(QStringLiteral(
-          "WSPR spots print here. Call, locator, and dBm. "
+          "Time, dB, DT, Frequency, Drift, Call, Locator, Report. "
+          "Report is the dBm in the message. "
           "Nothing is uploaded until Options → Network enables PSK Reporter."));
       echo->setToolTip(QStringLiteral(
-          "WSPR receive reports. There is no macro bar in this mode. "
-          "This does not key and does not send START."));
+          "WSPR receive columns: time, dB, DT, frequency, drift, call, locator, and the dBm report. "
+          "There is no macro bar in this mode. This does not key and does not send START."));
+      if (!echo->toPlainText().startsWith(QLatin1String("Time"))) {
+        const QString body = echo->toPlainText();
+        echo->setPlainText(wsprActivityHeader() +
+                           (body.isEmpty() ? QString() : QStringLiteral("\n") + body));
+      }
     } else {
+      echo->setLineWrapMode(QTextEdit::WidgetWidth);
+      if (echo->toPlainText().startsWith(QLatin1String("Time"))) {
+        const QString body = echo->toPlainText();
+        const int nl = body.indexOf(QLatin1Char('\n'));
+        echo->setPlainText(nl < 0 ? QString() : body.mid(nl + 1));
+      }
       echo->setPlaceholderText(QStringLiteral(
           "Sent text prints here in red as it goes out."));
       echo->setToolTip(QStringLiteral(
@@ -3289,7 +3332,10 @@ void MainWindow::showGuide() {
        "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Time "
        "Synchronization calibrates the period clock. Macros are a Fldigi .mdf; see Macros. Network "
        "Configuration can upload a PSK Reporter spot after a decode. That upload is off until Enable "
-       "is checked. PSK Reporter map opens the map for the saved callsign. Decode List Options "
+       "is checked. Antenna is the description sent with the spot. The status line says when a "
+       "spot packet is sent or when the send fails. PSK Reporter map opens the map for the saved "
+       "callsign and does not upload. A UDP option under Log Options also sends live decode packets "
+       "for GridTracker. Decode List Options "
        "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
        "decode is on by default. Log options, the ADIF path, the logger addresses, ASeq, TX "
        "confirmation, and Auto RESET QSO are saved. Those options do not key."},
@@ -7053,16 +7099,27 @@ void MainWindow::openNetworkDialog() {
   auto* port = new QSpinBox(&dialog);
   port->setRange(1, 65535);
   port->setValue(settings.value(QStringLiteral("dx/reportPort"), 4739).toInt());
+  auto* antenna = new QLineEdit(settings.value(QStringLiteral("dx/reportAntenna")).toString(), &dialog);
+  antenna->setObjectName(QStringLiteral("reportAntenna"));
+  antenna->setPlaceholderText(QStringLiteral("dipole, vertical, EFHW"));
+  antenna->setMaxLength(64);
+  antenna->setToolTip(QStringLiteral(
+      "Antenna description sent with each PSK Reporter spot, the same field WSJT-X calls Antenna "
+      "Description. This is not a callsign or a locator. Changing it does not key. START is never sent."));
   auto* form = new QFormLayout;
   form->addRow(QStringLiteral("Region"), region);
   form->addRow(QStringLiteral("Server"), host);
   form->addRow(QStringLiteral("UDP port"), port);
+  form->addRow(QStringLiteral("Antenna"), antenna);
   auto* note = new QLabel(
       QStringLiteral("Callsign and locator stay in Options → User. This dialog does not ask for them again. "
                      "A portable suffix such as N8SDR/VE sets Auto to that country; Region 1, 2, or 3 "
                      "overrides it. Enable uploads a spot a few seconds after an FT8, FT4, FT2, JT65, Q65, "
-                     "JS8, or WSPR decode. Leave it off and nothing is uploaded. View spots opens the map. "
-                     "This does not send START and does not key."),
+                     "JS8, or WSPR decode. The spot is the station that transmitted, including a hashed "
+                     "call once it is known. The status line says when the UDP write works or fails. "
+                     "Leave Enable off and nothing is uploaded. View spots opens the map and does not upload. "
+                     "Live decodes also go to the logger UDP address when a UDP option under Log Options is on, "
+                     "the same packets GridTracker reads. This does not send START and does not key."),
       &dialog);
   note->setWordWrap(true);
   auto* map = new QPushButton(QStringLiteral("View spots"), &dialog);
@@ -7091,6 +7148,7 @@ void MainWindow::openNetworkDialog() {
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
+  store.setValue(QStringLiteral("dx/reportAntenna"), antenna->text().trimmed());
   if (profile_) {
     profile_->setRegionOverride(region->currentData().toString());
     profile_->refreshStation();

@@ -5,6 +5,7 @@
 
 #include <QDateTime>
 #include <QHash>
+#include <QList>
 #include <QHostAddress>
 #include <QHostInfo>
 #include <QRandomGenerator>
@@ -148,6 +149,15 @@ QString pskReporterMapUrl(const QString& call) {
       .arg(QString::fromUtf8(QUrl::toPercentEncoding(trimmed)));
 }
 
+QString bareCall(QString token) {
+  token = cleanToken(token);
+  if (token.startsWith(QLatin1Char('<')) && token.endsWith(QLatin1Char('>')) && token.size() >= 3)
+    token = token.mid(1, token.size() - 2);
+  if (token == QLatin1String("...") || token == QLatin1String("..") || token.contains(QLatin1Char('.')))
+    return {};
+  return looksLikeCall(token) ? token : QString();
+}
+
 bool pskSpotFromMessage(const QString& message, QString* call, QString* grid) {
   if (!call || !grid)
     return false;
@@ -155,28 +165,33 @@ bool pskSpotFromMessage(const QString& message, QString* call, QString* grid) {
   grid->clear();
   static const QRegularExpression split(QStringLiteral("\\s+"));
   const QStringList words = message.toUpper().split(split, Qt::SkipEmptyParts);
-  static const QStringList skip{QStringLiteral("CQ"),   QStringLiteral("DE"),   QStringLiteral("QRZ"),
-                                QStringLiteral("DX"),   QStringLiteral("POTA"), QStringLiteral("SOTA"),
-                                QStringLiteral("IOTA"), QStringLiteral("WWFF"), QStringLiteral("BOTA"),
-                                QStringLiteral("QRP"),  QStringLiteral("UP"),   QStringLiteral("TEST"),
-                                QStringLiteral("RRR"),  QStringLiteral("RR73"), QStringLiteral("73")};
-  QString foundCall;
-  QString foundGrid;
-  for (const QString& raw : words) {
-    const QString word = cleanToken(raw);
-    if (word.isEmpty() || skip.contains(word))
+  QStringList calls;
+  QList<int> at;
+  for (int i = 0; i < words.size(); ++i) {
+    const QString found = bareCall(words.at(i));
+    if (found.isEmpty())
       continue;
-    if (foundCall.isEmpty() && looksLikeCall(word)) {
-      foundCall = word;
-      continue;
-    }
-    if (!foundCall.isEmpty() && foundGrid.isEmpty() && looksLikeGrid(word))
-      foundGrid = word;
+    calls.append(found);
+    at.append(i);
   }
-  if (foundCall.isEmpty())
+  if (calls.isEmpty())
     return false;
-  *call = foundCall;
-  *grid = foundGrid;
+  // WSJT-X reports the station that transmitted. On a CQ that is the
+  // call after CQ. On a QSO line the first call is the addressee and
+  // the second call is the sender. One call (WSPR, or a CQ) is the sender.
+  // Angle brackets are a resolved hash: <N8SDR> is N8SDR. <...> is not a call.
+  int index = 0;
+  if (!words.isEmpty() && cleanToken(words.first()) == QLatin1String("CQ"))
+    index = 0;
+  else if (calls.size() >= 2)
+    index = 1;
+  const int wordAt = at.at(index);
+  *call = calls.at(index);
+  if (wordAt + 1 < words.size()) {
+    const QString next = cleanToken(words.at(wordAt + 1));
+    if (looksLikeGrid(next))
+      *grid = next;
+  }
   return true;
 }
 
@@ -256,6 +271,10 @@ void PskUploader::flush() {
   QHostInfo::lookupHost(host, this, [this](const QHostInfo& info) {
     if (qEnvironmentVariableIsSet("STD_SELFTEST") || info.addresses().isEmpty()) {
       batch_.clear();
+      if (!qEnvironmentVariableIsSet("STD_SELFTEST"))
+        emit status(QStringLiteral(
+            "PSK Reporter did not send. The server name did not resolve. Nothing was keyed. "
+            "START was not sent."));
       return;
     }
     lookedUpName_ = pendingHost_;
@@ -267,11 +286,23 @@ void PskUploader::flush() {
 void PskUploader::sendTo(const QHostAddress& address) {
   if (batch_.isEmpty() || address.isNull())
     return;
+  const int count = batch_.size();
+  const QString antenna =
+      QSettings().value(QStringLiteral("dx/reportAntenna")).toString().trimmed().left(64);
   const QByteArray packet = pskReporterDatagram(
-      rxCall_, rxGrid_, QStringLiteral("STD ") + QLatin1String(STD_VERSION), QString(), batch_,
+      rxCall_, rxGrid_, QStringLiteral("STD ") + QLatin1String(STD_VERSION), antenna, batch_,
       quint32(QDateTime::currentSecsSinceEpoch()), ++sequence_, randomId_);
   batch_.clear();
-  if (packet.isEmpty() || !socket_)
+  if (packet.isEmpty() || !socket_) {
+    emit status(QStringLiteral(
+        "PSK Reporter did not send. The spot packet was empty. Nothing was keyed. START was not sent."));
     return;
-  socket_->writeDatagram(packet, address, port_);
+  }
+  const qint64 wrote = socket_->writeDatagram(packet, address, port_);
+  if (wrote != packet.size())
+    emit status(QStringLiteral(
+        "PSK Reporter did not send. The UDP write failed. Nothing was keyed. START was not sent."));
+  else
+    emit status(QStringLiteral("PSK Reporter sent %1 spot(s). Nothing was keyed. START was not sent.")
+                    .arg(count));
 }

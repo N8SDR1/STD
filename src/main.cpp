@@ -1005,11 +1005,14 @@ int shellReady(MainWindow& window) {
     std::vector<float> wave;
     if (!buildTxWave(QStringLiteral("JS8"), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
       return fail("JS8 modulator is missing");
-    const QString back = js8Decode(wave.data(), int(wave.size()), 48000, 1500);
+    int js8Snr = -999;
+    const QString back = js8Decode(wave.data(), int(wave.size()), 48000, 1500, &js8Snr);
     if (!back.contains(QLatin1Char('E'))) {
       qCritical("JS8 decode [%s] samples %d", qPrintable(back), int(wave.size()));
       return fail("JS8 did not decode");
     }
+    if (js8Snr < 10)
+      return fail("JS8 SNR is not measured");
   }
   const auto* js8 = window.findChild<QAction*>(QStringLiteral("modeJs8"));
   if (!js8 || !js8->toolTip().contains(QLatin1String("15")) ||
@@ -1129,8 +1132,22 @@ int shellReady(MainWindow& window) {
     return fail("WSPR is missing");
   const auto* wsprPower = window.findChild<QComboBox*>(QStringLiteral("wsprPower"));
   if (!wsprPower || wsprPower->count() != 19 || wsprPower->findData(37) < 0 ||
-      wsprPower->findData(0) < 0 || wsprPower->findData(60) < 0)
+      wsprPower->findData(0) < 0 || wsprPower->findData(60) < 0 ||
+      !wsprPower->itemText(wsprPower->findData(37)).contains(QLatin1String("5 W")) ||
+      !wsprPowerLabel(37).contains(QLatin1String("5 W")) ||
+      !wsprPowerLabel(0).contains(QLatin1String("1 mW")))
     return fail("WSPR power is missing");
+  const QString wsprHead = wsprActivityHeader();
+  if (!wsprHead.contains(QLatin1String("Time")) || !wsprHead.contains(QLatin1String("dB")) ||
+      !wsprHead.contains(QLatin1String("Frequency")) || !wsprHead.contains(QLatin1String("Drift")) ||
+      !wsprHead.contains(QLatin1String("Call")) || !wsprHead.contains(QLatin1String("Locator")) ||
+      !wsprHead.contains(QLatin1String("Report")))
+    return fail("WSPR column titles are missing");
+  const QString wsprColumns = wsprActivityLine(QStringLiteral("1928"), 2, 0.9, QStringLiteral("7.040045"), 0,
+                                              QStringLiteral("AB8EF EN63 37"));
+  if (!wsprColumns.contains(QLatin1String("AB8EF")) || !wsprColumns.contains(QLatin1String("EN63")) ||
+      !wsprColumns.contains(QLatin1String("1928")) || !wsprColumns.contains(QLatin1String("7.040045")))
+    return fail("WSPR column line is wrong");
   const auto* wsprPct = window.findChild<QSpinBox*>(QStringLiteral("wsprTxPct"));
   if (!wsprPct || wsprPct->minimum() != 0 || wsprPct->maximum() != 100)
     return fail("WSPR Tx Pct is missing");
@@ -1301,11 +1318,19 @@ int shellReady(MainWindow& window) {
       spotCall != QLatin1String("N8SDR") || spotGrid != QLatin1String("EM79"))
     return fail("PSK Reporter missed a CQ");
   if (!pskSpotFromMessage(QStringLiteral("W1AW N8SDR FN31"), &spotCall, &spotGrid) ||
-      spotCall != QLatin1String("W1AW") || spotGrid != QLatin1String("FN31"))
+      spotCall != QLatin1String("N8SDR") || spotGrid != QLatin1String("FN31"))
     return fail("PSK Reporter picked the wrong call");
   if (!pskSpotFromMessage(QStringLiteral("N8SDR EM79 37"), &spotCall, &spotGrid) ||
       spotCall != QLatin1String("N8SDR") || spotGrid != QLatin1String("EM79"))
     return fail("PSK Reporter missed WSPR");
+  if (!pskSpotFromMessage(QStringLiteral("<N8SDR> EM79 37"), &spotCall, &spotGrid) ||
+      spotCall != QLatin1String("N8SDR") || spotGrid != QLatin1String("EM79"))
+    return fail("PSK Reporter missed a hashed call");
+  if (!pskSpotFromMessage(QStringLiteral("W1AW <N8SDR> -12"), &spotCall, &spotGrid) ||
+      spotCall != QLatin1String("N8SDR") || !spotGrid.isEmpty())
+    return fail("PSK Reporter missed a hashed sender");
+  if (pskSpotFromMessage(QStringLiteral("<...>"), &spotCall, &spotGrid))
+    return fail("PSK Reporter invented a hashed call");
   if (pskSpotFromMessage(QStringLiteral("E"), &spotCall, &spotGrid))
     return fail("PSK Reporter invented a call");
   if (pskReporterModeName(QStringLiteral("JT65A")) != QLatin1String("JT65") ||
@@ -1344,6 +1369,20 @@ int shellReady(MainWindow& window) {
                           1, 1, 1)
           .size() != 0)
     return fail("PSK Reporter sent without a callsign");
+  if (!pskReporterDatagram(QStringLiteral("N8SDR"), QStringLiteral("EM79"), QStringLiteral("STD 0.1.0"),
+                           QStringLiteral("dipole"), {spot}, 1700000000, 1, 1)
+           .contains("dipole"))
+    return fail("PSK Reporter dropped the antenna");
+  const QByteArray live = QsoLog::decodeDatagram(QStringLiteral("FT8"), -15, 0.2f, 1200,
+                                                 QStringLiteral("CQ N8SDR EM79"), QTime(19, 30));
+  if (live.size() < 12 || quint8(live.at(0)) != 0xad || quint8(live.at(8)) != 0 || quint8(live.at(11)) != 2 ||
+      !live.contains("CQ N8SDR EM79") || !live.contains("FT8"))
+    return fail("live decode UDP is wrong");
+  const QByteArray wsprUdp = QsoLog::wsprDecodeDatagram(-12, 0.4f, 7040045, 0, QStringLiteral("<AB8EF>"),
+                                                       QStringLiteral("EN63"), 37, QTime(19, 28));
+  if (wsprUdp.size() < 12 || quint8(wsprUdp.at(11)) != 10 || !wsprUdp.contains("AB8EF") ||
+      wsprUdp.contains("<AB8EF>") || !wsprUdp.contains("EN63"))
+    return fail("WSPR decode UDP is wrong");
   const auto* pskLink = window.findChild<QAction*>(QStringLiteral("pskReporterLink"));
   const auto* network = window.findChild<QAction*>(QStringLiteral("networkConfig"));
   if (!pskLink || !pskLink->toolTip().contains(QLatin1String("pskreporter.info")) ||

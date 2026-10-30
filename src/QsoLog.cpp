@@ -5,6 +5,7 @@
 
 #include <QDataStream>
 #include <QDir>
+#include <QTime>
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
@@ -147,6 +148,36 @@ QByteArray QsoLog::heartbeatDatagram(const QString& version) {
   return wsjt(kHeartbeat, version, nullptr, QString());
 }
 
+QByteArray QsoLog::decodeDatagram(const QString& mode, int snr, float deltaTime, quint32 audioHz,
+                                  const QString& message, const QTime& time) {
+  QByteArray packet;
+  QDataStream out(&packet, QIODevice::WriteOnly);
+  out.setVersion(QDataStream::Qt_5_4);
+  out.setByteOrder(QDataStream::BigEndian);
+  const QTime stamp = time.isValid() ? time : QTime(0, 0);
+  out << kMagic << kSchema << quint32(2) << QStringLiteral("STD").toUtf8() << true << stamp
+      << qint32(snr) << deltaTime << audioHz << mode.left(16).toUtf8() << message.toUtf8() << false
+      << false;
+  return packet;
+}
+
+QByteArray QsoLog::wsprDecodeDatagram(int snr, float deltaTime, quint64 freqHz, qint32 drift,
+                                      const QString& call, const QString& grid, qint32 powerDbm,
+                                      const QTime& time) {
+  QByteArray packet;
+  QDataStream out(&packet, QIODevice::WriteOnly);
+  out.setVersion(QDataStream::Qt_5_4);
+  out.setByteOrder(QDataStream::BigEndian);
+  const QTime stamp = time.isValid() ? time : QTime(0, 0);
+  QString bare = call.trimmed().toUpper();
+  if (bare.startsWith(QLatin1Char('<')) && bare.endsWith(QLatin1Char('>')) && bare.size() >= 3)
+    bare = bare.mid(1, bare.size() - 2);
+  out << kMagic << kSchema << quint32(10) << QStringLiteral("STD").toUtf8() << true << stamp
+      << qint32(snr) << deltaTime << freqHz << drift << bare.toUtf8() << grid.trimmed().toUpper().toUtf8()
+      << powerDbm << false;
+  return packet;
+}
+
 void QsoLog::applySettings() {
   QSettings settings;
   path_ = settings.value(QStringLiteral("log/adifPath")).toString().trimmed();
@@ -199,6 +230,20 @@ bool QsoLog::sendTcp(const QByteArray& payload) {
   const bool flushed = wrote == payload.size() && socket.waitForBytesWritten(200);
   socket.disconnectFromHost();
   return flushed;
+}
+
+void QsoLog::sendDecode(const QString& mode, int snr, float deltaTime, quint32 audioHz,
+                        const QString& message, const QTime& time) {
+  if (qEnvironmentVariableIsSet("STD_SELFTEST") || (!udpQso_ && !udpAdif_) || message.trimmed().isEmpty())
+    return;
+  sendUdp(decodeDatagram(mode, snr, deltaTime, audioHz, message, time));
+}
+
+void QsoLog::sendWsprDecode(int snr, float deltaTime, quint64 freqHz, qint32 drift, const QString& call,
+                            const QString& grid, qint32 powerDbm, const QTime& time) {
+  if (qEnvironmentVariableIsSet("STD_SELFTEST") || (!udpQso_ && !udpAdif_) || call.trimmed().isEmpty())
+    return;
+  sendUdp(wsprDecodeDatagram(snr, deltaTime, freqHz, drift, call, grid, powerDbm, time));
 }
 
 void QsoLog::sendHeartbeat() {

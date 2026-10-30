@@ -9,6 +9,7 @@
 #include "DigitalMode.h"
 #include "wspr/WsprMetric.h"
 
+#include <QRegularExpression>
 #include <QCheckBox>
 #include <QColor>
 #include <QDateTime>
@@ -1845,6 +1846,101 @@ void createSchedule(int pctx) {
 }
 
 }  // namespace
+
+QString wsprPowerLabel(int dbm) {
+  const struct {
+    int dbm;
+    const char* watts;
+  } rows[] = {
+      {0, "1 mW"},   {3, "2 mW"},   {7, "5 mW"},    {10, "10 mW"}, {13, "20 mW"}, {17, "50 mW"},
+      {20, "100 mW"}, {23, "200 mW"}, {27, "500 mW"}, {30, "1 W"},   {33, "2 W"},   {37, "5 W"},
+      {40, "10 W"},  {43, "20 W"},  {47, "50 W"},   {50, "100 W"}, {53, "200 W"}, {57, "500 W"},
+      {60, "1 kW"},
+  };
+  for (const auto& row : rows) {
+    if (row.dbm == dbm)
+      return QStringLiteral("%1 dBm (%2)").arg(dbm).arg(QLatin1String(row.watts));
+  }
+  const double watts = std::pow(10.0, (dbm - 30) / 10.0);
+  if (watts >= 1.0)
+    return QStringLiteral("%1 dBm (%2 W)").arg(dbm).arg(watts, 0, 'f', watts >= 10.0 ? 0 : 1);
+  return QStringLiteral("%1 dBm (%2 mW)").arg(dbm).arg(int(std::lround(watts * 1000.0)));
+}
+
+namespace {
+
+QString activityCell(const QString& text, int width) {
+  const QString cut = text.size() > width ? text.left(width) : text;
+  return cut.leftJustified(width, QLatin1Char(' '));
+}
+
+bool activityGrid(const QString& token) {
+  static const QRegularExpression re(QStringLiteral("^[A-R]{2}[0-9]{2}(?:[A-X]{2})?$"));
+  return re.match(token.toUpper()).hasMatch();
+}
+
+}  // namespace
+
+bool wsprSplitMessage(const QString& message, QString* call, QString* grid, int* dbm) {
+  if (call)
+    call->clear();
+  if (grid)
+    grid->clear();
+  if (dbm)
+    *dbm = 0;
+  const QStringList words = message.trimmed().toUpper().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+  if (words.isEmpty())
+    return false;
+  int end = words.size();
+  bool powerOk = false;
+  const int power = words.last().toInt(&powerOk);
+  if (powerOk && power >= 0 && power <= 60) {
+    if (dbm)
+      *dbm = power;
+    --end;
+  }
+  if (end > 0 && activityGrid(words.at(end - 1))) {
+    if (grid)
+      *grid = words.at(end - 1);
+    --end;
+  }
+  if (end <= 0)
+    return false;
+  if (call) {
+    QStringList parts;
+    for (int i = 0; i < end; ++i)
+      parts << words.at(i);
+    *call = parts.join(QLatin1Char(' '));
+  }
+  return true;
+}
+
+QString wsprActivityHeader() {
+  return activityCell(QStringLiteral("Time"), 6) + activityCell(QStringLiteral("dB"), 4) +
+         activityCell(QStringLiteral("DT"), 6) + activityCell(QStringLiteral("Frequency"), 12) +
+         activityCell(QStringLiteral("Drift"), 6) + activityCell(QStringLiteral("Call"), 14) +
+         activityCell(QStringLiteral("Locator"), 8) + activityCell(QStringLiteral("Report"), 6);
+}
+
+QString wsprActivityLine(const QString& time, int snrDb, double dtSec, const QString& freqMhz, int drift,
+                         const QString& message) {
+  QString call;
+  QString grid;
+  int dbm = 0;
+  wsprSplitMessage(message, &call, &grid, &dbm);
+  const bool havePower = message.trimmed().split(QLatin1Char(' '), Qt::SkipEmptyParts).size() >= 2;
+  QString report;
+  if (havePower) {
+    bool ok = false;
+    message.trimmed().split(QLatin1Char(' '), Qt::SkipEmptyParts).last().toInt(&ok);
+    if (ok)
+      report = QString::number(dbm);
+  }
+  return activityCell(time, 6) + activityCell(QString::number(snrDb), 4) +
+         activityCell(QString::number(dtSec, 'f', 1), 6) + activityCell(freqMhz, 12) +
+         activityCell(QString::number(drift), 6) + activityCell(call, 14) + activityCell(grid, 8) +
+         activityCell(report, 6);
+}
 
 std::vector<float> wsprModulate(const QString& message, int toneHz) {
   unsigned char symbols[kSymbols];

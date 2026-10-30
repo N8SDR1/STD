@@ -286,6 +286,48 @@ void writeFrame(const int* tones, int toneHz, std::vector<float>* out) {
   }
 }
 
+double tonePower(const float* samples, int count, int toneHz, int tone) {
+  const double freq = double(toneHz) + tone * kSpacing;
+  const double w = 2.0 * 3.141592653589793 * freq / double(kRate);
+  double re = 0.0;
+  double im = 0.0;
+  for (int n = 0; n < count; n += 8) {
+    re += samples[n] * std::cos(w * n);
+    im += samples[n] * std::sin(w * n);
+  }
+  return re * re + im * im;
+}
+
+// Excess of the chosen tone over the other seven, then referred to
+// 2500 Hz the way FT8 and JS8Call report SNR. One bin is 6.25 Hz.
+int frameSnrDb(const float* samples, int count, int offset, int toneHz) {
+  if (!samples || offset < 0 || offset + kSymbols * kSymbol > count)
+    return -30;
+  double sig = 0.0;
+  double noise = 0.0;
+  for (int i = 0; i < kSymbols; ++i) {
+    const float* symbol = samples + offset + i * kSymbol;
+    int best = 0;
+    double bestMag = -1.0;
+    double rest = 0.0;
+    for (int tone = 0; tone < kTones; ++tone) {
+      const double mag = tonePower(symbol, kSymbol, toneHz, tone);
+      rest += mag;
+      if (mag > bestMag) {
+        bestMag = mag;
+        best = tone;
+      }
+    }
+    sig += bestMag;
+    noise += (rest - bestMag) / double(kTones - 1);
+  }
+  if (sig <= 0.0 || noise <= 1e-12)
+    return 40;
+  const double bin = 10.0 * std::log10(sig / noise);
+  const double snr = bin - 10.0 * std::log10(2500.0 / kSpacing);
+  return int(std::lround(std::clamp(snr, -40.0, 40.0)));
+}
+
 int bestTone(const float* samples, int count, int toneHz) {
   int best = 0;
   double bestMag = -1.0;
@@ -454,12 +496,15 @@ Js8Plan planJs8(const QString& text, int toneHz) {
   return plan;
 }
 
-QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz) {
+QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz, int* snrDb) {
+  if (snrDb)
+    *snrDb = 0;
   if (!samples || count < kSymbols * kSymbol || sampleRateHz != kRate)
     return {};
   const int tone = std::clamp(toneHz, 200, 3000);
   QString text;
   int offset = 0;
+  bool haveSnr = false;
   while (offset + kSymbols * kSymbol <= count) {
     const int found = findOffset(samples + offset, count - offset, tone);
     if (found < 0)
@@ -467,6 +512,10 @@ QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz)
     const QString part = textAt(samples + offset, count - offset, found, tone);
     if (part.isEmpty())
       break;
+    if (!haveSnr && snrDb) {
+      *snrDb = frameSnrDb(samples + offset, count - offset, found, tone);
+      haveSnr = true;
+    }
     text.append(part);
     offset += found + kSymbols * kSymbol;
   }
@@ -501,7 +550,8 @@ void Js8Engine::pushAudio(const float* samples, int count, int sampleRateHz) {
   const int need = 24000 + 79 * 7680;
   if (int(pending_.size()) < need || rate_ != kRate)
     return;
-  const QString text = js8Decode(pending_.data(), int(pending_.size()), kRate, toneHz_);
+  int snr = 0;
+  const QString text = js8Decode(pending_.data(), int(pending_.size()), kRate, toneHz_, &snr);
   if (text.isEmpty()) {
     if (int(pending_.size()) > need + kRate)
       pending_.erase(pending_.begin(), pending_.begin() + kRate);
@@ -509,7 +559,7 @@ void Js8Engine::pushAudio(const float* samples, int count, int sampleRateHz) {
   }
   if (text != last_) {
     last_ = text;
-    emit textReady(text);
+    emit textReady(text, snr);
   }
   pending_.clear();
 }
