@@ -8,11 +8,28 @@
 
 #include <vector>
 
-// Fldigi RTTY on DIGU with Reverse off (rtty.cxx, Dave Freese W1HKJ, GPL-3).
-// Mark is the higher tone, space the lower. The shift is 170 Hz, so each
-// tone sits 85 Hz from the waterfall cursor. 45.45 baud, 5 bits, LSB first,
-// one start bit (space), 1.5 stop bits (mark). US TTY figures. A space
-// sends LTRS and then the space code.
+// Fldigi RTTY on DIGU (rtty.cxx, Dave Freese W1HKJ, GPL-3).
+// Mark is the higher tone unless Reverse is on. The usual amateur pair is
+// 45.45 baud and 170 Hz, so each tone sits 85 Hz from the waterfall cursor.
+// Fldigi lists 45 baud first; this program selects 45.45. Five bits, LSB
+// first, one start bit (space), 1.5 stop bits (mark). US TTY figures unless
+// ITA-2 is on. Shaped keying is on. A space sends LTRS and then the space code.
+
+// Fldigi rtty::SHIFT[]. Custom shift is not on this row.
+inline constexpr double kRttyShifts[] = {23, 85, 160, 170, 182, 200, 240, 350, 425, 850};
+inline constexpr int kRttyShiftCount = int(sizeof(kRttyShifts) / sizeof(kRttyShifts[0]));
+
+// Fldigi rtty::BAUD[]. Index 0 is 45. The selected amateur speed is 45.45.
+inline constexpr double kRttyBauds[] = {45, 45.45, 50, 56, 75, 100, 110, 150, 200, 300};
+inline constexpr int kRttyBaudCount = int(sizeof(kRttyBauds) / sizeof(kRttyBauds[0]));
+
+struct RttyOptions {
+  double baud = 45.45;
+  double shiftHz = 170.0;
+  bool reverse = false;
+  bool ita2 = false;
+  bool shaped = true;
+};
 
 struct RttyPlan {
   std::vector<float> samples;
@@ -21,11 +38,13 @@ struct RttyPlan {
   std::vector<int> echoAt;
 };
 
-RttyPlan planRtty(const QString& text, int centerHz);
+RttyPlan planRtty(const QString& text, int centerHz, const RttyOptions& options = {});
 
 // One-shot decode of a buffer. Used by the live engine and the self-test.
+// shaped is a transmit option and does not change the receiver.
 QString rttyDecode(const float* samples, int count, int sampleRateHz, int centerHz,
-                   bool squelchOn = false, int squelchLevel = 10, bool afcOn = false);
+                   bool squelchOn = false, int squelchLevel = 10, bool afcOn = false,
+                   const RttyOptions& options = {});
 
 class RttyEngine : public QObject {
   Q_OBJECT
@@ -36,6 +55,7 @@ public:
 
   void setArmed(bool armed);
   void setToneHz(int hz);
+  void setOptions(const RttyOptions& options);
   void setSquelch(bool on, int level);
   void setAfc(bool on);
   void clear();

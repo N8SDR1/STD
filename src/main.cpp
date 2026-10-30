@@ -468,6 +468,28 @@ int shellReady(MainWindow& window) {
       !psk->toolTip().contains(QLatin1String("31.25")) ||
       psk->toolTip().contains(QLatin1String("does not key yet")))
     return fail("RTTY or PSK31 is missing");
+  const auto* rttyRow = window.findChild<QWidget*>(QStringLiteral("rttyOptions"));
+  const auto* rttyShift = window.findChild<QComboBox*>(QStringLiteral("rttyShift"));
+  const auto* rttyBaud = window.findChild<QComboBox*>(QStringLiteral("rttyBaud"));
+  const auto* rttyShape = window.findChild<QCheckBox*>(QStringLiteral("rttyShape"));
+  const auto* rttyReverse = window.findChild<QCheckBox*>(QStringLiteral("rttyReverse"));
+  const auto* rttyIta2 = window.findChild<QCheckBox*>(QStringLiteral("rttyIta2"));
+  if (!rttyRow || !rttyRow->isHidden() || !rttyShift || !rttyBaud || !rttyShape || !rttyReverse || !rttyIta2)
+    return fail("RTTY row is missing");
+  if (rttyShift->findText(QStringLiteral("170"), Qt::MatchExactly) < 0 ||
+      rttyShift->findText(QStringLiteral("23"), Qt::MatchExactly) < 0 ||
+      rttyShift->findText(QStringLiteral("850"), Qt::MatchExactly) < 0 ||
+      rttyBaud->findText(QStringLiteral("45.45"), Qt::MatchExactly) < 0 ||
+      rttyBaud->findText(QStringLiteral("45"), Qt::MatchExactly) < 0 ||
+      rttyBaud->findText(QStringLiteral("300"), Qt::MatchExactly) < 0)
+    return fail("RTTY baud or shift list is wrong");
+  if (!rttyShape->toolTip().contains(QLatin1String("does not key")) ||
+      !rttyShape->toolTip().contains(QLatin1String("START")) ||
+      !rttyReverse->toolTip().contains(QLatin1String("does not key")) ||
+      !rttyIta2->toolTip().contains(QLatin1String("START")) ||
+      !rttyShift->toolTip().contains(QLatin1String("does not key")) ||
+      !rttyBaud->toolTip().contains(QLatin1String("45.45")))
+    return fail("RTTY row tooltip is wrong");
   if (!keyboardTextMode(QStringLiteral("Feld Hell")) || !keyboardTextMode(QStringLiteral("RTTY")) ||
       !keyboardTextMode(QStringLiteral("PSK31")) || !keyboardTextMode(QStringLiteral("BPSK63")) ||
       !keyboardTextMode(QStringLiteral("QPSK31")) ||       !keyboardTextMode(QStringLiteral("Olivia 8/250")) ||
@@ -824,7 +846,9 @@ int shellReady(MainWindow& window) {
   };
   std::vector<float> rttyWave;
   std::vector<int> rttyEcho;
-  if (!buildTxWave(QStringLiteral("RTTY"), QStringLiteral("E"), 1500, &rttyWave, &rttyEcho) ||
+  RttyOptions hardRtty;
+  hardRtty.shaped = false;
+  if (!buildTxWave(QStringLiteral("RTTY"), QStringLiteral("E"), 1500, &rttyWave, &rttyEcho, &hardRtty) ||
       rttyWave.size() < 3200 || rttyEcho.empty())
     return fail("RTTY modulator is missing");
   // Two mark bits of idle, then the LTRS start bit, which is space.
@@ -863,6 +887,70 @@ int shellReady(MainWindow& window) {
     if (!tracked.contains(QLatin1Char('E'))) {
       qCritical("RTTY AFC [%s]", qPrintable(tracked));
       return fail("RTTY AFC walked off the signal");
+    }
+  }
+  {
+    std::vector<float> shaped;
+    if (!buildTxWave(QStringLiteral("RTTY"), QStringLiteral("E"), 1500, &shaped, nullptr) ||
+        shaped.size() < 3200)
+      return fail("shaped RTTY is missing");
+    const QString shapedBack = rttyDecode(shaped.data(), int(shaped.size()), 48000, 1500);
+    if (!shapedBack.contains(QLatin1Char('E'))) {
+      qCritical("shaped RTTY [%s]", qPrintable(shapedBack));
+      return fail("shaped RTTY did not decode");
+    }
+    RttyOptions reversed;
+    reversed.shaped = false;
+    reversed.reverse = true;
+    std::vector<float> revWave;
+    if (!buildTxWave(QStringLiteral("RTTY"), QStringLiteral("E"), 1500, &revWave, nullptr, &reversed) ||
+        revWave.size() < 3200)
+      return fail("reversed RTTY is missing");
+    const double revHi = tonePower(revWave, 0, 2000, 1585.0);
+    const double revLo = tonePower(revWave, 0, 2000, 1415.0);
+    if (!(revLo > revHi * 4.0))
+      return fail("reversed RTTY mark is not the lower tone");
+    const double revSpaceHi = tonePower(revWave, 2112, 3100, 1585.0);
+    const double revSpaceLo = tonePower(revWave, 2112, 3100, 1415.0);
+    if (!(revSpaceHi > revSpaceLo * 4.0))
+      return fail("reversed RTTY space is not the higher tone");
+    const QString revBack =
+        rttyDecode(revWave.data(), int(revWave.size()), 48000, 1500, false, 10, false, reversed);
+    if (!revBack.contains(QLatin1Char('E'))) {
+      qCritical("reversed RTTY [%s]", qPrintable(revBack));
+      return fail("reversed RTTY did not decode");
+    }
+    RttyOptions ita2;
+    ita2.shaped = false;
+    ita2.ita2 = true;
+    std::vector<float> plusWave;
+    if (!buildTxWave(QStringLiteral("RTTY"), QStringLiteral("+"), 1500, &plusWave, nullptr, &ita2) ||
+        plusWave.size() < 3200)
+      return fail("ITA2 RTTY is missing");
+    const QString itaBack =
+        rttyDecode(plusWave.data(), int(plusWave.size()), 48000, 1500, false, 10, false, ita2);
+    if (!itaBack.contains(QLatin1Char('+'))) {
+      qCritical("ITA2 [%s]", qPrintable(itaBack));
+      return fail("ITA2 plus did not decode");
+    }
+    const QString usBack = rttyDecode(plusWave.data(), int(plusWave.size()), 48000, 1500);
+    if (!usBack.contains(QLatin1Char('"')) || usBack.contains(QLatin1Char('+'))) {
+      qCritical("US figures [%s]", qPrintable(usBack));
+      return fail("ITA2 plus decoded as US figures");
+    }
+    RttyOptions other;
+    other.shaped = false;
+    other.baud = 75;
+    other.shiftHz = 200;
+    std::vector<float> otherWave;
+    if (!buildTxWave(QStringLiteral("RTTY"), QStringLiteral("E"), 1500, &otherWave, nullptr, &other) ||
+        otherWave.size() < 2000)
+      return fail("75 baud RTTY is missing");
+    const QString otherBack =
+        rttyDecode(otherWave.data(), int(otherWave.size()), 48000, 1500, false, 10, false, other);
+    if (!otherBack.contains(QLatin1Char('E'))) {
+      qCritical("75 baud [%s]", qPrintable(otherBack));
+      return fail("75 baud 200 Hz RTTY did not decode");
     }
   }
   std::vector<float> pskWave;

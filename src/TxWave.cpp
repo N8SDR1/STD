@@ -306,7 +306,7 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
 }  // namespace
 
 bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
-                 std::vector<int>* echoAt) {
+                 std::vector<int>* echoAt, const RttyOptions* rtty) {
   if (!out)
     return false;
   out->clear();
@@ -329,7 +329,7 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
   if (hellFamily(mode))
     return buildHell(mode, text, tone, out, echoAt);
   if (rttyMode(mode)) {
-    const RttyPlan plan = planRtty(text, tone);
+    const RttyPlan plan = planRtty(text, tone, rtty ? *rtty : RttyOptions{});
     if (plan.samples.empty())
       return false;
     *out = plan.samples;

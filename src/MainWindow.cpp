@@ -386,6 +386,44 @@ QString withoutWsprTitleLine(const QString& body) {
   return nl < 0 ? QString() : body.mid(nl + 1);
 }
 
+int comboIndexNear(const QComboBox* box, double value, double tol) {
+  if (!box)
+    return -1;
+  int best = -1;
+  double err = 1.0e9;
+  for (int i = 0; i < box->count(); ++i) {
+    const double delta = std::fabs(box->itemData(i).toDouble() - value);
+    if (delta < err) {
+      err = delta;
+      best = i;
+    }
+  }
+  return err <= tol ? best : -1;
+}
+
+RttyOptions rttyOptionsOf(const QWidget* window) {
+  RttyOptions opt;
+  if (!window)
+    return opt;
+  if (const auto* box = window->findChild<QComboBox*>(QStringLiteral("rttyBaud"))) {
+    const double baud = box->currentData().toDouble();
+    if (baud >= 45.0)
+      opt.baud = baud;
+  }
+  if (const auto* box = window->findChild<QComboBox*>(QStringLiteral("rttyShift"))) {
+    const double shift = box->currentData().toDouble();
+    if (shift >= 23.0)
+      opt.shiftHz = shift;
+  }
+  if (const auto* box = window->findChild<QCheckBox*>(QStringLiteral("rttyShape")))
+    opt.shaped = box->isChecked();
+  if (const auto* box = window->findChild<QCheckBox*>(QStringLiteral("rttyReverse")))
+    opt.reverse = box->isChecked();
+  if (const auto* box = window->findChild<QCheckBox*>(QStringLiteral("rttyIta2")))
+    opt.ita2 = box->isChecked();
+  return opt;
+}
+
 QString formatDial(qint64 hz) {
   if (hz < 0)
     return QString::fromUtf8("—");
@@ -593,6 +631,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       raster->addColumn(column);
   });
   rtty_ = new RttyEngine(this);
+  rtty_->setOptions(rttyOptionsOf(this));
   psk_ = new PskEngine(this);
   connect(rtty_, &RttyEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   connect(psk_, &PskEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
@@ -1149,6 +1188,98 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     js8BandRow->addStretch(1);
     js8Bands->hide();
     layout->addWidget(js8Bands);
+
+    auto* rttyRow = new QWidget(panel);
+    rttyRow->setObjectName(QStringLiteral("rttyOptions"));
+    auto* rttyLayout = new QHBoxLayout(rttyRow);
+    rttyLayout->setContentsMargins(0, 0, 0, 0);
+    rttyLayout->setSpacing(6);
+    auto* shiftLabel = new QLabel(QStringLiteral("Shift"), rttyRow);
+    shiftLabel->setFont(interfaceFont(11));
+    rttyLayout->addWidget(shiftLabel);
+    auto* rttyShift = new QComboBox(rttyRow);
+    rttyShift->setObjectName(QStringLiteral("rttyShift"));
+    rttyShift->setFont(interfaceFont(11));
+    rttyShift->setFocusPolicy(Qt::NoFocus);
+    rttyShift->setToolTip(QStringLiteral(
+        "Fldigi shift list. 170 Hz is the usual amateur shift. Mark and space sit half of this "
+        "either side of the cursor. This does not key. START is never sent."));
+    for (int i = 0; i < kRttyShiftCount; ++i)
+      rttyShift->addItem(QString::number(kRttyShifts[i], 'f', 0), kRttyShifts[i]);
+    rttyLayout->addWidget(rttyShift);
+    auto* baudLabel = new QLabel(QStringLiteral("Baud"), rttyRow);
+    baudLabel->setFont(interfaceFont(11));
+    rttyLayout->addWidget(baudLabel);
+    auto* rttyBaud = new QComboBox(rttyRow);
+    rttyBaud->setObjectName(QStringLiteral("rttyBaud"));
+    rttyBaud->setFont(interfaceFont(11));
+    rttyBaud->setFocusPolicy(Qt::NoFocus);
+    rttyBaud->setToolTip(QStringLiteral(
+        "Fldigi baud list. 45.45 is the usual amateur speed. Fldigi lists 45 first. "
+        "This does not key. START is never sent."));
+    for (int i = 0; i < kRttyBaudCount; ++i) {
+      const double baud = kRttyBauds[i];
+      const QString label = std::fabs(baud - 45.45) < 0.001 ? QStringLiteral("45.45")
+                                                            : QString::number(baud, 'f', 0);
+      rttyBaud->addItem(label, baud);
+    }
+    rttyLayout->addWidget(rttyBaud);
+    auto* rttyShape = new QCheckBox(QStringLiteral("Shape"), rttyRow);
+    rttyShape->setObjectName(QStringLiteral("rttyShape"));
+    rttyShape->setFont(interfaceFont(11));
+    rttyShape->setFocusPolicy(Qt::NoFocus);
+    rttyShape->setToolTip(QStringLiteral(
+        "Shape the transmit signal. On rounds the keying edges, the Fldigi default. "
+        "This does not key. START is never sent."));
+    rttyLayout->addWidget(rttyShape);
+    auto* rttyReverse = new QCheckBox(QStringLiteral("Reverse"), rttyRow);
+    rttyReverse->setObjectName(QStringLiteral("rttyReverse"));
+    rttyReverse->setFont(interfaceFont(11));
+    rttyReverse->setFocusPolicy(Qt::NoFocus);
+    rttyReverse->setToolTip(QStringLiteral(
+        "Swap mark and space. Off keeps mark as the higher tone on DIGU. "
+        "This does not key. START is never sent."));
+    rttyLayout->addWidget(rttyReverse);
+    auto* rttyIta2 = new QCheckBox(QStringLiteral("ITA-2"), rttyRow);
+    rttyIta2->setObjectName(QStringLiteral("rttyIta2"));
+    rttyIta2->setFont(interfaceFont(11));
+    rttyIta2->setFocusPolicy(Qt::NoFocus);
+    rttyIta2->setToolTip(QStringLiteral(
+        "ITA-2 figures. Off keeps the US TTY figures. On swaps the bell and the single quote "
+        "and changes a few other symbols. This does not key. START is never sent."));
+    rttyLayout->addWidget(rttyIta2);
+    rttyLayout->addStretch(1);
+    {
+      QSettings store;
+      const int shiftIndex =
+          comboIndexNear(rttyShift, store.value(QStringLiteral("rtty/shift"), 170.0).toDouble(), 0.6);
+      rttyShift->setCurrentIndex(shiftIndex >= 0 ? shiftIndex : comboIndexNear(rttyShift, 170.0, 0.6));
+      const int baudIndex =
+          comboIndexNear(rttyBaud, store.value(QStringLiteral("rtty/baud"), 45.45).toDouble(), 0.02);
+      rttyBaud->setCurrentIndex(baudIndex >= 0 ? baudIndex : comboIndexNear(rttyBaud, 45.45, 0.02));
+      rttyShape->setChecked(store.value(QStringLiteral("rtty/shaped"), true).toBool());
+      rttyReverse->setChecked(store.value(QStringLiteral("rtty/reverse"), false).toBool());
+      rttyIta2->setChecked(store.value(QStringLiteral("rtty/ita2"), false).toBool());
+    }
+    auto pushRtty = [this] {
+      const RttyOptions opt = rttyOptionsOf(this);
+      QSettings store;
+      store.setValue(QStringLiteral("rtty/shift"), opt.shiftHz);
+      store.setValue(QStringLiteral("rtty/baud"), opt.baud);
+      store.setValue(QStringLiteral("rtty/shaped"), opt.shaped);
+      store.setValue(QStringLiteral("rtty/reverse"), opt.reverse);
+      store.setValue(QStringLiteral("rtty/ita2"), opt.ita2);
+      if (rtty_)
+        rtty_->setOptions(opt);
+      applyChannelWidth();
+    };
+    connect(rttyShift, &QComboBox::currentIndexChanged, this, pushRtty);
+    connect(rttyBaud, &QComboBox::currentIndexChanged, this, pushRtty);
+    connect(rttyShape, &QCheckBox::toggled, this, pushRtty);
+    connect(rttyReverse, &QCheckBox::toggled, this, pushRtty);
+    connect(rttyIta2, &QCheckBox::toggled, this, pushRtty);
+    rttyRow->hide();
+    layout->addWidget(rttyRow);
 
     auto* hellText = new QPlainTextEdit(panel);
     hellText->setObjectName(QStringLiteral("txHell"));
@@ -2690,8 +2821,9 @@ void MainWindow::buildMenus() {
   rttyAction->setCheckable(true);
   rttyAction->setObjectName(QStringLiteral("modeRtty"));
   rttyAction->setToolTip(QStringLiteral(
-      "Fldigi RTTY on DIGU. 45.45 baud, 170 Hz shift. Mark is the higher tone and space is the lower "
-      "tone. TX sends it. START is never sent."));
+      "Fldigi RTTY on DIGU. Mark is the higher tone unless Reverse is on. "
+      "The RTTY row sets shift, baud, shaped keying, Reverse, and ITA-2 figures. "
+      "45.45 baud and 170 Hz are the usual amateur pair. TX sends it. START is never sent."));
   modes->addAction(rttyAction);
   connect(rttyAction, &QAction::triggered, this, [this] { activateDigitalMode(QStringLiteral("RTTY")); });
   auto* pskMenu = modeMenu->addMenu(QStringLiteral("PSK"));
@@ -3029,6 +3161,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     hell_->setArmed(autoMonitor_ && hell);
   }
   if (rtty_) {
+    rtty_->setOptions(rttyOptionsOf(this));
     rtty_->setToneHz(waterfall_ ? waterfall_->rxHz() : 1500);
     rtty_->setArmed(autoMonitor_ && rtty);
   }
@@ -3261,10 +3394,14 @@ void MainWindow::showGuide() {
       {"Keyboard text",
        "RTTY and the BPSK speeds use that same transmit box, receive echo, CLR RX, and CLR TX. "
        "Hell keeps the pixel tape. RTTY and BPSK show the echo. Characters print as the audio goes "
-       "out. RTTY follows Fldigi on DIGU with Reverse off: 45.45 baud, 170 Hz shift, mark the higher "
-       "tone (the cursor plus 85 Hz) and space the lower tone (the cursor minus 85 Hz). The frame "
-       "is one start bit (space), five data bits LSB first, and 1.5 stop bits (mark). A space sends "
-       "LTRS and then the space code. TX sends RTTY. Received text prints in the echo. "
+       "out. RTTY follows Fldigi on DIGU. The row above the transmit box is Shift, Baud, Shape, "
+       "Reverse, and ITA-2, the same controls Fldigi puts on its RTTY transmit and text pages. "
+       "Shape is on, Reverse is off, and ITA-2 is off until you change them. 45.45 baud and 170 Hz "
+       "are selected. Fldigi lists 45 baud first; 45.45 is the usual amateur speed. Mark is the "
+       "higher tone (the cursor plus half the shift) and space is the lower tone, unless Reverse "
+       "is on. The frame is one start bit (space), five data bits LSB first, and 1.5 stop bits "
+       "(mark). A space sends LTRS and then the space code. US TTY figures stay in use until ITA-2 "
+       "is checked. TX sends RTTY. Received text prints in the echo. "
        "Mode → PSK is PSK31, PSK63, PSK125, PSK250, PSK500, and PSK1000. The baud is 31.25, 62.5, "
        "125, 250, 500, or 1000. A zero reverses the phase. Two zeros separate characters. TX sends "
        "those speeds. Mode → Olivia and Mode → Contestia are the Fldigi tone sets 4/250, 8/250, "
@@ -4116,8 +4253,15 @@ void MainWindow::applyChannelWidth() {
     width = q65ChannelHz(mode);
   else if (hellFamily(mode))
     width = 245;
-  else if (rttyMode(mode))
-    width = 200;
+  else if (rttyMode(mode)) {
+    double shift = 170.0;
+    if (const auto* box = findChild<QComboBox*>(QStringLiteral("rttyShift"))) {
+      const double saved = box->currentData().toDouble();
+      if (saved >= 23.0)
+        shift = saved;
+    }
+    width = std::max(50, int(std::lround(shift + 40.0)));
+  }
   else if (keyedPsk(mode)) {
     const double baud = pskBaud(mode) > 0.0 ? pskBaud(mode) : qpskBaud(mode);
     width = std::max(80, int(std::lround(baud * 1.5)));
@@ -5047,7 +5191,9 @@ bool MainWindow::rebuildTxWave() {
   txLastPullMs_ = 0;
   txGuardDeadlineMs_ = 0;
   txPeriodEndMs_ = 0;
-  const bool built = buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_) && !txSamples_.empty();
+  const RttyOptions rtty = rttyOptionsOf(this);
+  const bool built = buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_, rttyMode(mode) ? &rtty : nullptr) &&
+                     !txSamples_.empty();
   txSymbolSamples_ = built ? tonalSamples(txSamples_) : 0;
   return built;
 }
@@ -5057,6 +5203,8 @@ void MainWindow::refreshTxChrome() {
   const bool textMode = keyboardTextMode(mode);
   const bool wspr = wsprMode(mode);
   const bool hell = hellFamily(mode);
+  if (auto* rttyRow = findChild<QWidget*>(QStringLiteral("rttyOptions")))
+    rttyRow->setVisible(rttyMode(mode));
   if (auto* text = findChild<QPlainTextEdit*>(QStringLiteral("txHell"))) {
     text->setVisible(textMode);
     text->setPlaceholderText(
@@ -5688,7 +5836,9 @@ void MainWindow::setUserTx(bool on) {
     return;
   }
   const int tone = waterfall_ ? waterfall_->txHz() : 1500;
-  if (!buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_) || txSamples_.empty()) {
+  const RttyOptions rtty = rttyOptionsOf(this);
+  if (!buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_, rttyMode(mode) ? &rtty : nullptr) ||
+      txSamples_.empty()) {
     txEchoAt_.clear();
     release();
     setTxStatus(QStringLiteral(
@@ -7862,7 +8012,7 @@ Licensed under the <b>GNU General Public License, version 3</b> or any later ver
 <ul>
 <li><b>MSHV</b> (Christo, LZ2HV) — FT8, FT4, and FT2 decoder, periods, and contest messages.</li>
 <li><b>WSJT-X</b> (Joe Taylor, K1JT, GPL-3) and <b>JTDX-improved</b> — WSPR-2, the WSPRnet post, and the PSK Reporter datagram (Edson Pereira, PY2SDR). Tx power, Tx Pct, and band hopping. Not MSHV.</li>
-<li><b>Fldigi</b> (Dave Freese, W1HKJ, GPL-3) — Feld Hell tape, macro files (.mdf), RTTY mark/space (45.45 baud, 170 Hz, mark high on DIGU), BPSK varicode, Olivia and Contestia (Pawel Jalocha's block code), MFSK (NASA K=7, IZ8BLY varicode, diagonal interleaver), DominoEX (18-tone IFK+, FEC off), Thor (K=7, 18-tone IFK+), and WEFAX-576 receive.</li>
+<li><b>Fldigi</b> (Dave Freese, W1HKJ, GPL-3) — Feld Hell tape, macro files (.mdf), RTTY mark/space (45.45 baud, 170 Hz, mark high on DIGU, shaped keying, Reverse, ITA-2, and the Fldigi baud and shift lists), BPSK varicode, Olivia and Contestia (Pawel Jalocha's block code), MFSK (NASA K=7, IZ8BLY varicode, diagonal interleaver), DominoEX (18-tone IFK+, FEC off), Thor (K=7, 18-tone IFK+), and WEFAX-576 receive.</li>
 <li><b>TCIdigi</b> — TCI audio for a Fldigi-style keyboard. STD does not include that tree.</li>
 <li><b>Lyra</b> (N8SDR, GPL-3) — the TCI client this socket follows. CW stays there.</li>
 </ul>

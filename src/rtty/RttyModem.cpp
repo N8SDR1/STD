@@ -3,23 +3,59 @@
 //
 // Mark/space pair from fldigi rtty.cxx (Dave Freese, W1HKJ, GPL-3.0-or-later).
 // On DIGU with Reverse off, symbol 1 is mark at center + shift/2 and symbol 0
-// is space at center - shift/2. The start bit is space. The stop bit is mark.
-// Baudot letters and US TTY figures are the tables in that file.
+// is space at center - shift/2. Reverse flips that symbol before the tone is
+// chosen. The start bit is space. The stop bit is mark. Baudot letters, US
+// TTY figures, and ITA-2 figures are the tables in that file. Shaped keying
+// is SymbolShaper plus two oscillators, also from that file.
 
 #include "RttyModem.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <map>
+#include <mutex>
 #include <vector>
 
 namespace {
 
-constexpr double kBaud = 45.45;
-constexpr double kShift = 170.0;
 constexpr int kRate = 48000;
 constexpr int kLetters = 0;
 constexpr int kFigures = 1;
+constexpr double kPi = 3.141592653589793;
+constexpr double kTwoPi = 6.283185307179586;
+
+double snapList(double asked, const double* list, int count, double fallback, double tol) {
+  double best = fallback;
+  double err = 1.0e9;
+  for (int i = 0; i < count; ++i) {
+    const double delta = std::fabs(list[i] - asked);
+    if (delta < err) {
+      err = delta;
+      best = list[i];
+    }
+  }
+  return err <= tol ? best : fallback;
+}
+
+double snapBaud(double baud) {
+  return snapList(baud, kRttyBauds, kRttyBaudCount, 45.45, 0.02);
+}
+
+double snapShift(double shift) {
+  return snapList(shift, kRttyShifts, kRttyShiftCount, 170.0, 0.6);
+}
+
+int filtLenFor(double baud) {
+  // Fldigi FILTLEN[], same order as BAUD[]. 45 through 110 stay at 512.
+  static const int kLens[] = {512, 512, 512, 512, 512, 512, 512, 256, 128, 64};
+  const double snapped = snapBaud(baud);
+  for (int i = 0; i < kRttyBaudCount; ++i) {
+    if (std::fabs(kRttyBauds[i] - snapped) < 0.02)
+      return kLens[i];
+  }
+  return 512;
+}
 
 const char kLettersTab[32] = {
     '\0', 'E',  '\n', 'A', ' ', 'S', 'I', 'U', '\r', 'D', 'R', 'J', 'N', 'F', 'C', 'K',
@@ -31,18 +67,122 @@ const char kFiguresTab[32] = {
     '5',  '"',  ')',  '2', '#', '6',  '0', '1', '9',  '?', '&', ' ',  '.', '/', ';', ' ',
 };
 
-int bitSamples(int rate) {
-  return std::max(1, int(std::lround(double(rate) / kBaud)));
+// Fldigi ITA2_figures. Indices 5, 9, 11, 17, and 30 differ from the US set.
+const char kIta2Tab[32] = {
+    '\0', '3',  '\n', '-', ' ', '\'', '8', '7', '\r', ' ', '4', '\a', ',', '!', ':', '(',
+    '5',  '+',  ')',  '2', '#', '6',  '0', '1', '9',  '?', '&', ' ',  '.', '/', '=', ' ',
+};
+
+// Fldigi misc.h rcos, alpha 1. Raised-cosine pulse used by SymbolShaper.
+double rttyRcos(double t, double width) {
+  constexpr double alpha = 1.0;
+  if (t == 0.0)
+    return 1.0;
+  const double taT = width / (2.0 * alpha);
+  if (std::fabs(t) == taT)
+    return (alpha / 2.0) * std::sin(kPi / (2.0 * alpha));
+  return (std::sin(kPi * t / width) / (kPi * t / width)) * std::cos(alpha * kPi * t / width) /
+         (1.0 - (t / taT) * (t / taT));
 }
 
-int stopSamples(int rate) {
-  return std::max(1, int(std::lround(1.5 * double(rate) / kBaud)));
-}
+// Fldigi SymbolShaper. Six overlapping sinc integrators. At 48 kHz the table
+// is several thousand samples, so a free integrator is one whose counter has
+// reached the table length. Fldigi's reset uses 1024 because its modem rate
+// is 8 kHz; that value is still inside the table here and would drop the
+// first edge.
+struct SymbolShaper {
+  int tableSize = 1;
+  std::vector<double> sinc;
+  bool state = false;
+  double acc = 0.0;
+  int c0 = 1;
+  int c1 = 1;
+  int c2 = 1;
+  int c3 = 1;
+  int c4 = 1;
+  int c5 = 1;
+  double f0 = 0.0;
+  double f1 = 0.0;
+  double f2 = 0.0;
+  double f3 = 0.0;
+  double f4 = 0.0;
+  double f5 = 0.0;
 
-int tonePair(int center, bool mark) {
-  const int half = int(kShift / 2.0);
-  return mark ? center + half : center - half;
-}
+  void idle() {
+    state = false;
+    acc = 0.0;
+    c0 = c1 = c2 = c3 = c4 = c5 = tableSize;
+    f0 = f1 = f2 = f3 = f4 = f5 = 0.0;
+  }
+
+  void preset(double baud, double sampleRate) {
+    baud = std::max(1.0, baud);
+    sampleRate = std::max(1.0, sampleRate);
+    tableSize = std::max(8, int(std::lround(sampleRate / baud * 5.49)));
+    sinc.assign(static_cast<size_t>(tableSize), 0.0);
+    const int offset = tableSize / 2;
+    const double width = (1.0 / 1.568) * sampleRate / (baud * 2.0);
+    long double sum = 0.0;
+    for (int x = 0; x < tableSize; ++x) {
+      sinc[static_cast<size_t>(x)] = rttyRcos(double(x - offset), width);
+      sum += sinc[static_cast<size_t>(x)];
+    }
+    if (sum != 0.0) {
+      for (double& value : sinc)
+        value *= 1.0 / double(sum);
+    }
+    idle();
+  }
+
+  double update(bool next) {
+    if (state != next) {
+      state = next;
+      const double factor = next ? 1.0 : -1.0;
+      if (c0 >= tableSize) {
+        c0 = 0;
+        f0 = factor;
+      } else if (c1 >= tableSize) {
+        c1 = 0;
+        f1 = factor;
+      } else if (c2 >= tableSize) {
+        c2 = 0;
+        f2 = factor;
+      } else if (c3 >= tableSize) {
+        c3 = 0;
+        f3 = factor;
+      } else if (c4 >= tableSize) {
+        c4 = 0;
+        f4 = factor;
+      } else if (c5 >= tableSize) {
+        c5 = 0;
+        f5 = factor;
+      }
+    }
+    auto step = [&](int& counter, double factor) {
+      if (counter < tableSize)
+        acc += factor * sinc[static_cast<size_t>(counter++)];
+    };
+    step(c0, f0);
+    step(c1, f1);
+    step(c2, f2);
+    step(c3, f3);
+    step(c4, f4);
+    step(c5, f5);
+    return acc / std::sqrt(2.0);
+  }
+};
+
+struct Oscillator {
+  double phase = 0.0;
+  double rate = 48000.0;
+
+  double update(double frequency) {
+    phase += frequency / rate * kTwoPi;
+    if (phase > kTwoPi)
+      phase -= kTwoPi;
+    return std::sin(phase);
+  }
+};
 
 struct Tx {
   std::vector<float> samples;
@@ -50,22 +190,87 @@ struct Tx {
   double phase = 0.0;
   int shift = kLetters;
   int center = 1500;
+  RttyOptions opt;
+  const char* figures = kFiguresTab;
+  double maxamp = 0.0;
+  SymbolShaper shaper1;
+  SymbolShaper shaper2;
+  Oscillator osc1;
+  Oscillator osc2;
+
+  int bitCount() const { return std::max(1, int(std::lround(double(kRate) / opt.baud))); }
+
+  int stopCount() const {
+    return std::max(1, int(std::lround(1.5 * double(kRate) / opt.baud)));
+  }
+
+  void prepare() {
+    opt.baud = snapBaud(opt.baud);
+    opt.shiftHz = snapShift(opt.shiftHz);
+    figures = opt.ita2 ? kIta2Tab : kFiguresTab;
+    if (!opt.shaped)
+      return;
+    // Learn the peak on alternating symbols, then return both shapers to
+    // idle and both oscillators to zero. Fldigi's Preset clears the global
+    // peak; the peak learned here is kept so the first real edge is scaled.
+    shaper1.preset(opt.baud, kRate);
+    shaper2.preset(opt.baud, kRate);
+    osc1.rate = kRate;
+    osc2.rate = kRate;
+    const double hi = double(center) + opt.shiftHz / 2.0;
+    const double lo = double(center) - opt.shiftHz / 2.0;
+    const int span = 3 * bitCount();
+    bool sym = false;
+    for (int j = 0; j < 100; ++j) {
+      sym = !sym;
+      for (int i = 0; i < span; ++i) {
+        const double mark = shaper1.update(sym) * osc1.update(hi);
+        const double space = shaper2.update(!sym) * osc2.update(lo);
+        maxamp = std::max(maxamp, std::fabs(mark + space));
+      }
+    }
+    shaper1.idle();
+    shaper2.idle();
+    osc1.phase = 0.0;
+    osc2.phase = 0.0;
+    if (maxamp < 1.0e-12)
+      maxamp = 1.0;
+  }
 
   void tone(bool mark, int count) {
-    const double step = 2.0 * 3.141592653589793 * double(tonePair(center, mark)) / double(kRate);
+    // Fldigi send_symbol: reverse flips the symbol, then the high tone is
+    // that symbol. Shaped keying keeps the mark oscillator on the high tone
+    // and the space oscillator on the low tone.
+    bool symbol = mark;
+    if (opt.reverse)
+      symbol = !symbol;
+    if (!opt.shaped) {
+      const double hz = symbol ? double(center) + opt.shiftHz / 2.0 : double(center) - opt.shiftHz / 2.0;
+      const double step = kTwoPi * hz / double(kRate);
+      for (int i = 0; i < count; ++i) {
+        samples.push_back(float(0.6 * std::sin(phase)));
+        phase += step;
+        if (phase > kTwoPi)
+          phase -= kTwoPi;
+      }
+      return;
+    }
+    const double hi = double(center) + opt.shiftHz / 2.0;
+    const double lo = double(center) - opt.shiftHz / 2.0;
     for (int i = 0; i < count; ++i) {
-      samples.push_back(float(0.6 * std::sin(phase)));
-      phase += step;
-      if (phase > 6.283185307179586)
-        phase -= 6.283185307179586;
+      const double markAmp = shaper1.update(symbol) * osc1.update(hi);
+      const double spaceAmp = shaper2.update(!symbol) * osc2.update(lo);
+      const double signal = markAmp + spaceAmp;
+      maxamp = std::max(maxamp, std::fabs(signal));
+      samples.push_back(float(0.6 * (maxamp > 0.0 ? signal / maxamp : 0.0)));
     }
   }
 
   void code(int five) {
-    tone(false, bitSamples(kRate));
+    tone(false, bitCount());
     for (int i = 0; i < 5; ++i)
-      tone(((five >> i) & 1) != 0, bitSamples(kRate));
-    tone(true, stopSamples(kRate));
+      tone(((five >> i) & 1) != 0, bitCount());
+    tone(true, stopCount());
   }
 
   void put(int five) {
@@ -77,7 +282,7 @@ struct Tx {
   }
 };
 
-int encodeChar(QChar ch, int* shiftOut) {
+int encodeChar(QChar ch, int* shiftOut, const char* figures) {
   if (ch == QLatin1Char(' ')) {
     *shiftOut = kLetters;
     return 0x04;
@@ -94,8 +299,8 @@ int encodeChar(QChar ch, int* shiftOut) {
   }
   const char fig = ch.unicode() < 128 ? char(ch.unicode()) : 0;
   for (int i = 0; i < 32; ++i) {
-    if (kFiguresTab[i] == fig && kFiguresTab[i] != '\0' && kFiguresTab[i] != ' ' &&
-        kFiguresTab[i] != '\n' && kFiguresTab[i] != '\r') {
+    if (figures[i] == fig && figures[i] != '\0' && figures[i] != ' ' && figures[i] != '\n' &&
+        figures[i] != '\r') {
       *shiftOut = kFigures;
       return i;
     }
@@ -103,7 +308,7 @@ int encodeChar(QChar ch, int* shiftOut) {
   return -1;
 }
 
-QString decodeCode(int code, int* shift) {
+QString decodeCode(int code, int* shift, const char* figures) {
   code &= 0x1F;
   if (code == 0x1F) {
     *shift = kLetters;
@@ -117,7 +322,7 @@ QString decodeCode(int code, int* shift) {
     *shift = kLetters;
     return QStringLiteral(" ");
   }
-  const char glyph = *shift == kFigures ? kFiguresTab[code] : kLettersTab[code];
+  const char glyph = *shift == kFigures ? figures[code] : kLettersTab[code];
   if (glyph == '\0' || glyph == '\a')
     return {};
   return QString(QChar::fromLatin1(glyph));
@@ -132,14 +337,20 @@ double rttyDecay(double average, double input, double weight) {
 // Impulse response of fldigi fftfilt::rtty_filter at 8 kHz, 512 taps.
 // Raised cosine, cutoff scaled by 1.4, the setting with the lowest
 // character error rate at -9 dB S/N.
-const std::vector<double>& rttyTaps() {
-  static const std::vector<double> taps = [] {
-    constexpr int flen = 512;
-    constexpr double baud = 45.45;
-    constexpr double rate = 8000.0;
-    constexpr double pi = 3.141592653589793;
-    const int half = flen / 2;
-    const double f = 1.4 * baud / rate;
+const std::vector<double>& rttyTaps(double baud) {
+  baud = snapBaud(baud);
+  const int flen = filtLenFor(baud);
+  const int key = flen * 100000 + int(std::lround(baud * 100.0));
+  static std::mutex gate;
+  static std::map<int, std::vector<double>> cache;
+  std::lock_guard<std::mutex> lock(gate);
+  const auto found = cache.find(key);
+  if (found != cache.end())
+    return found->second;
+  constexpr double rate = 8000.0;
+  const int half = flen / 2;
+  const double f = 1.4 * baud / rate;
+  auto build = [&]() {
     std::vector<double> hr(flen, 0.0);
     std::vector<double> hi(flen, 0.0);
     for (int i = 0; i < half; ++i) {
@@ -149,17 +360,17 @@ const std::vector<double>& rttyTaps() {
         if (x > 2.0 * f) {
           dht = 0.0;
         } else {
-          dht = std::cos((pi * x) / (f * 4.0));
+          dht = std::cos((kPi * x) / (f * 4.0));
           dht *= dht;
           if (i != 0) {
             const double arg = 2.0 * double(i) * f;
-            const double s = std::sin(pi * arg) / (pi * arg);
+            const double s = std::sin(kPi * arg) / (kPi * arg);
             if (std::fabs(s) > 1e-12)
               dht /= s;
           }
         }
       }
-      const double ang = double(i) * 0.5 * pi;
+      const double ang = double(i) * 0.5 * kPi;
       const double c = std::cos(ang);
       const double sn = std::sin(ang);
       hr[static_cast<size_t>(i)] = dht * c;
@@ -174,14 +385,14 @@ const std::vector<double>& rttyTaps() {
     for (int n = 0; n < flen; ++n) {
       double acc = 0.0;
       for (int k = 0; k < flen; ++k) {
-        const double ang = 2.0 * pi * double(k) * double(n) / double(flen);
+        const double ang = kTwoPi * double(k) * double(n) / double(flen);
         acc += hr[static_cast<size_t>(k)] * std::cos(ang) - hi[static_cast<size_t>(k)] * std::sin(ang);
       }
       h[static_cast<size_t>(n)] = acc / double(flen);
     }
     return h;
-  }();
-  return taps;
+  };
+  return cache.emplace(key, build()).first->second;
 }
 
 struct ToneFir {
@@ -269,16 +480,30 @@ struct Rx {
   int rxData = 0;
   int shift = kLetters;
   int lastChar = 0;
+  double baud = 45.45;
+  double shiftHz = 170.0;
+  bool reverse = false;
+  bool ita2 = false;
+  const char* figures = kFiguresTab;
   std::vector<unsigned char> bitBuf;
 
-  Rx() {
-    symbollen = std::max(8, int(std::lround(8000.0 / kBaud)));
-    const std::vector<double>& taps = rttyTaps();
-    markFir.init(taps);
-    spaceFir.init(taps);
-    noiseFir.init(taps);
-    bitBuf.assign(static_cast<size_t>(symbollen), 1);
+  void setOptions(const RttyOptions& options) {
+    const double nextBaud = snapBaud(options.baud);
+    const double nextShift = snapShift(options.shiftHz);
+    const bool changed = markFir.taps.empty() || std::fabs(baud - nextBaud) > 1.0e-9 ||
+                         std::fabs(shiftHz - nextShift) > 1.0e-6 || reverse != options.reverse ||
+                         ita2 != options.ita2;
+    baud = nextBaud;
+    shiftHz = nextShift;
+    reverse = options.reverse;
+    ita2 = options.ita2;
+    figures = ita2 ? kIta2Tab : kFiguresTab;
+    symbollen = std::max(8, int(std::lround(8000.0 / baud)));
+    if (changed)
+      reset();
   }
+
+  Rx() { setOptions(RttyOptions{}); }
 
   void armDecimator() {
     decimFactor = (rate % 8000 == 0) ? rate / 8000 : 0;
@@ -315,9 +540,10 @@ struct Rx {
 
   void reset() {
     phaseM = phaseS = phaseN = 0.0;
-    markFir.init(rttyTaps());
-    spaceFir.init(rttyTaps());
-    noiseFir.init(rttyTaps());
+    const std::vector<double>& taps = rttyTaps(baud);
+    markFir.init(taps);
+    spaceFir.init(taps);
+    noiseFir.init(taps);
     markEnv = spaceEnv = 0.0;
     markNoise = spaceNoise = 1.0;
     sigTrack = noiseTrack = 1e-8;
@@ -344,8 +570,8 @@ struct Rx {
   }
 
   // fldigi freqerr after a good character. Slow AFC (weight 8). Mark phase
-  // only; Reverse is not on the menu. The cursor moves when the tone crosses
-  // a whole Hz.
+  // only; Reverse flips the bit before it reaches the state machine, not the
+  // mixer. The cursor moves when the tone crosses a whole Hz.
   void trackTone() {
     if (!afcOn || !haveTone)
       return;
@@ -353,8 +579,8 @@ struct Rx {
       return;
     const double real = markZI * markPI + markZQ * markPQ;
     const double imag = markZI * markPQ - markZQ * markPI;
-    double ferr = (2.0 * 3.141592653589793 * 8000.0 / kBaud) * std::atan2(imag, real);
-    if (std::fabs(ferr) > kBaud / 2.0)
+    double ferr = (kTwoPi * 8000.0 / baud) * std::atan2(imag, real);
+    if (std::fabs(ferr) > baud / 2.0)
       ferr = 0.0;
     freqerr = rttyDecay(freqerr, ferr / 8.0, 8.0);
     tuneHz -= freqerr;
@@ -370,7 +596,7 @@ struct Rx {
   }
 
   QString accept(int code) {
-    const QString glyph = decodeCode(code, &shift);
+    const QString glyph = decodeCode(code, &shift, figures);
     if (glyph.isEmpty())
       return {};
     const QChar ch = glyph.at(0);
@@ -466,8 +692,8 @@ struct Rx {
       *q = sample * s;
     };
     double mi = 0, mq = 0, si = 0, sq = 0, ni = 0, nq = 0;
-    mix(phaseM, tuneHz + kShift / 2.0, &mi, &mq);
-    mix(phaseS, tuneHz - kShift / 2.0, &si, &sq);
+    mix(phaseM, tuneHz + shiftHz / 2.0, &mi, &mq);
+    mix(phaseS, tuneHz - shiftHz / 2.0, &si, &sq);
     mix(phaseN, tuneHz, &ni, &nq);
     markFir.run(mi, mq, &mi, &mq);
     spaceFir.run(si, sq, &si, &sq);
@@ -505,7 +731,8 @@ struct Rx {
     markZI = mi;
     markZQ = mq;
     haveTone = true;
-    return onBit(v3 > 0.0);
+    const bool bit = v3 > 0.0;
+    return onBit(reverse ? !bit : bit);
   }
 
   QString push(float sample) {
@@ -546,11 +773,16 @@ struct Rx {
 
 }  // namespace
 
-RttyPlan planRtty(const QString& text, int centerHz) {
+RttyPlan planRtty(const QString& text, int centerHz, const RttyOptions& options) {
   Tx tx;
+  tx.opt = options;
   tx.center = std::clamp(centerHz, 200, 3000);
+  tx.prepare();
   tx.echoAt.assign(static_cast<size_t>(text.size()), -1);
-  tx.tone(true, bitSamples(kRate) * 2);
+  // Shaped keying rises over about three symbols. Hold mark long enough
+  // that the first start bit is a settled edge. Hard FSK keeps two bits,
+  // which is what the tone-power windows measure.
+  tx.tone(true, tx.bitCount() * (tx.opt.shaped ? 6 : 2));
   tx.put(0x1F);
   tx.put(0x1F);
   for (int i = 0; i < text.size(); ++i) {
@@ -565,7 +797,7 @@ RttyPlan planRtty(const QString& text, int centerHz) {
       continue;
     }
     int want = kLetters;
-    const int five = encodeChar(ch, &want);
+    const int five = encodeChar(ch, &want, tx.figures);
     if (five < 0)
       continue;
     if (ch == QLatin1Char(' ')) {
@@ -586,12 +818,13 @@ RttyPlan planRtty(const QString& text, int centerHz) {
 }
 
 QString rttyDecode(const float* samples, int count, int sampleRateHz, int centerHz,
-                   bool squelchOn, int squelchLevel, bool afcOn) {
+                   bool squelchOn, int squelchLevel, bool afcOn, const RttyOptions& options) {
   if (!samples || count < 1 || sampleRateHz < 1000)
     return {};
   Rx rx;
   rx.rate = sampleRateHz;
   rx.center = std::clamp(centerHz, 200, 3000);
+  rx.setOptions(options);
   rx.tuneHz = double(rx.center);
   rx.afcOn = afcOn;
   rx.squelchOn = squelchOn;
@@ -621,6 +854,10 @@ void RttyEngine::setArmed(bool armed) {
     return;
   d_->armed = armed;
   d_->reset();
+}
+
+void RttyEngine::setOptions(const RttyOptions& options) {
+  d_->setOptions(options);
 }
 
 void RttyEngine::setToneHz(int hz) {
