@@ -1192,14 +1192,28 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     auto* rttyRow = new QWidget(panel);
     rttyRow->setObjectName(QStringLiteral("rttyOptions"));
     auto* rttyLayout = new QHBoxLayout(rttyRow);
-    rttyLayout->setContentsMargins(0, 0, 0, 0);
-    rttyLayout->setSpacing(6);
+    rttyLayout->setContentsMargins(0, 2, 0, 2);
+    rttyLayout->setSpacing(10);
+    const QString rttyLabelStyle = QStringLiteral("color: #f7ffff; font-size: 14px;");
+    const QString rttyComboStyle = QStringLiteral(
+        "QComboBox { color: #f7ffff; background: #071018; border: 1px solid #00e5ff; "
+        "border-radius: 4px; padding: 1px 8px; min-height: 24px; font-size: 14px; }"
+        "QComboBox QAbstractItemView { color: #f7ffff; background: #0c141c; "
+        "selection-background-color: #123040; selection-color: #00e5ff; }");
+    const QString rttyCheckStyle = QStringLiteral(
+        "QCheckBox { color: #f7ffff; font-size: 14px; spacing: 8px; }"
+        "QCheckBox::indicator { width: 18px; height: 18px; border: 2px solid #00e5ff; "
+        "border-radius: 4px; background: #071018; }"
+        "QCheckBox::indicator:checked { background: #00e5ff; border: 2px solid #f7ffff; }");
     auto* shiftLabel = new QLabel(QStringLiteral("Shift"), rttyRow);
-    shiftLabel->setFont(interfaceFont(11));
+    shiftLabel->setObjectName(QStringLiteral("rttyShiftLabel"));
+    shiftLabel->setFont(interfaceFont(14));
+    shiftLabel->setStyleSheet(rttyLabelStyle);
     rttyLayout->addWidget(shiftLabel);
     auto* rttyShift = new QComboBox(rttyRow);
     rttyShift->setObjectName(QStringLiteral("rttyShift"));
-    rttyShift->setFont(interfaceFont(11));
+    rttyShift->setFont(interfaceFont(14));
+    rttyShift->setStyleSheet(rttyComboStyle);
     rttyShift->setFocusPolicy(Qt::NoFocus);
     rttyShift->setToolTip(QStringLiteral(
         "Fldigi shift list. 170 Hz is the usual amateur shift. Mark and space sit half of this "
@@ -1208,11 +1222,14 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       rttyShift->addItem(QString::number(kRttyShifts[i], 'f', 0), kRttyShifts[i]);
     rttyLayout->addWidget(rttyShift);
     auto* baudLabel = new QLabel(QStringLiteral("Baud"), rttyRow);
-    baudLabel->setFont(interfaceFont(11));
+    baudLabel->setObjectName(QStringLiteral("rttyBaudLabel"));
+    baudLabel->setFont(interfaceFont(14));
+    baudLabel->setStyleSheet(rttyLabelStyle);
     rttyLayout->addWidget(baudLabel);
     auto* rttyBaud = new QComboBox(rttyRow);
     rttyBaud->setObjectName(QStringLiteral("rttyBaud"));
-    rttyBaud->setFont(interfaceFont(11));
+    rttyBaud->setFont(interfaceFont(14));
+    rttyBaud->setStyleSheet(rttyComboStyle);
     rttyBaud->setFocusPolicy(Qt::NoFocus);
     rttyBaud->setToolTip(QStringLiteral(
         "Fldigi baud list. 45.45 is the usual amateur speed. Fldigi lists 45 first. "
@@ -1226,7 +1243,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     rttyLayout->addWidget(rttyBaud);
     auto* rttyShape = new QCheckBox(QStringLiteral("Shape"), rttyRow);
     rttyShape->setObjectName(QStringLiteral("rttyShape"));
-    rttyShape->setFont(interfaceFont(11));
+    rttyShape->setFont(interfaceFont(14));
+    rttyShape->setStyleSheet(rttyCheckStyle);
     rttyShape->setFocusPolicy(Qt::NoFocus);
     rttyShape->setToolTip(QStringLiteral(
         "Shape the transmit signal. On rounds the keying edges, the Fldigi default. "
@@ -1234,7 +1252,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     rttyLayout->addWidget(rttyShape);
     auto* rttyReverse = new QCheckBox(QStringLiteral("Reverse"), rttyRow);
     rttyReverse->setObjectName(QStringLiteral("rttyReverse"));
-    rttyReverse->setFont(interfaceFont(11));
+    rttyReverse->setFont(interfaceFont(14));
+    rttyReverse->setStyleSheet(rttyCheckStyle);
     rttyReverse->setFocusPolicy(Qt::NoFocus);
     rttyReverse->setToolTip(QStringLiteral(
         "Swap mark and space. Off keeps mark as the higher tone on DIGU. "
@@ -1242,7 +1261,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     rttyLayout->addWidget(rttyReverse);
     auto* rttyIta2 = new QCheckBox(QStringLiteral("ITA-2"), rttyRow);
     rttyIta2->setObjectName(QStringLiteral("rttyIta2"));
-    rttyIta2->setFont(interfaceFont(11));
+    rttyIta2->setFont(interfaceFont(14));
+    rttyIta2->setStyleSheet(rttyCheckStyle);
     rttyIta2->setFocusPolicy(Qt::NoFocus);
     rttyIta2->setToolTip(QStringLiteral(
         "ITA-2 figures. Off keeps the US TTY figures. On swaps the bell and the single quote "

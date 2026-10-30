@@ -507,6 +507,7 @@ void ModeProfile::setDigitalMode(const QString& mode) {
   refreshBands();
   const bool hell = hellFamily(mode_);
   const bool keyboard = keyboardTextMode(mode_);
+  const bool rtty = rttyMode(mode_);
   const bool js8 = mode_.compare(QLatin1String("JS8"), Qt::CaseInsensitive) == 0;
   const bool keys = rttyMode(mode_) || keyedPsk(mode_) ||
                     oliviaBandwidthHz(mode_) > 0 || mfskBandwidthHz(mode_) > 0 ||
@@ -519,6 +520,9 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     label->setText(!keyboard || hell ? QStringLiteral(
                                            "Keyboard modes keep their own controls. None are loaded yet.")
                     : js8       ? js8Hint
+                    : rtty      ? QStringLiteral(
+                                      "RTTY uses the transmit box and the receive echo. "
+                                      "CLR RX and CLR TX clear those. TX sends it.")
                     : keys      ? QStringLiteral("%1 uses the transmit box and the receive echo. "
                                                  "CLR RX and CLR TX clear those. TX sends it. "
                                                  "START is never sent.")
