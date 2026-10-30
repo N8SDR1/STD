@@ -32,6 +32,7 @@ class WefaxEngine;
 class Js8Engine;
 class WsprEngine;
 class PskUploader;
+class WsprNetUploader;
 class UpdateChecker;
 class ModeProfile;
 class QAction;
@@ -202,6 +203,7 @@ private:
   QString stationCall() const;
   QString stationGrid() const;
   void openPskReporterMap() const;
+  void openWsprnetReports() const;
   void noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz,
                       const QString& dt = QString(), const QString& utc = QString());
   void checkForUpdates(bool manual);
@@ -352,6 +354,7 @@ private:
   int wsprHopMark_ = -1;
   bool wsprHopTune_ = false;
   PskUploader* spots_ = nullptr;
+  WsprNetUploader* wsprnet_ = nullptr;
   UpdateChecker* updates_ = nullptr;
   QAction* updateAction_ = nullptr;
   QString pendingUpdateUrl_;

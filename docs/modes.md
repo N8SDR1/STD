@@ -22,7 +22,7 @@ Connect sends `AUDIO_START:0`. The text command START is never sent. CW stays in
 | Thor | 4, 5, 8, 11, 16, 22, 25x4, 50x1, 50x2, 100 | Slow speeds are NASA K=7. 25x4, 50x1, 50x2, and 100 are IEEE K=15. 18-tone incremental keying. |
 | MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L | 64 carriers, Walsh code, short or long interleave. Centered on the cursor. |
 | JS8 | one row, labeled JS8 | JS8Call-improved Normal. 15 s, 50 Hz, JS8 Costas. The transmit box is the payload. Band buttons QSY to the suggested calling dials, 160 m through 6 m. 2 m is in that guide and is not on the row. |
-| WSPR | one row, labeled WSPR | WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Band buttons QSY to the WSPR dials. Tx power, Tx Pct, Band Hopping. No macro bar. Locator is Options → User. Receive titles stay above the scrolling rows: Time, dB, DT, Frequency, Drift, Call, Locator, Report. DT is the time offset. Report is the dBm in the message. |
+| WSPR | one row, labeled WSPR | WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Band buttons QSY to the WSPR dials. Tx power, Tx Pct, Band Hopping. No macro bar. Locator is Options → User. Receive titles stay above the scrolling rows: Time, dB, DT, Frequency, Drift, Call, Locator, Report. DT is the time offset. Report is the dBm in the message. Options → Network can post each heard station to WSPRnet. That post is off until Enable WSPRnet is checked. WSPRnet does not ask for a password. The reports page lists stations this callsign reported. |
 
 TX or Tune is what sends `trx`. An empty line does not key.
 

@@ -119,6 +119,8 @@ qt_add_executable(std
   src/wspr/WsprModem.h
   src/spot/PskReporter.cpp
   src/spot/PskReporter.h
+  src/spot/WsprNet.cpp
+  src/spot/WsprNet.h
   src/UpdateChecker.cpp
   src/UpdateChecker.h
   src/mt63/fldigi/dsp.cxx

@@ -19,6 +19,7 @@
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
 #include "spot/PskReporter.h"
+#include "spot/WsprNet.h"
 #include "UpdateChecker.h"
 #include "ModeProfile.h"
 #include "QsoLog.h"
@@ -613,6 +614,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     }
     noteDecodeSpot(QStringLiteral("WSPR"), spot.message, spot.snrDb, int(std::lround(spot.audioHz)),
                    QString::number(spot.dtSec, 'f', 1), utc);
+    if (wsprnet_ && dial >= 100000) {
+      const QString date =
+          QDateTime::fromMSecsSinceEpoch(periodStartMs, QTimeZone::utc()).toString(QStringLiteral("yyMMdd"));
+      wsprnet_->note(stationCall(), stationGrid(), dial, spot.audioHz, date, utc, spot.snrDb, spot.dtSec,
+                     spot.drift, spot.message);
+    }
     if (qsoLog_) {
       QString call;
       QString grid;
@@ -791,6 +798,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   applyDxOptions();
   spots_ = new PskUploader(this);
   connect(spots_, &PskUploader::status, this, [this](const QString& text) { setTxStatus(text); });
+  wsprnet_ = new WsprNetUploader(this);
+  connect(wsprnet_, &WsprNetUploader::status, this, [this](const QString& text) { setTxStatus(text); });
   updates_ = new UpdateChecker(this);
   connect(updates_, &UpdateChecker::updateAvailable, this, [this](const QString& tag, const QString& url,
                                                                   const QString& body) {
@@ -1770,6 +1779,10 @@ void MainWindow::openPskReporterMap() const {
   QDesktopServices::openUrl(QUrl(pskReporterMapUrl(stationCall())));
 }
 
+void MainWindow::openWsprnetReports() const {
+  QDesktopServices::openUrl(QUrl(wsprnetReportsUrl(stationCall())));
+}
+
 void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz,
                                 const QString& dt, const QString& utc) {
   QTime clock = QTime::fromString(utc, QStringLiteral("HHmmss"));
@@ -2348,7 +2361,8 @@ void MainWindow::buildMenus() {
   auto* networkConfig = optionsMenu->addAction(QStringLiteral("Network Configuration"));
   networkConfig->setObjectName(QStringLiteral("networkConfig"));
   networkConfig->setToolTip(QStringLiteral(
-      "PSK Reporter. Upload stays off until Enable is checked. Does not key and does not send START."));
+      "PSK Reporter and WSPRnet. Each upload stays off until its Enable is checked. "
+      "WSPRnet does not ask for a password. Does not key and does not send START."));
   connect(networkConfig, &QAction::triggered, this, [this] { openNetworkDialog(); });
 
   auto* pskMap = optionsMenu->addAction(QStringLiteral("PSK Reporter map"));
@@ -2357,6 +2371,13 @@ void MainWindow::buildMenus() {
       "Opens pskreporter.info for the callsign saved under Options → User. Does not upload, does not "
       "key, and does not send START."));
   connect(pskMap, &QAction::triggered, this, [this] { openPskReporterMap(); });
+
+  auto* wsprReports = optionsMenu->addAction(QStringLiteral("WSPRnet reports"));
+  wsprReports->setObjectName(QStringLiteral("wsprnetReports"));
+  wsprReports->setToolTip(QStringLiteral(
+      "Opens wsprnet.org for stations reported by the callsign saved under Options → User. "
+      "WSPRnet does not ask for a password. Does not upload, does not key, and does not send START."));
+  connect(wsprReports, &QAction::triggered, this, [this] { openWsprnetReports(); });
 
   auto graphicsLabel = [](const QString& key) {
     if (key == QLatin1String("d3d11"))
@@ -3065,7 +3086,7 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
       echo->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
       echo->setPlaceholderText(QStringLiteral(
           "Decodes appear under the titles. Report is the dBm in the message. "
-          "Nothing is uploaded until Options → Network enables PSK Reporter."));
+          "WSPRnet and PSK Reporter stay off until Enable is checked under Options → Network."));
       echo->setToolTip(QStringLiteral(
           "WSPR rows: time, dB, DT, frequency, drift, call, locator, and the dBm report. "
           "The titles stay above this list. There is no macro bar in this mode. "
@@ -3238,6 +3259,8 @@ void MainWindow::showGuide() {
        "and Band Hopping. The locator is the one in Options → User. TX sends that message. "
        "Receive titles Time, dB, DT, Frequency, Drift, Call, Locator, and Report stay on screen "
        "while the rows scroll. DT is the time offset. Report is the dBm the other station sent. "
+       "Options → Network can post those heard stations to WSPRnet. That post is off until Enable "
+       "WSPRnet is checked. There is no password. The callsign and locator stay in Options → User. "
        "A macro copies into the transmit box on the keyboard modes. WSPR has no macro bar. "
        "TX macro also presses TX when it is on. Hell, RTTY, BPSK, QPSK, "
        "Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
@@ -3356,7 +3379,11 @@ void MainWindow::showGuide() {
        "Configuration can upload a PSK Reporter spot after a decode. That upload is off until Enable "
        "is checked. Antenna is the description sent with the spot. The status line says when a "
        "spot packet is sent or when the send fails. PSK Reporter map opens the map for the saved "
-       "callsign and does not upload. A UDP option under Log Options also sends live decode packets "
+       "callsign and does not upload. Enable WSPRnet, in that same dialog, posts each WSPR station "
+       "STD decodes. It does not post your own transmission. WSPRnet does not ask for a password or "
+       "a key. WSPRnet reports opens the page of stations reported by the callsign saved under "
+       "Options → User. Both stay "
+       "off until their Enable line is checked. A UDP option under Log Options also sends live decode packets "
        "for GridTracker. Decode List Options "
        "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
        "decode is on by default. Log options, the ADIF path, the logger addresses, ASeq, TX "
@@ -7166,16 +7193,36 @@ void MainWindow::openNetworkDialog() {
                      "the same packets GridTracker reads. This does not send START and does not key."),
       &dialog);
   note->setWordWrap(true);
+  auto* wsprEnable = new QCheckBox(QStringLiteral("Enable WSPRnet spots"), &dialog);
+  wsprEnable->setObjectName(QStringLiteral("wsprnetEnable"));
+  wsprEnable->setChecked(settings.value(QStringLiteral("dx/wsprnetEnabled"), false).toBool());
+  wsprEnable->setToolTip(QStringLiteral(
+      "Post each WSPR station STD decodes to wsprnet.org. Off until checked. "
+      "WSPRnet does not ask for a password or a key. Does not key. START is never sent."));
+  auto* wsprNote = new QLabel(
+      QStringLiteral("WSPRnet posts the station STD heard, not your own transmission. "
+                     "There is no password and no key. The receiver callsign and locator are the ones "
+                     "in Options → User. View reports opens the page of stations reported by that callsign. "
+                     "Leave Enable off and nothing is posted. This does not send START and does not key."),
+      &dialog);
+  wsprNote->setWordWrap(true);
   auto* map = new QPushButton(QStringLiteral("View spots"), &dialog);
   map->setObjectName(QStringLiteral("pskReporterMap"));
   map->setToolTip(QStringLiteral(
       "Opens pskreporter.info for the callsign in Options → User. Does not upload, does not key, and "
       "does not send START."));
   connect(map, &QPushButton::clicked, this, [this] { openPskReporterMap(); });
+  auto* reports = new QPushButton(QStringLiteral("View reports"), &dialog);
+  reports->setObjectName(QStringLiteral("wsprnetView"));
+  reports->setToolTip(QStringLiteral(
+      "Opens wsprnet.org for stations reported by the callsign in Options → User. "
+      "Does not upload, does not key, and does not send START."));
+  connect(reports, &QPushButton::clicked, this, [this] { openWsprnetReports(); });
   auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
   auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
   auto* buttons = new QHBoxLayout;
   buttons->addWidget(map);
+  buttons->addWidget(reports);
   buttons->addStretch(1);
   buttons->addWidget(ok);
   buttons->addWidget(cancel);
@@ -7183,6 +7230,8 @@ void MainWindow::openNetworkDialog() {
   layout->addWidget(enable);
   layout->addLayout(form);
   layout->addWidget(note);
+  layout->addWidget(wsprEnable);
+  layout->addWidget(wsprNote);
   layout->addLayout(buttons);
   connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
   connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -7190,6 +7239,7 @@ void MainWindow::openNetworkDialog() {
     return;
   QSettings store;
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
+  store.setValue(QStringLiteral("dx/wsprnetEnabled"), wsprEnable->isChecked());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
   store.setValue(QStringLiteral("dx/reportAntenna"), antenna->text().trimmed());
@@ -7723,7 +7773,7 @@ Licensed under the <b>GNU General Public License, version 3</b> or any later ver
 <p><b>Sources and references.</b> These projects were read for conventions. Each stays under its own license.</p>
 <ul>
 <li><b>MSHV</b> (Christo, LZ2HV) — FT8, FT4, and FT2 decoder, periods, and contest messages.</li>
-<li><b>WSJT-X</b> (Joe Taylor, K1JT, GPL-3) and <b>JTDX-improved</b> — WSPR-2 and the PSK Reporter datagram (Edson Pereira, PY2SDR). Tx power, Tx Pct, and band hopping. Not MSHV.</li>
+<li><b>WSJT-X</b> (Joe Taylor, K1JT, GPL-3) and <b>JTDX-improved</b> — WSPR-2, the WSPRnet post, and the PSK Reporter datagram (Edson Pereira, PY2SDR). Tx power, Tx Pct, and band hopping. Not MSHV.</li>
 <li><b>Fldigi</b> (Dave Freese, W1HKJ, GPL-3) — Feld Hell tape, macro files (.mdf), RTTY mark/space (45.45 baud, 170 Hz, mark high on DIGU), BPSK varicode, Olivia and Contestia (Pawel Jalocha's block code), MFSK (NASA K=7, IZ8BLY varicode, diagonal interleaver), DominoEX (18-tone IFK+, FEC off), Thor (K=7, 18-tone IFK+), and WEFAX-576 receive.</li>
 <li><b>TCIdigi</b> — TCI audio for a Fldigi-style keyboard. STD does not include that tree.</li>
 <li><b>Lyra</b> (N8SDR, GPL-3) — the TCI client this socket follows. CW stays there.</li>

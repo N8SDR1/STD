@@ -23,6 +23,7 @@
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
 #include "spot/PskReporter.h"
+#include "spot/WsprNet.h"
 #include "UpdateChecker.h"
 #include "WaterfallGpu.h"
 #include "WaterfallWidget.h"
@@ -1398,8 +1399,63 @@ int shellReady(MainWindow& window) {
     return fail("PSK Reporter still says spots are not sent");
   if (window.findChild<QLineEdit*>(QStringLiteral("pskCall")) ||
       window.findChild<QLineEdit*>(QStringLiteral("reportCall")) ||
-      window.findChild<QLineEdit*>(QStringLiteral("wsprCall")))
+      window.findChild<QLineEdit*>(QStringLiteral("wsprCall")) ||
+      window.findChild<QLineEdit*>(QStringLiteral("wsprnetCall")) ||
+      window.findChild<QLineEdit*>(QStringLiteral("wsprnetGrid")))
     return fail("a second callsign field was added");
+  QString postedCall;
+  const QByteArray wsprBody = wsprnetFormBody(
+      QStringLiteral("n8sdr"), QStringLiteral("em79rj"), 7038600, 1490.0, QStringLiteral("261030"),
+      QStringLiteral("1928"), -12, 0.4, 1, QStringLiteral("<AB8EF> EN63 37"), QStringLiteral("STD 0.1.0"),
+      &postedCall);
+  if (postedCall != QLatin1String("AB8EF") || !wsprBody.contains("function=wspr") ||
+      !wsprBody.contains("rcall=N8SDR") || !wsprBody.contains("rgrid=EM79RJ") ||
+      !wsprBody.contains("rqrg=7.040100") || !wsprBody.contains("tqrg=7.040090") ||
+      !wsprBody.contains("tcall=AB8EF") || wsprBody.contains("<AB8EF>") ||
+      !wsprBody.contains("tgrid=EN63") || !wsprBody.contains("sig=-12") ||
+      !wsprBody.contains("dt=0.4") || !wsprBody.contains("drift=1") || !wsprBody.contains("dbm=37") ||
+      !wsprBody.contains("date=261030") || !wsprBody.contains("time=1928") ||
+      !wsprBody.contains("mode=2") || !wsprBody.contains("version=STD"))
+    return fail("WSPRnet spot is wrong");
+  if (!wsprnetFormBody(QStringLiteral("N8SDR"), QStringLiteral("EM79"), 7038600, 1500.0,
+                       QStringLiteral("261030"), QStringLiteral("1928"), -10, 0.1, 0,
+                       QStringLiteral("N8SDR EM79 37"), QStringLiteral("STD 0.1.0"), nullptr)
+           .isEmpty())
+    return fail("WSPRnet posted the operator");
+  if (!wsprnetFormBody(QStringLiteral("N8SDR"), QStringLiteral("EM79"), 7038600, 1500.0,
+                       QStringLiteral("261030"), QStringLiteral("1928"), -10, 0.1, 0,
+                       QStringLiteral("<...> EM79 37"), QStringLiteral("STD 0.1.0"), nullptr)
+           .isEmpty())
+    return fail("WSPRnet invented a hashed call");
+  if (!wsprnetFormBody(QString(), QStringLiteral("EM79"), 7038600, 1500.0, QStringLiteral("261030"),
+                       QStringLiteral("1928"), -10, 0.1, 0, QStringLiteral("W1AW FN31 37"),
+                       QStringLiteral("STD 0.1.0"), nullptr)
+           .isEmpty() ||
+      !wsprnetFormBody(QStringLiteral("N8SDR"), QString(), 7038600, 1500.0, QStringLiteral("261030"),
+                       QStringLiteral("1928"), -10, 0.1, 0, QStringLiteral("W1AW FN31 37"),
+                       QStringLiteral("STD 0.1.0"), nullptr)
+           .isEmpty() ||
+      !wsprnetFormBody(QStringLiteral("N8SDR"), QStringLiteral("EM79"), 50000, 1500.0,
+                       QStringLiteral("261030"), QStringLiteral("1928"), -10, 0.1, 0,
+                       QStringLiteral("W1AW FN31 37"), QStringLiteral("STD 0.1.0"), nullptr)
+           .isEmpty())
+    return fail("WSPRnet sent without a callsign");
+  const QString reports = wsprnetReportsUrl(QStringLiteral("n8sdr"));
+  if (!reports.startsWith(QLatin1String("https://www.wsprnet.org/olddb")) ||
+      !reports.contains(QLatin1String("findreporter=N8SDR")))
+    return fail("WSPRnet reports link is wrong");
+  if (wsprnetReportsUrl(QString()).contains(QLatin1String("findreporter=")) ||
+      !wsprnetReportsUrl(QString()).contains(QLatin1String("wsprnet.org")))
+    return fail("WSPRnet reports link invented a callsign");
+  const auto* wsprLink = window.findChild<QAction*>(QStringLiteral("wsprnetReports"));
+  if (!wsprLink || !wsprLink->toolTip().contains(QLatin1String("wsprnet.org")) ||
+      !wsprLink->toolTip().contains(QLatin1String("password")) ||
+      !wsprLink->toolTip().contains(QLatin1String("does not send START")) ||
+      wsprLink->toolTip().contains(QLatin1String("does not key yet")))
+    return fail("WSPRnet reports link is missing");
+  if (!network || !network->toolTip().contains(QLatin1String("WSPRnet")) ||
+      !network->toolTip().contains(QLatin1String("password")))
+    return fail("WSPRnet is missing from Network");
   if (stdVersionName() != QStringLiteral("testing phase \u00B7 highly transmissible"))
     return fail("version subtitle is wrong");
   if (!UpdateChecker::isNewer(QStringLiteral("v0.1.1"), QStringLiteral("0.1.0")) ||
