@@ -40,6 +40,7 @@
 #include <QDir>
 #include <QFile>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QTemporaryDir>
 #include <QIcon>
 #include <QLabel>
@@ -1174,6 +1175,72 @@ int shellReady(MainWindow& window) {
     }
     if (js8Snr < 10)
       return fail("JS8 SNR is not measured");
+    if (int(wave.size()) != js8FrameSamples())
+      return fail("JS8 frame length is wrong");
+    double lead = 0.0;
+    for (int i = 0; i < 24000 && i < int(wave.size()); ++i)
+      lead += std::fabs(wave[static_cast<std::size_t>(i)]);
+    if (lead > 1.0)
+      return fail("JS8 frame does not start with half a second of silence");
+  }
+  {
+    const QString many(40, QLatin1Char('E'));
+    int used = 0;
+    const Js8Plan first = planJs8(many, 1500, 1, &used, true);
+    if (int(first.samples.size()) != js8FrameSamples() || used < 8 || used >= many.size())
+      return fail("JS8 is not one 15 second frame");
+    const QString part = js8Decode(first.samples.data(), int(first.samples.size()), 48000, 1500);
+    if (part != many.left(used))
+      return fail("JS8 first part did not decode");
+    int used2 = 0;
+    const Js8Plan second = planJs8(many.mid(used), 1500, 1, &used2, false);
+    if (second.samples.size() != first.samples.size() || used2 < 1)
+      return fail("JS8 continuation frame is missing");
+    const QString part2 = js8Decode(second.samples.data(), int(second.samples.size()), 48000, 1500);
+    if (part2 != many.mid(used, used2))
+      return fail("JS8 continuation did not decode");
+    const Js8Plan whole = planJs8(many, 1500);
+    if (int(whole.samples.size()) <= js8FrameSamples())
+      return fail("JS8 dropped the rest of a long message");
+    const QString all = js8Decode(whole.samples.data(), int(whole.samples.size()), 48000, 1500);
+    if (all != many.left(used + used2) && all != many)
+      return fail("JS8 long message did not decode");
+  }
+  {
+    QSettings keep;
+    const QVariant hellSaved = keep.value(QStringLiteral("tx/hellText"));
+    auto* echo = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+    auto* box = window.findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+    auto* list = window.findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
+    if (!echo || !box || !list)
+      return fail("panes are missing");
+    echo->setPlainText(QStringLiteral("OLD-RX"));
+    {
+      const QSignalBlocker block(box);
+      box->setPlainText(QStringLiteral("OLD-TX"));
+    }
+    list->setPlainText(QStringLiteral("OLD-LIST"));
+    auto* ft8Mode = window.findChild<QAction*>(QStringLiteral("modeFt8"));
+    auto* rttyMode = window.findChild<QAction*>(QStringLiteral("modeRtty"));
+    if (!ft8Mode || !rttyMode)
+      return fail("mode actions are missing");
+    ft8Mode->trigger();
+    const bool sameKept = echo->toPlainText() == QLatin1String("OLD-RX") &&
+                          box->toPlainText() == QLatin1String("OLD-TX") &&
+                          list->toPlainText() == QLatin1String("OLD-LIST");
+    rttyMode->trigger();
+    const bool cleared = echo->toPlainText().isEmpty() && box->toPlainText().isEmpty() &&
+                         list->toPlainText().isEmpty();
+    ft8Mode->trigger();
+    if (hellSaved.isValid())
+      keep.setValue(QStringLiteral("tx/hellText"), hellSaved);
+    else
+      keep.remove(QStringLiteral("tx/hellText"));
+    keep.sync();
+    if (!sameKept)
+      return fail("the same mode cleared the panes");
+    if (!cleared)
+      return fail("mode change kept the previous text");
   }
   const auto* js8 = window.findChild<QAction*>(QStringLiteral("modeJs8"));
   if (!js8 || !js8->toolTip().contains(QLatin1String("15")) ||

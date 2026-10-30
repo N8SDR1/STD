@@ -515,7 +515,9 @@ void ModeProfile::setDigitalMode(const QString& mode) {
   if (auto* label = qobject_cast<QLabel*>(keyboard_)) {
     const QString js8Hint = QStringLiteral(
         "JS8 uses the transmit box and the receive echo. Band buttons move the radio to the "
-        "JS8Call-improved calling dial. CLR RX and CLR TX clear those. TX sends the box. "
+        "JS8Call-improved calling dial. CLR RX and CLR TX clear those. TX waits for the next "
+        "15 second UTC period and sends one frame, starting half a second in. A longer message "
+        "continues on the following periods. Changing mode clears both panes. "
         "START is never sent.");
     label->setText(!keyboard || hell ? QStringLiteral(
                                            "Keyboard modes keep their own controls. None are loaded yet.")

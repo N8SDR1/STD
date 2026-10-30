@@ -412,7 +412,13 @@ int findOffset(const float* samples, int count, int toneHz) {
   return -1;
 }
 
+static_assert(kDelay + kSymbols * kSymbol == 24000 + 79 * 7680, "JS8 frame length");
+
 }  // namespace
+
+int js8FrameSamples() {
+  return 24000 + 79 * 7680;
+}
 
 bool js8Mode(const QString& mode) {
   return mode.compare(QLatin1String("JS8"), Qt::CaseInsensitive) == 0;
@@ -461,12 +467,17 @@ QString js8SuggestedPlace(int bandIndex) {
   return QString::fromLatin1(kSuggested[bandIndex].place);
 }
 
-Js8Plan planJs8(const QString& text, int toneHz) {
+Js8Plan planJs8(const QString& text, int toneHz, int maxFrames, int* consumed, bool messageStart) {
   Js8Plan plan;
   const int tone = std::clamp(toneHz, 200, 3000);
   QString left = text.toUpper();
-  bool first = true;
+  plan.echoAt.assign(static_cast<std::size_t>(text.size()), -1);
+  bool first = messageStart;
+  int frames = 0;
+  int total = 0;
   while (!left.isEmpty()) {
+    if (maxFrames > 0 && frames >= maxFrames)
+      break;
     int used = 0;
     const std::string bits = pack72(left, &used);
     if (used < 1 || bits.size() != 72)
@@ -481,18 +492,20 @@ Js8Plan planJs8(const QString& text, int toneHz) {
     int tones[kSymbols];
     if (!encodeFrame(symbols, type, tones))
       break;
-    if (first)
-      plan.echoAt.assign(static_cast<std::size_t>(text.size()), -1);
     const int at = int(plan.samples.size()) + kDelay;
-    for (int i = 0; i < used && i < text.size(); ++i) {
+    for (int i = 0; i < used; ++i) {
       const int index = text.size() - left.size() + i;
       if (index >= 0 && index < text.size())
         plan.echoAt[static_cast<std::size_t>(index)] = at;
     }
     writeFrame(tones, tone, &plan.samples);
     left = left.mid(used);
+    total += used;
     first = false;
+    ++frames;
   }
+  if (consumed)
+    *consumed = total;
   return plan;
 }
 

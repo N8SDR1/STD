@@ -2790,8 +2790,9 @@ void MainWindow::buildMenus() {
   js8Action->setObjectName(QStringLiteral("modeJs8"));
   js8Action->setToolTip(QStringLiteral(
       "JS8Call-improved Normal. 15 second period, 50 Hz, the JS8 Costas array. "
-      "Band buttons QSY to the suggested calling dials. TX sends the transmit box. "
-      "START is never sent. Fast, Turbo, Slow, Ultra, and 8PSK are not here."));
+      "Band buttons QSY to the suggested calling dials. TX waits for the next UTC period "
+      "and sends one frame, starting half a second in. A longer message continues on the "
+      "following periods. START is never sent. Fast, Turbo, Slow, Ultra, and 8PSK are not here."));
   modes->addAction(js8Action);
   connect(js8Action, &QAction::triggered, this, [this] { activateDigitalMode(QStringLiteral("JS8")); });
   auto* wsprAction = modeMenu->addAction(QStringLiteral("WSPR"));
@@ -3116,7 +3117,46 @@ void eachModeAction(QMenu* menu, const std::function<void(QAction*)>& visit) {
 
 }  // namespace
 
+void MainWindow::clearModePanes() {
+  if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
+    echo->clear();
+  if (auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell")))
+    box->clear();
+  if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
+    tape->clear();
+  if (auto* view = findChild<QLabel*>(QStringLiteral("wefaxView")))
+    view->clear();
+  if (rtty_)
+    rtty_->clear();
+  if (psk_)
+    psk_->clear();
+  if (olivia_)
+    olivia_->clear();
+  if (mfsk_)
+    mfsk_->clear();
+  if (domino_)
+    domino_->clear();
+  if (thor_)
+    thor_->clear();
+  if (js8_)
+    js8_->clear();
+  if (wspr_)
+    wspr_->clear();
+  if (mt63_)
+    mt63_->clear();
+  if (wefax_)
+    wefax_->clear();
+  if (ft8_)
+    ft8_->clear();
+  decodes_.clear();
+  refreshDecodes();
+}
+
 void MainWindow::activateDigitalMode(const QString& modeName) {
+  const QString previous = profile_ ? profile_->digitalMode() : QString();
+  const bool changed = !previous.isEmpty() && previous.compare(modeName, Qt::CaseInsensitive) != 0;
+  if (changed)
+    stopUserTx(true);
   eachModeAction(findChild<QMenu*>(QStringLiteral("modeMenu")), [modeName](QAction* action) {
     const bool on = action->text() == modeName;
     if (action->isChecked() == on)
@@ -3229,6 +3269,8 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   applyMacroBar();
   syncWfHellControls();
   applyAfc();
+  if (changed)
+    clearModePanes();
   if (family)
     tuneActiveBand();
   if (wspr)
@@ -3239,7 +3281,8 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   else if (js8)
     setTxStatus(QStringLiteral(
         "JS8. Band buttons move the radio to the JS8Call-improved calling dial. "
-        "The transmit box is the message. This does not key. START was not sent."));
+        "TX waits for the next 15 second UTC period and sends one frame, starting half a second in. "
+        "A longer message continues on the following periods. This does not key. START was not sent."));
 }
 
 void MainWindow::showKeyboardReceive(const QString& mode) {
@@ -3430,9 +3473,14 @@ void MainWindow::showGuide() {
        "MT63-1000L, MT63-2000S, and MT63-2000L. Sixty-four carriers, a Walsh code, and the fldigi "
        "short or long interleaver, centered on the cursor. TX sends those. Mode → QPSK is QPSK31, QPSK63, QPSK125, QPSK250, and QPSK500. "
        "Each varicode bit is a K=5 dibit. 8PSK is a different constellation and is not on this menu. "
+       "Changing the mode clears the receive pane, the Hell tape, the WEFAX picture, and the "
+       "transmit box. Text from the previous mode does not stay. Clicking the mode that is already "
+       "on, which cycles an FT8 dial, does not clear. "
        "Mode → JS8 is JS8Call-improved Normal, a 15 second 50 Hz frame on the cursor. "
        "Band buttons QSY to the JS8Call-improved suggested dials, 160 m through 6 m. "
-       "2 m is in that guide and is not on the row. TX sends the transmit box. "
+       "2 m is in that guide and is not on the row. TX waits for the next 15 second UTC period. "
+       "The frame starts half a second into that period. One frame goes out per period. A message "
+       "that needs more than one frame continues on the following periods. "
        "Fast, Turbo, Slow, and Ultra are not on this menu. "
        "Mode → WSPR is WSPR-2 from WSJT-X and JTDX. Even UTC minutes. "
        "Band buttons QSY to the WSPR dials. There is no macro bar. Tx power, Tx Pct, "
@@ -4940,6 +4988,10 @@ int MainWindow::txStartLeadMs(const QString& mode) const {
   const int period = periodLengthMs(mode);
   if (period <= 0)
     return 0;
+  // The JS8 wave already begins with 500 ms of silence, so playback starts
+  // on the UTC boundary and the first symbol lands half a second in.
+  if (js8Mode(mode))
+    return 0;
   if (jt65Mode(mode))
     return 700;
   int target = 0;
@@ -5013,7 +5065,7 @@ bool MainWindow::halfIsFirst(const QString& mode) const {
 int MainWindow::periodLengthMs(const QString& mode) const {
   if (wsprMode(mode))
     return 120000;
-  if (mode == QLatin1String("FT8"))
+  if (js8Mode(mode) || mode == QLatin1String("FT8"))
     return 15000;
   if (mode == QLatin1String("FT4"))
     return 7500;
@@ -5192,7 +5244,7 @@ bool MainWindow::rebuildTxWave() {
     return false;
   const QString mode = profile_->digitalMode();
   const QString text = transmitMessage();
-  if (text.isEmpty())
+  if (text.isEmpty() && txJs8Text_.isEmpty())
     return false;
   const int tone = waterfall_ ? waterfall_->txHz() : 1500;
   txCursor_ = 0;
@@ -5203,6 +5255,25 @@ bool MainWindow::rebuildTxWave() {
   txLastPullMs_ = 0;
   txGuardDeadlineMs_ = 0;
   txPeriodEndMs_ = 0;
+  if (js8Mode(mode)) {
+    if (txJs8Text_.isEmpty())
+      txJs8Text_ = text;
+    const QString left = txJs8Text_.mid(txJs8Next_);
+    if (left.isEmpty())
+      return false;
+    int used = 0;
+    const Js8Plan plan = planJs8(left, tone, 1, &used, txJs8Next_ == 0);
+    if (plan.samples.empty() || used < 1)
+      return false;
+    txJs8Pending_ = used;
+    txJs8Part_ = left.left(used);
+    txSamples_ = plan.samples;
+    txEchoAt_ = plan.echoAt;
+    txSymbolSamples_ = tonalSamples(txSamples_);
+    return true;
+  }
+  if (text.isEmpty())
+    return false;
   const RttyOptions rtty = rttyOptionsOf(this);
   const bool built = buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_, rttyMode(mode) ? &rtty : nullptr) &&
                      !txSamples_.empty();
@@ -5487,6 +5558,14 @@ int MainWindow::selectedTxSlot() const {
 }
 
 bool MainWindow::periodReady(const QString& mode) {
+  if (js8Mode(mode)) {
+    // JS8Call copies a frame that starts on the 15 s boundary. Do not join
+    // a period that has already opened.
+    const int into = utcIntoPeriodMs(15000);
+    const bool crossed = txPeriodMark_ >= 0 && into < txPeriodMark_;
+    txPeriodMark_ = into;
+    return crossed || into < 200;
+  }
   if (keyboardTextMode(mode))
     return true;
   if (wsprMode(mode)) {
@@ -5834,6 +5913,10 @@ void MainWindow::setUserTx(bool on) {
   }
   const QString mode = profile_->digitalMode();
   const QString text = transmitMessage();
+  txJs8Text_.clear();
+  txJs8Part_.clear();
+  txJs8Next_ = 0;
+  txJs8Pending_ = 0;
   if (text.isEmpty()) {
     release();
     setTxStatus(wsprMode(mode)
@@ -5849,8 +5932,14 @@ void MainWindow::setUserTx(bool on) {
   }
   const int tone = waterfall_ ? waterfall_->txHz() : 1500;
   const RttyOptions rtty = rttyOptionsOf(this);
-  if (!buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_, rttyMode(mode) ? &rtty : nullptr) ||
-      txSamples_.empty()) {
+  if (js8Mode(mode))
+    txJs8Text_ = text;
+  const bool waveOk = js8Mode(mode)
+                          ? rebuildTxWave()
+                          : buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_,
+                                        rttyMode(mode) ? &rtty : nullptr) &&
+                                !txSamples_.empty();
+  if (!waveOk || txSamples_.empty()) {
     txEchoAt_.clear();
     release();
     setTxStatus(QStringLiteral(
@@ -5878,8 +5967,13 @@ void MainWindow::setUserTx(bool on) {
   txSeqStartMs_ = QDateTime::currentMSecsSinceEpoch();
   txJoinOpen_ = txSequence_ && slotStillOpen(mode);
   if (button)
-    button->setText(keyboardTextMode(mode) ? QStringLiteral("TX") : QStringLiteral("WAIT"));
-  if (keyboardTextMode(mode))
+    button->setText((keyboardTextMode(mode) && !js8Mode(mode)) ? QStringLiteral("TX")
+                                                                : QStringLiteral("WAIT"));
+  if (js8Mode(mode))
+    setTxStatus(QStringLiteral(
+        "Armed for the next 15 second UTC period. The frame starts half a second in. "
+        "A longer message continues on the following periods, one frame each. START was not sent."));
+  else if (keyboardTextMode(mode))
     setTxStatus(QStringLiteral(
         "Sending. Sent characters print in the receive pane as they go out. START was not sent."));
   else if (wsprMode(mode))
@@ -6131,7 +6225,13 @@ void MainWindow::pumpUserTx() {
     // MSHV MsPlayerHV::xplaymessage: first symbol 450 ms into an FT8
     // period (350 ms FT4 / FT2), 200 ms after a late start.
     txPlayOriginMs_ = now + txStartLeadMs(mode);
-    txSentText_ = txEchoAt_.empty() ? transmitMessage() : transmitMessage().trimmed();
+    if (js8Mode(mode)) {
+      txJs8Next_ += txJs8Pending_;
+      txJs8Pending_ = 0;
+      txSentText_ = txJs8Part_;
+    } else {
+      txSentText_ = txEchoAt_.empty() ? transmitMessage() : transmitMessage().trimmed();
+    }
     txEchoCount_ = 0;
     txEchoSamples_ = textModeSamplesPerChar(mode);
     if (const int period = periodLengthMs(mode)) {
@@ -6156,7 +6256,14 @@ void MainWindow::pumpUserTx() {
     const bool periods = !spin || spin->prefix().startsWith(QLatin1String("Periods"));
     const QString count =
         periods ? QStringLiteral("try %1 of %2").arg(txTries_ + 1).arg(n) : QStringLiteral("Max Time");
-    if (keyboardTextMode(mode))
+    if (js8Mode(mode))
+      setTxStatus(txJs8Next_ < txJs8Text_.size()
+                      ? QStringLiteral(
+                            "On the air. This JS8 frame is one part. The rest waits for the next "
+                            "15 second period. START was not sent.")
+                      : QStringLiteral(
+                            "On the air. This JS8 frame is the whole message. START was not sent."));
+    else if (keyboardTextMode(mode))
       setTxStatus(QStringLiteral(
           "On the air. Sent characters print in the receive pane as they go out. START was not sent."));
     else if (wsprMode(mode))
@@ -6248,6 +6355,22 @@ void MainWindow::finishTxPass() {
                           .arg(txSlotName())
                     : QStringLiteral("Calling CQ on the next %1 slot. TRX is off. START was not sent.")
                           .arg(txSlotName()));
+    return;
+  }
+  if (js8Mode(mode) && button && button->isChecked() && txJs8Next_ < txJs8Text_.size() &&
+      !qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    if (!rebuildTxWave()) {
+      setTxStatus(QStringLiteral(
+          "The rest of the JS8 message did not build. Stopped. TRX is off. START was not sent."));
+      stopUserTx(true);
+      return;
+    }
+    button->setText(QStringLiteral("WAIT"));
+    if (txTimer_ && !txTimer_->isActive())
+      txTimer_->start(20);
+    setTxStatus(QStringLiteral(
+        "JS8 frame sent. The next part waits for the following 15 second period. "
+        "TRX is off. START was not sent."));
     return;
   }
   if (!txSequence_ || !sequencedMode(mode) || qEnvironmentVariableIsSet("STD_SELFTEST")) {
@@ -6522,6 +6645,10 @@ void MainWindow::stopUserTx(bool uncheck) {
   txSentText_.clear();
   txEchoCount_ = 0;
   txEchoSamples_ = 0;
+  txJs8Text_.clear();
+  txJs8Part_.clear();
+  txJs8Next_ = 0;
+  txJs8Pending_ = 0;
   if (auto* button = findChild<QPushButton*>(QStringLiteral("txSend"))) {
     if (uncheck) {
       const QSignalBlocker block(button);

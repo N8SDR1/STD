@@ -73,6 +73,7 @@ private:
   void showGuide();
   void tuneActiveBand();
   void activateDigitalMode(const QString& modeName);
+  void clearModePanes();
   void cycleDigitalMode();
   void offerLayoutSave();
   void captureLayoutBaseline();
@@ -339,6 +340,12 @@ private:
   int txTuneSent_ = 0;
   int txSymbolSamples_ = 0;
   QString txSentText_;
+  // JS8 snapshot taken when TX is pressed. One frame leaves per 15 s
+  // period; txJs8Next_ is how far into that snapshot has already gone out.
+  QString txJs8Text_;
+  QString txJs8Part_;
+  int txJs8Next_ = 0;
+  int txJs8Pending_ = 0;
   int txEchoCount_ = 0;
   int txEchoSamples_ = 0;
   std::vector<int> txEchoAt_;

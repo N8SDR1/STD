@@ -29,7 +29,15 @@ qint64 js8SuggestedDialHz(int bandIndex);
 QString js8SuggestedBandName(int bandIndex);
 QString js8SuggestedPlace(int bandIndex);
 
-Js8Plan planJs8(const QString& text, int toneHz);
+// One Normal frame is 500 ms of silence plus 79 symbols (13.14 s).
+// JS8Call only copies a frame that starts on a 15 s UTC boundary.
+int js8FrameSamples();
+// maxFrames 0 plans every frame back to back. Pass 1 to take a single
+// 15 s part. consumed, when set, receives how many characters of text
+// went into the plan. messageStart is false for a later part of the
+// same message so the frame type stays a continuation.
+Js8Plan planJs8(const QString& text, int toneHz, int maxFrames = 0, int* consumed = nullptr,
+                bool messageStart = true);
 // snrDb, when set, receives the frame SNR in a 2500 Hz bandwidth, the
 // same reference WSJT-X and JS8Call print. A clean local frame is positive.
 QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz, int* snrDb = nullptr);
