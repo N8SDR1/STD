@@ -9,6 +9,7 @@
 #include "StatusStrip.h"
 
 #include "QsoLog.h"
+#include "StationFiles.h"
 #include "TxWave.h"
 #include "hell/HellEngine.h"
 #include "dominoex/DominoModem.h"
@@ -35,7 +36,10 @@
 #include <QByteArray>
 #include <QAction>
 #include <QApplication>
+#include <QDir>
 #include <QFile>
+#include <QSettings>
+#include <QTemporaryDir>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
@@ -323,6 +327,89 @@ int shellReady(MainWindow& window) {
   for (const char* name : dxNames) {
     if (!window.findChild<QAction*>(QLatin1String(name)))
       return fail("a DX option is missing");
+  }
+  for (const char* name : {"backupSettings", "importSettings", "backupLogbook", "exportAdif"}) {
+    const auto* action = window.findChild<QAction*>(QLatin1String(name));
+    if (!action || !action->toolTip().contains(QLatin1String("START")) ||
+        !action->toolTip().contains(QLatin1String("not key")))
+      return fail("a backup action is missing");
+  }
+  if (window.findChild<QLineEdit*>(QStringLiteral("backupCall")) ||
+      window.findChild<QLineEdit*>(QStringLiteral("backupGrid")))
+    return fail("backup added a callsign field");
+  {
+    QTemporaryDir dir;
+    if (!dir.isValid())
+      return fail("settings temp dir is missing");
+    const QString sourcePath = dir.filePath(QStringLiteral("source.ini"));
+    const QString destPath = dir.filePath(QStringLiteral("dest.ini"));
+    const QString layoutOnlyPath = dir.filePath(QStringLiteral("layout.ini"));
+    QSettings source(sourcePath, QSettings::IniFormat);
+    source.setValue(QStringLiteral("layout/FT8/state"), QByteArray("ABC"));
+    source.setValue(QStringLiteral("dx/reportCall"), QStringLiteral("W1AW"));
+    source.setValue(QStringLiteral("dx/reportGrid"), QStringLiteral("FN31"));
+    source.setValue(QStringLiteral("tci/host"), QStringLiteral("192.0.2.1"));
+    source.setValue(QStringLiteral("tci/port"), 9);
+    source.sync();
+    QSettings dest(destPath, QSettings::IniFormat);
+    dest.setValue(QStringLiteral("layout/FT8/state"), QByteArray("OLD"));
+    dest.setValue(QStringLiteral("layout/WSPR/state"), QByteArray("GONE"));
+    dest.setValue(QStringLiteral("dx/reportCall"), QStringLiteral("KEEP"));
+    dest.setValue(QStringLiteral("tci/host"), QStringLiteral("127.0.0.1"));
+    dest.sync();
+    if (copyStationSettings(source, dest, true) < 3)
+      return fail("settings copy wrote nothing");
+    dest.sync();
+    QSettings check(destPath, QSettings::IniFormat);
+    if (check.value(QStringLiteral("layout/FT8/state")).toByteArray() != QByteArray("ABC") ||
+        check.value(QStringLiteral("dx/reportCall")).toString() != QLatin1String("W1AW") ||
+        check.value(QStringLiteral("dx/reportGrid")).toString() != QLatin1String("FN31") ||
+        check.contains(QStringLiteral("layout/WSPR/state")) ||
+        check.value(QStringLiteral("tci/host")).toString() != QLatin1String("127.0.0.1") ||
+        check.value(QStringLiteral("tci/port")).toInt() != 0)
+      return fail("settings copy touched TCI or dropped a layout");
+    QSettings layoutOnly(layoutOnlyPath, QSettings::IniFormat);
+    layoutOnly.setValue(QStringLiteral("layout/JS8/state"), QByteArray("JS"));
+    layoutOnly.sync();
+    if (copyStationSettings(layoutOnly, check, true) < 1)
+      return fail("layout-only import wrote nothing");
+    check.sync();
+    QSettings afterLayout(destPath, QSettings::IniFormat);
+    if (afterLayout.value(QStringLiteral("dx/reportCall")).toString() != QLatin1String("W1AW") ||
+        afterLayout.value(QStringLiteral("layout/JS8/state")).toByteArray() != QByteArray("JS") ||
+        afterLayout.contains(QStringLiteral("layout/FT8/state")) ||
+        afterLayout.value(QStringLiteral("tci/host")).toString() != QLatin1String("127.0.0.1"))
+      return fail("layout-only import changed the callsign or TCI");
+    const QString logPath = dir.filePath(QStringLiteral("std.adi"));
+    const QByteArray logBody =
+        QByteArrayLiteral("STD ADIF\n<ADIF_VER:5>3.1.0\n<PROGRAMID:3>STD\n<EOH>\n"
+                          "<CALL:4>W1AW<GRIDSQUARE:4>FN31<MODE:3>FT8<EOR>\n");
+    QFile logFile(logPath);
+    if (!logFile.open(QIODevice::WriteOnly) || logFile.write(logBody) != logBody.size())
+      return fail("logbook sample did not write");
+    logFile.close();
+    const QString backupPath = dir.filePath(QStringLiteral("std-logbook-backup.adi"));
+    QString fileError;
+    if (!backupLogbookFile(logPath, backupPath, &fileError) ||
+        QFile(backupPath).size() != logBody.size())
+      return fail("logbook backup did not copy");
+    if (backupLogbookFile(logPath, logPath, &fileError))
+      return fail("logbook backup replaced itself");
+    if (backupLogbookFile(dir.filePath(QStringLiteral("missing.adi")), backupPath, &fileError))
+      return fail("logbook backup invented a file");
+    const QString exportPath = dir.filePath(QStringLiteral("std-logbook-export.adi"));
+    int records = -1;
+    if (!exportAdifForLogger(logPath, exportPath, &records, &fileError) || records != 1)
+      return fail("ADIF export missed the QSO");
+    QFile exported(exportPath);
+    if (!exported.open(QIODevice::ReadOnly))
+      return fail("ADIF export did not write");
+    const QByteArray exportedBody = exported.readAll();
+    if (!exportedBody.contains("<EOH>") || !exportedBody.contains("<CALL:4>W1AW") ||
+        !exportedBody.contains("<EOR>") || !exportedBody.contains("<PROGRAMID:3>STD"))
+      return fail("ADIF export is not a logger file");
+    if (QFile(logPath).size() != logBody.size())
+      return fail("ADIF export changed the logbook");
   }
 
   const auto* chip = window.findChild<QPushButton*>("digitalModeChip");

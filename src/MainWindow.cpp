@@ -22,6 +22,7 @@
 #include "UpdateChecker.h"
 #include "ModeProfile.h"
 #include "QsoLog.h"
+#include "StationFiles.h"
 #include "StatusStrip.h"
 #include "TciClient.h"
 #include "TxWave.h"
@@ -80,6 +81,7 @@
 #include <QTimeZone>
 #include <QPushButton>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -2137,6 +2139,34 @@ void MainWindow::buildMenus() {
       "Save the macros in use as a Fldigi .mdf. This does not key and does not send START."));
   connect(macroSave, &QAction::triggered, this, [this] { saveMacroFile(); });
   fileMenu->addSeparator();
+  auto* backupSettingsAction = fileMenu->addAction(QStringLiteral("Backup settings…"));
+  backupSettingsAction->setObjectName(QStringLiteral("backupSettings"));
+  backupSettingsAction->setToolTip(QStringLiteral(
+      "Save layouts and the callsign and locator already stored under Options → User. "
+      "Does not copy the TCI host or port. Does not add a callsign field. "
+      "Does not key. START is never sent."));
+  connect(backupSettingsAction, &QAction::triggered, this, [this] { backupSettings(); });
+  auto* importSettingsAction = fileMenu->addAction(QStringLiteral("Import settings…"));
+  importSettingsAction->setObjectName(QStringLiteral("importSettings"));
+  importSettingsAction->setToolTip(QStringLiteral(
+      "Restore layouts from a settings file. The callsign and locator change only when "
+      "that file contains them. The TCI host and port stay. Does not add a callsign field. "
+      "Does not key. START is never sent."));
+  connect(importSettingsAction, &QAction::triggered, this, [this] { importSettings(); });
+  fileMenu->addSeparator();
+  auto* backupLogAction = fileMenu->addAction(QStringLiteral("Backup logbook…"));
+  backupLogAction->setObjectName(QStringLiteral("backupLogbook"));
+  backupLogAction->setToolTip(QStringLiteral(
+      "Copy the ADIF logbook to another file. The original stays in place. "
+      "Does not key. START is never sent."));
+  connect(backupLogAction, &QAction::triggered, this, [this] { backupLogbook(); });
+  auto* exportAdifAction = fileMenu->addAction(QStringLiteral("Export ADIF…"));
+  exportAdifAction->setObjectName(QStringLiteral("exportAdif"));
+  exportAdifAction->setToolTip(QStringLiteral(
+      "Write an ADIF file another logger can import. The logbook stays in place. "
+      "Does not key. START is never sent."));
+  connect(exportAdifAction, &QAction::triggered, this, [this] { exportAdif(); });
+  fileMenu->addSeparator();
   auto* quit = fileMenu->addAction("Quit");
   quit->setShortcut(QKeySequence::Quit);
   connect(quit, &QAction::triggered, this, &QWidget::close);
@@ -3201,6 +3231,10 @@ void MainWindow::showGuide() {
        "Logged ADIF datagrams to the saved host and port. The first address is 127.0.0.1 port 2237. "
        "TCP sends a DXKeeper log command to 127.0.0.1 port 52001 until you change it. UDP and TCP stay "
        "off until you enable them. A heartbeat goes to the UDP port only while one of those is on. "
+       "File → Backup logbook copies that ADIF file and leaves the original in place. "
+       "File → Export ADIF writes a copy another logger can import. File → Backup settings "
+       "and Import settings save and restore layouts and the callsign and locator from "
+       "Options → User. They do not copy the TCI host or port, and they do not add a field. "
        "None of this keys the radio or sends START."},
       {"Tune",
        "Tune sends a tone at the TX marker so the waterfall can show it and TX gain can be set. It "
@@ -7230,6 +7264,121 @@ QString MainWindow::maybeLogQso(const QString& sent) {
   const QString dup = again ? QStringLiteral(" This call was already in the file.") : QString();
   return QStringLiteral("Logged %1 to %2.%3 TRX is off. START was not sent.")
       .arg(qsoCall_, where.join(QStringLiteral(", ")), dup);
+}
+
+QString MainWindow::logbookPath() const {
+  QString path = QSettings().value(QStringLiteral("log/adifPath")).toString().trimmed();
+  if (path.isEmpty())
+    path = QsoLog::defaultAdifPath();
+  return path;
+}
+
+void MainWindow::backupSettings() {
+  const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("Backup settings"),
+      QDir(documents).filePath(QStringLiteral("STD-settings.ini")),
+      QStringLiteral("STD settings (*.ini)"));
+  if (path.isEmpty())
+    return;
+  QFile::remove(path);
+  QSettings live;
+  QSettings dest(path, QSettings::IniFormat);
+  const int count = copyStationSettings(live, dest, false);
+  if (count < 1) {
+    QFile::remove(path);
+    QMessageBox::information(
+        this, QStringLiteral("Backup settings"),
+        QStringLiteral("Nothing was saved. There is no layout, and Options → User has no callsign "
+                       "or locator yet. Nothing was keyed. START was not sent."));
+    return;
+  }
+  setTxStatus(QStringLiteral("Settings saved. Nothing was keyed. START was not sent."));
+  QMessageBox::information(
+      this, QStringLiteral("Backup settings"),
+      QStringLiteral("Saved %1 layout and user entries to\n%2\n\nThe TCI host and port were not copied. "
+                     "Nothing was keyed. START was not sent.")
+          .arg(count)
+          .arg(path));
+}
+
+void MainWindow::importSettings() {
+  const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  const QString path = QFileDialog::getOpenFileName(
+      this, QStringLiteral("Import settings"), documents, QStringLiteral("STD settings (*.ini)"));
+  if (path.isEmpty())
+    return;
+  QSettings backup(path, QSettings::IniFormat);
+  QSettings live;
+  const int count = copyStationSettings(backup, live, true);
+  if (count < 1) {
+    QMessageBox::information(
+        this, QStringLiteral("Import settings"),
+        QStringLiteral("That file has no STD layouts or user info. Nothing was changed. "
+                       "Nothing was keyed. START was not sent."));
+    return;
+  }
+  if (profile_)
+    profile_->refreshStation();
+  refreshDecodes();
+  applyStationLock();
+  refreshTxFields();
+  restoreModeLayout();
+  applyMacroBar();
+  refreshTxChrome();
+  setTxStatus(QStringLiteral("Settings imported. Nothing was keyed. START was not sent."));
+  QMessageBox::information(
+      this, QStringLiteral("Import settings"),
+      QStringLiteral("Restored %1 layout and user entries from\n%2\n\nThe TCI host and port were left "
+                     "as they are. Nothing was keyed. START was not sent.")
+          .arg(count)
+          .arg(path));
+}
+
+void MainWindow::backupLogbook() {
+  const QString source = logbookPath();
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("Backup logbook"),
+      QDir(QFileInfo(source).absolutePath()).filePath(QStringLiteral("std-logbook-backup.adi")),
+      QStringLiteral("ADIF (*.adi)"));
+  if (path.isEmpty())
+    return;
+  QString error;
+  if (!backupLogbookFile(source, path, &error)) {
+    QMessageBox::warning(this, QStringLiteral("Backup logbook"),
+                         error + QStringLiteral(" Nothing was keyed. START was not sent."));
+    return;
+  }
+  setTxStatus(QStringLiteral("Logbook copied. Nothing was keyed. START was not sent."));
+  QMessageBox::information(
+      this, QStringLiteral("Backup logbook"),
+      QStringLiteral("Copied the logbook to\n%1\n\nThe original stays at\n%2\n\nNothing was keyed. "
+                     "START was not sent.")
+          .arg(path, source));
+}
+
+void MainWindow::exportAdif() {
+  const QString source = logbookPath();
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("Export ADIF"),
+      QDir(QFileInfo(source).absolutePath()).filePath(QStringLiteral("std-logbook-export.adi")),
+      QStringLiteral("ADIF (*.adi)"));
+  if (path.isEmpty())
+    return;
+  int records = 0;
+  QString error;
+  if (!exportAdifForLogger(source, path, &records, &error)) {
+    QMessageBox::warning(this, QStringLiteral("Export ADIF"),
+                         error + QStringLiteral(" Nothing was keyed. START was not sent."));
+    return;
+  }
+  setTxStatus(QStringLiteral("ADIF exported. Nothing was keyed. START was not sent."));
+  QMessageBox::information(
+      this, QStringLiteral("Export ADIF"),
+      QStringLiteral("Wrote %1 QSO(s) for another logger to\n%2\n\nThe logbook stays in place. "
+                     "Nothing was keyed. START was not sent.")
+          .arg(records)
+          .arg(path));
 }
 
 void MainWindow::openLogDialog() {

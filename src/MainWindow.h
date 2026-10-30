@@ -95,6 +95,11 @@ private:
   void openNetworkDialog();
   void openUserDialog();
   void openLogDialog();
+  void backupSettings();
+  void importSettings();
+  void backupLogbook();
+  void exportAdif();
+  QString logbookPath() const;
   void rememberQso(const QString& call, const QString& grid, const QString& theirReport, bool fresh,
                    const QString& rxMessage = QString());
   QString maybeLogQso(const QString& sent);

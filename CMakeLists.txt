@@ -87,6 +87,8 @@ qt_add_executable(std
   src/TxWave.h
   src/QsoLog.cpp
   src/QsoLog.h
+  src/StationFiles.cpp
+  src/StationFiles.h
   src/MacroFile.cpp
   src/MacroFile.h
   src/hell/HellEngine.cpp
