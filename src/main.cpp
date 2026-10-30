@@ -1143,6 +1143,11 @@ int shellReady(MainWindow& window) {
       !wsprHead.contains(QLatin1String("Call")) || !wsprHead.contains(QLatin1String("Locator")) ||
       !wsprHead.contains(QLatin1String("Report")))
     return fail("WSPR column titles are missing");
+  const auto* wsprTitle = window.findChild<QLabel*>(QStringLiteral("wsprRxHeader"));
+  const auto* wsprTitleHost = window.findChild<QWidget*>(QStringLiteral("wsprRxHeaderHost"));
+  if (!wsprTitle || !wsprTitleHost || wsprTitle->text() != wsprHead ||
+      wsprTitle->parentWidget() != wsprTitleHost || wsprTitleHost->isVisible())
+    return fail("WSPR column header is not held");
   const QString wsprColumns = wsprActivityLine(QStringLiteral("1928"), 2, 0.9, QStringLiteral("7.040045"), 0,
                                               QStringLiteral("AB8EF EN63 37"));
   if (!wsprColumns.contains(QLatin1String("AB8EF")) || !wsprColumns.contains(QLatin1String("EN63")) ||

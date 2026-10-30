@@ -124,6 +124,7 @@ private:
   void applyHellSquelch();
   void syncWfHellControls();
   void alignDecodeHeader();
+  void alignWsprHeader();
   void setUserTx(bool on);
   void setTune(bool on);
   void haltTx();

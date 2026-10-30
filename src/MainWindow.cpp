@@ -81,6 +81,7 @@
 #include <QTime>
 #include <QTimeZone>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QShowEvent>
@@ -377,6 +378,13 @@ protected:
   }
 };
 
+QString withoutWsprTitleLine(const QString& body) {
+  if (!body.startsWith(QLatin1String("Time")))
+    return body;
+  const int nl = body.indexOf(QLatin1Char('\n'));
+  return nl < 0 ? QString() : body.mid(nl + 1);
+}
+
 QString formatDial(qint64 hz) {
   if (hz < 0)
     return QString::fromUtf8("—");
@@ -597,10 +605,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                              ? QString::number((double(dial) + spot.audioHz) / 1.0e6, 'f', 6)
                              : QStringLiteral("%1 Hz").arg(spot.audioHz, 0, 'f', 1);
     if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
-      const QString header = wsprActivityHeader();
-      if (!echo->toPlainText().startsWith(QLatin1String("Time")))
-        echo->setPlainText(header);
+      const QString body = withoutWsprTitleLine(echo->toPlainText());
+      if (body != echo->toPlainText())
+        echo->setPlainText(body);
       echo->append(wsprActivityLine(utc, spot.snrDb, spot.dtSec, freq.trimmed(), spot.drift, spot.message));
+      alignWsprHeader();
     }
     noteDecodeSpot(QStringLiteral("WSPR"), spot.message, spot.snrDb, int(std::lround(spot.audioHz)),
                    QString::number(spot.dtSec, 'f', 1), utc);
@@ -1960,11 +1969,8 @@ QWidget* MainWindow::makeReceivePanel() {
       setTxStatus(QStringLiteral("No WEFAX picture yet. Nothing was keyed. START was not sent."));
   });
   connect(clrRx, &QPushButton::clicked, this, [this] {
-    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
+    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
       echo->clear();
-      if (profile_ && wsprMode(profile_->digitalMode()))
-        echo->setPlainText(wsprActivityHeader());
-    }
     if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
       tape->clear();
     if (rtty_)
@@ -2024,7 +2030,22 @@ QWidget* MainWindow::makeReceivePanel() {
   echo->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   echo->document()->setDocumentMargin(4);
   echo->hide();
+
+  auto* wsprHeadHost = new QWidget(panel);
+  wsprHeadHost->setObjectName(QStringLiteral("wsprRxHeaderHost"));
+  wsprHeadHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  wsprHeadHost->setFixedHeight(monoFont(13).pixelSize() + 4);
+  auto* wsprHead = new QLabel(wsprActivityHeader(), wsprHeadHost);
+  wsprHead->setObjectName(QStringLiteral("wsprRxHeader"));
+  wsprHead->setFont(monoFont(13));
+  wsprHead->setTextInteractionFlags(Qt::NoTextInteraction);
+  wsprHead->setToolTip(QStringLiteral(
+      "WSPR column titles. They stay put while the rows scroll. "
+      "Report is the dBm in the message. This does not key and does not send START."));
+  wsprHeadHost->hide();
+  layout->addWidget(wsprHeadHost);
   layout->addWidget(echo, 1);
+  connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
   auto* faxView = new QLabel(panel);
   faxView->setObjectName(QStringLiteral("wefaxView"));
@@ -3036,27 +3057,21 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
     echo->setVisible(text || wspr);
+    const QString body = withoutWsprTitleLine(echo->toPlainText());
+    if (body != echo->toPlainText())
+      echo->setPlainText(body);
     if (wspr) {
       echo->setLineWrapMode(QTextEdit::NoWrap);
+      echo->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
       echo->setPlaceholderText(QStringLiteral(
-          "Time, dB, DT, Frequency, Drift, Call, Locator, Report. "
-          "Report is the dBm in the message. "
+          "Decodes appear under the titles. Report is the dBm in the message. "
           "Nothing is uploaded until Options → Network enables PSK Reporter."));
       echo->setToolTip(QStringLiteral(
-          "WSPR receive columns: time, dB, DT, frequency, drift, call, locator, and the dBm report. "
-          "There is no macro bar in this mode. This does not key and does not send START."));
-      if (!echo->toPlainText().startsWith(QLatin1String("Time"))) {
-        const QString body = echo->toPlainText();
-        echo->setPlainText(wsprActivityHeader() +
-                           (body.isEmpty() ? QString() : QStringLiteral("\n") + body));
-      }
+          "WSPR rows: time, dB, DT, frequency, drift, call, locator, and the dBm report. "
+          "The titles stay above this list. There is no macro bar in this mode. "
+          "This does not key and does not send START."));
     } else {
       echo->setLineWrapMode(QTextEdit::WidgetWidth);
-      if (echo->toPlainText().startsWith(QLatin1String("Time"))) {
-        const QString body = echo->toPlainText();
-        const int nl = body.indexOf(QLatin1Char('\n'));
-        echo->setPlainText(nl < 0 ? QString() : body.mid(nl + 1));
-      }
       echo->setPlaceholderText(QStringLiteral(
           "Sent text prints here in red as it goes out."));
       echo->setToolTip(QStringLiteral(
@@ -3064,6 +3079,11 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
           "Hell keeps the tape. RTTY, BPSK, QPSK, Olivia, Contestia, MFSK, DominoEX, and Thor print received text here too. "
           "This does not key and does not send START."));
     }
+  }
+  if (auto* wsprHead = findChild<QWidget*>(QStringLiteral("wsprRxHeaderHost"))) {
+    wsprHead->setVisible(wspr);
+    if (wspr)
+      alignWsprHeader();
   }
   if (auto* clrRx = findChild<QPushButton*>(QStringLiteral("clrRx")))
     clrRx->setVisible(text || fax || wspr);
@@ -3216,6 +3236,8 @@ void MainWindow::showGuide() {
        "Mode → WSPR is WSPR-2 from WSJT-X and JTDX. Even UTC minutes. "
        "Band buttons QSY to the WSPR dials. There is no macro bar. Tx power, Tx Pct, "
        "and Band Hopping. The locator is the one in Options → User. TX sends that message. "
+       "Receive titles Time, dB, DT, Frequency, Drift, Call, Locator, and Report stay on screen "
+       "while the rows scroll. DT is the time offset. Report is the dBm the other station sent. "
        "A macro copies into the transmit box on the keyboard modes. WSPR has no macro bar. "
        "TX macro also presses TX when it is on. Hell, RTTY, BPSK, QPSK, "
        "Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
@@ -4067,6 +4089,7 @@ void MainWindow::alignDecodeHeader() {
   edit->document()->rootFrame()->setFrameFormat(cleared);
   QTimer::singleShot(0, this, [this] {
     headerAlignQueued_ = false;
+    alignWsprHeader();
     auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader"));
     auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
     if (!header || !edit || !edit->viewport() || !header->parentWidget())
@@ -4086,6 +4109,25 @@ void MainWindow::alignDecodeHeader() {
       edit->document()->rootFrame()->setFrameFormat(format);
     }
   });
+}
+
+void MainWindow::alignWsprHeader() {
+  auto* host = findChild<QWidget*>(QStringLiteral("wsprRxHeaderHost"));
+  auto* header = findChild<QLabel*>(QStringLiteral("wsprRxHeader"));
+  auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+  if (!host || !header || !echo || !echo->viewport() || !host->isVisible())
+    return;
+  const QFontMetrics metrics(header->font());
+  const int line = std::max(metrics.height(), 1);
+  if (host->height() != line)
+    host->setFixedHeight(line);
+  header->setFixedHeight(line);
+  const int wide = std::max(header->sizeHint().width(), metrics.horizontalAdvance(header->text()) + 4);
+  header->resize(wide, line);
+  const QPoint origin = echo->viewport()->mapTo(host, QPoint(0, 0));
+  const int margin = int(std::lround(echo->document()->documentMargin()));
+  const int x = origin.x() + margin - echo->horizontalScrollBar()->value();
+  header->move(x, 0);
 }
 
 namespace {
@@ -6497,6 +6539,8 @@ void MainWindow::applyTextStyle() {
     edit->setFont(font);
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
     echo->setFont(font);
+  if (auto* wsprHead = findChild<QLabel*>(QStringLiteral("wsprRxHeader")))
+    wsprHead->setFont(font);
   if (auto* hellText = findChild<QPlainTextEdit*>(QStringLiteral("txHell")))
     hellText->setFont(font);
   const char* txNames[] = {"tx1", "tx2", "tx3", "tx4", "tx5", "tx6", "txExtra", "txQrg"};
