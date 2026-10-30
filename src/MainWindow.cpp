@@ -912,7 +912,7 @@ void MainWindow::buildDocks() {
       "transmitText",
       "Transmit text.",
       false,
-      "Double-click a decode to arm the other slot. Halt ends TX now. Tune stops itself. START is never sent."));
+      "Double-click a decode to arm the other slot. Halt ends TX now. Tune stops itself."));
   transmitDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
   placeDockTitle(transmitDock_, QStringLiteral("Transmit"), {"txClrQueue", "txClrNow", "clrTx"});
 
@@ -1634,16 +1634,15 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     tx->setToolTip(QStringLiteral(
         "Send the selected line on its slot and hold TRX until that slot ends. "
         "Max Periods is how many times it keys. Stops on 73, when someone else answers, "
-        "or when the try limit is reached. CQ on free continues with CQ. CNS ignores the limit. "
-        "START is never sent."));
+        "or when the try limit is reached. CQ on free continues with CQ. CNS ignores the limit."));
     connect(tx, &QPushButton::toggled, this, [this](bool on) { setUserTx(on); });
     auto* halt = new QPushButton(QStringLiteral("Halt"), panel);
     halt->setObjectName(QStringLiteral("txHalt"));
     halt->setFont(interfaceFont(12));
     halt->setFocusPolicy(Qt::NoFocus);
     halt->setToolTip(QStringLiteral(
-        "MSHV STOP TX. Ends this transmission now, even mid-slot, and stops the sequence. "
-        "Does not key. START is never sent."));
+        "Ends this transmission now, even mid-slot, and stops the sequence. "
+        "Does not key."));
     connect(halt, &QPushButton::clicked, this, [this] { haltTx(); });
     buttons->addWidget(tune);
     buttons->addWidget(tx);
@@ -1911,8 +1910,7 @@ void MainWindow::applyStationLock() {
     tx->setToolTip(haveCall
                        ? QStringLiteral(
                              "Send the selected line on its slot and hold TRX until that slot ends. "
-                             "Halt ends it now. TRX goes out only after this is pressed. "
-                             "START is never sent.")
+                             "Halt ends it now. TRX goes out only after this is pressed.")
                        : QStringLiteral(
                              "Set your callsign under Options → User before TX. This does not key."));
   }
@@ -3306,7 +3304,7 @@ void MainWindow::showGuide() {
       {"Halt",
        "Halt ends the transmission immediately, even in the middle of a slot, turns TRX off, and stops "
        "the sequence. If nothing is transmitting, Halt does not key. It leaves Tx1 through Tx6 as they "
-       "are. It does not send START."},
+       "are."},
       {"User callsign",
        "Options → User stores the callsign and the locator. DIST is the distance from that locator to "
        "the grid in a message. Tx1 through Tx5 and the CQ on Tx6 use that locator. TX and Tune stay "
@@ -5500,9 +5498,9 @@ void MainWindow::haltTx() {
   stopUserTx(true);
   if (live || armed)
     setTxStatus(QStringLiteral(
-        "Halted. TRX is off and the sequence stopped. Nothing was keyed. START was not sent."));
+        "Halted. TRX is off and the sequence stopped. Nothing was keyed."));
   else
-    setTxStatus(QStringLiteral("Nothing is transmitting. Halt did not key. START was not sent."));
+    setTxStatus(QStringLiteral("Nothing is transmitting. Halt did not key."));
 }
 
 void MainWindow::setTune(bool on) {

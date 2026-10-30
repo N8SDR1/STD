@@ -152,7 +152,8 @@ int shellReady(MainWindow& window) {
     return fail("Tune is not idle");
   const auto* halt = window.findChild<QPushButton*>("txHalt");
   if (!halt || halt->isCheckable() || halt->isChecked() ||
-      !halt->toolTip().contains(QLatin1String("START")) ||
+      halt->toolTip().contains(QLatin1String("MSHV")) ||
+      halt->toolTip().contains(QLatin1String("START")) ||
       !halt->toolTip().contains(QLatin1String("Does not key")))
     return fail("Halt is missing");
   const auto* rxTx = window.findChild<QPushButton*>("freqRxTx");
