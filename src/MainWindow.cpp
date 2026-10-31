@@ -2176,19 +2176,23 @@ QWidget* MainWindow::makeReceivePanel() {
   faxSlantLabel->setObjectName(QStringLiteral("wefaxSlantLabel"));
   faxSlantLabel->setFont(interfaceFont(12));
   faxSlantLabel->setToolTip(QStringLiteral(
-      "Slant corrects a sound-card clock error, in percent. Zero is 120 lines per minute. "
-      "This does not key. START is never sent."));
+      "Slant corrects a sound-card clock error, in parts per million. A typical card is off by "
+      "tens to a few hundred ppm. If the picture leans one way, step it the other way. "
+      "Zero is exactly 120 lines per minute. This does not key. START is never sent."));
   faxSlantLabel->hide();
   auto* faxSlant = new QSpinBox(panel);
   faxSlant->setObjectName(QStringLiteral("wefaxSlant"));
-  faxSlant->setRange(-20, 20);
-  faxSlant->setSuffix(QStringLiteral(" %"));
+  faxSlant->setRange(-20000, 20000);
+  faxSlant->setSingleStep(10);
+  faxSlant->setSuffix(QStringLiteral(" ppm"));
   faxSlant->setFont(interfaceFont(12));
-  faxSlant->setFixedWidth(72);
+  faxSlant->setFixedWidth(104);
   faxSlant->setFocusPolicy(Qt::ClickFocus);
   faxSlant->setToolTip(faxSlantLabel->toolTip());
   faxSlant->hide();
-  const int savedSlant = std::clamp(QSettings().value(QStringLiteral("wefax/slant"), 0).toInt(), -20, 20);
+  // wefax/slantPpm replaces the old whole-percent wefax/slant key.
+  const int savedSlant =
+      std::clamp(QSettings().value(QStringLiteral("wefax/slantPpm"), 0).toInt(), -20000, 20000);
   faxSlant->setValue(savedSlant);
   if (wefax_)
     wefax_->setSlant(savedSlant);
@@ -2216,7 +2220,7 @@ QWidget* MainWindow::makeReceivePanel() {
       setTxStatus(QStringLiteral("No WEFAX picture yet. Nothing was keyed. START was not sent."));
   });
   connect(faxSlant, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
-    QSettings().setValue(QStringLiteral("wefax/slant"), value);
+    QSettings().setValue(QStringLiteral("wefax/slantPpm"), value);
     if (wefax_)
       wefax_->setSlant(value);
   });
@@ -3584,7 +3588,7 @@ void MainWindow::showGuide() {
        "receive cursor and white is 400 Hz above it. The cursor starts at 1900 Hz, so black is 1500 Hz "
        "and white is 2300 Hz until you move it. Reception mixes to the cursor, filters, then reads the FM. "
        "A 300 Hz start tone opens a picture and a 450 Hz stop tone saves it and clears the screen for the next one. "
-       "Slant, next to Save, corrects a sound-card clock error in percent. Zero is 120 lines per minute. "
+       "Slant, next to Save, corrects a sound-card clock error in parts per million, 10 ppm a step. Zero is 120 lines per minute. "
        "Folder picks the directory. Until you pick one, pictures "
        "save under Documents\\STD\\wefax. Save writes the picture received so far as a PNG. A stop tone "
        "also writes that file. CLR RX clears the picture and does not unkey. TX and Tune do not key "

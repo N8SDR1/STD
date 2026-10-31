@@ -50,10 +50,15 @@ int firTapsFor(int rate) {
   return taps;
 }
 
-double lineStep(int sampleRateHz, int lpm, double slantPercent) {
+// Slant is in parts per million of the line length. Sound cards are off
+// by tens to a few hundred ppm; one percent would skew a 1810-pixel line
+// by 18 pixels a row.
+constexpr int kSlantMaxPpm = 20000;
+
+double lineStep(int sampleRateHz, int lpm, double slantPpm) {
   const int nominal = wefaxSamplesPerLine(sampleRateHz, lpm);
-  const double slant = std::clamp(slantPercent, -20.0, 20.0);
-  return std::max(32.0, double(nominal) * (100.0 + slant) / 100.0);
+  const double slant = std::clamp(slantPpm, -double(kSlantMaxPpm), double(kSlantMaxPpm));
+  return std::max(32.0, double(nominal) * (1.0 + slant * 1e-6));
 }
 
 struct DemodState {
@@ -277,7 +282,7 @@ std::vector<float> wefaxModulateTest(const WefaxSpec& spec, int sampleRateHz,
 }
 
 WefaxImage wefaxDecode(const WefaxSpec& spec, const float* samples, int count, int sampleRateHz,
-                       double slantPercent) {
+                       double slantPpm) {
   WefaxImage picture;
   std::vector<float> lum;
   demod(samples, count, sampleRateHz, spec, &lum);
@@ -285,7 +290,7 @@ WefaxImage wefaxDecode(const WefaxSpec& spec, const float* samples, int count, i
   if (int(lum.size()) <= drop)
     return picture;
   lum.erase(lum.begin(), lum.begin() + drop);
-  const double step = lineStep(sampleRateHz, spec.lpm, slantPercent);
+  const double step = lineStep(sampleRateHz, spec.lpm, slantPpm);
   const int span = std::max(32, int(std::lround(step)));
   const int pixels = wefaxPixelsPerLine(spec.ioc);
   if (int(lum.size()) < span * 2)
@@ -417,8 +422,8 @@ void WefaxEngine::setCenterHz(int hz) {
   d_->resetFilter();
 }
 
-void WefaxEngine::setSlant(int percent) {
-  d_->slant = std::clamp(percent, -20, 20);
+void WefaxEngine::setSlant(int ppm) {
+  d_->slant = std::clamp(ppm, -kSlantMaxPpm, kSlantMaxPpm);
 }
 
 int WefaxEngine::slant() const {

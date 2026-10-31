@@ -21,6 +21,7 @@
 #include "rtty/RttyModem.h"
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
+#include "modem/ToneClock.h"
 #include "wspr/WsprModem.h"
 #include "spot/PskReporter.h"
 #include "spot/WsprNet.h"
@@ -1361,6 +1362,88 @@ int shellReady(MainWindow& window) {
     const QString repaired = js8Decode(js8Erased.data(), int(js8Erased.size()), 48000, 1500);
     if (!repaired.contains(QLatin1Char('E')))
       return fail("JS8 LDPC did not repair a symbol");
+    // Interop vectors from an independent transcription of JS8Call-improved's
+    // encoder (Varicode.cpp packHuffMessage/pack72bits, JS8.cpp encode() with
+    // CRC12 = boost::augmented_crc<12,0xc06> ^ 42). STD's tones must match
+    // exactly, or JS8Call rejects the frame on its CRC.
+    {
+      struct Vector {
+        const char* text;
+        const char* tones;
+      };
+      const Vector vectors[] = {
+          {"HELLO", "4256130644204246400051707535356745444256130416317177377777777777777327204256130"},
+          {"CQ DE N8SDR", "4256130630053420512060014063467364474256130542203670677432354037777317664256130"},
+      };
+      for (const Vector& vec : vectors) {
+        const Js8Plan plan = planJs8(QString::fromLatin1(vec.text), 1500);
+        if (int(plan.samples.size()) != js8FrameSamples()) {
+          qCritical("JS8 vector %s: %d samples, one frame is %d", vec.text, int(plan.samples.size()), js8FrameSamples());
+          return fail("JS8 interop vector did not build one frame");
+        }
+        QString got;
+        for (int sym = 0; sym < 79; ++sym) {
+          const float* at = plan.samples.data() + 24000 + sym * 7680;
+          int best = 0;
+          double bestPower = -1.0;
+          for (int tone = 0; tone < 8; ++tone) {
+            const double w = 2.0 * 3.141592653589793 * (1500.0 + 6.25 * tone) / 48000.0;
+            double re = 0.0;
+            double im = 0.0;
+            for (int n = 0; n < 7680; ++n) {
+              re += at[n] * std::cos(w * n);
+              im += at[n] * std::sin(w * n);
+            }
+            if (re * re + im * im > bestPower) {
+              bestPower = re * re + im * im;
+              best = tone;
+            }
+          }
+          got += QChar(u'0' + best);
+        }
+        if (got != QLatin1String(vec.tones)) {
+          qCritical("JS8 vector %s\n  got  %s\n  want %s", vec.text, qPrintable(got), vec.tones);
+          return fail("JS8 frame does not match JS8Call-improved");
+        }
+      }
+    }
+    // Every frame type JS8Call sends in Normal mode, built by an independent
+    // transcription of JS8Call-improved's packers (Varicode.cpp) and read back
+    // with its DecodedText rules. The compressed ones use the JSC word table.
+    {
+      struct Frame {
+        const char* frame;
+        int type;
+        const char* text;
+      };
+      const Frame frames[] = {
+          {"2tju88QZOkJm", 3, "N8SDR: @HB HEARTBEAT EN80 "},
+          {"2tju88QZPkJn", 3, "N8SDR: @ALLCALL CQ DX EN80 "},
+          {"2Y-pe-ukv++u", 3, "KN4CRD: @ALLCALL CQ CQ CQ  "},
+          {"SN5-lU-2KS00", 3, "KN4CRD: N8SDR SNR? "},
+          {"SN5-lU-2KTaJ", 3, "KN4CRD: N8SDR SNR -12 "},
+          {"VlWb7HSNwyw0", 3, "N8SDR/P: KN4CRD ACK "},
+          {"VlWb7VGGOrO0", 3, "N8SDR: @ALLCALL QSL? "},
+          {"VlWb7HSNwzqY", 3, "N8SDR: KN4CRD HEARTBEAT SNR +03 "},
+          {"VlWb7HSNwyG0", 3, "N8SDR: KN4CRD GRID? "},
+          {"Bu6SibJJqkJm", 1, "VE3/N8SDR: "},
+          {"IMgO0wx8O+L0", 2, "J1Y/P ACK "},
+          {"IY-pe+BnG+e0", 2, "KN4CRD/P SNR +07 "},
+          {"tYuMzoX+++++", 0, "HELLO WORLD"},
+          {"tkdKtlbDs9++", 2, "RICKS FOX 73"},
+          {"tGnDXsWF++++", 4, "GOOD MORNING EVERYONE"},
+      };
+      for (const Frame& f : frames) {
+        const std::vector<float> wave = js8FrameAudio(QString::fromLatin1(f.frame), f.type, 1500);
+        if (int(wave.size()) != js8FrameSamples())
+          return fail("JS8 test frame did not build");
+        const QString got = js8Decode(wave.data(), int(wave.size()), 48000, 1500);
+        if (got != QLatin1String(f.text)) {
+          qCritical("JS8 frame %s\n  got  [%s]\n  want [%s]", f.frame, qPrintable(got), f.text);
+          return fail("JS8 frame type not read the way JS8Call reads it");
+        }
+      }
+    }
     const Js8Plan low = planJs8(QStringLiteral("HELLO"), 1200);
     const Js8Plan high = planJs8(QStringLiteral("WORLD"), 1800);
     if (low.samples.size() != high.samples.size() || low.samples.size() < 1000)
@@ -1372,6 +1455,123 @@ int shellReady(MainWindow& window) {
     if (!pair.contains(QLatin1String("HELLO")) || !pair.contains(QLatin1String("WORLD"))) {
       qCritical("JS8 pair [%s]", qPrintable(pair));
       return fail("JS8 passband missed a station");
+    }
+    // A JS8 period with nothing at the cursor and two stations with their
+    // own clock offsets, decoded the way Js8Engine slices the audio: 2 s
+    // before the 15 s boundary. One frame starts 0.4 s early, one 0.6 s late.
+    {
+      const int lead = 2 * 48000;
+      std::vector<float> slice(static_cast<size_t>(18 * 48000), 0.0f);
+      auto place = [&](const Js8Plan& plan, int shiftSamples) {
+        for (size_t i = 0; i < plan.samples.size(); ++i) {
+          const long long at = lead + shiftSamples + static_cast<long long>(i);
+          if (at >= 0 && at < static_cast<long long>(slice.size()))
+            slice[static_cast<size_t>(at)] += plan.samples[i];
+        }
+      };
+      place(low, -int(0.4 * 48000));
+      place(high, int(0.6 * 48000));
+      std::mt19937 js8Rng(11);
+      std::normal_distribution<float> js8Noise(0.0f, 0.05f);
+      for (float& value : slice)
+        value += js8Noise(js8Rng);
+      QString period;
+      for (const Js8Heard& hit : js8DecodePeriod(slice.data(), int(slice.size()), 48000, 1500, 2000))
+        period += hit.text + QLatin1Char('|');
+      if (!period.contains(QLatin1String("HELLO")) || !period.contains(QLatin1String("WORLD"))) {
+        qCritical("JS8 period [%s]", qPrintable(period));
+        return fail("JS8 passband scan missed a station off the cursor or off time");
+      }
+    }
+  }
+  {
+    // AFC must hold a tone that is on tune and follow one that is 2 Hz off.
+    // The second half-symbol correlator restarts its phase, so the carrier's
+    // own advance has to come out of the estimate.
+    const int rate = 8000;
+    const int separ = 512;
+    const int half = separ / 2;
+    const double baud = 15.625;
+    for (int tone = 0; tone < 4; ++tone) {
+      const double nominal = 1500.0 - 15.0 * baud / 2.0 + double(tone) * baud;
+      for (const double offset : {0.0, 2.0}) {
+        std::vector<float> wave(static_cast<size_t>(separ * 3));
+        for (size_t i = 0; i < wave.size(); ++i)
+          wave[i] = float(std::sin(2.0 * 3.141592653589793 * (nominal + offset) * double(i) / rate + 0.3));
+        SymbolClock clock;
+        clock.setAfcEnabled(true);
+        for (int round = 0; round < 200; ++round) {
+          const double freq = nominal + clock.afcHz();
+          double si0 = 0.0, sq0 = 0.0, si1 = 0.0, sq1 = 0.0;
+          toneIq(wave.data(), int(wave.size()), separ, half, freq, rate, &si0, &sq0);
+          toneIq(wave.data(), int(wave.size()), separ + half, half, freq, rate, &si1, &sq1);
+          clock.observeFreq(si0, sq0, si1, sq1, half, rate, baud, freq, true, true);
+        }
+        if (std::fabs(clock.afcHz() - offset) > 0.3) {
+          qCritical("AFC tone %d offset %.1f settled at %.2f", tone, offset, clock.afcHz());
+          return fail("tone AFC does not settle on the signal");
+        }
+      }
+    }
+    SymbolClock ifk;
+    ifk.setAfcEnabled(true);
+    for (int round = 0; round < 200; ++round)
+      ifk.observeOffset(3.0 - ifk.afcHz(), 15.625, true);
+    if (std::fabs(ifk.afcHz() - 3.0) > 0.1)
+      return fail("IFK AFC does not follow the grid peak");
+  }
+  {
+    // Station A, two seconds of silence, then station B with its symbols half
+    // a symbol away from A's. B must print: the timing loop has to pull in
+    // within a few symbols, not one sample a symbol.
+    auto twoStations = [](const QString& mode, std::vector<float>* out) {
+      std::vector<float> first;
+      std::vector<float> second;
+      if (!buildTxWave(mode, QStringLiteral("CQ CQ DE N8SDR"), 1500, &first) ||
+          !buildTxWave(mode, QStringLiteral("THE QUICK BROWN FOX JUMPS"), 1500, &second))
+        return false;
+      // MFSK16 and Thor 16 are both 15.625 baud: 3072 samples at 48 kHz.
+      // Pad A plus about 2 s of silence to whole symbols, then add half a
+      // symbol, so B's symbols sit exactly half a symbol off A's.
+      constexpr size_t symbol48 = 3072;
+      out->assign(first.begin(), first.end());
+      size_t gap = out->size() + 2 * 48000;
+      gap = (gap + symbol48 - 1) / symbol48 * symbol48 + symbol48 / 2;
+      out->resize(gap, 0.0f);
+      out->insert(out->end(), second.begin(), second.end());
+      out->resize(out->size() + 48000, 0.0f);
+      return true;
+    };
+    auto feedQuiet = [](auto* engine, const std::vector<float>& wave) {
+      engine->setCenterHz(1500);
+      engine->setSquelch(false, 0);
+      engine->setAfc(false);
+      engine->setArmed(true);
+      for (int i = 0; i < int(wave.size()); i += 2048)
+        engine->pushAudio(wave.data() + i, std::min(2048, int(wave.size()) - i), 48000);
+    };
+    std::vector<float> pair;
+    if (!twoStations(QStringLiteral("MFSK16"), &pair))
+      return fail("MFSK16 two-station wave did not build");
+    MfskEngine mfskPull;
+    QString mfskPullGot;
+    QObject::connect(&mfskPull, &MfskEngine::textReady, [&](const QString& text) { mfskPullGot += text; });
+    mfskPull.setMode(QStringLiteral("MFSK16"));
+    feedQuiet(&mfskPull, pair);
+    if (!mfskPullGot.contains(QLatin1String("BROWN FOX"))) {
+      qCritical("MFSK16 second station [%s]", qPrintable(mfskPullGot));
+      return fail("MFSK16 did not pull in on a second station");
+    }
+    if (!twoStations(QStringLiteral("Thor 16"), &pair))
+      return fail("Thor 16 two-station wave did not build");
+    ThorEngine thorPull;
+    QString thorPullGot;
+    QObject::connect(&thorPull, &ThorEngine::textReady, [&](const QString& text) { thorPullGot += text; });
+    thorPull.setMode(QStringLiteral("Thor 16"));
+    feedQuiet(&thorPull, pair);
+    if (!thorPullGot.contains(QLatin1String("BROWN FOX"))) {
+      qCritical("Thor 16 second station [%s]", qPrintable(thorPullGot));
+      return fail("Thor 16 did not pull in on a second station");
     }
   }
   {
@@ -1709,7 +1909,7 @@ int shellReady(MainWindow& window) {
     return fail("WEFAX filtered demod is noisy");
   const std::vector<float> faxFast =
       wefaxModulateTest(faxSpec, 48000, faxGray, faxPixels, faxRows, 1.01);
-  const WefaxImage faxFixed = wefaxDecode(faxSpec, faxFast.data(), int(faxFast.size()), 48000, 1.0);
+  const WefaxImage faxFixed = wefaxDecode(faxSpec, faxFast.data(), int(faxFast.size()), 48000, 10000.0);
   const WefaxImage faxDrift = wefaxDecode(faxSpec, faxFast.data(), int(faxFast.size()), 48000, 0.0);
   if (faxFixed.height < 4 || faxLevel(faxFixed, faxFixed.height - 1, 0.02) > 80 ||
       faxLevel(faxFixed, faxFixed.height - 1, 0.60) < 180)
@@ -1729,7 +1929,8 @@ int shellReady(MainWindow& window) {
       faxLevel(faxWmoBack, faxWmoBack.height - 1, 0.50) > 80)
     return fail("WEFAX white phasing did not align");
   const auto* faxSlant = window.findChild<QSpinBox*>(QStringLiteral("wefaxSlant"));
-  if (!faxSlant || faxSlant->minimum() != -20 || faxSlant->maximum() != 20 ||
+  if (!faxSlant || faxSlant->minimum() != -20000 || faxSlant->maximum() != 20000 ||
+      faxSlant->singleStep() != 10 ||
       !faxSlant->toolTip().contains(QLatin1String("does not key")) ||
       !faxSlant->toolTip().contains(QLatin1String("START")))
     return fail("WEFAX slant is missing");

@@ -697,23 +697,18 @@ void DominoEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
       toneMagnitude(d_->pending.data(), size, at, separ, lowNow(), spacing, rate, 1, magnitude);
       bin = pickBin(magnitude, kTones);
     }
-    const bool repeat = d_->clock.tone() >= 0 && bin.index == d_->clock.tone();
-    if (repeat && binStrong(bin, kTones)) {
-      const int half = std::max(4, separ / 2);
-      const double freq = lowNow() + double(bin.index) * spacing;
-      double si0 = 0.0;
-      double sq0 = 0.0;
-      double si1 = 0.0;
-      double sq1 = 0.0;
-      toneIq(d_->pending.data(), size, at, half, freq, rate, &si0, &sq0);
-      toneIq(d_->pending.data(), size, at + half, half, freq, rate, &si1, &sq1);
-      d_->clock.observeFreq(si0, sq0, si1, sq1, half, rate, spacing, true, true);
-    }
     d_->clock.setTone(bin.index);
     const double instant = toneQuality(bin.peak, bin.sum, kTones);
     d_->metric += (instant - d_->metric) / 8.0;
     d_->rx->setMuted(d_->squelchOn && d_->metric < double(d_->squelch));
     const IfkPick ifk = pickIfk(d_->pending.data(), size, at, separ, lowNow(), spacing, kTones, rate);
+    // IFK tones never repeat, so AFC reads the fine-grid peak against the
+    // nearest nominal tone instead of a half-symbol phase slope.
+    if (binStrong(bin, kTones) && ifk.peak > 0.0) {
+      const double base = lowNow();
+      const double nearest = base + std::round((ifk.hz - base) / spacing) * spacing;
+      d_->clock.observeOffset(ifk.hz - nearest, spacing, true);
+    }
     const QString text = d_->rx->pushTone(ifk.bin);
     ++d_->next;
     if (!text.isEmpty())

@@ -5,5 +5,6 @@
     <file>style.qss</file>
     <file>waterfall.vert.qsb</file>
     <file>waterfall.frag.qsb</file>
+    <file>js8/jsc_words.bin</file>
   </qresource>
 </RCC>

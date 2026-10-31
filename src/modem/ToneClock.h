@@ -258,35 +258,48 @@ public:
     tone_ = tone;
   }
 
-  // +1 moves the next sample later. Only while a tone is actually present
-  // and it changed, which is when the symbol edge is visible.
-  int nudge(double early, double center, double late, int probe, bool strong, bool transition) {
+  // Samples to move the next window. Positive is later. Only while a tone
+  // is present and it changed, which is when the symbol edge is visible.
+  // early and late are the peak level of windows probe samples either side,
+  // probe = separ / 8. A window e samples late holds about separ - |e| of the
+  // right tone, so (late - early) / (early + center + late) is about
+  // -2e / (3 separ) while |e| < probe. Half of the error is taken per
+  // symbol, up to probe, so a new station pulls in within about 10 symbols
+  // the way fldigi's synchronize() does. power = true takes the square root
+  // of energy values first. gain is the fraction of the error taken per
+  // symbol. Olivia's pulses overlap by half a symbol, so its early/late test
+  // is noisy; it passes a small gain and leans on its block synchronizer,
+  // as fldigi does.
+  int nudge(double early, double center, double late, int probe, bool strong, bool transition,
+            bool power = false, double gain = 0.5) {
     if (!strong || !transition || probe < 1)
       return 0;
+    if (power) {
+      early = std::sqrt(std::max(0.0, early));
+      center = std::sqrt(std::max(0.0, center));
+      late = std::sqrt(std::max(0.0, late));
+    }
     const double denom = early + center + late;
     if (denom < 1e-9)
       return 0;
     const double slope = (late - early) / denom;
-    sync_ += slope * double(probe) * 4.0;
-    const double limit = double(probe) * 2.0;
+    const double error = slope * 1.5 * 8.0 * double(probe);
+    sync_ += gain * error;
+    const double limit = double(probe);
     if (sync_ > limit)
       sync_ = limit;
     if (sync_ < -limit)
       sync_ = -limit;
-    if (sync_ >= double(probe)) {
-      sync_ -= double(probe);
-      return 1;
-    }
-    if (sync_ <= -double(probe)) {
-      sync_ += double(probe);
-      return -1;
-    }
-    return 0;
+    const int shift = int(sync_);
+    sync_ -= double(shift);
+    return shift;
   }
 
-  // Half-symbol phase slope. eps > 0 means the tone is sharp of the bin.
+  // Half-symbol phase slope. eps > 0 means the tone is sharp of freqHz.
+  // toneIq restarts its reference at 0 for each half, so the carrier's own
+  // advance over the first half, 2 pi freqHz half / rate, is removed here.
   void observeFreq(double si0, double sq0, double si1, double sq1, int half, int rate, double spacing,
-                   bool repeat, bool strong) {
+                   double freqHz, bool repeat, bool strong) {
     if (!afcOn || !repeat || !strong || half < 4 || spacing <= 0.0 || rate < 1000)
       return;
     const double e0 = si0 * si0 + sq0 * sq0;
@@ -294,23 +307,34 @@ public:
     if (e0 < 1e-8 || e1 < 1e-8)
       return;
     constexpr double pi = 3.14159265358979323846;
-    double delta = std::atan2(sq1, si1) - std::atan2(sq0, si0);
-    if (delta > pi)
-      delta -= 2.0 * pi;
-    if (delta < -pi)
-      delta += 2.0 * pi;
+    const double advance = std::fmod(2.0 * pi * freqHz * double(half) / double(rate), 2.0 * pi);
+    double delta = std::atan2(sq1, si1) - std::atan2(sq0, si0) - advance;
+    delta = std::remainder(delta, 2.0 * pi);
     const double eps = delta * double(rate) / (2.0 * pi * double(half));
     if (std::fabs(eps) > spacing * 0.5)
       return;
-    afcHz_ = 0.8 * afcHz_ + 0.2 * eps;
-    const double cap = spacing * 0.45;
-    if (afcHz_ > cap)
-      afcHz_ = cap;
-    if (afcHz_ < -cap)
-      afcHz_ = -cap;
+    // eps is measured against freqHz, which already holds afcHz_.
+    afcHz_ += 0.2 * eps;
+    clampAfc(spacing);
+  }
+
+  // DominoEX and Thor: IFK tones never repeat, so the half-symbol phase
+  // test never runs. The peak on the fine IFK grid is used instead.
+  // residualHz is the peak minus the nearest nominal tone, which already
+  // holds afcHz_.
+  void observeOffset(double residualHz, double spacing, bool strong) {
+    if (!afcOn || !strong || spacing <= 0.0 || std::fabs(residualHz) > spacing * 0.5)
+      return;
+    afcHz_ += 0.1 * residualHz;
+    clampAfc(spacing);
   }
 
 private:
+  void clampAfc(double spacing) {
+    const double cap = spacing * 0.45;
+    afcHz_ = std::clamp(afcHz_, -cap, cap);
+  }
+
   double sync_ = 0.0;
   double afcHz_ = 0.0;
   int prev_ = -1;

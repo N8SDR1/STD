@@ -396,6 +396,9 @@ double lowHz(const Spec& spec, int centerHz) {
   return double(first) * (8000.0 / symbolLen);
 }
 
+// About one sample per symbol at most, the drift-only rate the receiver
+// had before. Larger steps chase the 50 % pulse overlap.
+constexpr double kOliviaTimingGain = 0.01;
 constexpr int kSyncMargin = 8;
 constexpr int kSyncInteg = 4;
 constexpr double kSyncSnr = 3.2;
@@ -683,7 +686,10 @@ OliviaPlan planOlivia(const QString& mode, const QString& text, int centerHz, bo
       cursor += step;
     }
     phase += step * (double(separ) / 2.0 + double(pulse) / 2.0);
-    const double differ = step * (double(pulse) / 4.0);
+    // fldigi PhaseDiffer is SymbolLen/4 in cosine-table units: a fixed
+    // quarter turn whatever the tone. step * pulse / 4 would be 90 degrees
+    // times the carrier bin, which is 0 or 180 on half the tones.
+    const double differ = twoPi / 4.0;
     phase += plus ? differ : -differ;
     plus = !plus;
     phase = std::fmod(phase, twoPi);
@@ -953,7 +959,7 @@ void OliviaEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
     BinPick bin = pickBin(energy, spec.tones);
     const bool strong = binStrong(bin, spec.tones);
     const bool transition = d_->clock.tone() < 0 || bin.index != d_->clock.tone();
-    const int shift = d_->clock.nudge(early, bin.peak, late, edge, strong, transition);
+    const int shift = d_->clock.nudge(early, bin.peak, late, edge, strong, transition, true, kOliviaTimingGain);
     if (shift != 0 && begin + shift >= 0 && begin + shift + separ <= size) {
       begin += shift;
       d_->origin += shift;
@@ -970,7 +976,7 @@ void OliviaEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
       double sq1 = 0.0;
       toneIq(d_->pending.data(), size, begin, half, freq, rate, &si0, &sq0);
       toneIq(d_->pending.data(), size, begin + half, half, freq, rate, &si1, &sq1);
-      d_->clock.observeFreq(si0, sq0, si1, sq1, half, rate, spec.spacing, true, true);
+      d_->clock.observeFreq(si0, sq0, si1, sq1, half, rate, spec.spacing, freq, true, true);
     }
     d_->clock.setTone(bin.index);
     const double instant = toneQuality(bin.peak, bin.sum, spec.tones);

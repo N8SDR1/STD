@@ -747,7 +747,7 @@ void MfskEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
       double sq1 = 0.0;
       toneIq(d_->pending.data(), size, at, half, freq, rate, &si0, &sq0);
       toneIq(d_->pending.data(), size, at + half, half, freq, rate, &si1, &sq1);
-      d_->clock.observeFreq(si0, sq0, si1, sq1, half, rate, spec->baud, true, true);
+      d_->clock.observeFreq(si0, sq0, si1, sq1, half, rate, spec->baud, freq, true, true);
     }
     d_->clock.setTone(bin.index);
     const QString text = d_->rx->push(magnitude);

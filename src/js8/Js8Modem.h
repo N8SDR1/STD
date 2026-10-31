@@ -43,6 +43,22 @@ Js8Plan planJs8(const QString& text, int toneHz, int maxFrames = 0, int* consume
 // same reference WSJT-X and JS8Call print. A clean local frame is positive.
 QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz, int* snrDb = nullptr);
 
+// One frame from its 12-character JS8Call payload and 3 transmission bits
+// (1 first, 2 last, 4 data). The self-test uses it to send heartbeat,
+// directed, compound and compressed frames that STD does not build itself.
+std::vector<float> js8FrameAudio(const QString& frame12, int type, int toneHz);
+
+struct Js8Heard {
+  int freqHz = 0;
+  QString text;
+  int snrDb = 0;
+};
+// One receive period, the way Js8Engine decodes it. samples are 48 kHz and
+// start leadMs before the 15 s UTC boundary. The cursor frame is tried
+// first, then every JS8 signal in 400-2650 Hz, each at its own time offset.
+std::vector<Js8Heard> js8DecodePeriod(const float* samples, int count, int sampleRateHz, int toneHz,
+                                      int leadMs);
+
 class Js8Engine : public QObject {
   Q_OBJECT
 
@@ -58,6 +74,9 @@ signals:
   void textReady(const QString& text, int snrDb);
 
 private:
+  void publish(qint64 periodStart, int generation, const std::vector<Js8Heard>& hits);
+
+  int generation_ = 0;
   bool armed_ = false;
   int toneHz_ = 1500;
   int rate_ = 48000;
