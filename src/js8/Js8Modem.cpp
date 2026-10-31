@@ -1305,6 +1305,6 @@ void Js8Engine::publish(qint64 periodStart, int generation, const std::vector<Js
     heard_.append(key);
     while (heard_.size() > 32)
       heard_.removeFirst();
-    emit textReady(hit.text, hit.snrDb);
+    emit textReady(hit.text, hit.snrDb, hit.freqHz);
   }
 }

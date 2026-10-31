@@ -225,9 +225,36 @@ int shellReady(MainWindow& window) {
     if (!tagged)
       return fail("contest exchange was not written to Tx1 through Tx3");
   }
-  if (!activity || activity->count() < 18 || activity->itemText(0) != QLatin1String("Standard") ||
+  if (!activity || activity->count() != 17 || activity->itemText(0) != QLatin1String("Standard") ||
       activity->findText(QStringLiteral("ARRL Field Day")) < 0)
     return fail("contest activity list is missing");
+  if (activity->findData(1) >= 0)
+    return fail("EU RSQ is on the FT activity list; MSHV leaves it off");
+  // ARRL International EME and FT Challenge use MSHV's report sequence:
+  // Tx2 the report, Tx3 R+report, Tx6 CQ / CQ FTC. Not a grid exchange.
+  {
+    auto* box = const_cast<QComboBox*>(activity);
+    const int was = box->currentIndex();
+    const struct {
+      int id;
+      const char* cq;
+    } reportContests[] = {{16, "CQ "}, {17, "CQ FTC "}};
+    for (const auto& c : reportContests) {
+      box->setCurrentIndex(box->findData(c.id));
+      const QString t2 = window.findChild<QLineEdit*>(QStringLiteral("tx2"))->text();
+      const QString t3 = window.findChild<QLineEdit*>(QStringLiteral("tx3"))->text();
+      const QString t6 = window.findChild<QLineEdit*>(QStringLiteral("tx6"))->text();
+      const QString t7 = window.findChild<QLineEdit*>(QStringLiteral("txExtra"))->text();
+      const bool report = t2.contains(QRegularExpression(QStringLiteral("[+-]\\d\\d$")));
+      const bool roger = t3.contains(QRegularExpression(QStringLiteral(" R[+-]\\d\\d$")));
+      if (!report || !roger || !t6.startsWith(QLatin1String(c.cq)) || !t7.endsWith(QLatin1String("QSOB4"))) {
+        qCritical("activity %d: [%s] [%s] [%s] [%s]", c.id, qPrintable(t2), qPrintable(t3), qPrintable(t6),
+                  qPrintable(t7));
+        return fail("EME / FT Challenge lines do not match MSHV");
+      }
+    }
+    box->setCurrentIndex(was);
+  }
   const auto* cqType = window.findChild<QComboBox*>("txCqType");
   const char* cqNames[] = {"CQ", "CQ MDX", "CQ DX", "CQ UP", "CQ IOTA", "CQ POTA", "CQ SOTA",
                            "CQ BOTA", "CQ WWFF", "CQ AF"};
@@ -2090,6 +2117,77 @@ int shellReady(MainWindow& window) {
                            QStringLiteral("dipole"), {spot}, 1700000000, 1, 1)
            .contains("dipole"))
     return fail("PSK Reporter dropped the antenna");
+  // IPFIX sets are padded to four bytes, as MSHV and WSJT-X send them. Walk
+  // the sets after the 16-byte header: each length is a multiple of four
+  // and the sets add up to the packet.
+  for (const QString& rxName : {QStringLiteral("N8SDR"), QStringLiteral("KN4CRD"), QStringLiteral("VE3/N8SDR")}) {
+    const QByteArray padded = pskReporterDatagram(rxName, QStringLiteral("EM79"), QStringLiteral("STD 0.1.0"),
+                                                  QStringLiteral("dipole"), {spot}, 1700000000, 1, 1);
+    int at = 16;
+    int sets = 0;
+    while (at + 4 <= padded.size()) {
+      const int length = (quint8(padded.at(at + 2)) << 8) | quint8(padded.at(at + 3));
+      if (length < 4 || length % 4 != 0)
+        return fail("PSK Reporter set is not padded to four bytes");
+      at += length;
+      ++sets;
+    }
+    if (at != padded.size() || sets != 4)
+      return fail("PSK Reporter sets do not add up to the packet");
+  }
+  // A busy period: 120 spots must all go out, split across packets that
+  // each stay inside the 952-byte UDP limit.
+  {
+    QVector<PskSpot> many;
+    for (int i = 0; i < 120; ++i) {
+      PskSpot s = spot;
+      s.call = QStringLiteral("K%1AB").arg(i % 10) + QChar(u'A' + i / 10);
+      s.freqHz = 14074000 + i * 10;
+      many.append(s);
+    }
+    quint32 seq = 5;
+    const QVector<QByteArray> packets = pskReporterDatagrams(QStringLiteral("N8SDR"), QStringLiteral("EM79"),
+                                                             QStringLiteral("STD 0.1.0"), QString(), many,
+                                                             1700000000, &seq, 1);
+    for (const QByteArray& p : packets) {
+      if (p.isEmpty() || p.size() > kPskMaxDatagram)
+        return fail("PSK Reporter packet is over the UDP limit");
+    }
+    for (const PskSpot& s : many) {
+      bool sent = false;
+      for (const QByteArray& p : packets)
+        sent = sent || p.contains(char(s.call.size()) + s.call.toLatin1());
+      if (!sent)
+        return fail("PSK Reporter dropped a spot from a busy period");
+    }
+    if (packets.size() < 2 || seq != quint32(5 + packets.size()))
+      return fail("PSK Reporter did not split a busy period");
+  }
+  // JS8: the sender is the call before the colon, never the addressee.
+  {
+    struct Js8Spot {
+      const char* text;
+      const char* call;
+      const char* grid;
+    };
+    const Js8Spot js8Spots[] = {
+        {"KN4CRD: W1AW SNR? ", "KN4CRD", ""},
+        {"N8SDR: @HB HEARTBEAT EN80 ", "N8SDR", "EN80"},
+        {"N8SDR: @ALLCALL CQ DX EN80 ", "N8SDR", "EN80"},
+        {"VE3/N8SDR: ", "VE3/N8SDR", ""},
+        {"N8SDR/P: KN4CRD ACK ", "N8SDR/P", ""},
+    };
+    for (const Js8Spot& s : js8Spots) {
+      if (!pskSpotFromJs8(QString::fromLatin1(s.text), &spotCall, &spotGrid) ||
+          spotCall != QLatin1String(s.call) || spotGrid != QLatin1String(s.grid)) {
+        qCritical("JS8 spot [%s] -> [%s] [%s]", s.text, qPrintable(spotCall), qPrintable(spotGrid));
+        return fail("PSK Reporter picked the wrong JS8 sender");
+      }
+    }
+    if (pskSpotFromJs8(QStringLiteral("J1Y/P ACK "), &spotCall, &spotGrid) ||
+        pskSpotFromJs8(QStringLiteral("HELLO WORLD"), &spotCall, &spotGrid))
+      return fail("PSK Reporter spotted a JS8 frame with no sender");
+  }
   const QByteArray live = QsoLog::decodeDatagram(QStringLiteral("FT8"), -15, 0.2f, 1200,
                                                  QStringLiteral("CQ N8SDR EM79"), QTime(19, 30));
   if (live.size() < 12 || quint8(live.at(0)) != 0xad || quint8(live.at(8)) != 0 || quint8(live.at(11)) != 2 ||

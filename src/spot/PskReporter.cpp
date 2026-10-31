@@ -36,7 +36,11 @@ void appendText(QByteArray* out, const QString& text) {
   out->append(bytes.constData(), count);
 }
 
-void writeLength(QByteArray* record) {
+// IPFIX sets are padded with zeros to a multiple of four bytes, as MSHV
+// and WSJT-X do. The set length includes the padding.
+void padAndWriteLength(QByteArray* record) {
+  while (record->size() % 4 != 0)
+    record->append(char(0));
   const int length = record->size();
   (*record)[2] = char((length >> 8) & 0xff);
   (*record)[3] = char(length & 0xff);
@@ -82,6 +86,37 @@ const QByteArray kTxDescriptor = QByteArray::fromHex(
 
 }  // namespace
 
+QVector<QByteArray> pskReporterDatagrams(const QString& rxCall, const QString& rxGrid,
+                                         const QString& program, const QString& antenna,
+                                         const QVector<PskSpot>& spots, quint32 unixTime,
+                                         quint32* sequence, quint32 randomId) {
+  // As many spots as fit in one datagram, then the next datagram. One spot
+  // alone always fits: every text field is capped well below the limit.
+  QVector<QByteArray> packets;
+  quint32 next = sequence ? *sequence : 0;
+  int at = 0;
+  while (at < spots.size()) {
+    QByteArray best;
+    int taken = 0;
+    for (int count = 1; at + count <= spots.size(); ++count) {
+      const QByteArray packet = pskReporterDatagram(rxCall, rxGrid, program, antenna, spots.mid(at, count),
+                                                    unixTime, next + 1, randomId);
+      if (packet.isEmpty())
+        break;
+      best = packet;
+      taken = count;
+    }
+    if (taken == 0)
+      break;
+    packets.append(best);
+    ++next;
+    at += taken;
+  }
+  if (sequence)
+    *sequence = next;
+  return packets;
+}
+
 QByteArray pskReporterDatagram(const QString& rxCall, const QString& rxGrid, const QString& program,
                                const QString& antenna, const QVector<PskSpot>& spots, quint32 unixTime,
                                quint32 sequence, quint32 randomId) {
@@ -97,9 +132,7 @@ QByteArray pskReporterDatagram(const QString& rxCall, const QString& rxGrid, con
   appendText(&rx, rxGrid.trimmed().toUpper().left(6));
   appendText(&rx, program.left(64));
   appendText(&rx, antenna.left(64));
-  rx.append(char(0));
-  rx.append(char(0));
-  writeLength(&rx);
+  padAndWriteLength(&rx);
 
   QByteArray tx;
   tx.append(QByteArray::fromHex("50E3"));
@@ -120,12 +153,10 @@ QByteArray pskReporterDatagram(const QString& rxCall, const QString& rxGrid, con
   }
   if (tx.size() <= 4)
     return {};
-  tx.append(char(0));
-  tx.append(char(0));
-  writeLength(&tx);
+  padAndWriteLength(&tx);
 
   const int total = 16 + kRxDescriptor.size() + kTxDescriptor.size() + rx.size() + tx.size();
-  if (total > 1400 || total > 65535)
+  if (total > kPskMaxDatagram)
     return {};
   QByteArray packet;
   packet.reserve(total);
@@ -191,6 +222,27 @@ bool pskSpotFromMessage(const QString& message, QString* call, QString* grid) {
     const QString next = cleanToken(words.at(wordAt + 1));
     if (looksLikeGrid(next))
       *grid = next;
+  }
+  return true;
+}
+
+bool pskSpotFromJs8(const QString& text, QString* call, QString* grid) {
+  if (!call || !grid)
+    return false;
+  call->clear();
+  grid->clear();
+  static const QRegularExpression split(QStringLiteral("\\s+"));
+  const QStringList words = text.toUpper().split(split, Qt::SkipEmptyParts);
+  if (words.isEmpty() || !words.first().endsWith(QLatin1Char(':')))
+    return false;
+  const QString from = bareCall(words.first());
+  if (from.isEmpty())
+    return false;
+  *call = from;
+  if (words.size() >= 3 && (words.at(1) == QLatin1String("@HB") || words.at(1) == QLatin1String("@ALLCALL"))) {
+    const QString last = cleanToken(words.last());
+    if (looksLikeGrid(last))
+      *grid = last;
   }
   return true;
 }
@@ -289,20 +341,23 @@ void PskUploader::sendTo(const QHostAddress& address) {
   const int count = batch_.size();
   const QString antenna =
       QSettings().value(QStringLiteral("dx/reportAntenna")).toString().trimmed().left(64);
-  const QByteArray packet = pskReporterDatagram(
+  const QVector<QByteArray> packets = pskReporterDatagrams(
       rxCall_, rxGrid_, QStringLiteral("STD ") + QLatin1String(STD_VERSION), antenna, batch_,
-      quint32(QDateTime::currentSecsSinceEpoch()), ++sequence_, randomId_);
+      quint32(QDateTime::currentSecsSinceEpoch()), &sequence_, randomId_);
   batch_.clear();
-  if (packet.isEmpty() || !socket_) {
+  if (packets.isEmpty() || !socket_) {
     emit status(QStringLiteral(
         "PSK Reporter did not send. The spot packet was empty. Nothing was keyed. START was not sent."));
     return;
   }
-  const qint64 wrote = socket_->writeDatagram(packet, address, port_);
-  if (wrote != packet.size())
-    emit status(QStringLiteral(
-        "PSK Reporter did not send. The UDP write failed. Nothing was keyed. START was not sent."));
-  else
-    emit status(QStringLiteral("PSK Reporter sent %1 spot(s). Nothing was keyed. START was not sent.")
-                    .arg(count));
+  for (const QByteArray& packet : packets) {
+    if (socket_->writeDatagram(packet, address, port_) != packet.size()) {
+      emit status(QStringLiteral(
+          "PSK Reporter did not send. The UDP write failed. Nothing was keyed. START was not sent."));
+      return;
+    }
+  }
+  emit status(QStringLiteral("PSK Reporter sent %1 spot(s) in %2 packet(s). Nothing was keyed. START was not sent.")
+                  .arg(count)
+                  .arg(packets.size()));
 }

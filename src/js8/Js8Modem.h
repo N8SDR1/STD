@@ -71,7 +71,8 @@ public:
   void pushAudio(const float* samples, int count, int sampleRateHz);
 
 signals:
-  void textReady(const QString& text, int snrDb);
+  // freqHz is that station's audio frequency, not the cursor.
+  void textReady(const QString& text, int snrDb, int freqHz);
 
 private:
   void publish(qint64 periodStart, int generation, const std::vector<Js8Heard>& hits);

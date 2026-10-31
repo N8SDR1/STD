@@ -662,9 +662,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   applyHellSquelch();
   applyAfc();
   js8_ = new Js8Engine(this);
-  connect(js8_, &Js8Engine::textReady, this, [this](const QString& text, int snrDb) {
+  connect(js8_, &Js8Engine::textReady, this, [this](const QString& text, int snrDb, int freqHz) {
     appendRxEcho(text);
-    noteDecodeSpot(QStringLiteral("JS8"), text, snrDb, waterfall_ ? waterfall_->rxHz() : 1500);
+    noteDecodeSpot(QStringLiteral("JS8"), text, snrDb, freqHz);
   });
   wspr_ = new WsprEngine(this);
   connect(wspr_, &WsprEngine::spotDecoded, this, [this](const WsprSpot& spot, qint64 periodStartMs) {
@@ -1073,8 +1073,9 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       int id;
       const char* name;
     } activities[] = {
+        // MSHV leaves EU RSQ And Serial Number off this list: it is a JTMS,
+        // FSK, ISCAT, and JT6M exchange and does not pack as a 77-bit message.
         {0, "Standard"},
-        {1, "EU RSQ And Serial Number"},
         {2, "NA VHF Contest"},
         {3, "EU VHF Contest"},
         {4, "ARRL Field Day"},
@@ -2012,7 +2013,8 @@ void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int
     return;
   QString call;
   QString grid;
-  if (!pskSpotFromMessage(message, &call, &grid))
+  const bool js8 = mode.startsWith(QLatin1String("JS8"), Qt::CaseInsensitive);
+  if (!(js8 ? pskSpotFromJs8(message, &call, &grid) : pskSpotFromMessage(message, &call, &grid)))
     return;
   qint64 dial = liveDialHz_;
   if (dial < 100000 && profile_)
@@ -5597,16 +5599,20 @@ void MainWindow::refreshTxFields() {
     lines[2] = joinParts({his, mine, QStringLiteral("R"), token});
     signoff();
     lines[5] = joinParts({QStringLiteral("CQ TEST"), mine, grid});
-  } else if (activity == 2 || activity == 5 || activity == 13 || activity == 16)
-    gridContest(activity == 16 ? QStringLiteral("CQ") : QStringLiteral("CQ TEST"));
+  } else if (activity == 2 || activity == 5 || activity == 13)
+    gridContest(QStringLiteral("CQ TEST"));
+  else if (activity == 16 || activity == 17) {
+    // ARRL International EME and FT Challenge keep the standard report
+    // sequence (grid, report, R+report) with their own CQ, as in MSHV.
+    signoff();
+    lines[5] = joinParts({activity == 17 ? QStringLiteral("CQ FTC") : QStringLiteral("CQ"), mine, grid});
+  }
   else if (activity == 6 || activity == 7 || activity == 8)
     gridContest(QStringLiteral("CQ WW"));
   else if (activity == 14)
     gridContest(QStringLiteral("CQ"));
   else if (activity == 15)
     gridContest(QStringLiteral("CQ NCCC"));
-  else if (activity == 17)
-    gridContest(QStringLiteral("CQ FTC"));
   else if (activity == 3) {
     const QString token = sentReport + serialText();
     lines[0] = joinParts({his, mine, grid});
@@ -7852,44 +7858,49 @@ QString MainWindow::maybeLogQso(const QString& sent) {
   if (grid4.size() > 4)
     grid4 = grid4.left(4);
   const QString sentReport = txReport_.trimmed().isEmpty() ? QStringLiteral("+00") : txReport_.trimmed().toUpper();
+  // CONTEST_ID values are MSHV's (config_str_con.h s_cont_name_id), so
+  // MSHV's Cabrillo export and other loggers file the QSO under the contest.
   if (activity == 4) {
     contestId = QStringLiteral("ARRL-FIELD-DAY");
     stx = settings.value(QStringLiteral("tx/fdExch")).toString().trimmed().toUpper();
-    const QStringList parts = stx.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-    if (parts.size() >= 2) {
-      fdClass = parts.first();
-      section = parts.last();
-    }
   } else if (activity == 1 || activity == 3) {
-    contestId = activity == 3 ? QStringLiteral("EU-VHF") : QStringLiteral("EU-RSQ");
+    contestId = activity == 3 ? QStringLiteral("EU-VHF-CONTEST") : QStringLiteral("EU-RSQ-AND-SN");
     stx = sentReport + serialText();
   } else if (activity == 9 || activity == 10 || activity == 11 || activity == 12) {
-    contestId = activity == 9    ? QStringLiteral("FT-ROUNDUP")
-                : activity == 10 ? QStringLiteral("BUCURESTI-DIGI")
+    contestId = activity == 9    ? QStringLiteral("FT8-RU")
+                : activity == 10 ? QStringLiteral("BUCURESTI-DIGITAL")
                 : activity == 11 ? QStringLiteral("FT4-SPRINT")
-                                 : QStringLiteral("PRO-DIGI");
+                                 : QStringLiteral("FT4-PDC");
     QString ru = settings.value(QStringLiteral("tx/ruExch"), QStringLiteral("DX")).toString().trimmed().toUpper();
     stx = (ru.isEmpty() || ru == QLatin1String("DX")) ? serialText() : ru;
+  } else if (activity == 16 || activity == 17) {
+    // A report exchange: the reports are RST_SENT and RST_RCVD.
+    contestId = activity == 16 ? QStringLiteral("ARRL-EME") : QStringLiteral("FT-CHALLENGE");
   } else if (activity == 2 || activity == 5 || activity == 6 || activity == 7 || activity == 8 ||
-             activity == 13 || activity == 14 || activity == 15 || activity == 16 || activity == 17) {
-    contestId = activity == 2    ? QStringLiteral("NA-VHF")
+             activity == 13 || activity == 14 || activity == 15) {
+    contestId = activity == 2    ? QStringLiteral("NA-VHF-CONTEST")
                 : activity == 5  ? QStringLiteral("ARRL-DIGI")
                 : activity == 6  ? QStringLiteral("WW-DIGI")
                 : activity == 7  ? QStringLiteral("FT4-DX")
                 : activity == 8  ? QStringLiteral("FT8-DX")
-                : activity == 13 ? QStringLiteral("CQ-WW-VHF")
+                : activity == 13 ? QStringLiteral("CQ-VHF")
                 : activity == 15 ? QStringLiteral("NCCC-SPRINT")
-                : activity == 16 ? QStringLiteral("ARRL-EME")
-                : activity == 17 ? QStringLiteral("FT-CHALLENGE")
                                  : QStringLiteral("PILEUP");
     stx = grid4;
   }
   const bool gridExchange = activity == 2 || activity == 5 || activity == 6 || activity == 7 ||
-                           activity == 8 || activity == 13 || activity == 14 || activity == 15 ||
-                           activity == 16 || activity == 17;
-  QString srx = activity == 0 ? QString() : heardExchange(qsoRxMessage_);
+                           activity == 8 || activity == 13 || activity == 14 || activity == 15;
+  QString srx = (activity == 0 || activity == 16 || activity == 17) ? QString() : heardExchange(qsoRxMessage_);
   if (gridExchange && srx.isEmpty())
     srx = qsoGrid_;
+  if (activity == 4) {
+    // ADIF CLASS and ARRL_SECT are the other station's Field Day exchange.
+    const QStringList heard = srx.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (heard.size() >= 2) {
+      fdClass = heard.first();
+      section = heard.last();
+    }
+  }
 
   QsoLog::Record record;
   record.call = qsoCall_;

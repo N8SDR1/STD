@@ -27,11 +27,22 @@ struct PskSpot {
   quint32 unixTime = 0;
 };
 
-// Empty when the receiver call or the spot list is empty.
+// MSHV's UDP limit: 1000-byte IP packet less the IPv6 and UDP headers.
+constexpr int kPskMaxDatagram = 952;
+
+// Empty when the receiver call or the spot list is empty, or when the
+// spots do not fit in kPskMaxDatagram bytes.
 QByteArray pskReporterDatagram(const QString& rxCall, const QString& rxGrid,
                                const QString& program, const QString& antenna,
                                const QVector<PskSpot>& spots, quint32 unixTime,
                                quint32 sequence, quint32 randomId);
+
+// Every spot, split across as many datagrams as needed. sequence is the
+// last sequence number used; it is advanced once per datagram.
+QVector<QByteArray> pskReporterDatagrams(const QString& rxCall, const QString& rxGrid,
+                                         const QString& program, const QString& antenna,
+                                         const QVector<PskSpot>& spots, quint32 unixTime,
+                                         quint32* sequence, quint32 randomId);
 
 // Map for the callsign already saved under Options → User.
 // No callsign: the map with no station filter.
@@ -40,6 +51,11 @@ QString pskReporterMapUrl(const QString& call);
 // Sender call and optional locator from a decode line.
 // "CQ N8SDR EM79", "W1AW N8SDR FN31", "N8SDR EM79 37".
 bool pskSpotFromMessage(const QString& message, QString* call, QString* grid);
+
+// JS8 text as JS8Call prints it. The sender is the call before the colon:
+// "KN4CRD: N8SDR SNR?" is KN4CRD. A heartbeat or CQ ends with the grid.
+// A continuation frame with no "CALL:" names no sender and is not a spot.
+bool pskSpotFromJs8(const QString& text, QString* call, QString* grid);
 
 // JT65A and Q65A are reported as JT65 and Q65.
 QString pskReporterModeName(const QString& mode);
