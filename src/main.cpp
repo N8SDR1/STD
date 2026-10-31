@@ -1090,6 +1090,12 @@ int shellReady(MainWindow& window) {
     qCritical("DominoEX CQ decode [%s]", qPrintable(dominoCqBack));
     return fail("DominoEX did not decode");
   }
+  const QString dominoOff =
+      dominoDecode(QStringLiteral("DominoEX 16"), dominoCq.data(), int(dominoCq.size()), 48000, 1508);
+  if (!dominoOff.contains(QLatin1String("CQ"))) {
+    qCritical("DominoEX offset [%s]", qPrintable(dominoOff));
+    return fail("DominoEX half-spacing mistune did not decode");
+  }
   const auto* domino16 = window.findChild<QAction*>(QStringLiteral("modeDominoex16"));
   if (!domino16 || !domino16->toolTip().contains(QLatin1String("15.625")) ||
       !domino16->toolTip().contains(QLatin1String("START")) ||
@@ -1114,6 +1120,12 @@ int shellReady(MainWindow& window) {
   if (!thorCqBack.contains(QLatin1String("CQ"))) {
     qCritical("Thor CQ decode [%s]", qPrintable(thorCqBack));
     return fail("Thor did not decode");
+  }
+  const QString thorOff =
+      thorDecode(QStringLiteral("Thor 16"), thorCq.data(), int(thorCq.size()), 48000, 1508);
+  if (!thorOff.contains(QLatin1String("CQ"))) {
+    qCritical("Thor offset [%s]", qPrintable(thorOff));
+    return fail("Thor half-spacing mistune did not decode");
   }
   const auto* thor16 = window.findChild<QAction*>(QStringLiteral("modeThor16"));
   if (!thor16 || !thor16->toolTip().contains(QLatin1String("15.625")) ||

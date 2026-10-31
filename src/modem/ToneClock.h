@@ -316,3 +316,62 @@ private:
   int prev_ = -1;
   int tone_ = -1;
 };
+
+// Fldigi DominoEX / Thor paths. The IFK difference is counted on this
+// grid, not on the 18 tone centers, so a fraction of a spacing still
+// decodes. extones is NUMTONES/2. Not the slow-CPU 3-path cut.
+inline constexpr int kIfkPaths = 5;
+
+struct IfkPick {
+  int bin = 0;
+  double peak = 0.0;
+  double second = 0.0;
+  double hz = 0.0;
+};
+
+inline int ifkToneBin(int tone, int tones = 18) {
+  const int extra = std::max(1, tones / 2);
+  return extra * kIfkPaths + tone * kIfkPaths;
+}
+
+inline IfkPick pickIfk(const float* samples, int count, int begin, int length, double tone0Hz,
+                       double spacing, int tones, int rate) {
+  IfkPick pick;
+  pick.bin = ifkToneBin(0, tones);
+  if (!samples || length < 8 || begin < 0 || begin + length > count || spacing <= 0.0 || tones < 2 ||
+      rate < 1000)
+    return pick;
+  const int extra = std::max(1, tones / 2);
+  const int bins = (tones + extra * 2) * kIfkPaths;
+  const double stepHz = spacing / double(kIfkPaths);
+  const double origin = tone0Hz - double(extra) * spacing;
+  const double stepBase = 2.0 * 3.14159265358979323846 / double(rate);
+  double best = -1.0;
+  double second = -1.0;
+  for (int bin = 0; bin < bins; ++bin) {
+    const double freq = origin + double(bin) * stepHz;
+    if (freq < 40.0 || freq > double(rate) * 0.45)
+      continue;
+    const double step = stepBase * freq;
+    double phase = 0.0;
+    double si = 0.0;
+    double sq = 0.0;
+    for (int i = 0; i < length; ++i) {
+      const double sample = samples[begin + i];
+      si += sample * std::sin(phase);
+      sq += sample * std::cos(phase);
+      phase += step;
+    }
+    const double power = si * si + sq * sq;
+    if (power > best) {
+      second = best;
+      best = power;
+      pick.bin = bin;
+      pick.hz = freq;
+    } else if (power > second)
+      second = power;
+  }
+  pick.peak = best > 0.0 ? best : 0.0;
+  pick.second = second > 0.0 ? second : 0.0;
+  return pick;
+}

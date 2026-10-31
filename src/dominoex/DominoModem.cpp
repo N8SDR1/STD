@@ -378,14 +378,15 @@ const short kDecode[4096] = {
 
 class NibbleRx {
 public:
-  void setPrev(int tone) { prev_ = tone; }
+  void setPrevBin(int bin) { prev_ = bin; }
 
   void setMuted(bool muted) { muted_ = muted; }
 
-  QString pushTone(int tone) {
-    int diff = tone - prev_;
-    prev_ = tone;
-    int nibble = int(std::floor(double(diff) + 0.5)) - 2;
+  // bin is a pickIfk index. One tone step is kIfkPaths bins.
+  QString pushTone(int bin) {
+    const double diff = double(bin - prev_) / double(kIfkPaths);
+    prev_ = bin;
+    int nibble = int(std::floor(diff + 0.5)) - 2;
     if (nibble < 0)
       nibble += kTones;
     if (nibble < 0 || nibble > 15) {
@@ -420,7 +421,7 @@ private:
 
   unsigned char buf_[3] = {};
   int count_ = 0;
-  int prev_ = 0;
+  int prev_ = ifkToneBin(0, kTones);
   bool muted_ = false;
 };
 
@@ -477,26 +478,16 @@ double lowHz(const Spec& spec, int centerHz) {
   return double(centerHz) - double(kTones - 1) * spacingHz(spec) / 2.0;
 }
 
-int peakTone(const double* magnitude) {
-  int best = 0;
-  for (int tone = 1; tone < kTones; ++tone) {
-    if (magnitude[tone] > magnitude[best])
-      best = tone;
-  }
-  return best;
-}
-
 QString textFromAudio(const Spec& spec, const float* samples, int count, int sampleRateHz, int centerHz) {
   const int separ = std::max(8, int(std::lround(double(sampleRateHz) / spec.baud)));
   const int symbols = count / separ;
   NibbleRx rx;
   QString text;
-  double magnitude[kTones];
   const double low = lowHz(spec, centerHz);
   const double spacing = spacingHz(spec);
   for (int s = 0; s < symbols; ++s) {
-    toneMagnitude(samples, count, s * separ, separ, low, spacing, sampleRateHz, 1, magnitude);
-    text += rx.pushTone(peakTone(magnitude));
+    const IfkPick ifk = pickIfk(samples, count, s * separ, separ, low, spacing, kTones, sampleRateHz);
+    text += rx.pushTone(ifk.bin);
   }
   return text;
 }
@@ -673,8 +664,9 @@ void DominoEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
     d_->next = 0;
     d_->rx = std::make_unique<NibbleRx>();
     if (symbolLock.at >= separ) {
-      toneMagnitude(d_->pending.data(), pending, symbolLock.at - separ, separ, low, spacing, rate, 1, magnitude);
-      d_->rx->setPrev(peakTone(magnitude));
+      const IfkPick seeded =
+          pickIfk(d_->pending.data(), pending, symbolLock.at - separ, separ, low, spacing, kTones, rate);
+      d_->rx->setPrevBin(seeded.bin);
     }
   }
   if (!d_->rx)
@@ -721,7 +713,8 @@ void DominoEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
     const double instant = toneQuality(bin.peak, bin.sum, kTones);
     d_->metric += (instant - d_->metric) / 8.0;
     d_->rx->setMuted(d_->squelchOn && d_->metric < double(d_->squelch));
-    const QString text = d_->rx->pushTone(bin.index);
+    const IfkPick ifk = pickIfk(d_->pending.data(), size, at, separ, lowNow(), spacing, kTones, rate);
+    const QString text = d_->rx->pushTone(ifk.bin);
     ++d_->next;
     if (!text.isEmpty())
       emit textReady(text);

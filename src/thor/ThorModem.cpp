@@ -319,7 +319,7 @@ public:
   explicit ToneRx(const Spec& spec)
       : inlv_(true, spec.depth), dec_(spec.constraint, spec.poly1, spec.poly2, spec.traceback) {}
 
-  void setPrev(int tone) { prev_ = tone; }
+  void setPrevBin(int bin) { prev_ = bin; }
 
   void setSquelch(bool on, int level) {
     squelchOn_ = on;
@@ -330,12 +330,13 @@ public:
   // K=7 traceback keep moving without a new nibble. fldigi does this on a
   // flat bin. A finished buffer has no bins after the last tone, and the
   // last characters sit in that delay until something clocks them out.
-  QString pushTone(int tone) {
-    if (tone < 0)
+  // bin is a pickIfk index, or negative to puncture. One tone step is kIfkPaths bins.
+  QString pushTone(int bin) {
+    if (bin < 0)
       return pushSoft(nullptr);
-    const int diff = tone - prev_;
-    prev_ = tone;
-    const int raw = int(std::floor(double(diff) + 0.5));
+    const double diff = double(bin - prev_) / double(kIfkPaths);
+    prev_ = bin;
+    const int raw = int(std::floor(diff + 0.5));
     if (preambleDetect(raw)) {
       flushRx();
       return {};
@@ -440,7 +441,7 @@ private:
   double met_ = 0.0;
   bool squelchOn_ = false;
   int squelch_ = 0;
-  int prev_ = 0;
+  int prev_ = ifkToneBin(0, kTones);
   int twoCount_ = 0;
   int preambleCheck_ = 0;
   bool neg16_ = false;
@@ -473,26 +474,16 @@ double lowHz(const Spec& spec, int centerHz) {
   return double(centerHz) - double(kTones - 1) * spacingHz(spec) / 2.0;
 }
 
-int peakTone(const double* magnitude) {
-  int best = 0;
-  for (int tone = 1; tone < kTones; ++tone) {
-    if (magnitude[tone] > magnitude[best])
-      best = tone;
-  }
-  return best;
-}
-
 QString textFromAudio(const Spec& spec, const float* samples, int count, int sampleRateHz, int centerHz) {
   const int separ = std::max(8, int(std::lround(double(sampleRateHz) / spec.baud)));
   const int symbols = count / separ;
   ToneRx rx(spec);
   QString text;
-  double magnitude[kTones];
   const double low = lowHz(spec, centerHz);
   const double spacing = spacingHz(spec);
   for (int s = 0; s < symbols; ++s) {
-    toneMagnitude(samples, count, s * separ, separ, low, spacing, sampleRateHz, 1, magnitude);
-    text += rx.pushTone(peakTone(magnitude));
+    const IfkPick ifk = pickIfk(samples, count, s * separ, separ, low, spacing, kTones, sampleRateHz);
+    text += rx.pushTone(ifk.bin);
   }
   // The K=7 traceback is 45 and the 4 by 10 interleaver holds the tail.
   // K=15 uses a traceback of 180 and a depth of 50. fldigi keeps
@@ -681,7 +672,9 @@ void ThorEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
     d_->rx = std::make_unique<ToneRx>(*spec);
     if (symbolLock.at >= separ) {
       toneMagnitude(d_->pending.data(), pending, symbolLock.at - separ, separ, low, spacing, rate, 1, magnitude);
-      d_->rx->setPrev(peakTone(magnitude));
+      const IfkPick seeded =
+          pickIfk(d_->pending.data(), pending, symbolLock.at - separ, separ, low, spacing, kTones, rate);
+      d_->rx->setPrevBin(seeded.bin);
     }
   }
   if (!d_->rx)
@@ -727,7 +720,8 @@ void ThorEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
     }
     d_->clock.setTone(bin.index);
     const bool flat = bin.sum < 1e-6 || bin.peak * double(kTones) < bin.sum * 1.2;
-    const QString text = d_->rx->pushTone(flat ? -1 : bin.index);
+    const IfkPick ifk = pickIfk(d_->pending.data(), size, at, separ, lowNow(), spacing, kTones, rate);
+    const QString text = d_->rx->pushTone(flat ? -1 : ifk.bin);
     ++d_->next;
     if (!text.isEmpty())
       emit textReady(text);
