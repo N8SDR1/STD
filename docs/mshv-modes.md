@@ -47,7 +47,7 @@ Hell, RTTY, BPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and WEFAX come from F
 not from `ModeStr`. Feld Hell is 17.5 columns/s, 14 pixels, 2 ms raised cosine,
 ink on the carrier. Slow Hell is 2.1875 columns/s. X5 is 87.5 and X9 is 157.5,
 hard keyed. FSK Hell, FSK Hell-105, and Hell 80 are two-tone, reverse off,
-shifts 122.5, 55, and 300 Hz. The receive tape reads that shift. RTTY is 45.45 baud, 170 Hz, mark high on DIGU. BPSK is
+shifts 122.5, 55, and 300 Hz. The receive tape reads that shift. RTTY is 45.45 baud and 170 Hz selected, mark high on DIGU unless Reverse is on. The transmit pane also sets Fldigi's other baud rates and shifts, shaped keying, and ITA-2 figures. BPSK is
 PSK31, PSK63, PSK125, PSK250, PSK500, and PSK1000. Olivia and Contestia are
 4/250, 8/250, 8/500, 16/500, 16/1000, and 32/1000, Gray-coded tones from Pawel
 Jalocha's block code. MFSK is MFSK4, MFSK8, MFSK11, MFSK16, MFSK22, MFSK31,
@@ -64,6 +64,6 @@ folder. They are still being proved on the air.
 
 MT63-500S, MT63-500L, MT63-1000S, MT63-1000L, MT63-2000S, and MT63-2000L key.
 QPSK31, QPSK63, QPSK125, QPSK250, and QPSK500 key. 8PSK is not in this build.
-JS8 Normal keys. It is the JS8Call-improved 15 second frame. Fast, Turbo, Slow, and Ultra are not in this build.
-WSPR-2 keys. It is the WSJT-X / JTDX-improved frame, not an MSHV generator. PSK Reporter upload is off until Options → Network Configuration enables it. The map uses the callsign already saved under Options → User.
+JS8 Normal keys. It is the JS8Call-improved 15 second frame. TX waits for the next 15 second UTC period and sends one frame, starting half a second in. A longer message continues on the following periods. Fast, Turbo, Slow, and Ultra are not in this build. Changing mode clears the receive and transmit panes.
+WSPR-2 keys. It is the WSJT-X / JTDX-improved frame, not an MSHV generator. PSK Reporter upload is off until Options → Network Configuration enables it. The map uses the callsign already saved under Options → User. WSPRnet upload of stations STD decodes is also off until WSPRnet is set to On. WSPRnet does not ask for a password. Callsign and locator stay in Options → User.
 CW stays in Lyra.
