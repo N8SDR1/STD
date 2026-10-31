@@ -70,8 +70,8 @@ QLabel#waterfallToneLabel {
 }
 
 QLabel#waterfallToneValue,
-QLabel#waterfallContrastValue,
-QLabel#waterfallBrightnessValue {
+QLabel#waterfallFloorValue,
+QLabel#waterfallRangeValue {
   color: #00e5ff;
   background: transparent;
 }
@@ -191,6 +191,29 @@ QPushButton#wfAfc:disabled, QPushButton#wfSql:disabled {
 QPushButton#squelchToggle:checked, QPushButton#wfSql:checked {
   background: #245068;
   color: #f4fdff;
+}
+
+/* Waterfall Auto and Flatten: a dim frame when off, a bright cyan frame
+   and fill when on, so the state reads at a glance. AFC on the same bar
+   gets the same on look. */
+QPushButton#waterfallAuto, QPushButton#waterfallFlatten {
+  background: #101820;
+  color: #6d8496;
+  border: 1px solid #274150;
+  border-radius: 4px;
+  padding: 0 8px;
+  min-width: 44px;
+}
+
+QPushButton#waterfallAuto:checked, QPushButton#waterfallFlatten:checked,
+QPushButton#wfAfc:checked {
+  background: #1d5a73;
+  color: #ffffff;
+  border: 2px solid #00e5ff;
+}
+
+QPushButton#waterfallAuto:hover, QPushButton#waterfallFlatten:hover {
+  border-color: #00e5ff;
 }
 
 QPushButton {
@@ -344,4 +367,38 @@ QToolTip {
   color: #cdd9e5;
   border: 1px solid #274150;
   padding: 4px 6px;
+}
+
+/* Tx line markers: a biohazard sign. Glowing toxic green on the line that
+   goes out next, a dim one on the others. Drawn by make-biohazard.py. */
+QRadioButton#txPick1::indicator,
+QRadioButton#txPick2::indicator,
+QRadioButton#txPick3::indicator,
+QRadioButton#txPick4::indicator,
+QRadioButton#txPick5::indicator,
+QRadioButton#txPick6::indicator,
+QRadioButton#txPick7::indicator {
+  width: 18px;
+  height: 18px;
+  image: url(:/std/biohazard-off.svg);
+}
+
+QRadioButton#txPick1::indicator:hover,
+QRadioButton#txPick2::indicator:hover,
+QRadioButton#txPick3::indicator:hover,
+QRadioButton#txPick4::indicator:hover,
+QRadioButton#txPick5::indicator:hover,
+QRadioButton#txPick6::indicator:hover,
+QRadioButton#txPick7::indicator:hover {
+  image: url(:/std/biohazard-hover.svg);
+}
+
+QRadioButton#txPick1::indicator:checked,
+QRadioButton#txPick2::indicator:checked,
+QRadioButton#txPick3::indicator:checked,
+QRadioButton#txPick4::indicator:checked,
+QRadioButton#txPick5::indicator:checked,
+QRadioButton#txPick6::indicator:checked,
+QRadioButton#txPick7::indicator:checked {
+  image: url(:/std/biohazard-on.svg);
 }

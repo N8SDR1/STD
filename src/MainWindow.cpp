@@ -1049,9 +1049,13 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       field->setFont(monoFont(12));
       field->setClearButtonEnabled(true);
       field->setMinimumWidth(0);
+      // Wide enough for the longest standard message with a compound call
+      // (about 26 characters) and the clear button, not the whole pane.
+      field->setMaximumWidth(field->fontMetrics().horizontalAdvance(QString(26, QLatin1Char('W'))) + 36);
       field->setToolTip(QStringLiteral("TX text. Editing it does not key."));
       row->addWidget(pick);
       row->addWidget(field, 1);
+      row->addStretch(0);
       return row;
     };
     auto addPair = [&](QHBoxLayout* left, QHBoxLayout* right) {
@@ -3211,7 +3215,7 @@ void MainWindow::buildMenus() {
   auto* saveLayout = viewMenu->addAction(QStringLiteral("Save layout"));
   saveLayout->setObjectName(QStringLiteral("saveLayout"));
   saveLayout->setToolTip(QStringLiteral(
-      "Save this dock arrangement, contrast, and brightness for the current mode. "
+      "Save this dock arrangement and the waterfall Floor, Range, and Auto for the current mode. "
       "They are restored the next time that mode opens. Does not key."));
   connect(saveLayout, &QAction::triggered, this, [this] { saveModeLayout(true); });
   auto* named = viewMenu->addAction(QStringLiteral("Named layouts…"));
@@ -3732,13 +3736,13 @@ void MainWindow::showGuide() {
        "pane or float it. Close hides it. The View menu lists those panes and shows a hidden one again. "
        "Macros stays hidden on FT8, FT4, and FT2. Hell and the other keyboard modes show the macro row. "
        "Each mode keeps its own dock arrangement, window "
-       "geometry, contrast, and brightness. View → Save layout writes the mode that is open. The next "
+       "geometry, and waterfall Floor, Range, and Auto. View → Save layout writes the mode that is open. The next "
        "time that mode opens, including after a restart, those panes come back. Leaving a mode, or "
        "closing STD, asks Save layout for this mode? when the docks differ from the saved arrangement. "
        "Yes writes this mode. No keeps the previous save. That question looks at the dock arrangement "
        "only. Receive text does not ask for a save. Closing also stops Tune or TX before that "
        "question. View → Named layouts keeps three named copies for the mode that is open. Save stores "
-       "the docks, window size, contrast, and brightness under the name you type. Recall puts that copy "
+       "the docks, window size, and waterfall Floor, Range, and Auto under the name you type. Recall puts that copy "
        "back. Receive text is not stored. View → Reset layout stacks this mode's docks back to the "
        "default and forgets the working arrangement. Named copies stay. None of this keys the radio or "
        "sends START."},
@@ -3747,10 +3751,16 @@ void MainWindow::showGuide() {
        "reports. A double-click or a right-click opens that whole band again. Start and BW narrow the "
        "same way, and they cannot cross the reported edges. Ticks on the bottom bar sets the ruler "
        "marks to 100, 250, or 500 Hz."},
-      {"Contrast and brightness",
-       "The two sliders on the waterfall bar recolor the trace. View → Save layout stores them with "
-       "that mode's docks, and opening the mode again restores them. They do not change the frequency "
-       "span, and they do not key."},
+      {"Floor, Range, Auto, and Flatten",
+       "Floor is the level, in dB, drawn as the bottom of the palette; anything under it is the "
+       "background colour. Range is how many dB the palette spans above the floor. A lower floor shows "
+       "more of the noise as dim grain and lets weak signals rise out of it; a smaller range makes weak "
+       "signals stand out, a larger one keeps strong signals from going white. Auto sets the floor a "
+       "few dB under the measured noise and keeps it there as band noise or RX gain changes; the Floor "
+       "slider then shows that level and is greyed. Turning Auto off leaves the floor where Auto had it. "
+       "Flatten removes the receiver passband slope line by line, so the band edges read like the "
+       "middle; it redraws what is still in memory. View → Save layout stores Floor, Range, and Auto "
+       "with that mode's docks. None of this changes the frequency span, and none of it keys."},
       {"Palettes",
        "Palette on that same bar lists Classic, Inferno, Viridis, Plasma, Rainbow, Ocean, Night, "
        "Grayscale, and Amber. The choice recolors the trace. It does not change the frequency "
@@ -4223,8 +4233,9 @@ void MainWindow::rememberModeTone() {
   if (!waterfall_ || layoutMode_.isEmpty() || qEnvironmentVariableIsSet("STD_SELFTEST"))
     return;
   QSettings settings;
-  settings.setValue(QStringLiteral("layout/%1/contrast").arg(layoutMode_), waterfall_->contrast());
-  settings.setValue(QStringLiteral("layout/%1/brightness").arg(layoutMode_), waterfall_->brightness());
+  settings.setValue(QStringLiteral("layout/%1/floorDb").arg(layoutMode_), waterfall_->floorDb());
+  settings.setValue(QStringLiteral("layout/%1/rangeDb").arg(layoutMode_), waterfall_->rangeDb());
+  settings.setValue(QStringLiteral("layout/%1/autoFloor").arg(layoutMode_), waterfall_->autoFloor());
 }
 
 void MainWindow::applyModeTone() {
@@ -4232,17 +4243,18 @@ void MainWindow::applyModeTone() {
     return;
   QSettings settings;
   const QString mode = layoutMode_;
-  const int contrast = std::clamp(
-      settings.value(QStringLiteral("layout/%1/contrast").arg(mode),
-                     settings.value(QStringLiteral("waterfall/contrast"), 50))
-          .toInt(),
-      0, 100);
-  const int brightness = std::clamp(
-      settings.value(QStringLiteral("layout/%1/brightness").arg(mode),
-                     settings.value(QStringLiteral("waterfall/brightness"), 50))
-          .toInt(),
-      0, 100);
-  waterfall_->setTone(contrast, brightness);
+  // Floor and Range replaced Contrast and Brightness; the old per-mode
+  // values do not carry over (they were a different scale).
+  const int floor = settings.value(QStringLiteral("layout/%1/floorDb").arg(mode),
+                                   settings.value(QStringLiteral("waterfall/floorDb"), -100))
+                        .toInt();
+  const int range = settings.value(QStringLiteral("layout/%1/rangeDb").arg(mode),
+                                   settings.value(QStringLiteral("waterfall/rangeDb"), 30))
+                        .toInt();
+  const bool autoFloor = settings.value(QStringLiteral("layout/%1/autoFloor").arg(mode),
+                                        settings.value(QStringLiteral("waterfall/autoFloor"), true))
+                             .toBool();
+  waterfall_->setTone(floor, range, autoFloor);
 }
 
 void MainWindow::saveModeLayout(bool force) {
@@ -4284,8 +4296,8 @@ void MainWindow::openNamedLayouts() {
   dialog.setObjectName(QStringLiteral("namedLayoutsDialog"));
   dialog.setMinimumWidth(520);
   auto* note = new QLabel(
-      QStringLiteral("Three named arrangements for %1. Save copies the docks, window size, contrast, and "
-                     "brightness. Receive text is not stored. Recall puts that arrangement back and makes "
+      QStringLiteral("Three named arrangements for %1. Save copies the docks, window size, and waterfall "
+                     "Floor, Range, and Auto. Receive text is not stored. Recall puts that arrangement back and makes "
                      "it the one this mode opens with. This does not key and does not send START.")
           .arg(layoutMode_),
       &dialog);
@@ -4365,8 +4377,9 @@ void MainWindow::saveNamedLayout(int slot, const QString& name) {
   settings.setValue(base + QStringLiteral("/state"), state);
   settings.setValue(base + QStringLiteral("/geometry"), geometry);
   if (waterfall_) {
-    settings.setValue(base + QStringLiteral("/contrast"), waterfall_->contrast());
-    settings.setValue(base + QStringLiteral("/brightness"), waterfall_->brightness());
+    settings.setValue(base + QStringLiteral("/floorDb"), waterfall_->floorDb());
+    settings.setValue(base + QStringLiteral("/rangeDb"), waterfall_->rangeDb());
+    settings.setValue(base + QStringLiteral("/autoFloor"), waterfall_->autoFloor());
   }
   settings.setValue(QStringLiteral("layout/%1/state").arg(layoutMode_), state);
   settings.setValue(QStringLiteral("layout/%1/geometry").arg(layoutMode_), geometry);
@@ -4390,12 +4403,9 @@ bool MainWindow::recallNamedLayout(int slot) {
   const bool restored = restoreState(state, 1);
   layoutGuard_ = false;
   if (waterfall_) {
-    const int contrast =
-        std::clamp(settings.value(base + QStringLiteral("/contrast"), waterfall_->contrast()).toInt(), 0, 100);
-    const int brightness =
-        std::clamp(settings.value(base + QStringLiteral("/brightness"), waterfall_->brightness()).toInt(), 0,
-                   100);
-    waterfall_->setTone(contrast, brightness);
+    waterfall_->setTone(settings.value(base + QStringLiteral("/floorDb"), waterfall_->floorDb()).toInt(),
+                        settings.value(base + QStringLiteral("/rangeDb"), waterfall_->rangeDb()).toInt(),
+                        settings.value(base + QStringLiteral("/autoFloor"), waterfall_->autoFloor()).toBool());
   }
   settings.setValue(QStringLiteral("layout/%1/state").arg(layoutMode_), state);
   if (!geometry.isEmpty())
@@ -4926,6 +4936,40 @@ void MainWindow::flipMaxPeriods() {
   QSettings().setValue(QStringLiteral("tx/maxIsPeriods"), periods);
 }
 
+// The engine keeps kilometres (its distance sort uses them). Show the unit
+// chosen under Decode List Options.
+QString MainWindow::maDistanceText(const QString& km) const {
+  bool ok = false;
+  const int value = km.toInt(&ok);
+  if (!ok)
+    return {};
+  return distMiles_ ? QStringLiteral("%1 mi").arg(int(std::lround(value * 0.621371)))
+                    : QStringLiteral("%1 km").arg(value);
+}
+
+// Multi-answer sends what the engine builds, not the selected Tx line. Show
+// the station being worked (first in Now) on Tx1 through Tx5 and put the dot
+// on the line that matches what goes out, so the panel reads like MSHV.
+void MainWindow::mirrorMaOnTxLines() {
+  if (!maActive())
+    return;
+  const QString his = ma_.now().isEmpty() ? QString() : ma_.now().front().call;
+  const QString report = ma_.now().isEmpty() ? QString() : ma_.now().front().txRpt;
+  if (his != txHisCall_ || report != txReport_) {
+    txHisCall_ = his;
+    txReport_ = report;
+    refreshTxFields();
+  }
+  const QString sending = ma_.message().trimmed();
+  for (int i = 0; i < 6; ++i) {
+    const auto* edit = findChild<QLineEdit*>(QStringLiteral("tx%1").arg(i + 1));
+    if (edit && edit->text().trimmed().compare(sending, Qt::CaseInsensitive) == 0) {
+      selectTxSlot(i);
+      break;
+    }
+  }
+}
+
 void MainWindow::paintMultiLists() {
   auto* tabs = findChild<QTabWidget*>(QStringLiteral("txMultiOptions"));
   auto paint = [](QListWidget* list, const QVector<QueuedCall>& rows) {
@@ -4944,7 +4988,7 @@ void MainWindow::paintMultiLists() {
       list->setCurrentRow(current);
   };
   if (maActive()) {
-    auto paintMa = [](QListWidget* list, const QVector<MaEngine::Row>& rows) {
+    auto paintMa = [this](QListWidget* list, const QVector<MaEngine::Row>& rows) {
       if (!list)
         return;
       const int current = list->currentRow();
@@ -4955,8 +4999,7 @@ void MainWindow::paintMultiLists() {
                           .arg(row.call, -10)
                           .arg(row.txRpt.isEmpty() ? QStringLiteral("   ") : row.txRpt)
                           .arg(row.grid.isEmpty() ? QStringLiteral("    ") : row.grid)
-                          .arg(row.dist.isEmpty() || row.dist == QLatin1String("?") ? QString()
-                                                                                   : row.dist + QStringLiteral(" km")));
+                          .arg(maDistanceText(row.dist)));
       }
       if (current >= 0 && current < list->count())
         list->setCurrentRow(current);
@@ -4967,6 +5010,7 @@ void MainWindow::paintMultiLists() {
       tabs->setTabText(0, QStringLiteral("Queue %1").arg(ma_.queue().size()));
       tabs->setTabText(1, QStringLiteral("Now %1").arg(ma_.now().size()));
     }
+    mirrorMaOnTxLines();
     return;
   }
   paint(findChild<QListWidget*>(QStringLiteral("txQueueList")), txQueue_);
@@ -6514,6 +6558,9 @@ void MainWindow::pumpUserTx() {
     return;
   }
   if (!tci_ || !profile_ || txSamples_.empty()) {
+    // Say why: a silent stop here hid the multi-answer bug for days.
+    setTxStatus(!tci_ ? QStringLiteral("Radio is not connected. TX stopped. START was not sent.")
+                      : QStringLiteral("Nothing was ready to send. TX stopped. TRX is off. START was not sent."));
     stopUserTx(true);
     return;
   }
@@ -6663,6 +6710,15 @@ void MainWindow::finishTxPass() {
     if (ma_.takeStop()) {
       setTxStatus(QStringLiteral(
           "MA Std: Now and the Queue are empty and CNS is off. Stopped. TRX is off. START was not sent."));
+      stopUserTx(true);
+      return;
+    }
+    // Build the next transmission now, as the other sequence paths do. The
+    // pump rebuilds it again when the slot opens (callers heard in the
+    // meantime are in it), but it stops TX on an empty buffer, so leaving
+    // the buffer empty here switched multi-answer off after every pass.
+    if (!rebuildTxWave()) {
+      setTxStatus(QStringLiteral("Multi-answer has nothing to send. Stopped. TRX is off. START was not sent."));
       stopUserTx(true);
       return;
     }
@@ -7330,6 +7386,7 @@ void MainWindow::applyDxOptions() {
   }
   refreshDecodeHeader();
   refreshDecodes();
+  paintMultiLists();
 }
 
 void MainWindow::refreshDecodeHeader() {

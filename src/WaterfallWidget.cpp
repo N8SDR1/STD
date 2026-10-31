@@ -226,10 +226,18 @@ QRgb samplePalette(const Palette& palette, float u) {
   return qRgb(mix(left->r, right->r), mix(left->g, right->g), mix(left->b, right->b));
 }
 
-QRgb traceColor(float dbAboveNoise, int contrast, int brightness, int palette) {
-  const float threshold = 18.0f * (1.0f - float(brightness) / 100.0f);
-  const float span = 22.0f - 16.0f * (float(contrast) / 100.0f);
-  const float rise = (dbAboveNoise - threshold) / span;
+// Auto puts the bottom of the palette this far under the line's noise, so
+// the noise shows as dim grain and a weak signal rises out of it.
+constexpr float kAutoBelowDb = 4.0f;
+constexpr int kFloorMinDb = -160;
+constexpr int kFloorMaxDb = 0;
+constexpr int kRangeMinDb = 10;
+constexpr int kRangeMaxDb = 60;
+
+// level and floor are dB above the line's noise; range is the dB span of
+// the palette. Below the floor is the field colour.
+QRgb traceColor(float level, float floor, float range, int palette) {
+  const float rise = (level - floor) / std::max(1.0f, range);
   if (!(rise > 0.0f))
     return kField;
   const float u = rise > 1.0f ? 1.0f : rise;
@@ -646,7 +654,7 @@ const WaterfallWidget::TraceRow& WaterfallWidget::rowAt(int age) const {
 }
 
 bool WaterfallWidget::rowMatches(const TraceRow& row) const {
-  return row.width == plotRect().width() && row.level.size() == row.width &&
+  return row.gen == analysisGen_ && row.width == plotRect().width() && row.level.size() == row.width &&
          std::fabs(row.lo - viewLoHz_) < 0.05f && std::fabs(row.hi - viewHiHz_) < 0.05f;
 }
 
@@ -711,16 +719,16 @@ void WaterfallWidget::stampTxTone(TraceRow* row) {
       continue;
     traces.push_back(level);
   }
-  // traceColor is black at or below threshold and full yellow at
-  // threshold + span. The old stamp sat near the floor and then scaled
+  // traceColor is the field colour at or below the floor and the top of
+  // the palette at floor + range. The old stamp sat near the floor and then scaled
   // that dB value like a gain, so the pixel fell back under the floor.
   // Keep the tone in the upper middle of the scale: visible, short of
   // the blown yellow a full-scale mix made. Split and locked both use
   // this TX frequency.
-  const float threshold = 18.0f * (1.0f - float(brightness_) / 100.0f);
-  const float span = std::max(6.0f, 22.0f - 16.0f * (float(contrast_) / 100.0f));
-  const float floor = threshold + span * 0.62f;
-  const float ceiling = threshold + span * 0.80f;
+  const float base = floorRelative(*row);
+  const float span = float(rangeDb_);
+  const float floor = base + span * 0.62f;
+  const float ceiling = base + span * 0.80f;
   float reference = floor;
   if (!traces.isEmpty()) {
     std::sort(traces.begin(), traces.end());
@@ -823,6 +831,12 @@ void WaterfallWidget::pushTrace(qint64 endSample) {
   TraceRow& row = rows_[newest_];
   row.endSample = endSample;
   analyze(endSample, &row);
+  if (row.width > 0) {
+    autoNoise_ = haveNoise_ ? autoNoise_ + (row.noise - autoNoise_) * 0.05f : row.noise;
+    haveNoise_ = true;
+    if (autoFloor_)
+      syncFloorReadout();
+  }
   stampTxTone(&row);
 }
 
@@ -831,6 +845,8 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
   row->lo = viewLoHz_;
   row->hi = viewHiHz_;
   row->width = width;
+  row->gen = analysisGen_;
+  row->noise = 0.0f;
   row->level = QVector<float>(std::max(width, 0), -80.0f);
   if (width < 8 || rateHz_ <= 0 || endSample <= 0)
     return;
@@ -925,14 +941,86 @@ void WaterfallWidget::analyze(qint64 endSample, TraceRow* row) {
   QVector<float> order = db;
   std::nth_element(order.begin(), order.begin() + rank, order.end());
   const float noise = order[rank];
-  for (int c = 0; c < width; ++c)
-    row->level[c] = db[c] - noise;
+  row->noise = noise;
+  if (flatten_) {
+    const QVector<float> base = waterfallBaseline(db);
+    for (int c = 0; c < width; ++c)
+      row->level[c] = db[c] - base[c];
+  } else {
+    for (int c = 0; c < width; ++c)
+      row->level[c] = db[c] - noise;
+  }
+}
+
+QVector<float> waterfallBaseline(const QVector<float>& db) {
+  const int width = int(db.size());
+  QVector<float> base(width, 0.0f);
+  if (width < 1)
+    return base;
+  // About 52 stretches across the plot, as MSHV's FlatDisplay uses; at least
+  // 8 columns each so one FT8 signal cannot fill a stretch.
+  const int segment = std::max(8, width / 52);
+  QVector<float> centerX;
+  QVector<float> centerV;
+  QVector<float> part;
+  for (int from = 0; from < width; from += segment) {
+    const int to = std::min(width, from + segment);
+    part = db.mid(from, to - from);
+    const int rank = std::clamp(int(part.size()) * 25 / 100, 0, int(part.size()) - 1);
+    std::nth_element(part.begin(), part.begin() + rank, part.end());
+    centerX.push_back(0.5f * float(from + to - 1));
+    centerV.push_back(part[rank]);
+  }
+  int k = 0;
+  for (int c = 0; c < width; ++c) {
+    const float x = float(c);
+    while (k + 1 < centerX.size() && centerX[k + 1] < x)
+      ++k;
+    if (centerX.size() == 1 || x <= centerX.front()) {
+      base[c] = centerV.front();
+    } else if (x >= centerX.back()) {
+      base[c] = centerV.back();
+    } else {
+      const float t = (x - centerX[k]) / std::max(1.0e-6f, centerX[k + 1] - centerX[k]);
+      base[c] = centerV[k] + (centerV[k + 1] - centerV[k]) * t;
+    }
+  }
+  return base;
+}
+
+float WaterfallWidget::floorRelative(const TraceRow& row) const {
+  if (autoFloor_)
+    return -kAutoBelowDb;
+  return float(floorDb_) - row.noise;
+}
+
+int WaterfallWidget::floorDb() const {
+  if (autoFloor_ && haveNoise_)
+    return int(std::lround(autoNoise_ - kAutoBelowDb));
+  return floorDb_;
+}
+
+// With Auto on the Floor slider follows the noise and shows where it is.
+void WaterfallWidget::syncFloorReadout() {
+  const int value = floorDb();
+  if (value == shownFloor_)
+    return;
+  shownFloor_ = value;
+  if (auto* slider = findChild<QSlider*>(QStringLiteral("waterfallFloor"))) {
+    const QSignalBlocker block(slider);
+    slider->setValue(std::clamp(value, kFloorMinDb, kFloorMaxDb));
+    slider->setEnabled(!autoFloor_);
+  }
+  if (auto* readout = findChild<QLabel*>(QStringLiteral("waterfallFloorValue")))
+    readout->setText(QStringLiteral("%1 dB").arg(value));
 }
 
 void WaterfallWidget::buildToneBar() {
   QSettings settings;
-  contrast_ = std::clamp(settings.value(QStringLiteral("waterfall/contrast"), 50).toInt(), 0, 100);
-  brightness_ = std::clamp(settings.value(QStringLiteral("waterfall/brightness"), 50).toInt(), 0, 100);
+  floorDb_ = std::clamp(settings.value(QStringLiteral("waterfall/floorDb"), -100).toInt(), kFloorMinDb, kFloorMaxDb);
+  rangeDb_ = std::clamp(settings.value(QStringLiteral("waterfall/rangeDb"), 30).toInt(), kRangeMinDb, kRangeMaxDb);
+  autoFloor_ = settings.value(QStringLiteral("waterfall/autoFloor"), true).toBool();
+  flatten_ = settings.value(QStringLiteral("waterfall/flatten"), false).toBool();
   rxHz_ = std::clamp(settings.value(QStringLiteral("waterfall/rxHz"), rxHz_).toInt(), 0, 5000);
   txHz_ = std::clamp(settings.value(QStringLiteral("waterfall/txHz"), txHz_).toInt(), 0, 5000);
   locked_ = settings.value(QStringLiteral("waterfall/lock"), false).toBool();
@@ -977,42 +1065,100 @@ void WaterfallWidget::buildToneBar() {
   layout->setContentsMargins(12, 4, 12, 4);
   layout->setSpacing(8);
 
-  auto addSlider = [this, layout](const QString& name, const QString& objectName, int value,
-                                   int* slot) {
+  QFont face("Inter");
+  face.setPixelSize(12);
+  auto addSlider = [this, layout, &face](const QString& name, const QString& objectName, int lo, int hi,
+                                          int value, const QString& tip) {
     auto* label = new QLabel(name, toneBar_);
     label->setObjectName("waterfallToneLabel");
-    QFont face("Inter");
-    face.setPixelSize(12);
     label->setFont(face);
     auto* slider = new QSlider(Qt::Horizontal, toneBar_);
     slider->setObjectName(objectName);
-    slider->setRange(0, 100);
-    slider->setValue(value);
-    slider->setFixedWidth(72);
+    slider->setRange(lo, hi);
+    slider->setValue(std::clamp(value, lo, hi));
+    slider->setFixedWidth(84);
     slider->setFocusPolicy(Qt::NoFocus);
     slider->setAccessibleName(name);
-    slider->setToolTip(name == QLatin1String("Contrast")
-                            ? QStringLiteral("Contrast. Display only. Does not change the span.")
-                            : QStringLiteral("Brightness. Display only. Does not change the span."));
-    auto* readout = new QLabel(QString::number(value), toneBar_);
+    slider->setToolTip(tip);
+    auto* readout = new QLabel(QStringLiteral("%1 dB").arg(value), toneBar_);
     readout->setObjectName(objectName + QStringLiteral("Value"));
     readout->setFont(face);
-    readout->setMinimumWidth(24);
+    readout->setMinimumWidth(52);
     layout->addWidget(label);
     layout->addWidget(slider);
     layout->addWidget(readout);
-    connect(slider, &QSlider::valueChanged, this, [this, slot, readout](int next) {
-      *slot = std::clamp(next, 0, 100);
-      readout->setText(QString::number(*slot));
-      update();
-      emit toneChanged(contrast_, brightness_);
-    });
+    return std::make_pair(slider, readout);
   };
 
-  addSlider(QStringLiteral("Contrast"), QStringLiteral("waterfallContrast"), contrast_, &contrast_);
-  layout->addSpacing(18);
-  addSlider(QStringLiteral("Brightness"), QStringLiteral("waterfallBrightness"), brightness_,
-            &brightness_);
+  auto floor = addSlider(QStringLiteral("Floor"), QStringLiteral("waterfallFloor"), kFloorMinDb, kFloorMaxDb,
+                         floorDb_,
+                         QStringLiteral("Floor: the level, in dB, drawn as the bottom of the palette. Lower "
+                                        "shows more of the noise and weaker signals. Auto sets it a few dB "
+                                        "under the noise. Display only. Does not key."));
+  layout->addSpacing(12);
+  auto range = addSlider(QStringLiteral("Range"), QStringLiteral("waterfallRange"), kRangeMinDb, kRangeMaxDb,
+                         rangeDb_,
+                         QStringLiteral("Range: how many dB the palette spans above the floor. Smaller makes "
+                                        "weak signals stand out; larger keeps strong ones from going white. "
+                                        "Display only. Does not key."));
+  connect(floor.first, &QSlider::valueChanged, this, [this, readout = floor.second](int next) {
+    if (autoFloor_)
+      return;
+    floorDb_ = std::clamp(next, kFloorMinDb, kFloorMaxDb);
+    shownFloor_ = floorDb_;
+    readout->setText(QStringLiteral("%1 dB").arg(floorDb_));
+    QSettings().setValue(QStringLiteral("waterfall/floorDb"), floorDb_);
+    update();
+    emit toneChanged();
+  });
+  connect(range.first, &QSlider::valueChanged, this, [this, readout = range.second](int next) {
+    rangeDb_ = std::clamp(next, kRangeMinDb, kRangeMaxDb);
+    readout->setText(QStringLiteral("%1 dB").arg(rangeDb_));
+    QSettings().setValue(QStringLiteral("waterfall/rangeDb"), rangeDb_);
+    update();
+    emit toneChanged();
+  });
+  floor.first->setEnabled(!autoFloor_);
+
+  auto* autoButton = new QPushButton(QStringLiteral("Auto"), toneBar_);
+  autoButton->setObjectName(QStringLiteral("waterfallAuto"));
+  autoButton->setCheckable(true);
+  autoButton->setChecked(autoFloor_);
+  autoButton->setFocusPolicy(Qt::NoFocus);
+  autoButton->setToolTip(QStringLiteral(
+      "Auto: Floor follows the measured noise, a few dB under it, so the picture holds steady when band "
+      "noise or RX gain changes. Off: Floor stays where you set it. Display only. Does not key."));
+  connect(autoButton, &QPushButton::toggled, this, [this](bool on) {
+    if (!on)
+      floorDb_ = std::clamp(floorDb(), kFloorMinDb, kFloorMaxDb);  // keep the picture where it was
+    autoFloor_ = on;
+    QSettings settings;
+    settings.setValue(QStringLiteral("waterfall/autoFloor"), on);
+    settings.setValue(QStringLiteral("waterfall/floorDb"), floorDb_);
+    shownFloor_ = 1 << 30;
+    syncFloorReadout();
+    update();
+    emit toneChanged();
+  });
+  layout->addWidget(autoButton);
+
+  auto* flattenButton = new QPushButton(QStringLiteral("Flatten"), toneBar_);
+  flattenButton->setObjectName(QStringLiteral("waterfallFlatten"));
+  flattenButton->setCheckable(true);
+  flattenButton->setChecked(flatten_);
+  flattenButton->setFocusPolicy(Qt::NoFocus);
+  flattenButton->setToolTip(QStringLiteral(
+      "Flatten: removes the receiver passband slope line by line, so the band edges read like the "
+      "middle, as MSHV's Flatten Display and WSJT-X's Flatten do. Display only. Does not key."));
+  connect(flattenButton, &QPushButton::toggled, this, [this](bool on) {
+    flatten_ = on;
+    QSettings().setValue(QStringLiteral("waterfall/flatten"), on);
+    ++analysisGen_;
+    scheduleRebuild();
+    update();
+  });
+  layout->addWidget(flattenButton);
+  shownFloor_ = 1 << 30;
   layout->addSpacing(12);
 
   auto* afc = new QPushButton(QStringLiteral("AFC"), toneBar_);
@@ -1127,8 +1273,6 @@ void WaterfallWidget::buildToneBar() {
 
   auto* paletteLabel = new QLabel(QStringLiteral("Palette"), toneBar_);
   paletteLabel->setObjectName("waterfallToneLabel");
-  QFont face("Inter");
-  face.setPixelSize(12);
   paletteLabel->setFont(face);
   auto* paletteButton = new QToolButton(toneBar_);
   paletteButton->setObjectName("waterfallPalette");
@@ -1164,23 +1308,22 @@ void WaterfallWidget::buildToneBar() {
   layout->addWidget(paletteButton);
 }
 
-void WaterfallWidget::setTone(int contrast, int brightness) {
-  contrast_ = std::clamp(contrast, 0, 100);
-  brightness_ = std::clamp(brightness, 0, 100);
-  const struct {
-    const char* slider;
-    const char* readout;
-    int value;
-  } rows[] = {{"waterfallContrast", "waterfallContrastValue", contrast_},
-              {"waterfallBrightness", "waterfallBrightnessValue", brightness_}};
-  for (const auto& row : rows) {
-    if (auto* slider = findChild<QSlider*>(QLatin1String(row.slider))) {
-      const QSignalBlocker block(slider);
-      slider->setValue(row.value);
-    }
-    if (auto* readout = findChild<QLabel*>(QLatin1String(row.readout)))
-      readout->setText(QString::number(row.value));
+void WaterfallWidget::setTone(int floorDb, int rangeDb, bool autoFloor) {
+  floorDb_ = std::clamp(floorDb, kFloorMinDb, kFloorMaxDb);
+  rangeDb_ = std::clamp(rangeDb, kRangeMinDb, kRangeMaxDb);
+  autoFloor_ = autoFloor;
+  if (auto* slider = findChild<QSlider*>(QStringLiteral("waterfallRange"))) {
+    const QSignalBlocker block(slider);
+    slider->setValue(rangeDb_);
   }
+  if (auto* readout = findChild<QLabel*>(QStringLiteral("waterfallRangeValue")))
+    readout->setText(QStringLiteral("%1 dB").arg(rangeDb_));
+  if (auto* button = findChild<QPushButton*>(QStringLiteral("waterfallAuto"))) {
+    const QSignalBlocker block(button);
+    button->setChecked(autoFloor_);
+  }
+  shownFloor_ = 1 << 30;
+  syncFloorReadout();
   update();
 }
 
@@ -1346,7 +1489,7 @@ QImage WaterfallWidget::spectrumImage() const {
     auto* dst = reinterpret_cast<QRgb*>(frame.scanLine(y));
     const int columns = std::min(int(row.level.size()), frame.width());
     for (int c = 0; c < columns; ++c)
-      dst[c] = traceColor(row.level[c], contrast_, brightness_, palette_);
+      dst[c] = traceColor(row.level[c], floorRelative(row), float(rangeDb_), palette_);
   }
   return frame;
 }

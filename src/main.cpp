@@ -40,6 +40,8 @@
 #include <QApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QImage>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QTemporaryDir>
@@ -107,11 +109,47 @@ int shellReady(MainWindow& window) {
   if (!window.findChild<WaterfallWidget*>())
     return fail("waterfall widget is missing");
 
-  const auto* contrast = window.findChild<QSlider*>("waterfallContrast");
-  const auto* brightness = window.findChild<QSlider*>("waterfallBrightness");
-  if (!contrast || !brightness || !contrast->isEnabled() || !brightness->isEnabled() ||
-      contrast->maximum() != 100 || brightness->maximum() != 100)
-    return fail("waterfall contrast or brightness is missing");
+  // Floor and Range in dB, with Auto and Flatten, as MSHV / WSJT-X / Lyra.
+  const auto* floorSlider = window.findChild<QSlider*>("waterfallFloor");
+  const auto* rangeSlider = window.findChild<QSlider*>("waterfallRange");
+  const auto* autoButton = window.findChild<QPushButton*>("waterfallAuto");
+  const auto* flattenButton = window.findChild<QPushButton*>("waterfallFlatten");
+  if (!floorSlider || !rangeSlider || !autoButton || !flattenButton || !autoButton->isCheckable() ||
+      !flattenButton->isCheckable() || floorSlider->minimum() != -160 || floorSlider->maximum() != 0 ||
+      rangeSlider->minimum() != 10 || rangeSlider->maximum() != 60 ||
+      floorSlider->isEnabled() == autoButton->isChecked())
+    return fail("waterfall Floor, Range, Auto, or Flatten is missing");
+  // The Tx line marker icons load through Qt's SVG image plugin. If the
+  // plugin were missing, the style sheet would fall back to no marker at all.
+  for (const char* icon : {":/std/biohazard-on.svg", ":/std/biohazard-off.svg", ":/std/biohazard-hover.svg"}) {
+    QImage art(QString::fromLatin1(icon));
+    if (art.isNull())
+      return fail("a Tx line marker icon does not load");
+    const QString dump = qEnvironmentVariable("STD_ICON_PNG");
+    if (!dump.isEmpty())
+      art.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+          .save(dump + QLatin1Char('/') + QFileInfo(QString::fromLatin1(icon)).completeBaseName() + ".png");
+  }
+  for (const char* name : {"waterfallContrast", "waterfallBrightness"}) {
+    if (window.findChild<QSlider*>(QLatin1String(name)))
+      return fail("the old Contrast / Brightness sliders are still there");
+  }
+  {
+    // Flatten follows a passband slope and ignores a strong narrow signal.
+    QVector<float> line(780);
+    for (int c = 0; c < line.size(); ++c)
+      line[c] = -110.0f + 20.0f * float(c) / float(line.size() - 1);  // 20 dB tilt
+    for (int c = 400; c < 412; ++c)
+      line[c] += 30.0f;  // one FT8-wide signal
+    const QVector<float> base = waterfallBaseline(line);
+    float worst = 0.0f;
+    for (int c = 0; c < line.size(); ++c) {
+      const float slope = -110.0f + 20.0f * float(c) / float(line.size() - 1);
+      worst = std::max(worst, std::fabs(base[c] - slope));
+    }
+    if (base.size() != line.size() || worst > 1.5f)
+      return fail("waterfall Flatten does not follow the passband slope");
+  }
 
   const auto* palette = window.findChild<QToolButton*>("waterfallPalette");
   const char* paletteNames[] = {"Classic", "Inferno", "Viridis", "Plasma", "Rainbow",
@@ -1740,6 +1778,47 @@ int shellReady(MainWindow& window) {
       qCritical("WSPR decode [%s] samples %d", qPrintable(back), int(wave.size()));
       return fail("WSPR did not decode");
     }
+  }
+  {
+    // The operator's 7.074 MHz setup: one slot (restricted dial), Queue 4,
+    // Periods 2, CNS on, CQ free on, sort by distance. Three stations answer
+    // the CQ in one period; the first is worked, the other two queue.
+    MaEngine live;
+    live.setDigitalMode(QStringLiteral("FT8"));
+    live.setRestricted(true);
+    live.setStation(QStringLiteral("N8SDR"), QStringLiteral("EM79"));
+    live.setMode(MaEngine::Mode::Standard);
+    live.setSlotCount(1);
+    live.setQueueLimit(4);
+    live.setMaxTry(2, true, 15.0);
+    live.setSort(1);
+    live.setCns(true);
+    live.setCqOnFreeSlot(true);
+    live.setCqLine(QStringLiteral("CQ N8SDR EM79"));
+    live.setDupeCheck([](const QString&) { return false; });
+    live.txStarted();
+    live.txEnded();
+    live.decoded(QStringLiteral("N8SDR W9MDM EN61"), 14, 1442, false);
+    live.decoded(QStringLiteral("N8SDR KC4WQ EM78"), 17, 1112, false);
+    live.decoded(QStringLiteral("N8SDR WB9LWQ EM69"), -16, 2330, false);
+    qInfo("MA live: now %d queue %d msg [%s]", int(live.now().size()), int(live.queue().size()),
+          qPrintable(live.message()));
+    if (live.now().size() != 1 || live.queue().size() != 2 || live.message().startsWith(QLatin1String("CQ")))
+      return fail("MA Std with one slot did not work the first caller and queue the rest");
+    // The next period opens: the report goes out and the queue stays.
+    live.txStarted();
+    if (live.message() != QLatin1String("W9MDM N8SDR +14") || live.queue().size() != 2)
+      return fail("MA Std lost the caller when the TX period opened");
+    live.txEnded();
+    live.decoded(QStringLiteral("N8SDR W9MDM R-09"), 14, 1442, false);
+    live.txStarted();
+    if (live.message() != QLatin1String("W9MDM N8SDR RR73"))
+      return fail("MA Std did not send RR73 after the R-report");
+    const QVector<MaEngine::Logged> liveDone = live.txEnded();
+    // Sort by distance takes the farthest caller next: WB9LWQ, then KC4WQ.
+    if (liveDone.size() != 1 || !live.message().startsWith(QLatin1String("WB9LWQ N8SDR")) ||
+        live.queue().size() != 1)
+      return fail("MA Std did not move to the next queued caller after RR73");
   }
   {
     // MSHV Multi Answering engine, both modes.

@@ -174,6 +174,8 @@ private:
   bool queueFollows() const;
   // MSHV Multi Answering engine (MA Std / MA DX) for FT8, FT4, FT2, Q65.
   bool maActive() const { return ma_.active(); }
+  QString maDistanceText(const QString& km) const;
+  void mirrorMaOnTxLines();
   void syncMaEngine();
   bool maRestrictedDial() const;
   void logMaQsos(const QVector<MaEngine::Logged>& done);
