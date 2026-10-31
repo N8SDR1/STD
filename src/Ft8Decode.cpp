@@ -342,6 +342,8 @@ void Ft8Decode::setMode(Period mode) {
   if (d_->mode == mode)
     return;
   d_->mode = mode;
+  // JT65 and Q65 averages belong to the old mode or submode.
+  d_->clearAverage = true;
   d_->stagePeriod = -1;
   d_->stageDone = 0;
 }

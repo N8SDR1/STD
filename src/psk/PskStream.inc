@@ -416,11 +416,13 @@ struct PskStream {
       bitclk += double(bitsteps);
     if (bitclk >= double(bitsteps)) {
       bitclk -= double(bitsteps);
-      // The bit clock wraps a couple of samples before the QPSK constellation
-      // has settled when the symbol is only 32 bins long (QPSK250 / QPSK500).
-      // Two samples later is still inside the symbol and on the point.
-      // QPSK250's 32-bin symbol settles two samples after the bit-clock wrap.
-      // The other speeds are already on the constellation at the wrap.
+      // Fldigi psk.cxx samples every speed at the bit-clock wrap. For QPSK250
+      // that drops the first character after the preamble in STD-to-STD tests
+      // (checked 2026-10-31: "Q CQ ..." for "CQ CQ ..."), although STD's
+      // preamble and transmit shaping match Fldigi's. Sampling from the value
+      // stored 14 steps earlier keeps that character; both symbols of a
+      // differential pair move together, so the steady state is the same.
+      // Decide with a Fldigi QPSK250 recording.
       if (qpsk && symbollen == 32) {
         const int pick = (idx + 2) % bitsteps;
         rxSymbol(histI[pick], histQ[pick]);

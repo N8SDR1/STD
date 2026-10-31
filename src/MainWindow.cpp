@@ -889,6 +889,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       QTimer::singleShot(5000, this, [this] { checkForUpdates(false); });
   }
   QTimer::singleShot(0, this, [this] { maybeAutoConnect(); });
+  // A saved contest exchange from an older STD is checked at start too, not
+  // only when Contest Tags is opened or the contest is chosen again.
+  QTimer::singleShot(1500, this, [this] {
+    const QString problem = contestSetupProblem();
+    if (!problem.isEmpty())
+      setTxStatus(problem);
+  });
 }
 
 void MainWindow::buildBrandBar() {
@@ -1945,6 +1952,8 @@ void MainWindow::beginWsprTune() {
 void MainWindow::qsyDial(qint64 hz) {
   if (hz < 100000)
     return;
+  if (ft8_ && liveDialHz_ > 0 && std::llabs(hz - liveDialHz_) > 1000)
+    ft8_->clearAverages();
   liveDialHz_ = hz;
   if (!tci_ || !tci_->isOpen())
     return;
@@ -8494,8 +8503,13 @@ void MainWindow::showRadioUp(const QString& host, quint16 port) {
 void MainWindow::showDial(qint64 hz) {
   if (!tci_ || !tci_->isOpen())
     return;
-  if (hz > 0)
+  if (hz > 0) {
+    // A different frequency is a different station: the JT65 and Q65
+    // averages from the old one would only add noise.
+    if (ft8_ && liveDialHz_ > 0 && std::llabs(hz - liveDialHz_) > 1000)
+      ft8_->clearAverages();
     liveDialHz_ = hz;
+  }
   dialText_ = formatDial(hz);
   if (statusStrip_)
     statusStrip_->setDial(dialText_);

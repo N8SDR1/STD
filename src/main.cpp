@@ -1140,6 +1140,33 @@ int shellReady(MainWindow& window) {
     qCritical("Olivia CQ decode [%s]", qPrintable(cqBack));
     return fail("Olivia did not decode");
   }
+  // Joining a transmission already under way, half a symbol off the symbol
+  // grid and without the start tones. Fldigi's block synchronizer looks at
+  // two time slices per symbol, so the text after the first few blocks
+  // must print.
+  {
+    std::vector<float> wave;
+    if (!buildTxWave(QStringLiteral("Olivia 8/250"),
+                     QStringLiteral("CQ CQ CQ DE N8SDR N8SDR N8SDR TEST TEST TEST PSE K"), 1500, &wave))
+      return fail("Olivia modulator is missing");
+    const int symbol = 1536;  // 32 ms at 48 kHz
+    std::mt19937 joinRng(7);
+    std::normal_distribution<float> joinNoise(0.0f, 0.25f);
+    for (int eighth = 1; eighth < 8; ++eighth) {
+      const int cut = 49152 + 10 * symbol + eighth * symbol / 8;  // after 1.024 s of start tones
+      if (int(wave.size()) <= cut)
+        return fail("Olivia join test wave is too short");
+      std::vector<float> noisy(wave.begin() + cut, wave.end());
+      for (float& v : noisy)
+        v += joinNoise(joinRng);
+      const QString joined =
+          oliviaDecode(QStringLiteral("Olivia 8/250"), noisy.data(), int(noisy.size()), 48000, 1500);
+      if (!joined.contains(QLatin1String("TEST TEST TEST PSE K"))) {
+        qCritical("Olivia joined %d/8 symbol off: [%s]", eighth, qPrintable(joined));
+        return fail("Olivia did not pull in when joining off the symbol grid");
+      }
+    }
+  }
   for (const char* name : {"MFSK16", "MFSK31"}) {
     std::vector<float> wave;
     if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
@@ -1336,11 +1363,14 @@ int shellReady(MainWindow& window) {
   }
   for (const char* name : {"QPSK31", "QPSK63", "QPSK125", "QPSK250", "QPSK500"}) {
     std::vector<float> wave;
-    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
+    // A full line, not one letter: a symbol-timing slip shows up as
+    // garbled characters before the end of the line.
+    if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("CQ CQ DE N8SDR N8SDR PSE K"), 1500, &wave) ||
+        wave.size() < 1000)
       return fail("QPSK modulator is missing");
     const QString back =
         pskDecode(QString::fromLatin1(name), wave.data(), int(wave.size()), 48000, 1500);
-    if (!back.contains(QLatin1Char('E'))) {
+    if (!back.contains(QLatin1String("CQ CQ DE N8SDR N8SDR PSE K"))) {
       qCritical("QPSK decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
       return fail("QPSK did not decode");
     }
@@ -2213,6 +2243,108 @@ int shellReady(MainWindow& window) {
     }
     if (at != padded.size() || sets != 4)
       return fail("PSK Reporter sets do not add up to the packet");
+  }
+  // Read the packet the way an IPFIX collector does: learn each template
+  // from the packet itself, then decode the data sets with it. The spot and
+  // the receiver must come back field for field, with only padding left over.
+  {
+    PskSpot second = spot;
+    second.call = QStringLiteral("K1JT");
+    second.grid = QStringLiteral("FN20");
+    second.freqHz = 7074321;
+    second.snr = 3;
+    second.mode = QStringLiteral("JS8");
+    const QByteArray p = pskReporterDatagram(QStringLiteral("N8SDR"), QStringLiteral("EM79"),
+                                             QStringLiteral("STD 0.1.0"), QStringLiteral("dipole"),
+                                             {spot, second}, 1700000000, 1, 1);
+    struct Field {
+      int id;
+      int length;
+    };
+    QHash<int, QVector<Field>> templates;
+    QVector<QVector<QByteArray>> records;
+    QVector<int> recordSet;
+    const auto be16 = [&](int at) { return (quint8(p.at(at)) << 8) | quint8(p.at(at + 1)); };
+    int at = 16;
+    bool ipfixOk = p.size() >= 16 && be16(2) == p.size();
+    while (ipfixOk && at + 4 <= p.size()) {
+      const int setId = be16(at);
+      const int length = be16(at + 2);
+      const int end = at + length;
+      if (length < 4 || end > p.size()) {
+        ipfixOk = false;
+        break;
+      }
+      int pos = at + 4;
+      if (setId == 2 || setId == 3) {
+        const int tid = be16(pos);
+        const int count = be16(pos + 2);
+        pos += setId == 3 ? 6 : 4;
+        QVector<Field> fields;
+        for (int f = 0; f < count; ++f) {
+          const int id = be16(pos);
+          fields.append(Field{id & 0x7fff, be16(pos + 2)});
+          pos += (id & 0x8000) ? 8 : 4;
+        }
+        templates.insert(tid, fields);
+      } else if (templates.contains(setId)) {
+        const QVector<Field>& fields = templates.value(setId);
+        while (pos < end) {
+          QVector<QByteArray> values;
+          int q = pos;
+          for (const Field& f : fields) {
+            int len = f.length;
+            if (len == 0xffff) {
+              if (q >= end)
+                break;
+              len = quint8(p.at(q));
+              ++q;
+            }
+            if (q + len > end)
+              break;
+            values.append(p.mid(q, len));
+            q += len;
+          }
+          if (values.size() != fields.size())
+            break;  // what is left is padding
+          records.append(values);
+          recordSet.append(setId);
+          pos = q;
+        }
+        for (int z = pos; z < end; ++z) {
+          if (p.at(z) != 0)
+            ipfixOk = false;
+        }
+        if (end - pos > 3)
+          ipfixOk = false;
+      } else {
+        ipfixOk = false;
+      }
+      at = end;
+    }
+    const auto num = [](const QByteArray& b) {
+      quint64 v = 0;
+      for (char c : b)
+        v = (v << 8) | quint8(c);
+      return v;
+    };
+    bool good = ipfixOk && records.size() == 3 && recordSet.at(0) == 0x50e2;
+    if (good) {
+      const QVector<QByteArray>& rx = records.at(0);
+      good = rx.size() == 4 && rx.at(0) == "N8SDR" && rx.at(1) == "EM79" && rx.at(2) == "STD 0.1.0" &&
+             rx.at(3) == "dipole";
+      const PskSpot* sent[2] = {&spot, &second};
+      for (int r = 0; good && r < 2; ++r) {
+        const QVector<QByteArray>& tx = records.at(r + 1);
+        good = recordSet.at(r + 1) == 0x50e3 && tx.size() == 7 &&
+               tx.at(0) == sent[r]->call.toLatin1() && num(tx.at(1)) == quint64(sent[r]->freqHz) &&
+               qint8(tx.at(2).at(0)) == sent[r]->snr && tx.at(3) == sent[r]->mode.toLatin1() &&
+               tx.at(4) == sent[r]->grid.toLatin1() && quint8(tx.at(5).at(0)) == 1 &&
+               num(tx.at(6)) == sent[r]->unixTime;
+      }
+    }
+    if (!good)
+      return fail("PSK Reporter packet does not parse by its own templates");
   }
   // A busy period: 120 spots must all go out, split across packets that
   // each stay inside the 952-byte UDP limit.
