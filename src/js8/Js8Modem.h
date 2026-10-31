@@ -5,6 +5,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 #include <vector>
 
@@ -60,6 +61,9 @@ private:
   bool armed_ = false;
   int toneHz_ = 1500;
   int rate_ = 48000;
-  std::vector<float> pending_;
-  QString last_;
+  std::vector<float> ring_;
+  qint64 total_ = 0;
+  qint64 newestMs_ = 0;
+  qint64 decodedPeriod_ = -1;
+  QStringList heard_;
 };

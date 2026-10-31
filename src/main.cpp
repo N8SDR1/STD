@@ -1339,6 +1339,40 @@ int shellReady(MainWindow& window) {
     const QString all = js8Decode(whole.samples.data(), int(whole.samples.size()), 48000, 1500);
     if (all != many.left(used + used2) && all != many)
       return fail("JS8 long message did not decode");
+    const Js8Plan clean = planJs8(QStringLiteral("E"), 1500);
+    if (int(clean.samples.size()) != js8FrameSamples())
+      return fail("JS8 clean frame is missing");
+    std::vector<float> js8Slip(2000, 0.0f);
+    js8Slip.insert(js8Slip.end(), clean.samples.begin(), clean.samples.end());
+    const QString slipped = js8Decode(js8Slip.data(), int(js8Slip.size()), 48000, 1500);
+    if (!slipped.contains(QLatin1Char('E')))
+      return fail("JS8 time search missed the frame");
+    const Js8Plan shifted = planJs8(QStringLiteral("E"), 1504);
+    const QString shiftedBack =
+        js8Decode(shifted.samples.data(), int(shifted.samples.size()), 48000, 1500);
+    if (!shiftedBack.contains(QLatin1Char('E')))
+      return fail("JS8 frequency search missed the frame");
+    std::vector<float> js8Erased = clean.samples;
+    const int eraseAt = 24000 + 43 * 7680;
+    if (eraseAt + 7680 > int(js8Erased.size()))
+      return fail("JS8 symbol is outside the frame");
+    for (int i = 0; i < 7680; ++i)
+      js8Erased[static_cast<size_t>(eraseAt + i)] = 0.0f;
+    const QString repaired = js8Decode(js8Erased.data(), int(js8Erased.size()), 48000, 1500);
+    if (!repaired.contains(QLatin1Char('E')))
+      return fail("JS8 LDPC did not repair a symbol");
+    const Js8Plan low = planJs8(QStringLiteral("HELLO"), 1200);
+    const Js8Plan high = planJs8(QStringLiteral("WORLD"), 1800);
+    if (low.samples.size() != high.samples.size() || low.samples.size() < 1000)
+      return fail("JS8 passband frames are missing");
+    std::vector<float> both(low.samples.size());
+    for (size_t i = 0; i < both.size(); ++i)
+      both[i] = low.samples[i] + high.samples[i];
+    const QString pair = js8Decode(both.data(), int(both.size()), 48000, 1500);
+    if (!pair.contains(QLatin1String("HELLO")) || !pair.contains(QLatin1String("WORLD"))) {
+      qCritical("JS8 pair [%s]", qPrintable(pair));
+      return fail("JS8 passband missed a station");
+    }
   }
   {
     QSettings keep;

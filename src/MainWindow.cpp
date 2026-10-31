@@ -2860,7 +2860,9 @@ void MainWindow::buildMenus() {
       "JS8Call-improved Normal. 15 second period, 50 Hz, the JS8 Costas array. "
       "Band buttons QSY to the suggested calling dials. TX waits for the next UTC period "
       "and sends one frame, starting half a second in. A longer message continues on the "
-      "following periods. START is never sent. Fast, Turbo, Slow, Ultra, and 8PSK are not here."));
+      "following periods. Receive follows that same 15 second boundary, searches a fraction "
+      "of a symbol and a couple of hertz, and prints every JS8 signal in the passband. "
+      "START is never sent. Fast, Turbo, Slow, Ultra, and 8PSK are not here."));
   modes->addAction(js8Action);
   connect(js8Action, &QAction::triggered, this, [this] { activateDigitalMode(QStringLiteral("JS8")); });
   auto* wsprAction = modeMenu->addAction(QStringLiteral("WSPR"));
@@ -3562,6 +3564,8 @@ void MainWindow::showGuide() {
        "2 m is in that guide and is not on the row. TX waits for the next 15 second UTC period. "
        "The frame starts half a second into that period. One frame goes out per period. A message "
        "that needs more than one frame continues on the following periods. "
+       "Receive uses that same boundary. It searches a fraction of a symbol and a couple of hertz, "
+       "corrects the frame with the LDPC code, and prints every JS8 signal in the passband. "
        "Fast, Turbo, Slow, and Ultra are not on this menu. "
        "Mode → WSPR is WSPR-2 from WSJT-X and JTDX. Even UTC minutes. "
        "Band buttons QSY to the WSPR dials. There is no macro bar. Tx power, Tx Pct, "
