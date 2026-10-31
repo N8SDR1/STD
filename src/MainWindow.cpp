@@ -1295,6 +1295,44 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     rttyRow->hide();
     layout->addWidget(rttyRow);
 
+    auto* toneRow = new QWidget(panel);
+    toneRow->setObjectName(QStringLiteral("startToneOptions"));
+    auto* toneLayout = new QHBoxLayout(toneRow);
+    toneLayout->setContentsMargins(0, 0, 0, 0);
+    toneLayout->setSpacing(8);
+    auto* oliviaTones = new QCheckBox(QStringLiteral("Start tones"), toneRow);
+    oliviaTones->setObjectName(QStringLiteral("oliviaStartTones"));
+    oliviaTones->setFont(interfaceFont(12));
+    oliviaTones->setStyleSheet(rttyText);
+    oliviaTones->setFocusPolicy(Qt::NoFocus);
+    oliviaTones->setToolTip(QStringLiteral(
+        "Olivia and Contestia band-edge tones before and after the text. On is the Fldigi default. "
+        "This does not key. START is never sent."));
+    auto* mt63Tones = new QCheckBox(QStringLiteral("Start tones"), toneRow);
+    mt63Tones->setObjectName(QStringLiteral("mt63StartTones"));
+    mt63Tones->setFont(interfaceFont(12));
+    mt63Tones->setStyleSheet(rttyText);
+    mt63Tones->setFocusPolicy(Qt::NoFocus);
+    mt63Tones->setToolTip(QStringLiteral(
+        "MT63 lower and upper tuning tones for 4 seconds before the text. On is the Fldigi default. "
+        "This does not key. START is never sent."));
+    toneLayout->addWidget(oliviaTones);
+    toneLayout->addWidget(mt63Tones);
+    toneLayout->addStretch(1);
+    {
+      QSettings store;
+      oliviaTones->setChecked(store.value(QStringLiteral("olivia/startTones"), true).toBool());
+      mt63Tones->setChecked(store.value(QStringLiteral("mt63/startTones"), true).toBool());
+    }
+    connect(oliviaTones, &QCheckBox::toggled, this, [](bool on) {
+      QSettings().setValue(QStringLiteral("olivia/startTones"), on);
+    });
+    connect(mt63Tones, &QCheckBox::toggled, this, [](bool on) {
+      QSettings().setValue(QStringLiteral("mt63/startTones"), on);
+    });
+    toneRow->hide();
+    layout->addWidget(toneRow);
+
     auto* hellText = new QPlainTextEdit(panel);
     hellText->setObjectName(QStringLiteral("txHell"));
     hellText->setFont(monoFont(13));
@@ -3472,6 +3510,9 @@ void MainWindow::showGuide() {
        "Olivia sends a byte above 127 as 127 and then the low 7 bits. "
        "SQL on the status row drops a character when the level is above the decoder meter. "
        "AFC stays off until you turn it on. It follows those tones inside the passband and leaves the cursor. "
+       "Start tones, on the transmit row, sends the Olivia and Contestia band-edge tones and the "
+       "MT63 tuning tones. It stays on until you turn it off. Thor rounds each symbol by 4 ms. "
+       "Shaped RTTY finishes the last character and then ramps off. "
        "Mode → DominoEX is DominoEX Micro, 4, 5, 8, 11, 16, and 22. "
        "Eighteen tones, incremental frequency keying, and the DominoEX nibble varicode. FEC is off. "
        "Micro is 2 baud. TX sends those. Mode → Thor is Thor 4, 5, 8, 11, 16, 22, 25x4, 50x1, 50x2, and 100. Each character is the IZ8BLY "
@@ -5263,6 +5304,20 @@ void MainWindow::retargetLiveTx() {
                     .arg(txSlotName()));
 }
 
+bool startTonesOf(const QWidget* window, const QString& mode) {
+  if (!window)
+    return true;
+  if (oliviaBandwidthHz(mode) > 0) {
+    if (auto* box = window->findChild<QCheckBox*>(QStringLiteral("oliviaStartTones")))
+      return box->isChecked();
+  }
+  if (mt63BandwidthHz(mode) > 0) {
+    if (auto* box = window->findChild<QCheckBox*>(QStringLiteral("mt63StartTones")))
+      return box->isChecked();
+  }
+  return true;
+}
+
 bool MainWindow::rebuildTxWave() {
   if (!profile_)
     return false;
@@ -5299,7 +5354,8 @@ bool MainWindow::rebuildTxWave() {
   if (text.isEmpty())
     return false;
   const RttyOptions rtty = rttyOptionsOf(this);
-  const bool built = buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_, rttyMode(mode) ? &rtty : nullptr) &&
+  const bool built = buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_, rttyMode(mode) ? &rtty : nullptr,
+                                 startTonesOf(this, mode)) &&
                      !txSamples_.empty();
   txSymbolSamples_ = built ? tonalSamples(txSamples_) : 0;
   return built;
@@ -5312,6 +5368,15 @@ void MainWindow::refreshTxChrome() {
   const bool hell = hellFamily(mode);
   if (auto* rttyRow = findChild<QWidget*>(QStringLiteral("rttyOptions")))
     rttyRow->setVisible(rttyMode(mode));
+  if (auto* toneRow = findChild<QWidget*>(QStringLiteral("startToneOptions"))) {
+    const bool olivia = oliviaBandwidthHz(mode) > 0;
+    const bool mt63 = mt63BandwidthHz(mode) > 0;
+    toneRow->setVisible(olivia || mt63);
+    if (auto* oliviaBox = toneRow->findChild<QCheckBox*>(QStringLiteral("oliviaStartTones")))
+      oliviaBox->setVisible(olivia);
+    if (auto* mt63Box = toneRow->findChild<QCheckBox*>(QStringLiteral("mt63StartTones")))
+      mt63Box->setVisible(mt63);
+  }
   if (auto* text = findChild<QPlainTextEdit*>(QStringLiteral("txHell"))) {
     text->setVisible(textMode);
     text->setPlaceholderText(
@@ -5961,7 +6026,7 @@ void MainWindow::setUserTx(bool on) {
   const bool waveOk = js8Mode(mode)
                           ? rebuildTxWave()
                           : buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_,
-                                        rttyMode(mode) ? &rtty : nullptr) &&
+                                        rttyMode(mode) ? &rtty : nullptr, startTonesOf(this, mode)) &&
                                 !txSamples_.empty();
   if (!waveOk || txSamples_.empty()) {
     txEchoAt_.clear();

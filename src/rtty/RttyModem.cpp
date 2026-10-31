@@ -193,6 +193,7 @@ struct Tx {
   RttyOptions opt;
   const char* figures = kFiguresTab;
   double maxamp = 0.0;
+  double lastHz = 0.0;
   SymbolShaper shaper1;
   SymbolShaper shaper2;
   Oscillator osc1;
@@ -246,6 +247,7 @@ struct Tx {
       symbol = !symbol;
     if (!opt.shaped) {
       const double hz = symbol ? double(center) + opt.shiftHz / 2.0 : double(center) - opt.shiftHz / 2.0;
+      lastHz = hz;
       const double step = kTwoPi * hz / double(kRate);
       for (int i = 0; i < count; ++i) {
         samples.push_back(float(0.6 * std::sin(phase)));
@@ -257,6 +259,7 @@ struct Tx {
     }
     const double hi = double(center) + opt.shiftHz / 2.0;
     const double lo = double(center) - opt.shiftHz / 2.0;
+    lastHz = symbol ? hi : lo;
     for (int i = 0; i < count; ++i) {
       const double markAmp = shaper1.update(symbol) * osc1.update(hi);
       const double spaceAmp = shaper2.update(!symbol) * osc2.update(lo);
@@ -279,6 +282,32 @@ struct Tx {
     else if (five == 0x1B)
       shift = kFigures;
     code(five);
+  }
+
+  // fldigi flush_stream: 6 bit-times of idle so the shaper tail leaves the
+  // buffer, then the carrier is at zero. Hard FSK ramps the last tone down.
+  void flush() {
+    if (!opt.shaped) {
+      const int n = std::max(8, bitCount() / 2);
+      const double step = kTwoPi * lastHz / double(kRate);
+      for (int i = 0; i < n; ++i) {
+        const double env = 0.5 * (1.0 + std::cos(kTwoPi * 0.5 * double(i) / double(n)));
+        samples.push_back(float(0.6 * env * std::sin(phase)));
+        phase += step;
+        if (phase > kTwoPi)
+          phase -= kTwoPi;
+      }
+      return;
+    }
+    const double hi = double(center) + opt.shiftHz / 2.0;
+    const double lo = double(center) - opt.shiftHz / 2.0;
+    const int n = bitCount() * 6;
+    for (int i = 0; i < n; ++i) {
+      const double markAmp = shaper1.update(false) * osc1.update(hi);
+      const double spaceAmp = shaper2.update(false) * osc2.update(lo);
+      const double signal = markAmp + spaceAmp;
+      samples.push_back(float(0.6 * (maxamp > 0.0 ? signal / maxamp : 0.0)));
+    }
   }
 };
 
@@ -811,6 +840,7 @@ RttyPlan planRtty(const QString& text, int centerHz, const RttyOptions& options)
   }
   tx.put(0x08);
   tx.put(0x02);
+  tx.flush();
   RttyPlan plan;
   plan.samples.swap(tx.samples);
   plan.echoAt.swap(tx.echoAt);

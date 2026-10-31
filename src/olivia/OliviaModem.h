@@ -22,7 +22,9 @@ struct OliviaPlan {
 // 0 when the name is not an Olivia or Contestia speed STD modulates.
 int oliviaBandwidthHz(const QString& mode);
 
-OliviaPlan planOlivia(const QString& mode, const QString& text, int centerHz);
+// startTones sends the band-edge pair before and after the text. Default on,
+// matching fldigi. The one-shot decoder skips a leading pair it recognizes.
+OliviaPlan planOlivia(const QString& mode, const QString& text, int centerHz, bool startTones = true);
 QString oliviaDecode(const QString& mode, const float* samples, int count, int sampleRateHz,
                      int centerHz);
 

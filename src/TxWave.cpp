@@ -306,7 +306,7 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
 }  // namespace
 
 bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
-                 std::vector<int>* echoAt, const RttyOptions* rtty) {
+                 std::vector<int>* echoAt, const RttyOptions* rtty, bool startTones) {
   if (!out)
     return false;
   out->clear();
@@ -374,7 +374,7 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
     return true;
   }
   if (oliviaBandwidthHz(mode) > 0) {
-    const OliviaPlan plan = planOlivia(mode, text, tone);
+    const OliviaPlan plan = planOlivia(mode, text, tone, startTones);
     if (plan.samples.empty())
       return false;
     *out = plan.samples;
@@ -401,7 +401,7 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
     return true;
   }
   if (mt63BandwidthHz(mode) > 0) {
-    const Mt63Plan plan = planMt63(mode, text, tone);
+    const Mt63Plan plan = planMt63(mode, text, tone, startTones);
     if (plan.samples.empty())
       return false;
     *out = plan.samples;

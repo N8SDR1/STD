@@ -355,7 +355,38 @@ int oliviaBandwidthHz(const QString& mode) {
   return specFor(mode).bandwidth;
 }
 
-OliviaPlan planOlivia(const QString& mode, const QString& text, int centerHz) {
+int oliviaToneSamples(int sampleRateHz) {
+  // fldigi TONE_DURATION is 8192 samples at 8 kHz, 1.024 seconds.
+  return std::max(4, int(std::lround(1.024 * double(sampleRateHz))));
+}
+
+std::vector<float> edgeTones(const Spec& spec, int centerHz, int sampleRateHz) {
+  const int total = oliviaToneSamples(sampleRateHz);
+  const int quarter = std::max(1, total / 4);
+  const int rise = std::max(1, quarter / 8);
+  const double bw = double(spec.bandwidth);
+  const double freqA = double(centerHz) - bw / 2.0;
+  const double freqB = double(centerHz) + bw / 2.0;
+  const double twoPi = 2.0 * 3.14159265358979323846;
+  const double freqs[4] = {freqA, freqB, freqA, freqB};
+  std::vector<float> out(static_cast<size_t>(quarter * 4), 0.0f);
+  for (int part = 0; part < 4; ++part) {
+    const double step = twoPi * freqs[part] / double(sampleRateHz);
+    double phase = 0.0;
+    for (int i = 0; i < quarter; ++i) {
+      double env = 1.0;
+      if (i < rise)
+        env = 0.5 * (1.0 - std::cos(3.14159265358979323846 * double(i) / double(rise)));
+      else if (i >= quarter - rise)
+        env = 0.5 * (1.0 - std::cos(3.14159265358979323846 * double(quarter - 1 - i) / double(rise)));
+      out[static_cast<size_t>(part * quarter + i)] = float(0.6 * env * std::sin(phase));
+      phase += step;
+    }
+  }
+  return out;
+}
+
+OliviaPlan planOlivia(const QString& mode, const QString& text, int centerHz, bool startTones) {
   OliviaPlan plan;
   const Spec spec = specFor(mode);
   const QString body = text;
@@ -401,18 +432,31 @@ OliviaPlan planOlivia(const QString& mode, const QString& text, int centerHz) {
   std::vector<double> wave(static_cast<size_t>(count), 0.0);
   const double low = lowHz(spec, std::clamp(centerHz, 200, 3000));
   const double twoPi = 2.0 * 3.14159265358979323846;
+  // fldigi MFSK_Modulator::Send keeps SymbolPhase across the hop and adds
+  // ±90 degrees. Resetting the phase on every symbol cancels a repeated tone
+  // in the 50% overlap.
+  double phase = 0.0;
+  bool plus = true;
   for (int s = 0; s < int(symbols.size()); ++s) {
     const int tone = grayCode(symbols[static_cast<size_t>(s)]);
     const double step = twoPi * (low + double(tone) * spec.spacing) / double(kRate);
-    double phase = 0.0;
+    phase -= step * (double(separ) / 2.0);
+    double cursor = phase;
     for (int t = 0; t < pulse; ++t) {
       const int idx = s * separ + t;
       if (idx >= count)
         break;
       const double shape = 1.0 - std::cos(twoPi * double(t) / double(pulse));
-      wave[static_cast<size_t>(idx)] += std::sin(phase) * shape;
-      phase += step;
+      wave[static_cast<size_t>(idx)] += std::sin(cursor) * shape;
+      cursor += step;
     }
+    phase += step * (double(separ) / 2.0 + double(pulse) / 2.0);
+    const double differ = step * (double(pulse) / 4.0);
+    phase += plus ? differ : -differ;
+    plus = !plus;
+    phase = std::fmod(phase, twoPi);
+    if (phase < 0.0)
+      phase += twoPi;
   }
   double peak = 0.0;
   for (double sample : wave)
@@ -421,7 +465,41 @@ OliviaPlan planOlivia(const QString& mode, const QString& text, int centerHz) {
   const double scale = peak > 0.0 ? 0.6 / peak : 0.0;
   for (size_t i = 0; i < wave.size(); ++i)
     plan.samples[i] = float(wave[i] * scale);
+  if (startTones) {
+    const std::vector<float> tones = edgeTones(spec, std::clamp(centerHz, 200, 3000), kRate);
+    for (int& at : plan.echoAt)
+      at += int(tones.size());
+    plan.samples.insert(plan.samples.begin(), tones.begin(), tones.end());
+    plan.samples.insert(plan.samples.end(), tones.begin(), tones.end());
+  }
   return plan;
+}
+
+int edgeToneLead(const Spec& spec, const float* samples, int count, int sampleRateHz, int centerHz) {
+  const int lead = oliviaToneSamples(sampleRateHz);
+  const int n = std::min(lead / 4, std::max(32, sampleRateHz / 5));
+  if (!samples || count < lead + 64 || n < 32)
+    return 0;
+  const double freqA = double(centerHz) - spec.bandwidth / 2.0;
+  const double mid = double(centerHz);
+  auto mag = [&](double freq) {
+    const double step = 2.0 * 3.14159265358979323846 * freq / double(sampleRateHz);
+    double phase = 0.0;
+    double si = 0.0;
+    double sq = 0.0;
+    for (int i = 0; i < n; ++i) {
+      const double sample = samples[i];
+      si += sample * std::sin(phase);
+      sq += sample * std::cos(phase);
+      phase += step;
+    }
+    return std::sqrt(si * si + sq * sq);
+  };
+  const double edge = mag(freqA);
+  const double center = mag(mid);
+  if (edge > 1.0 && edge > center * 3.0)
+    return lead;
+  return 0;
 }
 
 QString oliviaDecode(const QString& mode, const float* samples, int count, int sampleRateHz,
@@ -437,12 +515,13 @@ QString oliviaDecode(const QString& mode, const float* samples, int count, int s
   double energy[256];
   double bits[8];
   const double low = lowHz(spec, centerHz);
+  const int lead = edgeToneLead(spec, samples, count, sampleRateHz, centerHz);
   // Symbol s is integrated over [s*separ + separ/2, s*separ + 3*separ/2).
   // The modulator's last pulse ends one symbol after the last symbol start.
-  const int n = (count - separ / 2) / separ;
+  const int n = (count - lead - separ / 2) / separ;
   int fed = 0;
   for (int s = 0; s < n; ++s) {
-    toneEnergy(samples, count, s * separ + separ / 2, separ, low, spec.spacing, spec.tones,
+    toneEnergy(samples, count, lead + s * separ + separ / 2, separ, low, spec.spacing, spec.tones,
                sampleRateHz, energy);
     softBits(energy, spec, bits);
     decoder.push(bits);

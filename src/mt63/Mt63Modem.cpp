@@ -119,7 +119,43 @@ bool mt63LongInterleave(const QString& mode) {
   return bandwidthOf(mode) > 0 && mode.endsWith(QLatin1Char('L'));
 }
 
-Mt63Plan planMt63(const QString& mode, const QString& text, int centerHz) {
+// 48 kHz from 8 kHz. Zero-stuff and the same 16-cycle Blackman sinc the
+// RTTY decimator uses, cutoff 3600 Hz, gain 6 so an in-band tone keeps its level.
+std::vector<float> upsample6(const std::vector<double>& audio) {
+  constexpr int factor = kUp;
+  const int taps = 16 * factor + 1;
+  const int half = taps / 2;
+  constexpr double pi = 3.14159265358979323846;
+  const double fc = 3600.0 / (8000.0 * double(factor));
+  std::vector<double> coeff(static_cast<size_t>(taps), 0.0);
+  double sum = 0.0;
+  for (int k = 0; k < taps; ++k) {
+    const double u = double(k - half);
+    const double s = u == 0.0 ? 2.0 * fc : std::sin(2.0 * pi * fc * u) / (pi * u);
+    const double w = 0.42 - 0.5 * std::cos(2.0 * pi * double(k) / double(taps - 1)) +
+                     0.08 * std::cos(4.0 * pi * double(k) / double(taps - 1));
+    coeff[static_cast<size_t>(k)] = s * w;
+    sum += s * w;
+  }
+  if (sum != 0.0) {
+    for (double& tap : coeff)
+      tap /= sum;
+  }
+  const int nOut = int(audio.size()) * factor + half;
+  std::vector<float> out(static_cast<size_t>(std::max(0, nOut)), 0.0f);
+  for (int i = 0; i < int(audio.size()); ++i) {
+    const double value = audio[static_cast<size_t>(i)] * double(factor);
+    for (int k = 0; k < taps; ++k) {
+      const int idx = i * factor + (k - half);
+      if (idx < 0 || idx >= nOut)
+        continue;
+      out[static_cast<size_t>(idx)] += float(value * coeff[static_cast<size_t>(k)]);
+    }
+  }
+  return out;
+}
+
+Mt63Plan planMt63(const QString& mode, const QString& text, int centerHz, bool startTones) {
   const IeeeGuard ieee;
   Mt63Plan plan;
   const int bandwidth = bandwidthOf(mode);
@@ -164,12 +200,34 @@ Mt63Plan planMt63(const QString& mode, const QString& text, int centerHz) {
   if (peak <= 0.0)
     return plan;
   const double scale = 0.8 / peak;
-  plan.samples.reserve(audio.size() * static_cast<size_t>(kUp));
-  for (double sample : audio) {
-    const float value = static_cast<float>(sample * scale);
-    for (int i = 0; i < kUp; ++i)
-      plan.samples.push_back(value);
+  for (double& sample : audio)
+    sample *= scale;
+  if (startTones) {
+    // fldigi mt63_usetones and mt63_twotones, 4 seconds. Lower edge and the
+    // tone at +31/64 of the bandwidth.
+    constexpr double twoPi = 6.283185307179586;
+    const double bw = double(bandwidth);
+    const double w1 = twoPi * (double(center) - bw / 2.0) / double(kModemRate);
+    const double w2 = twoPi * (double(center) + 31.0 * bw / 64.0) / double(kModemRate);
+    const int toneCount = kModemRate * 4;
+    std::vector<double> lead(static_cast<size_t>(toneCount), 0.0);
+    double phi1 = 0.0;
+    double phi2 = 0.0;
+    for (int i = 0; i < toneCount; ++i) {
+      double sample = 0.5 * std::cos(phi1) + 0.5 * std::cos(phi2);
+      if (i < 200)
+        sample *= 1.0 - std::exp(-double(i) / 40.0);
+      if (i > toneCount - 200)
+        sample *= 1.0 - std::exp(-double(toneCount - 1 - i) / 40.0);
+      lead[static_cast<size_t>(i)] = sample * 0.8;
+      phi1 += w1;
+      phi2 += w2;
+    }
+    audio.insert(audio.begin(), lead.begin(), lead.end());
+    for (int& at : echo8)
+      at += toneCount;
   }
+  plan.samples = upsample6(audio);
   plan.echoAt.reserve(echo8.size());
   for (int at : echo8)
     plan.echoAt.push_back(at * kUp);

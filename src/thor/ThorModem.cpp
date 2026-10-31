@@ -45,25 +45,27 @@ struct Spec {
 const Spec kSlow{nullptr, 0, 0, 10, 4, 7, kNasaPoly1, kNasaPoly2, 45};
 const Spec kFast{nullptr, 0, 0, 50, 40, 15, kIeeePoly1, kIeeePoly2, 15 * 12};
 
-Spec modeSpec(const char* name, double baud, int doubled, const Spec& code) {
+Spec modeSpec(const char* name, double baud, int doubled, const Spec& code, int flushChars) {
   Spec spec = code;
   spec.name = name;
   spec.baud = baud;
   spec.doubled = doubled;
+  spec.flushChars = flushChars;
   return spec;
 }
 
+// fldigi thor.cxx flushlength. Thor 11 and 16 need 8, Thor 22 needs 16.
 const Spec kModes[] = {
-    modeSpec("Thor 4", 8000.0 / 2048.0, 2, kSlow),
-    modeSpec("Thor 5", 11025.0 / 2048.0, 2, kSlow),
-    modeSpec("Thor 8", 8000.0 / 1024.0, 2, kSlow),
-    modeSpec("Thor 11", 11025.0 / 1024.0, 1, kSlow),
-    modeSpec("Thor 16", 8000.0 / 512.0, 1, kSlow),
-    modeSpec("Thor 22", 11025.0 / 512.0, 1, kSlow),
-    modeSpec("Thor 25x4", 8000.0 / 320.0, 4, kFast),
-    modeSpec("Thor 50x1", 8000.0 / 160.0, 1, kFast),
-    modeSpec("Thor 50x2", 8000.0 / 160.0, 2, kFast),
-    modeSpec("Thor 100", 8000.0 / 80.0, 1, kFast),
+    modeSpec("Thor 4", 8000.0 / 2048.0, 2, kSlow, 4),
+    modeSpec("Thor 5", 11025.0 / 2048.0, 2, kSlow, 4),
+    modeSpec("Thor 8", 8000.0 / 1024.0, 2, kSlow, 4),
+    modeSpec("Thor 11", 11025.0 / 1024.0, 1, kSlow, 8),
+    modeSpec("Thor 16", 8000.0 / 512.0, 1, kSlow, 8),
+    modeSpec("Thor 22", 11025.0 / 512.0, 1, kSlow, 16),
+    modeSpec("Thor 25x4", 8000.0 / 320.0, 4, kFast, 40),
+    modeSpec("Thor 50x1", 8000.0 / 160.0, 1, kFast, 40),
+    modeSpec("Thor 50x2", 8000.0 / 160.0, 2, kFast, 40),
+    modeSpec("Thor 100", 8000.0 / 80.0, 1, kFast, 40),
 };
 
 const Spec* specFor(const QString& mode) {
@@ -539,10 +541,19 @@ ThorPlan planThor(const QString& mode, const QString& text, int centerHz) {
   const double spacing = spacingHz(*spec);
   double phase = 0.0;
   plan.samples.reserve(tx.symbols().size() * static_cast<size_t>(separ));
+  // fldigi THOR_RISETIME default is 4 ms, raised cosine on each symbol edge.
+  const int rise = std::max(1, int(std::lround(48000.0 * 4.0 / 1000.0)));
+  const int edge = rise * 2 < separ ? rise : std::max(1, separ / 4);
   for (int symbol : tx.symbols()) {
     const double step = twoPi * (low + double(symbol) * spacing) / 48000.0;
+    const int num2 = separ - edge;
     for (int i = 0; i < separ; ++i) {
-      plan.samples.push_back(float(0.6 * std::cos(phase)));
+      double coeff = 1.0;
+      if (i < edge)
+        coeff = 0.5 * (1.0 - std::cos(3.14159265358979323846 * double(i) / double(edge)));
+      else if (i > num2)
+        coeff = 0.5 * (1.0 - std::cos(3.14159265358979323846 * double(separ - i) / double(edge)));
+      plan.samples.push_back(float(0.6 * coeff * std::cos(phase)));
       phase -= step;
       if (phase < 0.0)
         phase += twoPi;

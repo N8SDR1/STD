@@ -17,8 +17,11 @@
 // keying). A null pointer uses the Fldigi defaults: 45.45 baud, 170 Hz,
 // Reverse off, US figures, shaped keying on.
 struct RttyOptions;
+// startTones is the Olivia, Contestia, and MT63 tuning-tone preamble.
+// Default on. Other modes ignore it.
 bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
-                 std::vector<int>* echoAt = nullptr, const RttyOptions* rtty = nullptr);
+                 std::vector<int>* echoAt = nullptr, const RttyOptions* rtty = nullptr,
+                 bool startTones = true);
 
 // Decimate a 48 kHz JT65 or Q65 wave to 12 kHz and run the MSHV decoder.
 // Empty when the mode is not one of those or nothing prints.
