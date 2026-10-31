@@ -8,6 +8,7 @@
 #include "Mt63Modem.h"
 
 #include "dsp.h"
+#include "modem/ToneClock.h"
 #include "mt63base.h"
 
 #include <immintrin.h>
@@ -57,12 +58,24 @@ void takeSymbol(MT63tx& tx, std::vector<double>* audio) {
   audio->insert(audio->end(), tx.Comb.Output.Data, tx.Comb.Output.Data + n);
 }
 
-QString printable(const MT63rx& rx) {
+// fldigi mt63_8bit: 127 then the low 7 bits. Bytes under 8 are idle unless
+// they follow that escape.
+QString printable(const MT63rx& rx, bool* escape) {
   QString text;
   for (int i = 0; i < rx.Output.Len; ++i) {
-    const unsigned char c = static_cast<unsigned char>(rx.Output.Data[i]);
-    if (c >= 32 && c < 127)
-      text.append(QLatin1Char(static_cast<char>(c)));
+    unsigned c = static_cast<unsigned char>(rx.Output.Data[i]);
+    if (c < 8 && escape && !*escape)
+      continue;
+    if (c == 127) {
+      if (escape)
+        *escape = true;
+      continue;
+    }
+    if (escape && *escape) {
+      c += 128;
+      *escape = false;
+    }
+    text += latin1Rx(int(c));
   }
   return text;
 }
@@ -77,6 +90,7 @@ QString decode8k(const QString& mode, const double* samples, int count, int cent
     return {};
   double_buff in;
   QString text;
+  bool escape = false;
   int pos = 0;
   while (pos < count) {
     const int n = std::min(800, count - pos);
@@ -86,7 +100,7 @@ QString decode8k(const QString& mode, const double* samples, int count, int cent
       in.Data[i] = samples[pos + i];
     in.Len = n;
     rx.Process(&in);
-    text.append(printable(rx));
+    text.append(printable(rx, &escape));
     pos += n;
   }
   return text;
@@ -94,18 +108,14 @@ QString decode8k(const QString& mode, const double* samples, int count, int cent
 
 std::vector<double> downsample(const float* samples, int count, int sampleRateHz) {
   std::vector<double> out;
-  if (!samples || count <= 0 || sampleRateHz < kModemRate)
+  if (!samples || count <= 0 || sampleRateHz < 1000)
     return out;
-  if (sampleRateHz % kModemRate != 0)
-    return out;
-  const int ratio = sampleRateHz / kModemRate;
-  out.reserve(static_cast<size_t>(count / ratio));
-  for (int i = 0; i + ratio <= count; i += ratio) {
-    double sum = 0.0;
-    for (int k = 0; k < ratio; ++k)
-      sum += samples[i + k];
-    out.push_back(sum / static_cast<double>(ratio));
-  }
+  Rate8k decim;
+  std::vector<float> at8k;
+  decim.push(samples, count, sampleRateHz, &at8k);
+  out.reserve(at8k.size());
+  for (float sample : at8k)
+    out.push_back(double(sample));
   return out;
 }
 
@@ -177,11 +187,15 @@ Mt63Plan planMt63(const QString& mode, const QString& text, int centerHz, bool s
     tx.SendChar(0);
     takeSymbol(tx, &audio);
   }
-  for (const QChar ch : text) {
-    unsigned char c = ' ';
-    if (ch.unicode() >= 32 && ch.unicode() < 127)
-      c = static_cast<unsigned char>(ch.unicode());
+  const QByteArray latin = text.toLatin1();
+  for (int i = 0; i < latin.size(); ++i) {
+    unsigned char c = static_cast<unsigned char>(latin.at(i));
     echo8.push_back(static_cast<int>(audio.size()));
+    if (c >= 128) {
+      tx.SendChar(127);
+      takeSymbol(tx, &audio);
+      c = static_cast<unsigned char>(c & 127);
+    }
     tx.SendChar(static_cast<char>(c));
     takeSymbol(tx, &audio);
   }
@@ -254,9 +268,8 @@ struct Mt63Engine::Private {
   int centerHz = 1500;
   QString mode;
   MT63rx* rx = nullptr;
-  double bucket = 0.0;
-  int bucketCount = 0;
-  int ratio = kUp;
+  Rate8k decim;
+  bool escape = false;
 
   void closeRx() {
     delete rx;
@@ -265,9 +278,8 @@ struct Mt63Engine::Private {
 
   void openRx() {
     closeRx();
-    bucket = 0.0;
-    bucketCount = 0;
-    ratio = kUp;
+    decim.reset();
+    escape = false;
     const int bandwidth = bandwidthOf(mode);
     if (bandwidth <= 0)
       return;
@@ -330,23 +342,16 @@ void Mt63Engine::clear() {
 
 void Mt63Engine::pushAudio(const float* samples, int count, int sampleRateHz) {
   const IeeeGuard ieee;
-  if (!d_->armed || !d_->rx || !samples || count <= 0 || sampleRateHz < kModemRate ||
-      sampleRateHz % kModemRate != 0)
+  if (!d_->armed || !d_->rx || !samples || count <= 0 || sampleRateHz < 1000)
     return;
-  d_->ratio = sampleRateHz / kModemRate;
+  std::vector<float> at8k;
+  d_->decim.push(samples, count, sampleRateHz, &at8k);
+  if (at8k.empty())
+    return;
   std::vector<double> audio;
-  audio.reserve(static_cast<size_t>(count / d_->ratio + 2));
-  for (int i = 0; i < count; ++i) {
-    d_->bucket += samples[i];
-    ++d_->bucketCount;
-    if (d_->bucketCount >= d_->ratio) {
-      audio.push_back(d_->bucket / static_cast<double>(d_->ratio));
-      d_->bucket = 0.0;
-      d_->bucketCount = 0;
-    }
-  }
-  if (audio.empty())
-    return;
+  audio.reserve(at8k.size());
+  for (float sample : at8k)
+    audio.push_back(double(sample));
   double_buff in;
   if (in.EnsureSpace(static_cast<int>(audio.size())))
     return;
@@ -356,7 +361,7 @@ void Mt63Engine::pushAudio(const float* samples, int count, int sampleRateHz) {
   d_->rx->Process(&in);
   if (d_->squelchOn && d_->rx->FEC_SNR() < d_->squelchLevel)
     return;
-  const QString text = printable(*d_->rx);
+  const QString text = printable(*d_->rx, &d_->escape);
   if (!text.isEmpty())
     emit textReady(text);
 }

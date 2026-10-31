@@ -1553,6 +1553,16 @@ int shellReady(MainWindow& window) {
       return fail("MT63 did not decode");
     }
   }
+  {
+    const QString body = QStringLiteral("A\nB") + QChar(0x00E9);
+    const Mt63Plan line = planMt63(QStringLiteral("MT63-500S"), body, 1500);
+    const QString back = mt63Decode(QStringLiteral("MT63-500S"), line.samples.data(),
+                                    int(line.samples.size()), 48000, 1500);
+    if (!back.contains(QStringLiteral("A\nB")) || !back.contains(QChar(0x00E9))) {
+      qCritical("MT63 latin [%s]", qPrintable(back));
+      return fail("MT63 newline or Latin-1 did not decode");
+    }
+  }
   const auto* mt63 = window.findChild<QAction*>(QStringLiteral("modeMt631000S"));
   if (!mt63 || !mt63->toolTip().contains(QLatin1String("1000 Hz")) ||
       !mt63->toolTip().contains(QLatin1String("START")) ||

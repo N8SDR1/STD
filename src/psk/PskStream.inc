@@ -123,6 +123,7 @@ struct PskStream {
   double qualI = 0.0;
   double qualQ = 0.0;
   double metric = 0.0;
+  double afcMetric = 0.0;
   bool havePrev = false;
   bool dcd = false;
   unsigned shreg = 0;
@@ -162,7 +163,9 @@ struct PskStream {
   // per symbol. PSK500 and QPSK500 are skipped, same as fldigi. The capture
   // window is one baud (samplerate / symbollen).
   void phaseAfc(double ang, int bits) {
-    if (!afcOn || !dcd || symbollen == 16)
+    // fldigi also requires afcmetric >= 0.05. With squelch off, DCD stays
+    // true, and without this gate the loop chases noise.
+    if (!afcOn || !dcd || symbollen == 16 || afcMetric < 0.05)
       return;
     double error = ang - double(bits) * (kPi / 2.0);
     if (error < -kPi / 2.0 || error > kPi / 2.0)
@@ -237,6 +240,7 @@ struct PskStream {
     prevI = prevQ = 0.0;
     qualI = qualQ = 0.0;
     metric = 0.0;
+    afcMetric = 0.0;
     havePrev = false;
     dcd = false;
     shreg = 0;
@@ -324,6 +328,7 @@ struct PskStream {
     metric = 100.0 * (qualI * qualI + qualQ * qualQ);
     if (metric > 100.0)
       metric = 100.0;
+    afcMetric = pskDecay(afcMetric, qualI * qualI + qualQ * qualQ, 50.0);
 
     const int shift = (qpsk ? 2 : 1) + 1;
     shreg = ((shreg << shift) | unsigned(bits)) & 0xffffffffu;
