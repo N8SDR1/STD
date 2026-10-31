@@ -1152,6 +1152,22 @@ int shellReady(MainWindow& window) {
       qCritical("Olivia latin [%s]", qPrintable(oliviaBack));
       return fail("Olivia newline or Latin-1 did not decode");
     }
+    // 17 symbols of silence moves the FEC boundary off phase 0. 1516 Hz
+    // is one FFT bin off the 1500 Hz cursor. Both still have to print.
+    std::vector<float> slipped(17 * 1536, 0.0f);
+    slipped.insert(slipped.end(), oliviaLatin.samples.begin(), oliviaLatin.samples.end());
+    const QString slipBack = oliviaDecode(QStringLiteral("Olivia 8/250"), slipped.data(),
+                                          int(slipped.size()), 48000, 1500);
+    if (!slipBack.contains(QStringLiteral("A\nB")) || !slipBack.contains(QChar(0x00E9))) {
+      qCritical("Olivia slip [%s]", qPrintable(slipBack));
+      return fail("Olivia block sync did not decode");
+    }
+    const QString offBack = oliviaDecode(QStringLiteral("Olivia 8/250"), oliviaLatin.samples.data(),
+                                         int(oliviaLatin.samples.size()), 48000, 1516);
+    if (!offBack.contains(QStringLiteral("A\nB")) || !offBack.contains(QChar(0x00E9))) {
+      qCritical("Olivia offset [%s]", qPrintable(offBack));
+      return fail("Olivia frequency search did not decode");
+    }
     auto feed = [](auto* engine, const std::vector<float>& wave) {
       engine->setCenterHz(1500);
       engine->setSquelch(true, 15);
@@ -1169,6 +1185,15 @@ int shellReady(MainWindow& window) {
     if (!mfskGot.contains(QStringLiteral("A\nB")) || !mfskGot.contains(QChar(0x00E9))) {
       qCritical("MFSK live [%s]", qPrintable(mfskGot));
       return fail("MFSK live receive did not decode");
+    }
+    OliviaEngine oliviaLive;
+    QString oliviaGot;
+    QObject::connect(&oliviaLive, &OliviaEngine::textReady, [&](const QString& text) { oliviaGot += text; });
+    oliviaLive.setMode(QStringLiteral("Olivia 8/250"));
+    feed(&oliviaLive, slipped);
+    if (!oliviaGot.contains(QStringLiteral("A\nB")) || !oliviaGot.contains(QChar(0x00E9))) {
+      qCritical("Olivia live [%s]", qPrintable(oliviaGot));
+      return fail("Olivia live receive did not decode");
     }
     std::vector<float> noise(48000 * 2);
     std::mt19937 noiseRng(7);

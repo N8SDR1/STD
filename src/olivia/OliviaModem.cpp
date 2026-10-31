@@ -11,6 +11,7 @@
 #include "modem/ToneClock.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -258,48 +259,35 @@ void softBits(const double* energy, const Spec& spec, double* bits) {
     bits[bit] /= total;
 }
 
+struct BlockMetrics {
+  double signal = 0.0;
+  double noise = 0.0;
+};
+
 class BlockDecoder {
 public:
   explicit BlockDecoder(const Spec& spec) : spec_(spec) {
     buffer_.assign(static_cast<size_t>(spec.symbolsPerBlock * spec.bits), 0.0);
   }
 
+  // fldigi MFSK_SoftDecoder::DecodeCharacter: peak magnitude over the
+  // mean power of the other FHT bins. Sync S/N is signal / sqrt(noise).
+  BlockMetrics metrics() const {
+    BlockMetrics out;
+    if (spec_.bits < 1)
+      return out;
+    for (int freq = 0; freq < spec_.bits; ++freq) {
+      const FecHit hit = fecHit(freq);
+      out.signal += std::fabs(hit.peak);
+      out.noise += hit.noise;
+    }
+    out.signal /= double(spec_.bits);
+    out.noise /= double(spec_.bits);
+    return out;
+  }
+
   int character(int freqBit) const {
-    const int block = spec_.symbolsPerBlock;
-    const int bits = spec_.bits;
-    const int len = block * bits;
-    const int wrap = block - 1;
-    std::vector<double> buffer(static_cast<size_t>(block), 0.0);
-    int ptr = ptr_;
-    int rotate = freqBit;
-    int codeBit = (freqBit * spec_.shift) & wrap;
-    for (int time = 0; time < block; ++time) {
-      double bit = buffer_[static_cast<size_t>(ptr + rotate)];
-      const uint64_t codeMask = uint64_t(1) << codeBit;
-      if ((spec_.scramble & codeMask) != 0)
-        bit = -bit;
-      buffer[static_cast<size_t>(time)] = bit;
-      codeBit = (codeBit + 1) & wrap;
-      ++rotate;
-      if (rotate >= bits)
-        rotate -= bits;
-      ptr += bits;
-      if (ptr >= len)
-        ptr -= len;
-    }
-    fht(&buffer);
-    double peak = 0.0;
-    int peakPos = 0;
-    for (int time = 0; time < block; ++time) {
-      const double signal = buffer[static_cast<size_t>(time)];
-      if (std::fabs(signal) > std::fabs(peak)) {
-        peak = signal;
-        peakPos = time;
-      }
-    }
-    int ch = peakPos;
-    if (peak < 0.0)
-      ch += block;
+    int ch = fecHit(freqBit).ch;
     if (spec_.contestia)
       ch = contestiaChar(ch);
     return ch;
@@ -339,15 +327,259 @@ public:
   }
 
 private:
+  struct FecHit {
+    int ch = 0;
+    double peak = 0.0;
+    double noise = 0.0;
+  };
+
+  FecHit fecHit(int freqBit) const {
+    FecHit hit;
+    const int block = spec_.symbolsPerBlock;
+    const int bits = spec_.bits;
+    const int len = block * bits;
+    const int wrap = block - 1;
+    if (block < 2 || bits < 1 || freqBit < 0 || freqBit >= bits)
+      return hit;
+    std::vector<double> buffer(static_cast<size_t>(block), 0.0);
+    int ptr = ptr_;
+    int rotate = freqBit;
+    int codeBit = (freqBit * spec_.shift) & wrap;
+    double sumSq = 0.0;
+    for (int time = 0; time < block; ++time) {
+      double bit = buffer_[static_cast<size_t>(ptr + rotate)];
+      const uint64_t codeMask = uint64_t(1) << codeBit;
+      if ((spec_.scramble & codeMask) != 0)
+        bit = -bit;
+      buffer[static_cast<size_t>(time)] = bit;
+      codeBit = (codeBit + 1) & wrap;
+      ++rotate;
+      if (rotate >= bits)
+        rotate -= bits;
+      ptr += bits;
+      if (ptr >= len)
+        ptr -= len;
+    }
+    fht(&buffer);
+    for (int time = 0; time < block; ++time) {
+      const double signal = buffer[static_cast<size_t>(time)];
+      sumSq += signal * signal;
+      if (std::fabs(signal) > std::fabs(hit.peak)) {
+        hit.peak = signal;
+        hit.ch = time;
+      }
+    }
+    if (hit.peak < 0.0)
+      hit.ch += block;
+    sumSq -= hit.peak * hit.peak;
+    hit.noise = sumSq / double(block - 1);
+    return hit;
+  }
+
   Spec spec_;
   std::vector<double> buffer_;
   int ptr_ = 0;
   bool escape_ = false;
 };
 
+// fldigi FirstCarrier = int((SymbolLen/16) * (f - fc_offset)/500) + 1
+// at the 8 kHz processor. fc_offset = BW * (1 - 0.5/tones) / 2, so the
+// tone set sits about a quarter of a spacing off a cursor-centred comb.
+// The carrier frequency is that FFT bin times 8000/SymbolLen.
 double lowHz(const Spec& spec, int centerHz) {
-  return double(centerHz) - (double(spec.tones - 1) * spec.spacing) / 2.0;
+  if (spec.spacing <= 0.0 || spec.tones < 2 || spec.bandwidth < 125)
+    return double(centerHz);
+  const double fcOffset = double(spec.bandwidth) * (1.0 - 0.5 / double(spec.tones)) / 2.0;
+  const double symbolLen = 16000.0 / spec.spacing;
+  const double scaled = (symbolLen / 16.0) * ((double(centerHz) - fcOffset) / 500.0);
+  const int first = std::max(1, int(scaled) + 1);
+  return double(first) * (8000.0 / symbolLen);
 }
+
+constexpr int kSyncMargin = 8;
+constexpr int kSyncInteg = 4;
+constexpr double kSyncSnr = 3.2;
+
+double syncSnr(double signal, double noise) {
+  if (noise <= 1e-18)
+    return signal > 0.2 ? 80.0 : 0.0;
+  return signal / std::sqrt(noise);
+}
+
+struct BlockScore {
+  double signal = 0.0;
+  double noise = 0.0;
+  int blocks = 0;
+};
+
+BlockScore scorePhase(const Spec& spec, const std::vector<std::array<double, 8>>& symbols, int phase) {
+  BlockScore score;
+  const int block = spec.symbolsPerBlock;
+  const int have = int(symbols.size()) - phase;
+  const int blocks = have / block;
+  if (phase < 0 || blocks < 1)
+    return score;
+  const int use = std::min(blocks, kSyncInteg);
+  const int start = phase + (blocks - use) * block;
+  BlockDecoder decoder(spec);
+  int got = 0;
+  for (int s = start; s < start + use * block; ++s) {
+    decoder.push(symbols[static_cast<size_t>(s)].data());
+    if (++got % block == 0) {
+      const BlockMetrics metrics = decoder.metrics();
+      score.signal += metrics.signal;
+      score.noise += metrics.noise;
+      ++score.blocks;
+    }
+  }
+  return score;
+}
+
+double phaseSnr(const BlockScore& score) {
+  if (score.blocks < 1)
+    return 0.0;
+  return syncSnr(score.signal / double(score.blocks), score.noise / double(score.blocks));
+}
+
+QString textAtPhase(const Spec& spec, const std::vector<std::array<double, 8>>& symbols, int phase) {
+  const int block = spec.symbolsPerBlock;
+  BlockDecoder decoder(spec);
+  QString text;
+  int got = 0;
+  for (int s = phase; s < int(symbols.size()); ++s) {
+    decoder.push(symbols[static_cast<size_t>(s)].data());
+    if (++got % block == 0)
+      text += decoder.take();
+  }
+  return text;
+}
+
+// One symbol of soft bits at each tune offset. The ring holds one FEC
+// block. Printing waits until a (phase, offset) pair holds S/N >= 3.2
+// across up to four blocks, which is fldigi's SyncThreshold / SyncIntegLen.
+class OliviaSync {
+public:
+  explicit OliviaSync(const Spec& spec) : spec_(spec), printer_(spec) {
+    cap_ = std::max(8, spec.symbolsPerBlock);
+    nOff_ = kSyncMargin * 2 + 1;
+    soft_.assign(static_cast<size_t>(nOff_), std::vector<double>(static_cast<size_t>(cap_ * spec.bits), 0.0));
+    hist_.assign(static_cast<size_t>(cap_ * nOff_), Hist{});
+  }
+
+  QString push(const double* soft, double quality, bool squelchOn, int squelch) {
+    if (!soft || spec_.symbolsPerBlock < 8 || spec_.bits < 1)
+      return {};
+    const int block = spec_.symbolsPerBlock;
+    const int bits = spec_.bits;
+    const int s = symbols_;
+    ++symbols_;
+    for (int off = 0; off < nOff_; ++off) {
+      double* slot = soft_[static_cast<size_t>(off)].data() + (s % cap_) * bits;
+      const double* src = soft + off * bits;
+      for (int bit = 0; bit < bits; ++bit)
+        slot[bit] = src[bit];
+    }
+    if (s < block - 1)
+      return {};
+    const int phase = (s + 1) % block;
+    const int start = s - block + 1;
+    for (int off = 0; off < nOff_; ++off) {
+      BlockDecoder decoder(spec_);
+      for (int i = start; i <= s; ++i)
+        decoder.push(soft_[static_cast<size_t>(off)].data() + (i % cap_) * bits);
+      const BlockMetrics metrics = decoder.metrics();
+      Hist& hist = hist_[static_cast<size_t>(phase * nOff_ + off)];
+      hist.sig[hist.pos] = metrics.signal;
+      hist.noi[hist.pos] = metrics.noise;
+      hist.pos = (hist.pos + 1) % kSyncInteg;
+      if (hist.n < kSyncInteg)
+        ++hist.n;
+    }
+    int globalPhase = 0;
+    int globalOff = kSyncMargin;
+    double global = -1.0;
+    double second = -1.0;
+    for (int p = 0; p < block; ++p) {
+      for (int off = 0; off < nOff_; ++off) {
+        const Hist& hist = hist_[static_cast<size_t>(p * nOff_ + off)];
+        if (hist.n < 2)
+          continue;
+        const double snr = snrOf(hist);
+        if (snr > global) {
+          second = global;
+          global = snr;
+          globalPhase = p;
+          globalOff = off;
+        } else if (snr > second) {
+          second = snr;
+        }
+      }
+    }
+    // A lone false block can clear 3.2. Print when this pair is in a
+    // different class from the runner-up, which is what a real FEC block does.
+    const bool distinct = global >= kSyncSnr && (second < kSyncSnr || global > second * 2.0);
+    if (!distinct)
+      global = -1.0;
+    // Hold the pair we are printing. A one-bin wiggle must not reset the
+    // escape state between the two characters of a Latin-1 byte.
+    if (global >= kSyncSnr && (latchedPhase_ < 0 || global > latchedSnr_ + 0.5)) {
+      latchedPhase_ = globalPhase;
+      latchedOff_ = globalOff;
+    }
+    if (latchedPhase_ < 0)
+      return {};
+    latchedSnr_ = snrOf(hist_[static_cast<size_t>(latchedPhase_ * nOff_ + latchedOff_)]);
+    if (latchedSnr_ < kSyncSnr || phase != latchedPhase_)
+      return {};
+    if (hist_[static_cast<size_t>(phase * nOff_ + latchedOff_)].n < 2)
+      return {};
+    if (printerPhase_ != phase || printerOff_ != latchedOff_ || s - lastPrinted_ != block)
+      printer_ = BlockDecoder(spec_);
+    for (int i = start; i <= s; ++i)
+      printer_.push(soft_[static_cast<size_t>(latchedOff_)].data() + (i % cap_) * bits);
+    printerPhase_ = phase;
+    printerOff_ = latchedOff_;
+    lastPrinted_ = s;
+    QString text = printer_.take();
+    if (squelchOn && quality < double(squelch))
+      text.clear();
+    return text;
+  }
+
+private:
+  struct Hist {
+    double sig[kSyncInteg] = {};
+    double noi[kSyncInteg] = {};
+    int n = 0;
+    int pos = 0;
+  };
+
+  double snrOf(const Hist& hist) const {
+    if (hist.n < 1)
+      return 0.0;
+    double signal = 0.0;
+    double noise = 0.0;
+    for (int i = 0; i < hist.n; ++i) {
+      signal += hist.sig[i];
+      noise += hist.noi[i];
+    }
+    return syncSnr(signal / double(hist.n), noise / double(hist.n));
+  }
+
+  Spec spec_;
+  BlockDecoder printer_;
+  int cap_ = 0;
+  int nOff_ = 0;
+  int symbols_ = 0;
+  int printerPhase_ = -1;
+  int printerOff_ = -1;
+  int latchedPhase_ = -1;
+  int latchedOff_ = kSyncMargin;
+  double latchedSnr_ = 0.0;
+  int lastPrinted_ = -100000;
+  std::vector<std::vector<double>> soft_;
+  std::vector<Hist> hist_;
+};
 
 }  // namespace
 
@@ -510,26 +742,42 @@ QString oliviaDecode(const QString& mode, const float* samples, int count, int s
   const int separ = separAt(spec, sampleRateHz);
   if (separ < 8)
     return {};
-  BlockDecoder decoder(spec);
-  QString text;
   double energy[256];
-  double bits[8];
-  const double low = lowHz(spec, centerHz);
+  const double base = lowHz(spec, centerHz);
+  const double binHz = spec.spacing / 2.0;
   const int lead = edgeToneLead(spec, samples, count, sampleRateHz, centerHz);
   // Symbol s is integrated over [s*separ + separ/2, s*separ + 3*separ/2).
   // The modulator's last pulse ends one symbol after the last symbol start.
   const int n = (count - lead - separ / 2) / separ;
-  int fed = 0;
-  for (int s = 0; s < n; ++s) {
-    toneEnergy(samples, count, lead + s * separ + separ / 2, separ, low, spec.spacing, spec.tones,
-               sampleRateHz, energy);
-    softBits(energy, spec, bits);
-    decoder.push(bits);
-    ++fed;
-    if (fed % spec.symbolsPerBlock == 0)
-      text += decoder.take();
+  if (n < spec.symbolsPerBlock)
+    return {};
+  const int nOff = kSyncMargin * 2 + 1;
+  std::vector<std::vector<std::array<double, 8>>> syms(static_cast<size_t>(nOff));
+  for (int off = 0; off < nOff; ++off) {
+    syms[static_cast<size_t>(off)].resize(static_cast<size_t>(n));
+    const double low = base + double(off - kSyncMargin) * binHz;
+    for (int s = 0; s < n; ++s) {
+      toneEnergy(samples, count, lead + s * separ + separ / 2, separ, low, spec.spacing, spec.tones,
+                 sampleRateHz, energy);
+      softBits(energy, spec, syms[static_cast<size_t>(off)][static_cast<size_t>(s)].data());
+    }
   }
-  return text;
+  int bestPhase = 0;
+  int bestOff = 0;
+  double bestSnr = -1.0;
+  for (int off = 0; off < nOff; ++off) {
+    for (int phase = 0; phase < spec.symbolsPerBlock; ++phase) {
+      const double snr = phaseSnr(scorePhase(spec, syms[static_cast<size_t>(off)], phase));
+      if (snr > bestSnr) {
+        bestSnr = snr;
+        bestPhase = phase;
+        bestOff = off;
+      }
+    }
+  }
+  if (bestSnr < kSyncSnr)
+    return {};
+  return textAtPhase(spec, syms[static_cast<size_t>(bestOff)], bestPhase);
 }
 
 struct OliviaEngine::Private {
@@ -546,7 +794,7 @@ struct OliviaEngine::Private {
   int fed = 0;
   double quality = 0.0;
   std::vector<float> pending;
-  std::unique_ptr<BlockDecoder> rx;
+  std::unique_ptr<OliviaSync> sync;
   Rate8k decim;
   SymbolClock clock;
 
@@ -558,7 +806,7 @@ struct OliviaEngine::Private {
     fed = 0;
     quality = 0.0;
     pending.clear();
-    rx.reset();
+    sync.reset();
     decim.reset();
     clock.resetTrack();
   }
@@ -621,57 +869,70 @@ void OliviaEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
     return;
   d_->sinceDecode += count;
   const int need = (spec.symbolsPerBlock + 4) * separ;
-  if (int(d_->pending.size()) < need)
+  // The long window is only for finding symbol timing. Once locked, a
+  // trimmed buffer is still decoded a symbol at a time.
+  if (!d_->locked && int(d_->pending.size()) < need)
     return;
   double energy[256];
-  double bits[8];
   const auto lowNow = [&] { return lowHz(spec, d_->center) + d_->clock.afcHz(); };
   if (!d_->locked) {
-    if (d_->sinceDecode < sampleRateHz / 2)
-      return;
-    d_->sinceDecode = 0;
-    double best = -1.0;
-    int bestAt = 0;
     const int step = std::max(1, separ / 4);
     const int probe = std::min(16, spec.symbolsPerBlock);
-    const double low = lowNow();
-    for (int off = 0; off < separ; off += step) {
-      double score = 0.0;
-      int used = 0;
-      for (int s = 0; s < probe; ++s) {
-        const int begin = off + s * separ + separ / 2;
-        if (begin + separ > int(d_->pending.size()))
-          break;
-        toneEnergy(d_->pending.data(), int(d_->pending.size()), begin, separ, low, spec.spacing, spec.tones,
-                   rate, energy);
-        double peak = 0.0;
-        double second = 0.0;
-        for (int tone = 0; tone < spec.tones; ++tone) {
-          const double power = energy[tone];
-          if (power > peak) {
-            second = peak;
-            peak = power;
-          } else if (power > second)
-            second = power;
+    const double binHz = spec.spacing / 2.0;
+    const int nOff = kSyncMargin * 2 + 1;
+    while (!d_->locked && int(d_->pending.size()) >= need) {
+      double best = -1.0;
+      int bestAt = 0;
+      const int sizeNow = int(d_->pending.size());
+      for (int bin = 0; bin < nOff; ++bin) {
+        const double low = lowNow() + double(bin - kSyncMargin) * binHz;
+        for (int off = 0; off < separ; off += step) {
+          double score = 0.0;
+          int used = 0;
+          for (int s = 0; s < probe; ++s) {
+            const int begin = off + s * separ + separ / 2;
+            if (begin + separ > sizeNow)
+              break;
+            toneEnergy(d_->pending.data(), sizeNow, begin, separ, low, spec.spacing, spec.tones, rate, energy);
+            double peak = 0.0;
+            double second = 0.0;
+            for (int tone = 0; tone < spec.tones; ++tone) {
+              const double power = energy[tone];
+              if (power > peak) {
+                second = peak;
+                peak = power;
+              } else if (power > second)
+                second = power;
+            }
+            if (peak > 0.0)
+              score += (peak - second) / peak;
+            ++used;
+          }
+          if (used >= 8 && score > best + 0.5) {
+            best = score;
+            bestAt = off;
+          }
         }
-        if (peak > 0.0)
-          score += (peak - second) / peak;
-        ++used;
       }
-      if (used >= 8 && score > best + 0.5) {
-        best = score;
-        bestAt = off;
+      if (best >= 4.0) {
+        d_->locked = true;
+        d_->origin = bestAt;
+        d_->fed = 0;
+        d_->quality = 0.0;
+        d_->sync = std::make_unique<OliviaSync>(spec);
+        break;
       }
+      // Start tones and silence are not an FEC symbol. Drop the window
+      // just scored so the next pass can see the text that follows.
+      const int drop = std::min(sizeNow, probe * separ);
+      if (drop < 1)
+        break;
+      d_->pending.erase(d_->pending.begin(), d_->pending.begin() + drop);
     }
-    if (best < 4.0)
+    if (!d_->locked)
       return;
-    d_->locked = true;
-    d_->origin = bestAt;
-    d_->fed = 0;
-    d_->quality = 0.0;
-    d_->rx = std::make_unique<BlockDecoder>(spec);
   }
-  if (!d_->rx)
+  if (!d_->sync)
     return;
   const int size = int(d_->pending.size());
   const int edge = std::max(1, separ / 8);
@@ -714,17 +975,22 @@ void OliviaEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
     d_->clock.setTone(bin.index);
     const double instant = toneQuality(bin.peak, bin.sum, spec.tones);
     d_->quality += (instant - d_->quality) / 16.0;
-    softBits(energy, spec, bits);
-    d_->rx->push(bits);
-    d_->origin += separ;
-    ++d_->fed;
-    if (d_->fed % spec.symbolsPerBlock == 0) {
-      QString text = d_->rx->take();
-      if (d_->squelchOn && d_->quality < double(d_->squelch))
-        text.clear();
-      if (!text.isEmpty())
-        emit textReady(text);
+    const int nOff = kSyncMargin * 2 + 1;
+    const double binHz = spec.spacing / 2.0;
+    const double base = lowNow();
+    std::vector<double> packed(static_cast<size_t>(nOff * spec.bits), 0.0);
+    softBits(energy, spec, packed.data() + kSyncMargin * spec.bits);
+    for (int off = 0; off < nOff; ++off) {
+      if (off == kSyncMargin)
+        continue;
+      toneEnergy(d_->pending.data(), size, begin, separ, base + double(off - kSyncMargin) * binHz,
+                 spec.spacing, spec.tones, rate, energy);
+      softBits(energy, spec, packed.data() + off * spec.bits);
     }
+    const QString text = d_->sync->push(packed.data(), d_->quality, d_->squelchOn, d_->squelch);
+    d_->origin += separ;
+    if (!text.isEmpty())
+      emit textReady(text);
   }
   const int margin = separ * 4;
   if (d_->origin > margin * 8) {
