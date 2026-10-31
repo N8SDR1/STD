@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QObject>
 #include <QString>
+#include <QTime>
 
 class QTimer;
 class QUdpSocket;
@@ -49,9 +50,23 @@ public:
   static QString defaultAdifPath();
   static QByteArray heartbeatDatagram(const QString& version);
 
+  // WSJT-X UDP type 2 (Decode) and type 10 (WSPRDecode), schema 3.
+  // GridTracker reads these. They are built even when UDP is off.
+  // Sending happens only while a logger UDP option is on, and never
+  // during STD_SELFTEST. This does not key and does not send START.
+  static QByteArray decodeDatagram(const QString& mode, int snr, float deltaTime, quint32 audioHz,
+                                   const QString& message, const QTime& time);
+  static QByteArray wsprDecodeDatagram(int snr, float deltaTime, quint64 freqHz, qint32 drift,
+                                       const QString& call, const QString& grid, qint32 powerDbm,
+                                       const QTime& time);
+
   void applySettings();
   void shutdown();
   Result store(const Record& qso);
+  void sendDecode(const QString& mode, int snr, float deltaTime, quint32 audioHz, const QString& message,
+                  const QTime& time);
+  void sendWsprDecode(int snr, float deltaTime, quint64 freqHz, qint32 drift, const QString& call,
+                      const QString& grid, qint32 powerDbm, const QTime& time);
 
 private:
   void sendHeartbeat();

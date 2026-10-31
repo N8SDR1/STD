@@ -21,7 +21,9 @@ struct Mt63Plan {
 int mt63BandwidthHz(const QString& mode);
 bool mt63LongInterleave(const QString& mode);
 
-Mt63Plan planMt63(const QString& mode, const QString& text, int centerHz);
+// startTones sends the lower and upper tuning tones for 4 seconds first.
+// Default on, matching fldigi.
+Mt63Plan planMt63(const QString& mode, const QString& text, int centerHz, bool startTones = true);
 QString mt63Decode(const QString& mode, const float* samples, int count, int sampleRateHz,
                    int centerHz);
 

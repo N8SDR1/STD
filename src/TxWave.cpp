@@ -213,8 +213,15 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
   double counter = 0.0;
   int previous = 0;
   const double step = timing.columnsPerSec * double(kHellFontRows) / double(kRate);
+  // Fldigi's OffShape is 32 samples at 8 kHz from the start of the pixel,
+  // which is the whole Feld Hell pixel. A Slow Hell pixel is 261 samples,
+  // so Fldigi keys the last ink pixel of a stroke for 4 ms and leaves the
+  // rest blank. Pixels longer than the shape put the 2 ms fall at the end
+  // of the pixel instead. Feld Hell keeps the Fldigi shape sample for sample.
+  const bool longPixel = 8000.0 / (timing.columnsPerSec * double(kHellFontRows)) > 40.0;
   auto sendPixel = [&](int current, int next) {
     int n = 0;
+    const int length = std::max(1, int(std::ceil((1.0 - counter) / step - 1e-9)));
     for (;;) {
       double amp = 1.0;
       double freq = double(tone);
@@ -222,6 +229,14 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
         freq += (current ? -1.0 : 1.0) * timing.shiftHz / 2.0;
       } else if (!timing.shaped) {
         amp = current ? 1.0 : 0.0;
+      } else if (longPixel && current == 1) {
+        // Rise over the first 2 ms after a gap, fall over the last 2 ms
+        // before one. A lone pixel gets both.
+        amp = 1.0;
+        if (previous == 0)
+          amp = std::min(amp, hellEdge(n, true));
+        if (next == 0)
+          amp = std::min(amp, hellEdge(length - 1 - n, true));
       } else if (previous == 0 && current == 1) {
         amp = hellEdge(n, true);
       } else if (current == 1 && next == 0) {
@@ -271,12 +286,16 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
   for (const QChar ch : message) {
     if (echoAt)
       echoAt->push_back(int(out->size()));
-    unsigned char c = ' ';
-    if (ch.unicode() >= ' ' && ch.unicode() <= '~')
-      c = static_cast<unsigned char>(ch.unicode());
-    else if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n'))
-      c = ' ';
-    sendChar(c);
+    // feld::tx_process maps CR and LF to a space. Any other character
+    // outside the font sends only the two blank columns of tx_char.
+    if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n')) {
+      sendChar(' ');
+    } else if (ch.unicode() >= ' ' && ch.unicode() <= '~') {
+      sendChar(static_cast<unsigned char>(ch.unicode()));
+    } else {
+      sendColumn(0);
+      sendColumn(0);
+    }
   }
   for (int i = 0; i < 3; ++i)
     sendChar('.');
@@ -287,7 +306,7 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
 }  // namespace
 
 bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
-                 std::vector<int>* echoAt) {
+                 std::vector<int>* echoAt, const RttyOptions* rtty, bool startTones) {
   if (!out)
     return false;
   out->clear();
@@ -310,7 +329,7 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
   if (hellFamily(mode))
     return buildHell(mode, text, tone, out, echoAt);
   if (rttyMode(mode)) {
-    const RttyPlan plan = planRtty(text, tone);
+    const RttyPlan plan = planRtty(text, tone, rtty ? *rtty : RttyOptions{});
     if (plan.samples.empty())
       return false;
     *out = plan.samples;
@@ -355,7 +374,7 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
     return true;
   }
   if (oliviaBandwidthHz(mode) > 0) {
-    const OliviaPlan plan = planOlivia(mode, text, tone);
+    const OliviaPlan plan = planOlivia(mode, text, tone, startTones);
     if (plan.samples.empty())
       return false;
     *out = plan.samples;
@@ -373,7 +392,7 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
     return true;
   }
   if (wsprMode(mode)) {
-    const std::vector<float> wave = wsprModulate(text, tone);
+    const std::vector<float> wave = wsprModulate(text, wsprClampTxHz(tone));
     if (wave.empty())
       return false;
     *out = wave;
@@ -382,7 +401,7 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
     return true;
   }
   if (mt63BandwidthHz(mode) > 0) {
-    const Mt63Plan plan = planMt63(mode, text, tone);
+    const Mt63Plan plan = planMt63(mode, text, tone, startTones);
     if (plan.samples.empty())
       return false;
     *out = plan.samples;
@@ -539,6 +558,7 @@ class SequencedDecodeThread : public QThread {
 public:
   QString mode;
   const std::vector<float>* wave = nullptr;
+  bool allOptions = false;
   QString message;
 
   void run() override {
@@ -560,6 +580,28 @@ public:
                          LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (!module)
       return;
+    auto setSlow = reinterpret_cast<decltype(&slow_set_options)>(GetProcAddress(module, "slow_set_options"));
+    if (allOptions && !setSlow)
+      return;
+    if (setSlow) {
+      SlowDecodeOptions slow{};
+      slow.depth = allOptions ? 3 : 1;
+      slow.ap = allOptions ? 1 : 0;
+      slow.averaging = allOptions ? 1 : 0;
+      slow.autoClearAverage = 1;
+      slow.singleSignal = 0;
+      slow.driftCorrection = allOptions ? 1 : 0;
+      slow.vhfUhf = allOptions ? 1 : 0;
+      slow.maxCandidates = allOptions ? 32 : 8;
+      slow.clearAverage = 1;
+      slow.emeDelay = 0;
+      slow.deepSearch = allOptions ? 1 : 0;
+      slow.deepSearchDb = allOptions ? "W1AW,FN31\nN8SDR,EM79\nK1JT,FN20" : "";
+      slow.myCall = allOptions ? "W1AW" : "";
+      slow.hisCall = "";
+      slow.hisGrid = "";
+      setSlow(&slow);
+    }
     SequencedHit hit;
     const char* stamp = "000000";
     if (jt) {
@@ -578,17 +620,26 @@ public:
              takeSequencedHit, &hit);
     }
     message = hit.message;
+    if (setSlow && allOptions) {
+      SlowDecodeOptions defaults{};
+      defaults.depth = 1;
+      defaults.autoClearAverage = 1;
+      defaults.maxCandidates = 8;
+      defaults.clearAverage = 1;
+      setSlow(&defaults);
+    }
   }
 };
 
 }  // namespace
 
-QString decodeSequencedMessage(const QString& mode, const std::vector<float>& wave48k) {
+QString decodeSequencedMessage(const QString& mode, const std::vector<float>& wave48k, bool allOptions) {
   if (!jt65Mode(mode) && !q65Mode(mode))
     return {};
   SequencedDecodeThread thread;
   thread.mode = mode;
   thread.wave = &wave48k;
+  thread.allOptions = allOptions;
   thread.setStackSize(64 * 1024 * 1024);
   thread.start();
   if (!thread.wait(180000))

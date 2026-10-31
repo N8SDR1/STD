@@ -4,7 +4,8 @@
 // Feld Hell receive from fldigi 4.2.06, tag v4.2.06.
 // feld.cxx mixer(), rx(), and rx_process() by Dave Freese, W1HKJ,
 // GPL-3.0-or-later. The lowpass and Hilbert transforms are the
-// fldigi filter classes compiled beside this file. Transmit is absent.
+// fldigi filter classes compiled beside this file. TCIdigi carries the
+// same feld.cxx unchanged. Transmit is in TxWave.cpp.
 
 #include "HellEngine.h"
 
@@ -19,8 +20,48 @@
 namespace {
 
 constexpr int kSampleRate = 8000;
-constexpr int kColumnLen = 20;
-constexpr double kBandwidthHz = 245.0;
+constexpr int kColumnLen = 20;  // fldigi HellRcvHeight default
+
+// fldigi progdefaults HELL_BW_* defaults, the receive filter bandwidth for
+// each mode. rx_process builds the lowpass at half of it.
+double rxBandwidthHz(double columnRate, double fskShift) {
+  if (fskShift > 0.0) {
+    if (std::fabs(fskShift - 55.0) < 1.0)
+      return 120.0;  // FSK Hell-105
+    if (std::fabs(fskShift - 300.0) < 1.0)
+      return 450.0;  // Hell 80
+    return 250.0;    // FSK Hell (122.5 Hz shift)
+  }
+  if (std::fabs(columnRate - 2.1875) < 0.01)
+    return 30.0;     // Slow Hell
+  if (std::fabs(columnRate - 87.5) < 0.01)
+    return 1225.0;   // Feld Hell X5
+  if (std::fabs(columnRate - 157.5) < 0.01)
+    return 2205.0;   // Feld Hell X9
+  if (std::fabs(columnRate - 17.5) < 0.01)
+    return 245.0;    // Feld Hell
+  return 14.0 * columnRate;
+}
+
+// Lowpass taps for an integer decimation to 8000 Hz, cut at 3600 Hz.
+std::vector<double> decimatorTaps(int factor) {
+  const int taps = 16 * factor + 1;
+  const int half = taps / 2;
+  const double fc = 3600.0 / (8000.0 * factor);
+  std::vector<double> h(static_cast<size_t>(taps));
+  double sum = 0.0;
+  for (int k = 0; k < taps; ++k) {
+    const double u = double(k - half);
+    const double s = u == 0.0 ? 2.0 * fc : std::sin(2.0 * M_PI * fc * u) / (M_PI * u);
+    const double w = 0.42 - 0.5 * std::cos(2.0 * M_PI * k / (taps - 1)) +
+                     0.08 * std::cos(4.0 * M_PI * k / (taps - 1));
+    h[size_t(k)] = s * w;
+    sum += s * w;
+  }
+  for (double& v : h)
+    v /= sum;
+  return h;
+}
 
 double clampd(double x, double lo, double hi) {
   if (x < lo)
@@ -52,6 +93,10 @@ struct HellEngine::Private {
   double phi2freq = 0.0;
   double downsampleInc = (kColumnLen * 17.5) / static_cast<double>(kSampleRate);
   cmplx prev = cmplx(0.0, 0.0);
+  int decimFactor = 0;
+  std::vector<double> decimTaps;
+  std::vector<double> decimHistory;
+  int decimPhase = 0;
   C_FIR_filter* hilbert = nullptr;
   fftfilt* lowpass = nullptr;
   Cmovavg* average = nullptr;
@@ -60,26 +105,28 @@ struct HellEngine::Private {
   void applyFilter() {
     if (!lowpass)
       return;
-    if (fskShift > 0.0) {
-      // feld::restart for MODE_FSKH245 / FSKH105 / HELL80.
-      const double bandwidth = 5.0 * std::round(4.0 * fskShift / 5.0);
-      phi2freq = static_cast<double>(kSampleRate) / M_PI / (fskShift / 2.0);
-      lowpass->create_filter(0, 1.0 * bandwidth / kSampleRate);
-    } else {
-      phi2freq = 0.0;
-      lowpass->create_filter(0, 0.5 * kBandwidthHz / kSampleRate);
-    }
+    // feld::rx_process: lpfilt->create_filter(0, 0.5 * HELL_BW / samplerate)
+    // with the mode's default HELL_BW. X5 and X9 need the wide filter;
+    // Slow Hell gets the narrow one.
+    phi2freq = fskShift > 0.0 ? static_cast<double>(kSampleRate) / M_PI / (fskShift / 2.0) : 0.0;
+    lowpass->create_filter(0, 0.5 * rxBandwidthHz(columnRate, fskShift) / kSampleRate);
+  }
+
+  void applyAverager() {
+    // feld::restart: average->setLength(500 * samplerate / rxpixrate).
+    if (!average)
+      return;
+    const double pixels = std::max(1.0, kColumnLen * columnRate);
+    average->setLength(std::max(1, static_cast<int>(500.0 * kSampleRate / pixels)));
   }
 
   void open() {
     hilbert = new C_FIR_filter();
     hilbert->init_hilbert(37, 1);
-    lowpass = new fftfilt(0, 0.5 * kBandwidthHz / kSampleRate, 1024);
-    // feld::restart sets the averager to 500 * rate / (height * column rate).
+    lowpass = new fftfilt(0, 0.5 * rxBandwidthHz(columnRate, fskShift) / kSampleRate, 1024);
     average = new Cmovavg(200);
     bbfilt = new Cmovavg(8);
-    const int pixels = std::max(1, static_cast<int>(kColumnLen * columnRate));
-    average->setLength(std::max(1, 500 * kSampleRate / pixels));
+    applyAverager();
     applyFilter();
   }
 
@@ -106,6 +153,8 @@ struct HellEngine::Private {
     peakhold = 0.0;
     agc = 0.0;
     prev = cmplx(0.0, 0.0);
+    decimHistory.assign(decimTaps.size(), 0.0);
+    decimPhase = 0;
     colPointer = 0;
     for (int& sample : colData)
       sample = 0;
@@ -140,10 +189,11 @@ struct HellEngine::Private {
       peakhold *= (1.0 - 0.02 / kColumnLen);
     int ix = static_cast<int>(clampd(255.0 * x / (peakhold > 0.0 ? peakhold : 1.0), 0.0, 255.0));
 
+    // fldigi hellagc default 2, medium decay.
     if (avg > agc)
       agc = avg;
     else
-      agc *= (1.0 - 0.01 / kColumnLen);
+      agc *= (1.0 - 0.075 / kColumnLen);
     // feld::rx metric is 1000*agc, clamped 0..100, then compared with the slider.
     const double metric = clampd(1000.0 * agc, 0.0, 100.0);
     const bool gated = squelchOn && metric <= static_cast<double>(squelchLevel);
@@ -179,7 +229,7 @@ struct HellEngine::Private {
     if (avg > agc)
       agc = avg;
     else
-      agc *= (1.0 - 0.01 / kColumnLen);
+      agc *= (1.0 - 0.075 / kColumnLen);
     const double metric = clampd(1000.0 * agc, 0.0, 100.0);
     const bool gated = squelchOn && metric <= static_cast<double>(squelchLevel);
 
@@ -229,11 +279,15 @@ void HellEngine::setSquelch(bool on, int level) {
 void HellEngine::setColumnRate(double columnsPerSecond) {
   if (columnsPerSecond < 1.0)
     columnsPerSecond = 17.5;
+  if (std::fabs(d_->columnRate - columnsPerSecond) < 1e-9)
+    return;
   d_->columnRate = columnsPerSecond;
   d_->downsampleInc = (kColumnLen * d_->columnRate) / static_cast<double>(kSampleRate);
-  if (d_->average) {
-    const int pixels = std::max(1, static_cast<int>(kColumnLen * d_->columnRate));
-    d_->average->setLength(std::max(1, 500 * kSampleRate / pixels));
+  if (d_->armed) {
+    d_->reset();
+  } else {
+    d_->applyAverager();
+    d_->applyFilter();
   }
 }
 
@@ -263,7 +317,36 @@ void HellEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
   const double ratio = static_cast<double>(kSampleRate) / static_cast<double>(sampleRateHz);
   std::vector<double> audio;
   audio.reserve(static_cast<size_t>(count * ratio + 2));
-  for (int i = 0; i < count; ++i) {
+  // Fldigi resamples to 8000 Hz through libsamplerate. Integer ratios
+  // (48000, 96000) use a windowed-sinc lowpass so 4 to 8 kHz noise does not
+  // fold onto the tone. Other rates keep the plain block average.
+  const int factor = sampleRateHz % kSampleRate == 0 ? sampleRateHz / kSampleRate : 0;
+  if (factor != d_->decimFactor) {
+    d_->decimFactor = factor;
+    d_->decimTaps = factor > 1 ? decimatorTaps(factor) : std::vector<double>();
+    d_->decimHistory.assign(d_->decimTaps.size(), 0.0);
+    d_->decimPhase = 0;
+  }
+  if (factor == 1) {
+    for (int i = 0; i < count; ++i)
+      audio.push_back(samples[i]);
+  } else if (factor > 1) {
+    std::vector<double>& hist = d_->decimHistory;
+    const std::vector<double>& h = d_->decimTaps;
+    const size_t taps = h.size();
+    for (int i = 0; i < count; ++i) {
+      std::move(hist.begin() + 1, hist.end(), hist.begin());
+      hist.back() = samples[i];
+      if (++d_->decimPhase < factor)
+        continue;
+      d_->decimPhase = 0;
+      double acc = 0.0;
+      for (size_t k = 0; k < taps; ++k)
+        acc += h[k] * hist[k];
+      audio.push_back(acc);
+    }
+  }
+  for (int i = 0; factor == 0 && i < count; ++i) {
     d_->bucket += samples[i];
     ++d_->bucketCount;
     d_->held += ratio;

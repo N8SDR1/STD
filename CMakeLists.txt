@@ -7,7 +7,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(STD
-  VERSION 0.1.0
+  VERSION 0.1.1
   DESCRIPTION "STD — Shift, Tone, Decode"
   LANGUAGES CXX)
 
@@ -68,6 +68,8 @@ qt_add_executable(std
   WIN32
   src/main.cpp
   src/MainWindow.cpp
+  src/MaEngine.cpp
+  src/MaEngine.h
   src/MainWindow.h
   src/WaterfallWidget.cpp
   src/WaterfallWidget.h
@@ -85,6 +87,8 @@ qt_add_executable(std
   src/TxWave.h
   src/QsoLog.cpp
   src/QsoLog.h
+  src/StationFiles.cpp
+  src/StationFiles.h
   src/MacroFile.cpp
   src/MacroFile.h
   src/hell/HellEngine.cpp
@@ -115,6 +119,8 @@ qt_add_executable(std
   src/wspr/WsprModem.h
   src/spot/PskReporter.cpp
   src/spot/PskReporter.h
+  src/spot/WsprNet.cpp
+  src/spot/WsprNet.h
   src/UpdateChecker.cpp
   src/UpdateChecker.h
   src/mt63/fldigi/dsp.cxx
@@ -151,6 +157,7 @@ if(WIN32)
       "${CMAKE_SOURCE_DIR}/src/ft8/decoderms_ft8.h"
       "${CMAKE_SOURCE_DIR}/src/ft8/decoderms_jt65.h"
       "${CMAKE_SOURCE_DIR}/src/ft8/jt65_bridge.cpp"
+      "${CMAKE_SOURCE_DIR}/src/ft8/patch_unpack_text.py"
       "${CMAKE_SOURCE_DIR}/src/ft8/qt6_compat.h"
       "${CMAKE_SOURCE_DIR}/src/ft8/patch_qt_import.py"
       "${CMAKE_SOURCE_DIR}/src/ft8/patch_moc_undef.py"

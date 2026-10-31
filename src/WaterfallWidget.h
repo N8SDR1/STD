@@ -33,6 +33,12 @@ class QWindow;
 // Contrast, brightness,
 // speed, start, bandwidth, ticks, and palette recolor the trace only.
 // Nothing here decodes a modem.
+// Flatten: the passband shape under one waterfall line, one value per
+// column. Each short stretch takes a low percentile (signals sit above it),
+// then the stretches are joined by straight lines. MSHV's Flatten Display and
+// WSJT-X's Flatten remove this so the band edges read like the middle.
+QVector<float> waterfallBaseline(const QVector<float>& db);
+
 class WaterfallWidget : public QWidget {
   Q_OBJECT
 public:
@@ -76,10 +82,15 @@ public:
   void setTxHz(int hz);
   // Move TX to hz. RX moves too while Lock is on.
   void qsyAudio(int hz);
-  int contrast() const { return contrast_; }
-  int brightness() const { return brightness_; }
-  // Puts the sliders back without writing settings.
-  void setTone(int contrast, int brightness);
+  // Floor is the dB level drawn as the bottom of the palette; Range is how
+  // many dB the palette spans above it. With Auto on, Floor follows the
+  // measured noise (a few dB under it) and floorDb() reports that level.
+  int floorDb() const;
+  int rangeDb() const { return rangeDb_; }
+  bool autoFloor() const { return autoFloor_; }
+  bool flatten() const { return flatten_; }
+  // Puts the controls back without writing settings.
+  void setTone(int floorDb, int rangeDb, bool autoFloor);
   // vulkan, d3d11, d3d12, opengl, or painter. Auto is Vulkan.
   // Options shows the backend that is actually in use. A different API
   // restarts STD so the window is created on that backend.
@@ -93,7 +104,7 @@ public:
 
 signals:
   void frequenciesChanged(int rxHz, int txHz);
-  void toneChanged(int contrast, int brightness);
+  void toneChanged();
   void graphicsModeChanged(const QString& mode);
   // True only while STD itself is transmitting and the TX spectrum is
   // wider than the red channel. Receive audio never raises this.
@@ -115,8 +126,12 @@ private:
     float lo = 0.0f;
     float hi = 0.0f;
     int width = 0;
-    QVector<float> level;
+    int gen = 0;          // analysisGen_ when built; Flatten bumps it
+    float noise = 0.0f;   // this line's noise level, dB
+    QVector<float> level; // dB above noise (or above the flattened baseline)
   };
+  float floorRelative(const TraceRow& row) const;
+  void syncFloorReadout();
 
   friend class WaterfallChrome;
 
@@ -203,8 +218,14 @@ private:
   float dragLo_ = 0.0f;
   float dragHi_ = 0.0f;
   QWidget* toneBar_ = nullptr;
-  int contrast_ = 50;
-  int brightness_ = 50;
+  int floorDb_ = -100;
+  int rangeDb_ = 30;
+  bool autoFloor_ = true;
+  bool flatten_ = false;
+  bool haveNoise_ = false;
+  float autoNoise_ = 0.0f;
+  int shownFloor_ = 1 << 30;
+  int analysisGen_ = 0;
   int palette_ = 0;
   int traceSpeed_ = 9;
   int tickHz_ = 500;

@@ -70,6 +70,12 @@ struct Job {
   int modid = 14;
   int periodSec = 15;
   QString stamp;
+  Ft8Decode::SlowOptions slow;
+  bool clearAverage = false;
+  QByteArray myCall;
+  QByteArray hisCall;
+  QByteArray hisGrid;
+  QByteArray deepSearchDb;
 };
 
 class Worker : public QThread {
@@ -126,6 +132,7 @@ public:
         reinterpret_cast<decltype(&q65_decode_wave)>(GetProcAddress(module, "q65_decode_wave"));
     auto setMulti = reinterpret_cast<decltype(&ft8_session_set_multi_answer)>(
         GetProcAddress(module, "ft8_session_set_multi_answer"));
+    auto setSlow = reinterpret_cast<decltype(&slow_set_options)>(GetProcAddress(module, "slow_set_options"));
     if (!open || !close || !decode) {
       emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT8 decoder did not load."), 0});
       FreeLibrary(module);
@@ -182,6 +189,25 @@ public:
       };
       if (setMulti)
         setMulti(session, job.multi);
+      if (setSlow && (job.kind == 3 || job.kind == 4)) {
+        SlowDecodeOptions slow{};
+        slow.depth = job.depth;
+        slow.ap = job.ap;
+        slow.averaging = job.slow.averaging ? 1 : 0;
+        slow.autoClearAverage = job.slow.autoClearAverage ? 1 : 0;
+        slow.singleSignal = job.slow.singleSignal ? 1 : 0;
+        slow.driftCorrection = job.slow.driftCorrection ? 1 : 0;
+        slow.vhfUhf = job.slow.vhfUhf ? 1 : 0;
+        slow.maxCandidates = job.slow.maxCandidates;
+        slow.clearAverage = job.clearAverage ? 1 : 0;
+        slow.emeDelay = job.slow.emeDelay ? 1 : 0;
+        slow.deepSearch = job.slow.deepSearch ? 1 : 0;
+        slow.deepSearchDb = job.deepSearchDb.constData();
+        slow.myCall = job.myCall.constData();
+        slow.hisCall = job.hisCall.constData();
+        slow.hisGrid = job.hisGrid.constData();
+        setSlow(&slow);
+      }
       if (job.kind == 2) {
         if (!decode2) {
           emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT2 decoder did not load."), 0});
@@ -270,6 +296,12 @@ struct Ft8Decode::Private {
   int rxHz = 1200;
   int txHz = 1500;
   bool workerStarted = false;
+  Ft8Decode::SlowOptions slow;
+  bool clearAverage = false;
+  QByteArray myCall;
+  QByteArray hisCall;
+  QByteArray hisGrid;
+  QByteArray deepSearchDb;
 };
 
 Ft8Decode::Ft8Decode(QObject* parent) : QObject(parent), d_(new Private) {
@@ -310,6 +342,8 @@ void Ft8Decode::setMode(Period mode) {
   if (d_->mode == mode)
     return;
   d_->mode = mode;
+  // JT65 and Q65 averages belong to the old mode or submode.
+  d_->clearAverage = true;
   d_->stagePeriod = -1;
   d_->stageDone = 0;
 }
@@ -325,6 +359,28 @@ void Ft8Decode::setOptions(bool threeStage, int depth, bool ap, int clockOffsetM
   d_->depth = std::clamp(depth, 1, 3);
   d_->ap = ap;
   d_->clockOffsetMs = std::clamp(clockOffsetMs, -5000, 5000);
+}
+
+void Ft8Decode::setSlowOptions(const SlowOptions& options) {
+  QMutexLocker lock(&d_->mutex);
+  d_->slow = options;
+}
+
+void Ft8Decode::setApCalls(const QString& myCall, const QString& hisCall, const QString& hisGrid) {
+  QMutexLocker lock(&d_->mutex);
+  d_->myCall = myCall.trimmed().toUpper().toLatin1();
+  d_->hisCall = hisCall.trimmed().toUpper().toLatin1();
+  d_->hisGrid = hisGrid.trimmed().toUpper().toLatin1();
+}
+
+void Ft8Decode::setDeepSearchCalls(const QStringList& callGrid) {
+  QMutexLocker lock(&d_->mutex);
+  d_->deepSearchDb = callGrid.join(QLatin1Char('\n')).toLatin1();
+}
+
+void Ft8Decode::clearAverages() {
+  QMutexLocker lock(&d_->mutex);
+  d_->clearAverage = true;
 }
 
 void Ft8Decode::clear() {
@@ -502,6 +558,15 @@ void Ft8Decode::poll() {
     job.submode = submode;
     job.modid = modid;
     job.periodSec = periodSec;
+    job.slow = d_->slow;
+    job.myCall = d_->myCall;
+    job.hisCall = d_->hisCall;
+    job.hisGrid = d_->hisGrid;
+    job.deepSearchDb = d_->deepSearchDb;
+    if (kind >= 3) {
+      job.clearAverage = d_->clearAverage;
+      d_->clearAverage = false;
+    }
     job.stamp = QDateTime::fromMSecsSinceEpoch(periodStart, QTimeZone::utc()).toString(QStringLiteral("hhmmss"));
     d_->stageDone += 1;
     ready = true;
@@ -509,9 +574,12 @@ void Ft8Decode::poll() {
   if (!ready)
     return;
   ensureWorker();
+  const bool clearing = job.clearAverage;
   if (!d_->worker.submit(std::move(job))) {
     QMutexLocker lock(&d_->mutex);
     if (d_->stageDone > 0)
       d_->stageDone -= 1;
+    if (clearing)
+      d_->clearAverage = true;
   }
 }

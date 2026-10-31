@@ -5,6 +5,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 #include <vector>
 
@@ -29,8 +30,34 @@ qint64 js8SuggestedDialHz(int bandIndex);
 QString js8SuggestedBandName(int bandIndex);
 QString js8SuggestedPlace(int bandIndex);
 
-Js8Plan planJs8(const QString& text, int toneHz);
-QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz);
+// One Normal frame is 500 ms of silence plus 79 symbols (13.14 s).
+// JS8Call only copies a frame that starts on a 15 s UTC boundary.
+int js8FrameSamples();
+// maxFrames 0 plans every frame back to back. Pass 1 to take a single
+// 15 s part. consumed, when set, receives how many characters of text
+// went into the plan. messageStart is false for a later part of the
+// same message so the frame type stays a continuation.
+Js8Plan planJs8(const QString& text, int toneHz, int maxFrames = 0, int* consumed = nullptr,
+                bool messageStart = true);
+// snrDb, when set, receives the frame SNR in a 2500 Hz bandwidth, the
+// same reference WSJT-X and JS8Call print. A clean local frame is positive.
+QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz, int* snrDb = nullptr);
+
+// One frame from its 12-character JS8Call payload and 3 transmission bits
+// (1 first, 2 last, 4 data). The self-test uses it to send heartbeat,
+// directed, compound and compressed frames that STD does not build itself.
+std::vector<float> js8FrameAudio(const QString& frame12, int type, int toneHz);
+
+struct Js8Heard {
+  int freqHz = 0;
+  QString text;
+  int snrDb = 0;
+};
+// One receive period, the way Js8Engine decodes it. samples are 48 kHz and
+// start leadMs before the 15 s UTC boundary. The cursor frame is tried
+// first, then every JS8 signal in 400-2650 Hz, each at its own time offset.
+std::vector<Js8Heard> js8DecodePeriod(const float* samples, int count, int sampleRateHz, int toneHz,
+                                      int leadMs);
 
 class Js8Engine : public QObject {
   Q_OBJECT
@@ -44,12 +71,19 @@ public:
   void pushAudio(const float* samples, int count, int sampleRateHz);
 
 signals:
-  void textReady(const QString& text);
+  // freqHz is that station's audio frequency, not the cursor.
+  void textReady(const QString& text, int snrDb, int freqHz);
 
 private:
+  void publish(qint64 periodStart, int generation, const std::vector<Js8Heard>& hits);
+
+  int generation_ = 0;
   bool armed_ = false;
   int toneHz_ = 1500;
   int rate_ = 48000;
-  std::vector<float> pending_;
-  QString last_;
+  std::vector<float> ring_;
+  qint64 total_ = 0;
+  qint64 newestMs_ = 0;
+  qint64 decodedPeriod_ = -1;
+  QStringList heard_;
 };

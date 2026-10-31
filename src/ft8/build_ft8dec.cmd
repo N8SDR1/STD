@@ -82,7 +82,9 @@ echo COMPILE pack_msg
 "%GPP%" %FLAGS% %INC% -o "%OBJ%\pack_msg.o" "%MSHV%\src\HvMsPlayer\libsound\HvPackUnpackMsg\pack_msg.cpp"
 if errorlevel 1 exit /b 1
 echo COMPILE unpack_msg
-"%GPP%" %FLAGS% %INC% -o "%OBJ%\unpack_msg.o" "%MSHV%\src\HvMsPlayer\libsound\HvPackUnpackMsg\unpack_msg.cpp"
+python "%STD%\src\ft8\patch_unpack_text.py" "%MSHV%\src\HvMsPlayer\libsound\HvPackUnpackMsg\unpack_msg.cpp" "%OBJ%\unpack_msg_qt6.cpp"
+if errorlevel 1 exit /b 1
+"%GPP%" %FLAGS% %INC% -I"%MSHV%\src\HvMsPlayer\libsound\HvPackUnpackMsg" -o "%OBJ%\unpack_msg.o" "%OBJ%\unpack_msg_qt6.cpp"
 if errorlevel 1 exit /b 1
 echo COMPILE hvqthloc
 "%GPP%" %FLAGS% %INC% -o "%OBJ%\hvqthloc.o" "%MSHV%\src\HvTxW\hvqthloc.cpp"

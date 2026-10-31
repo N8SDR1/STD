@@ -12,8 +12,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <cstring>
+
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QFile>
+#include <QPointer>
+#include <QThreadPool>
 
 namespace {
 
@@ -21,6 +28,10 @@ constexpr int kRate = 48000;
 constexpr int kSymbol = 7680;
 constexpr int kDelay = 24000;
 constexpr int kSymbols = 79;
+// Receive runs at 12 kHz, the JS8Call rate: 1920 samples a symbol.
+constexpr int kRx = 12000;
+constexpr int kRxSym = 1920;
+constexpr int kRxDelay = 6000;
 constexpr int kTones = 8;
 constexpr double kSpacing = 6.25;
 constexpr char kAlphabet[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-+";
@@ -98,22 +109,21 @@ bool parityBit(int row, int col) {
   return (value & (1 << shift)) != 0;
 }
 
-// boost::augmented_crc<12, 0xc06>, then JS8Call-improved xor 42.
-// Width-12, poly 0xC06, init 0, no reflection, then 12 zero bits.
+// boost::augmented_crc<12, 0xc06>, then xor 42, as JS8Call and
+// JS8Call-improved CRC12() do. "Augmented" means the buffer's own trailing
+// zero bits are the augmentation: each bit shifts in at the bottom of the
+// register and nothing is appended. Over the 11-byte frame that is the CRC
+// of the first 76 bits (75 message bits and a zero).
 uint16_t crc12(const uint8_t* data, int count) {
   uint16_t rem = 0;
-  auto bit = [&](int one) {
-    const int top = (rem >> 11) & 1;
-    rem = static_cast<uint16_t>((rem << 1) & 0x0FFF);
-    if (top ^ one)
-      rem = static_cast<uint16_t>(rem ^ 0x0C06);
-  };
   for (int i = 0; i < count; ++i) {
-    for (int b = 7; b >= 0; --b)
-      bit((data[i] >> b) & 1);
+    for (int b = 7; b >= 0; --b) {
+      const bool top = (rem & 0x800) != 0;
+      rem = static_cast<uint16_t>(((rem << 1) | ((data[i] >> b) & 1)) & 0x0FFF);
+      if (top)
+        rem = static_cast<uint16_t>(rem ^ 0x0C06);
+    }
   }
-  for (int i = 0; i < 12; ++i)
-    bit(0);
   return static_cast<uint16_t>(rem ^ 42);
 }
 
@@ -148,17 +158,272 @@ QString huffDecode(const std::string& bits) {
   return text;
 }
 
-QString unpack72(const std::string& bits72) {
-  if (bits72.size() < 72 || bits72[0] != '1')
+// ---- Receive side of the JS8Call message formats ----------------------
+// From JS8Call-improved JS8_Main/Varicode.cpp (unpack*Message, unpackCallsign,
+// unpackAlphaNumeric50, unpackGrid, unpackCmd), JS8_JSC/JSC.cpp decompress()
+// and JS8_Mode/DecodedText.cpp, which picks the frame type and builds the
+// text. The word table is JS8_JSC/JSC_map.cpp, stored in resources/js8.
+
+constexpr char kAlphaNumeric[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ /@";
+constexpr uint32_t kBaseCall = 37u * 36 * 10 * 27 * 27 * 27;
+constexpr int kBaseGrid = 180 * 180;
+constexpr int kUserGrid = kBaseGrid + 10;
+constexpr int kMaxGrid = (1 << 15) - 1;
+
+// basecalls in Varicode.cpp: name n is kBaseCall + 1 + n.
+const char* const kGroups[] = {
+    "<....>",     "@ALLCALL",  "@JS8NET",   "@DX/NA",    "@DX/SA",    "@DX/EU",    "@DX/AS",
+    "@DX/AF",     "@DX/OC",    "@DX/AN",    "@REGION/1", "@REGION/2", "@REGION/3", "@GROUP/0",
+    "@GROUP/1",   "@GROUP/2",  "@GROUP/3",  "@GROUP/4",  "@GROUP/5",  "@GROUP/6",  "@GROUP/7",
+    "@GROUP/8",   "@GROUP/9",  "@COMMAND",  "@CONTROL",  "@NET",      "@NTS",      "@RESERVE/0",
+    "@RESERVE/1", "@RESERVE/2", "@RESERVE/3", "@RESERVE/4", "@APRSIS",  "@RAGCHEW",  "@JS8",
+    "@EMCOMM",    "@ARES",     "@MARS",     "@AMRRON",   "@RACES",    "@RAYNET",   "@RADAR",
+    "@SKYWARN",   "@CQ",       "@HB",       "@QSO",      "@QSOPARTY", "@CONTEST",  "@FIELDDAY",
+    "@SOTA",      "@IOTA",     "@POTA",     "@QRP",      "@QRO",
+};
+
+// directed_cmds.key(n): the first key in QMap order with value n.
+const char* const kCommands[32] = {
+    " SNR?",  " DIT DIT", " NACK", " HEARING?", " GRID?", ">",     " STATUS?",  " STATUS",
+    " HEARING", " MSG",   " MSG TO:", " QUERY", " QUERY MSGS", " QUERY CALL", " ACK", " GRID",
+    " INFO?", " INFO",    " FB",   " HW CPY?", " SK",    " RR",    " QSL?",     " QSL",
+    " CMD",   " SNR",     " NO",   " YES",     " 73",    " HEARTBEAT SNR", " AGN?", " ",
+};
+
+const char* const kCqs[8] = {"CQ CQ CQ", "CQ DX", "CQ QRP", "CQ CONTEST", "CQ FIELD", "CQ FD", "CQ CQ", "CQ"};
+
+bool snrCommand(int cmd) {
+  return cmd == 25 || cmd == 29;
+}
+
+uint64_t bitsValue(const std::string& bits, std::size_t from, int count) {
+  uint64_t value = 0;
+  for (int i = 0; i < count; ++i)
+    value = (value << 1) | (bits[from + static_cast<std::size_t>(i)] == '1' ? 1u : 0u);
+  return value;
+}
+
+struct JscWords {
+  QByteArray data;
+  std::vector<int> offset;
+};
+
+constexpr int kJscSize = 262144;
+
+const JscWords& jscWords() {
+  static const JscWords table = [] {
+    JscWords words;
+    QFile file(QStringLiteral(":/std/js8/jsc_words.bin"));
+    if (file.open(QIODevice::ReadOnly))
+      words.data = file.readAll();
+    int start = 0;
+    for (int i = 0; i < words.data.size() && int(words.offset.size()) < kJscSize; ++i) {
+      if (words.data.at(i) == '\0') {
+        words.offset.push_back(start);
+        start = i + 1;
+      }
+    }
+    if (int(words.offset.size()) != kJscSize)
+      words.offset.clear();
+    return words;
+  }();
+  return table;
+}
+
+// JSC::decompress(): 4-bit nibbles, (s,c)-dense with s = 7, c = 9. A
+// nibble below 7 ends a word and is followed by a separator bit.
+QString jscDecompress(const std::string& bits) {
+  const JscWords& words = jscWords();
+  if (words.offset.empty())
     return {};
-  const int pad = static_cast<int>(bits72.rfind('0'));
-  if (pad <= 2)
+  constexpr uint32_t s = 7;
+  constexpr uint32_t c = 9;
+  uint32_t base[8];
+  base[0] = 0;
+  uint32_t step = s;
+  for (int k = 1; k < 8; ++k) {
+    base[k] = base[k - 1] + step;
+    step *= c;
+  }
+  std::vector<uint32_t> nibbles;
+  std::vector<std::size_t> separators;
+  std::size_t i = 0;
+  while (i + 4 <= bits.size()) {
+    const uint32_t nibble = uint32_t(bitsValue(bits, i, 4));
+    nibbles.push_back(nibble);
+    i += 4;
+    if (nibble < s) {
+      if (i < bits.size() && bits[i] == '1')
+        separators.push_back(nibbles.size() - 1);
+      i += 1;
+    }
+  }
+  QString text;
+  std::size_t sep = 0;
+  std::size_t start = 0;
+  while (start < nibbles.size()) {
+    std::size_t k = 0;
+    uint64_t j = 0;
+    while (start + k < nibbles.size() && nibbles[start + k] >= s) {
+      j = j * c + (nibbles[start + k] - s);
+      ++k;
+    }
+    if (j >= uint64_t(kJscSize) || start + k >= nibbles.size() || k >= 8)
+      break;
+    j = j * s + nibbles[start + k] + base[k];
+    if (j >= uint64_t(kJscSize))
+      break;
+    text.append(QString::fromLatin1(words.data.constData() + words.offset[static_cast<std::size_t>(j)]));
+    if (sep < separators.size() && separators[sep] == start + k) {
+      text.append(QLatin1Char(' '));
+      ++sep;
+    }
+    start += k + 1;
+  }
+  return text;
+}
+
+QString unpackCallsign(uint32_t value, bool portable) {
+  if (value > kBaseCall) {
+    const uint32_t group = value - kBaseCall - 1;
+    if (group < sizeof(kGroups) / sizeof(kGroups[0]))
+      return QString::fromLatin1(kGroups[group]);
+  }
+  char word[7] = {};
+  for (int i = 5; i >= 3; --i) {
+    word[i] = kAlphaNumeric[value % 27 + 10];
+    value /= 27;
+  }
+  word[2] = kAlphaNumeric[value % 10];
+  value /= 10;
+  word[1] = kAlphaNumeric[value % 36];
+  value /= 36;
+  if (value > 38)
     return {};
-  // Drop the data flag and the compression flag. The pad zero and the
-  // ones after it are not payload.
-  if (bits72[1] != '0')
+  word[0] = kAlphaNumeric[value];
+  QString call = QString::fromLatin1(word);
+  if (call.startsWith(QLatin1String("3D0")))
+    call = QLatin1String("3DA0") + call.mid(3);
+  if (call.startsWith(QLatin1Char('Q')) && call.at(1) >= QLatin1Char('A') && call.at(1) <= QLatin1Char('Z'))
+    call = QLatin1String("3X") + call.mid(1);
+  if (portable)
+    call = call.trimmed() + QLatin1String("/P");
+  return call.trimmed();
+}
+
+// [39][38][38][2][38][38][38][2][38][38][38], spaces dropped.
+QString unpackAlphaNumeric50(uint64_t packed) {
+  char word[12] = {};
+  for (int i = 10; i >= 8; --i) {
+    word[i] = kAlphaNumeric[packed % 38];
+    packed /= 38;
+  }
+  word[7] = packed % 2 ? '/' : ' ';
+  packed /= 2;
+  for (int i = 6; i >= 4; --i) {
+    word[i] = kAlphaNumeric[packed % 38];
+    packed /= 38;
+  }
+  word[3] = packed % 2 ? '/' : ' ';
+  packed /= 2;
+  for (int i = 2; i >= 1; --i) {
+    word[i] = kAlphaNumeric[packed % 38];
+    packed /= 38;
+  }
+  word[0] = kAlphaNumeric[packed % 39];
+  return QString::fromLatin1(word).remove(QLatin1Char(' '));
+}
+
+// unpackGrid() through deg2grid(), four characters.
+QString unpackGrid(int value) {
+  if (value > kBaseGrid)
     return {};
-  return huffDecode(bits72.substr(2, static_cast<std::size_t>(pad - 2)));
+  const float dlat = float(value % 180 - 90);
+  float dlong = float(value / 180 * 2 - 180 + 2);
+  if (dlong > 180)
+    dlong -= 360;
+  const int nlong = int(60.0 * (180.0 - dlong) / 5);
+  const int nlat = int(60.0 * (dlat + 90) / 2.5);
+  const char grid[5] = {char('A' + nlong / 240), char('A' + nlat / 240),
+                        char('0' + (nlong - 240 * (nlong / 240)) / 24),
+                        char('0' + (nlat - 240 * (nlat / 240)) / 24), 0};
+  return QString::fromLatin1(grid);
+}
+
+QString formatSnr(int snr) {
+  if (snr < -60 || snr > 60)
+    return {};
+  return QString::asprintf("%c%02d", snr >= 0 ? '+' : '-', std::abs(snr));
+}
+
+// Heartbeat (000), compound (001) and compound directed (010):
+// [3 type][50 callsign][11 num high], then [5 num low][3 bits3].
+QString unpackCompound(const std::string& bits72, int type) {
+  const QString call = unpackAlphaNumeric50(bitsValue(bits72, 3, 50));
+  const int num = int((bitsValue(bits72, 53, 11) << 5) | bitsValue(bits72, 64, 5));
+  const int bits3 = int(bitsValue(bits72, 69, 3));
+  if (type == 0) {
+    const QString grid = unpackGrid(num & kMaxGrid);
+    if (num & (1 << 15))
+      return call + QLatin1String(": @ALLCALL ") + QLatin1String(kCqs[bits3]) + QLatin1Char(' ') + grid +
+             QLatin1Char(' ');
+    return call + QLatin1String(": @HB HEARTBEAT ") + grid + QLatin1Char(' ');
+  }
+  if (type == 1)
+    return call + QLatin1String(": ");
+  QStringList extra;
+  if (num <= kBaseGrid) {
+    extra.append(QLatin1Char(' ') + unpackGrid(num));
+  } else if (num >= kUserGrid && num < kMaxGrid) {
+    const int value = (num - kUserGrid) & 0xFF;
+    const int cmd = value & 0x80 ? (value & 0x40 ? 29 : 25) : value & 0x7F;
+    extra.append(cmd < 32 ? QLatin1String(kCommands[cmd]) : QString());
+    if (snrCommand(cmd))
+      extra.append(formatSnr((value & 0x3F) - 31));
+  }
+  return call + extra.join(QLatin1Char(' ')) + QLatin1Char(' ');
+}
+
+// Directed (011): [3 type][28 from][28 to][5 cmd], then
+// [1 from /P][1 to /P][6 num].
+QString unpackDirected(const std::string& bits72) {
+  const int extra = int(bitsValue(bits72, 64, 8));
+  const QString from = unpackCallsign(uint32_t(bitsValue(bits72, 3, 28)), (extra & 0x80) != 0);
+  const QString to = unpackCallsign(uint32_t(bitsValue(bits72, 31, 28)), (extra & 0x40) != 0);
+  if (from.isEmpty() || to.isEmpty())
+    return {};
+  const int cmd = int(bitsValue(bits72, 59, 5));
+  QString text = from + QLatin1String(": ") + to + QLatin1String(kCommands[cmd]);
+  const int num = extra % 64;
+  if (num != 0)
+    text += QLatin1Char(' ') + (snrCommand(cmd) ? formatSnr(num - 31) : QString::number(num - 31));
+  return text + QLatin1Char(' ');
+}
+
+// DecodedText's unpack order: fast data, data, heartbeat, compound,
+// directed. flags are the frame's 3 transmission bits (4 = JS8CallData).
+QString unpackFrame(const std::string& bits72, int flags) {
+  if (bits72.size() < 72)
+    return {};
+  if (flags & 4) {
+    const std::size_t pad = bits72.rfind('0');
+    if (pad == std::string::npos)
+      return {};
+    return jscDecompress(bits72.substr(0, pad));
+  }
+  if (bits72[0] == '1') {
+    // Drop the data flag and the compression flag. The pad zero and the
+    // ones after it are not payload.
+    const std::size_t pad = bits72.rfind('0');
+    if (pad == std::string::npos || pad < 2)
+      return {};
+    const std::string payload = bits72.substr(2, pad - 2);
+    return bits72[1] == '1' ? jscDecompress(payload) : huffDecode(payload);
+  }
+  const int type = int(bitsValue(bits72, 0, 3));
+  if (type <= 2)
+    return unpackCompound(bits72, type);
+  return unpackDirected(bits72);
 }
 
 std::string pack72(const QString& text, int* consumed) {
@@ -286,91 +551,525 @@ void writeFrame(const int* tones, int toneHz, std::vector<float>* out) {
   }
 }
 
-int bestTone(const float* samples, int count, int toneHz) {
-  int best = 0;
-  double bestMag = -1.0;
-  for (int tone = 0; tone < kTones; ++tone) {
-    const double freq = double(toneHz) + tone * kSpacing;
-    const double w = 2.0 * 3.141592653589793 * freq / double(kRate);
-    double re = 0.0;
-    double im = 0.0;
-    for (int n = 0; n < count; n += 8) {
-      re += samples[n] * std::cos(w * n);
-      im += samples[n] * std::sin(w * n);
+// 48 kHz to 12 kHz. Blackman-windowed sinc, 4.5 kHz cut-off, centred so
+// output sample i lines up with input sample 4 i. Reading every 8th or
+// 32nd sample of the 48 kHz audio folded tones 1.5 or 6 kHz apart onto
+// each other; filtering first keeps each JS8 tone in its own bin.
+std::vector<float> to12k(const float* samples, int count) {
+  constexpr int factor = kRate / kRx;
+  constexpr int taps = 16 * factor + 1;
+  constexpr int half = taps / 2;
+  static const std::array<double, taps> coeff = [] {
+    std::array<double, taps> c{};
+    constexpr double pi = 3.141592653589793;
+    const double fc = 4500.0 / double(kRate);
+    double sum = 0.0;
+    for (int k = 0; k < taps; ++k) {
+      const double u = double(k - half);
+      const double s = u == 0.0 ? 2.0 * fc : std::sin(2.0 * pi * fc * u) / (pi * u);
+      const double w = 0.42 - 0.5 * std::cos(2.0 * pi * k / (taps - 1)) + 0.08 * std::cos(4.0 * pi * k / (taps - 1));
+      c[static_cast<std::size_t>(k)] = s * w;
+      sum += s * w;
     }
-    const double mag = re * re + im * im;
-    if (mag > bestMag) {
-      bestMag = mag;
-      best = tone;
+    for (double& v : c)
+      v /= sum;
+    return c;
+  }();
+  std::vector<float> out;
+  if (!samples || count < factor)
+    return out;
+  out.resize(static_cast<std::size_t>(count / factor));
+  for (int i = 0; i < int(out.size()); ++i) {
+    const int centre = i * factor;
+    double acc = 0.0;
+    for (int k = 0; k < taps; ++k) {
+      const int at = centre + k - half;
+      if (at >= 0 && at < count)
+        acc += coeff[static_cast<std::size_t>(k)] * samples[at];
     }
+    out[static_cast<std::size_t>(i)] = float(acc);
   }
-  return best;
+  return out;
 }
 
-bool costasAt(const float* samples, int count, int offset, int toneHz) {
-  if (offset < 0 || offset + kSymbols * kSymbol > count)
-    return false;
-  int hits = 0;
-  for (int block = 0; block < 3; ++block) {
-    for (int i = 0; i < 7; ++i) {
-      const int at = offset + (kCostasAt[block] + i) * kSymbol;
-      if (bestTone(samples + at, kSymbol, toneHz) == kCostas[i])
-        ++hits;
-    }
+// Goertzel power of one JS8 tone over count samples at 12 kHz.
+double tonePowerHz(const float* samples, int count, double baseHz, int tone) {
+  if (!samples || count < 8)
+    return 0.0;
+  const double freq = baseHz + tone * kSpacing;
+  const double coeff = 2.0 * std::cos(2.0 * 3.141592653589793 * freq / double(kRx));
+  double s1 = 0.0;
+  double s2 = 0.0;
+  for (int n = 0; n < count; ++n) {
+    const double s0 = samples[n] + coeff * s1 - s2;
+    s2 = s1;
+    s1 = s0;
   }
-  return hits >= 18;
+  return std::max(0.0, s1 * s1 + s2 * s2 - coeff * s1 * s2);
 }
 
-QString textAt(const float* samples, int count, int offset, int toneHz) {
-  if (!costasAt(samples, count, offset, toneHz))
-    return {};
-  int tones[kSymbols];
-  for (int i = 0; i < kSymbols; ++i)
-    tones[i] = bestTone(samples + offset + i * kSymbol, kSymbol, toneHz);
-  std::string bits;
-  bits.reserve(87);
-  for (int i = 0; i < 29; ++i) {
-    const int word = tones[43 + i] & 7;
-    bits.push_back((word & 4) ? '1' : '0');
-    bits.push_back((word & 2) ? '1' : '0');
-    bits.push_back((word & 1) ? '1' : '0');
+double tonePower(const float* samples, int count, int toneHz, int tone) {
+  return tonePowerHz(samples, count, double(toneHz), tone);
+}
+
+// Excess of the chosen tone over the other seven, then referred to
+// 2500 Hz the way FT8 and JS8Call report SNR. One bin is 6.25 Hz.
+int frameSnrDb(const float* samples, int count, int offset, int toneHz) {
+  if (!samples || offset < 0 || offset + kSymbols * kRxSym > count)
+    return -30;
+  double sig = 0.0;
+  double noise = 0.0;
+  for (int i = 0; i < kSymbols; ++i) {
+    const float* symbol = samples + offset + i * kRxSym;
+    int best = 0;
+    double bestMag = -1.0;
+    double rest = 0.0;
+    for (int tone = 0; tone < kTones; ++tone) {
+      const double mag = tonePower(symbol, kRxSym, toneHz, tone);
+      rest += mag;
+      if (mag > bestMag) {
+        bestMag = mag;
+        best = tone;
+      }
+    }
+    sig += bestMag;
+    noise += (rest - bestMag) / double(kTones - 1);
   }
-  if (bits.size() < 75)
+  if (sig <= 0.0 || noise <= 1e-12)
+    return 40;
+  const double bin = 10.0 * std::log10(sig / noise);
+  const double snr = bin - 10.0 * std::log10(2500.0 / kSpacing);
+  return int(std::lround(std::clamp(snr, -40.0, 40.0)));
+}
+
+struct LdpcGraph {
+  std::vector<std::vector<int>> checks;
+  std::vector<std::vector<int>> vars;
+};
+
+const LdpcGraph& ldpcGraph() {
+  static LdpcGraph graph;
+  if (!graph.checks.empty())
+    return graph;
+  graph.checks.resize(87);
+  graph.vars.resize(174);
+  for (int row = 0; row < 87; ++row) {
+    for (int col = 0; col < 87; ++col) {
+      if (!parityBit(row, col))
+        continue;
+      graph.checks[static_cast<std::size_t>(row)].push_back(col);
+      graph.vars[static_cast<std::size_t>(col)].push_back(row);
+    }
+    graph.checks[static_cast<std::size_t>(row)].push_back(87 + row);
+    graph.vars[static_cast<std::size_t>(87 + row)].push_back(row);
+  }
+  return graph;
+}
+
+QString textFromBits(const int* bits) {
+  if (!bits)
     return {};
   std::array<uint8_t, 11> bytes{};
+  std::string textBits;
+  textBits.reserve(87);
   for (int i = 0; i < 87; ++i) {
-    if (bits[static_cast<std::size_t>(i)] == '1')
-      bytes[static_cast<std::size_t>(i / 8)] =
-          static_cast<uint8_t>(bytes[static_cast<std::size_t>(i / 8)] | (0x80 >> (i % 8)));
+    const bool one = bits[i] != 0;
+    textBits.push_back(one ? '1' : '0');
+    if (one) {
+      bytes[static_cast<std::size_t>(i / 8)] = static_cast<uint8_t>(
+          bytes[static_cast<std::size_t>(i / 8)] | (0x80 >> (i % 8)));
+    }
   }
   const uint16_t got = static_cast<uint16_t>(((bytes[9] & 0x1F) << 7) | (bytes[10] >> 1));
   bytes[9] = static_cast<uint8_t>(bytes[9] & 0xE0);
   bytes[10] = 0;
   if (got != crc12(bytes.data(), int(bytes.size())))
     return {};
-  return unpack72(bits.substr(0, 72));
+  const int flags = (bits[72] ? 4 : 0) | (bits[73] ? 2 : 0) | (bits[74] ? 1 : 0);
+  return unpackFrame(textBits.substr(0, 72), flags);
 }
 
-int findOffset(const float* samples, int count, int toneHz) {
-  const int need = kSymbols * kSymbol;
+bool ldpcBelief(const double* channel, int* bits) {
+  const LdpcGraph& graph = ldpcGraph();
+  std::vector<double> message(static_cast<std::size_t>(87 * 174), 0.0);
+  auto at = [&](int check, int var) -> double& {
+    return message[static_cast<std::size_t>(check * 174 + var)];
+  };
+  for (int iter = 0; iter < 25; ++iter) {
+    for (int check = 0; check < 87; ++check) {
+      const std::vector<int>& neighbors = graph.checks[static_cast<std::size_t>(check)];
+      std::vector<double> inbound(neighbors.size(), 0.0);
+      for (std::size_t n = 0; n < neighbors.size(); ++n) {
+        const int var = neighbors[n];
+        double sum = channel[var];
+        for (int other : graph.vars[static_cast<std::size_t>(var)]) {
+          if (other != check)
+            sum += at(other, var);
+        }
+        inbound[n] = sum;
+      }
+      for (std::size_t n = 0; n < neighbors.size(); ++n) {
+        double mag = 1e9;
+        int sign = 1;
+        for (std::size_t other = 0; other < neighbors.size(); ++other) {
+          if (other == n)
+            continue;
+          const double value = inbound[other];
+          if (value < 0.0)
+            sign = -sign;
+          mag = std::min(mag, std::fabs(value));
+        }
+        if (mag > 1e8)
+          mag = 0.0;
+        at(check, neighbors[n]) = 0.75 * double(sign) * mag;
+      }
+    }
+    for (int var = 0; var < 87; ++var) {
+      double sum = channel[var];
+      for (int check : graph.vars[static_cast<std::size_t>(var)])
+        sum += at(check, var);
+      bits[var] = sum < 0.0 ? 1 : 0;
+    }
+    if (!textFromBits(bits).isEmpty())
+      return true;
+  }
+  return !textFromBits(bits).isEmpty();
+}
+
+void symbolPowers(const float* symbol, double baseHz, double* power) {
+  for (int tone = 0; tone < kTones; ++tone)
+    power[tone] = tonePowerHz(symbol, kRxSym, baseHz, tone);
+}
+
+double syncScore(const float* samples, int count, int offset, double baseHz) {
+  const int need = kSymbols * kRxSym;
+  if (!samples || offset < 0 || offset + need > count)
+    return 0.0;
+  double score = 0.0;
+  double power[kTones];
+  for (int block = 0; block < 3; ++block) {
+    for (int i = 0; i < 7; ++i) {
+      symbolPowers(samples + offset + (kCostasAt[block] + i) * kRxSym, baseHz, power);
+      double total = 0.0;
+      for (int tone = 0; tone < kTones; ++tone)
+        total += power[tone];
+      score += power[kCostas[i]] / (total + 1e-12);
+    }
+  }
+  return score;
+}
+
+QString decodeAt(const float* samples, int count, int offset, double baseHz) {
+  const int need = kSymbols * kRxSym;
+  if (!samples || offset < 0 || offset + need > count)
+    return {};
+  double channel[174];
+  for (int i = 0; i < 174; ++i)
+    channel[i] = 0.0;
+  auto llr = [](const double* power, int bit) {
+    const int mask = 4 >> bit;
+    double zero = 1e-12;
+    double one = 1e-12;
+    for (int tone = 0; tone < kTones; ++tone) {
+      if (tone & mask)
+        one += power[tone];
+      else
+        zero += power[tone];
+    }
+    return std::clamp(std::log(zero) - std::log(one), -10.0, 10.0);
+  };
+  for (int symbol = 0; symbol < 29; ++symbol) {
+    double data[kTones];
+    double parity[kTones];
+    symbolPowers(samples + offset + (43 + symbol) * kRxSym, baseHz, data);
+    symbolPowers(samples + offset + (7 + symbol) * kRxSym, baseHz, parity);
+    for (int bit = 0; bit < 3; ++bit) {
+      channel[symbol * 3 + bit] = llr(data, bit);
+      channel[87 + symbol * 3 + bit] = llr(parity, bit);
+    }
+  }
+  int bits[87];
+  for (int i = 0; i < 87; ++i)
+    bits[i] = channel[i] < 0.0 ? 1 : 0;
+  const QString hard = textFromBits(bits);
+  if (!hard.isEmpty())
+    return hard;
+  if (syncScore(samples, count, offset, baseHz) < 8.0)
+    return {};
+  if (!ldpcBelief(channel, bits))
+    return {};
+  return textFromBits(bits);
+}
+
+int findBestTime(const float* samples, int count, double baseHz, int prefer) {
+  const int need = kSymbols * kRxSym;
   if (count < need)
     return -1;
-  const int candidates[] = {kDelay, 0};
-  for (int offset : candidates) {
-    if (textAt(samples, count, offset, toneHz).isEmpty() && !costasAt(samples, count, offset, toneHz))
-      continue;
-    if (!textAt(samples, count, offset, toneHz).isEmpty())
-      return offset;
-  }
   const int last = count - need;
-  for (int offset = 0; offset <= last; offset += kSymbol) {
-    if (costasAt(samples, count, offset, toneHz))
-      return offset;
+  const int from = std::max(0, prefer - 2 * kRx);
+  const int to = std::min(last, prefer + 2 * kRx);
+  const int step = std::max(1, kRxSym / 4);
+  int best = -1;
+  double bestScore = 8.0;
+  for (int offset = from; offset <= to; offset += step) {
+    const double score = syncScore(samples, count, offset, baseHz);
+    if (score > bestScore) {
+      bestScore = score;
+      best = offset;
+    }
   }
-  return -1;
+  if (best < 0)
+    return -1;
+  const int fine = std::max(1, step / 4);
+  const int fineFrom = std::max(0, best - step);
+  const int fineTo = std::min(last, best + step);
+  for (int offset = fineFrom; offset <= fineTo; offset += fine) {
+    const double score = syncScore(samples, count, offset, baseHz);
+    if (score > bestScore) {
+      bestScore = score;
+      best = offset;
+    }
+  }
+  return best;
 }
 
+struct Js8Hit {
+  int freq = 0;
+  QString text;
+  int snr = 0;
+  int time = 0;
+};
+
+// Cursor search: the frame at the cursor gets the wide dt and df search.
+QString decodeNear(const float* samples, int count, int offset, double baseHz, int* snr, int* timeOut) {
+  QString text = decodeAt(samples, count, offset, baseHz);
+  int bestOffset = offset;
+  double bestHz = baseHz;
+  if (text.isEmpty()) {
+    double bestScore = 8.0;
+    const int half = kRxSym / 2;
+    const int fine = std::max(1, kRxSym / 8);
+    for (int df = -8; df <= 8; ++df) {
+      for (int dt = -half; dt <= half; dt += fine) {
+        const int at = offset + dt;
+        const double score = syncScore(samples, count, at, baseHz + df);
+        if (score > bestScore) {
+          bestScore = score;
+          bestOffset = at;
+          bestHz = baseHz + df;
+        }
+      }
+    }
+    if (bestScore <= 8.0)
+      return {};
+    text = decodeAt(samples, count, bestOffset, bestHz);
+  }
+  if (text.isEmpty())
+    return {};
+  if (snr)
+    *snr = frameSnrDb(samples, count, bestOffset, int(std::lround(bestHz)));
+  if (timeOut)
+    *timeOut = bestOffset;
+  return text;
+}
+
+// Passband scan. A quarter-symbol DFT at every half bin, phase referenced
+// to the start of the slice, so four in a row add up to one symbol and the
+// Costas sync can be scored at any quarter-symbol start. Each station gets
+// its own best dt: JS8Call stations are routinely half a second apart.
+constexpr int kQuarter = kRxSym / 4;
+constexpr double kScanStepHz = kSpacing / 2.0;
+constexpr double kScanLowHz = 400.0;
+constexpr double kScanHighHz = 2650.0;
+constexpr double kScanSync = 7.0;
+constexpr int kScanMax = 30;
+
+struct ScanCandidate {
+  double hz = 0.0;
+  int time = 0;
+  double score = 0.0;
+};
+
+std::vector<ScanCandidate> scanPassband(const float* samples, int count, int prefer) {
+  std::vector<ScanCandidate> found;
+  const int chunks = count / kQuarter;
+  const int bins = int((kScanHighHz - kScanLowHz) / kScanStepHz) + 1;
+  const int frameSteps = kSymbols * 4;
+  if (chunks < frameSteps + 4 || bins < 16)
+    return found;
+  constexpr double pi = 3.141592653589793;
+  // q[c * bins + b]: complex sum over quarter c at bin b.
+  std::vector<std::complex<float>> q(static_cast<std::size_t>(chunks) * bins);
+  for (int b = 0; b < bins; ++b) {
+    const double w = 2.0 * pi * (kScanLowHz + b * kScanStepHz) / double(kRx);
+    const std::complex<double> rot(std::cos(w), -std::sin(w));
+    std::complex<double> phasor(1.0, 0.0);
+    for (int c = 0; c < chunks; ++c) {
+      std::complex<double> acc(0.0, 0.0);
+      const float* x = samples + static_cast<std::size_t>(c) * kQuarter;
+      for (int n = 0; n < kQuarter; ++n) {
+        acc += double(x[n]) * phasor;
+        phasor *= rot;
+      }
+      phasor /= std::abs(phasor);
+      q[static_cast<std::size_t>(c) * bins + b] = std::complex<float>(acc);
+    }
+  }
+  const int steps = chunks - 3;
+  std::vector<float> power(static_cast<std::size_t>(steps) * bins);
+  for (int t = 0; t < steps; ++t) {
+    for (int b = 0; b < bins; ++b) {
+      std::complex<float> sum = 0.0f;
+      for (int k = 0; k < 4; ++k)
+        sum += q[static_cast<std::size_t>(t + k) * bins + b];
+      power[static_cast<std::size_t>(t) * bins + b] = std::norm(sum);
+    }
+  }
+  const int span = 2 * kRx / kQuarter;
+  const int center = prefer / kQuarter;
+  const int tFrom = std::max(0, center - span);
+  // The last symbol is quarters t + 4 * 78 .. + 3, which power row
+  // t + 4 * 78 already sums.
+  const int tTo = std::min(steps - 1 - 4 * (kSymbols - 1), center + span);
+  const int binsPerTone = int(std::lround(kSpacing / kScanStepHz));
+  const int top = bins - binsPerTone * (kTones - 1);
+  if (top < 1 || tTo < tFrom)
+    return found;
+  std::vector<double> bestScore(static_cast<std::size_t>(top), 0.0);
+  std::vector<int> bestTime(static_cast<std::size_t>(top), 0);
+  for (int b = 0; b < top; ++b) {
+    for (int t = tFrom; t <= tTo; ++t) {
+      double score = 0.0;
+      for (int block = 0; block < 3; ++block) {
+        for (int i = 0; i < 7; ++i) {
+          const float* row =
+              power.data() + static_cast<std::size_t>(t + 4 * (kCostasAt[block] + i)) * bins + b;
+          double total = 1e-12;
+          for (int tone = 0; tone < kTones; ++tone)
+            total += row[tone * binsPerTone];
+          score += row[kCostas[i] * binsPerTone] / total;
+        }
+      }
+      if (score > bestScore[static_cast<std::size_t>(b)]) {
+        bestScore[static_cast<std::size_t>(b)] = score;
+        bestTime[static_cast<std::size_t>(b)] = t;
+      }
+    }
+  }
+  for (int b = 0; b < top; ++b) {
+    const double score = bestScore[static_cast<std::size_t>(b)];
+    if (score < kScanSync)
+      continue;
+    bool peak = true;
+    for (int n = std::max(0, b - 3); n <= std::min(top - 1, b + 3) && peak; ++n) {
+      const double other = bestScore[static_cast<std::size_t>(n)];
+      if (other > score || (other == score && n < b))
+        peak = false;
+    }
+    if (peak)
+      found.push_back(
+          ScanCandidate{kScanLowHz + b * kScanStepHz, bestTime[static_cast<std::size_t>(b)] * kQuarter, score});
+  }
+  std::sort(found.begin(), found.end(),
+            [](const ScanCandidate& a, const ScanCandidate& b) { return a.score > b.score; });
+  if (int(found.size()) > kScanMax)
+    found.resize(static_cast<std::size_t>(kScanMax));
+  return found;
+}
+
+// A scan candidate sits on a quarter-symbol and half-bin grid. Try it
+// there, then on a finer grid around it.
+QString decodeCandidate(const float* samples, int count, const ScanCandidate& cand, double* hzOut,
+                        int* timeOut) {
+  QString text = decodeAt(samples, count, cand.time, cand.hz);
+  double bestHz = cand.hz;
+  int bestTime = cand.time;
+  if (text.isEmpty()) {
+    double bestScore = 0.0;
+    const int fine = kRxSym / 16;
+    for (int dt = -2 * fine; dt <= 2 * fine; dt += fine) {
+      for (int k = -2; k <= 2; ++k) {
+        const double hz = cand.hz + k * kScanStepHz / 2.0;
+        const double score = syncScore(samples, count, cand.time + dt, hz);
+        if (score > bestScore) {
+          bestScore = score;
+          bestHz = hz;
+          bestTime = cand.time + dt;
+        }
+      }
+    }
+    text = decodeAt(samples, count, bestTime, bestHz);
+  }
+  *hzOut = bestHz;
+  *timeOut = bestTime;
+  return text;
+}
+
+// samples are 12 kHz. prefer is where a frame on time would start.
+void collectFrame(const float* samples, int count, int toneHz, int prefer, int* timeUsed,
+                  std::vector<Js8Hit>* hits, int* snrOut) {
+  if (timeUsed)
+    *timeUsed = 0;
+  if (!hits)
+    return;
+  hits->clear();
+  const int need = kSymbols * kRxSym;
+  if (!samples || count < need)
+    return;
+  if (prefer < 0 || prefer + need > count)
+    prefer = kRxDelay + need <= count ? kRxDelay : 0;
+  int cursorTime = prefer;
+  int cursorSnr = 0;
+  QString cursorText = decodeNear(samples, count, prefer, double(toneHz), &cursorSnr, &cursorTime);
+  if (cursorText.isEmpty()) {
+    const int searched = findBestTime(samples, count, double(toneHz), prefer);
+    if (searched >= 0)
+      cursorText = decodeNear(samples, count, searched, double(toneHz), &cursorSnr, &cursorTime);
+  }
+  auto taken = [&](double hz) {
+    for (const Js8Hit& hit : *hits) {
+      if (std::fabs(double(hit.freq) - hz) < 6.0)
+        return true;
+    }
+    return false;
+  };
+  if (!cursorText.isEmpty())
+    hits->push_back(Js8Hit{toneHz, cursorText, cursorSnr, cursorTime});
+  for (const ScanCandidate& cand : scanPassband(samples, count, prefer)) {
+    if (taken(cand.hz))
+      continue;
+    double hz = cand.hz;
+    int time = cand.time;
+    const QString text = decodeCandidate(samples, count, cand, &hz, &time);
+    if (text.isEmpty() || taken(hz))
+      continue;
+    const int found = int(std::lround(hz));
+    hits->push_back(Js8Hit{found, text, frameSnrDb(samples, count, time, found), time});
+  }
+  if (timeUsed) {
+    // js8Decode steps to the next frame from here: the cursor frame when
+    // it printed, else the strongest station, else the on-time start.
+    *timeUsed = !cursorText.isEmpty() ? cursorTime : (!hits->empty() ? hits->front().time : prefer);
+  }
+  std::sort(hits->begin(), hits->end(), [](const Js8Hit& a, const Js8Hit& b) { return a.freq < b.freq; });
+  if (snrOut && !hits->empty()) {
+    *snrOut = hits->front().snr;
+    for (const Js8Hit& hit : *hits) {
+      if (std::abs(hit.freq - toneHz) <= 8) {
+        *snrOut = hit.snr;
+        break;
+      }
+    }
+  }
+}
+
+static_assert(kDelay + kSymbols * kSymbol == 24000 + 79 * 7680, "JS8 frame length");
+
 }  // namespace
+
+int js8FrameSamples() {
+  return 24000 + 79 * 7680;
+}
 
 bool js8Mode(const QString& mode) {
   return mode.compare(QLatin1String("JS8"), Qt::CaseInsensitive) == 0;
@@ -419,12 +1118,17 @@ QString js8SuggestedPlace(int bandIndex) {
   return QString::fromLatin1(kSuggested[bandIndex].place);
 }
 
-Js8Plan planJs8(const QString& text, int toneHz) {
+Js8Plan planJs8(const QString& text, int toneHz, int maxFrames, int* consumed, bool messageStart) {
   Js8Plan plan;
   const int tone = std::clamp(toneHz, 200, 3000);
   QString left = text.toUpper();
-  bool first = true;
+  plan.echoAt.assign(static_cast<std::size_t>(text.size()), -1);
+  bool first = messageStart;
+  int frames = 0;
+  int total = 0;
   while (!left.isEmpty()) {
+    if (maxFrames > 0 && frames >= maxFrames)
+      break;
     int used = 0;
     const std::string bits = pack72(left, &used);
     if (used < 1 || bits.size() != 72)
@@ -439,38 +1143,79 @@ Js8Plan planJs8(const QString& text, int toneHz) {
     int tones[kSymbols];
     if (!encodeFrame(symbols, type, tones))
       break;
-    if (first)
-      plan.echoAt.assign(static_cast<std::size_t>(text.size()), -1);
     const int at = int(plan.samples.size()) + kDelay;
-    for (int i = 0; i < used && i < text.size(); ++i) {
+    for (int i = 0; i < used; ++i) {
       const int index = text.size() - left.size() + i;
       if (index >= 0 && index < text.size())
         plan.echoAt[static_cast<std::size_t>(index)] = at;
     }
     writeFrame(tones, tone, &plan.samples);
     left = left.mid(used);
+    total += used;
     first = false;
+    ++frames;
   }
+  if (consumed)
+    *consumed = total;
   return plan;
 }
 
-QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz) {
+std::vector<float> js8FrameAudio(const QString& frame12, int type, int toneHz) {
+  std::vector<float> out;
+  int tones[kSymbols];
+  if (!encodeFrame(frame12, type, tones))
+    return out;
+  writeFrame(tones, std::clamp(toneHz, 200, 3000), &out);
+  return out;
+}
+
+QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz, int* snrDb) {
+  if (snrDb)
+    *snrDb = 0;
   if (!samples || count < kSymbols * kSymbol || sampleRateHz != kRate)
     return {};
   const int tone = std::clamp(toneHz, 200, 3000);
+  const std::vector<float> rx = to12k(samples, count);
+  const int rxCount = int(rx.size());
   QString text;
   int offset = 0;
-  while (offset + kSymbols * kSymbol <= count) {
-    const int found = findOffset(samples + offset, count - offset, tone);
-    if (found < 0)
+  bool haveSnr = false;
+  const int frame = kSymbols * kRxSym;
+  while (offset + frame <= rxCount) {
+    std::vector<Js8Hit> hits;
+    int time = 0;
+    int snr = 0;
+    collectFrame(rx.data() + offset, rxCount - offset, tone, kRxDelay, &time, &hits, &snr);
+    if (hits.empty())
       break;
-    const QString part = textAt(samples + offset, count - offset, found, tone);
-    if (part.isEmpty())
+    if (!haveSnr && snrDb) {
+      *snrDb = snr;
+      haveSnr = true;
+    }
+    for (const Js8Hit& hit : hits)
+      text.append(hit.text);
+    const int step = time + frame;
+    if (step < frame)
       break;
-    text.append(part);
-    offset += found + kSymbols * kSymbol;
+    offset += step;
   }
   return text;
+}
+
+std::vector<Js8Heard> js8DecodePeriod(const float* samples, int count, int sampleRateHz, int toneHz,
+                                      int leadMs) {
+  std::vector<Js8Heard> heard;
+  if (!samples || count < 1 || sampleRateHz != kRate || leadMs < 0)
+    return heard;
+  const std::vector<float> rx = to12k(samples, count);
+  std::vector<Js8Hit> hits;
+  int time = 0;
+  int snr = 0;
+  const int prefer = int(qint64(leadMs) * kRx / 1000) + kRxDelay;
+  collectFrame(rx.data(), int(rx.size()), std::clamp(toneHz, 200, 3000), prefer, &time, &hits, &snr);
+  for (const Js8Hit& hit : hits)
+    heard.push_back(Js8Heard{hit.freq, hit.text, hit.snr});
+  return heard;
 }
 
 Js8Engine::Js8Engine(QObject* parent) : QObject(parent) {}
@@ -486,30 +1231,80 @@ void Js8Engine::setToneHz(int hz) {
 }
 
 void Js8Engine::clear() {
-  pending_.clear();
-  last_.clear();
+  ring_.clear();
+  total_ = 0;
+  newestMs_ = 0;
+  decodedPeriod_ = -1;
+  heard_.clear();
+  ++generation_;
 }
 
 void Js8Engine::pushAudio(const float* samples, int count, int sampleRateHz) {
   if (!armed_ || !samples || count < 1 || sampleRateHz < 1000)
     return;
   if (sampleRateHz != rate_) {
-    pending_.clear();
+    clear();
     rate_ = sampleRateHz;
+    armed_ = true;
   }
-  pending_.insert(pending_.end(), samples, samples + count);
-  const int need = 24000 + 79 * 7680;
-  if (int(pending_.size()) < need || rate_ != kRate)
+  if (rate_ != 48000)
     return;
-  const QString text = js8Decode(pending_.data(), int(pending_.size()), kRate, toneHz_);
-  if (text.isEmpty()) {
-    if (int(pending_.size()) > need + kRate)
-      pending_.erase(pending_.begin(), pending_.begin() + kRate);
+  constexpr int kRing = 48000 * 22;
+  constexpr qint64 kPeriod = 15000;
+  if (int(ring_.size()) != kRing)
+    ring_.assign(static_cast<std::size_t>(kRing), 0.0f);
+  for (int i = 0; i < count; ++i) {
+    ring_[static_cast<std::size_t>(total_ % kRing)] = samples[i];
+    ++total_;
+  }
+  newestMs_ = QDateTime::currentMSecsSinceEpoch();
+  qint64 periodStart = (newestMs_ / kPeriod) * kPeriod;
+  // The frame ends 13.14 s after the boundary. Wait until 16 s so a late
+  // start of up to 2 s is still inside the ring.
+  if (newestMs_ < periodStart + 16000)
+    periodStart -= kPeriod;
+  if (periodStart < 0 || periodStart == decodedPeriod_)
     return;
+  const qint64 sliceStart = periodStart - 2000;
+  const int slice = 18 * 48000;
+  const qint64 ago = (newestMs_ - sliceStart) * 48000 / 1000;
+  const qint64 start = (total_ - 1) - ago;
+  const qint64 oldest = total_ > kRing ? total_ - kRing : 0;
+  if (start < oldest || start + slice > total_)
+    return;
+  decodedPeriod_ = periodStart;
+  std::vector<float> window(static_cast<std::size_t>(slice));
+  for (int i = 0; i < slice; ++i)
+    window[static_cast<std::size_t>(i)] = ring_[static_cast<std::size_t>((start + i) % kRing)];
+  // The passband scan takes a few hundred ms. Run it off the GUI thread so
+  // the waterfall and the other receivers keep going; print back here.
+  const QPointer<Js8Engine> self(this);
+  const int tone = toneHz_;
+  const int generation = generation_;
+  QThreadPool::globalInstance()->start([self, window = std::move(window), tone, periodStart, generation]() {
+    std::vector<Js8Heard> hits = js8DecodePeriod(window.data(), int(window.size()), 48000, tone, 2000);
+    QMetaObject::invokeMethod(
+        QCoreApplication::instance(),
+        [self, hits = std::move(hits), periodStart, generation]() {
+          if (self)
+            self->publish(periodStart, generation, hits);
+        },
+        Qt::QueuedConnection);
+  });
+}
+
+void Js8Engine::publish(qint64 periodStart, int generation, const std::vector<Js8Heard>& hits) {
+  // A Clear, a disarm, or a rate change since the slice was taken drops it.
+  if (!armed_ || generation != generation_)
+    return;
+  for (const Js8Heard& hit : hits) {
+    const QString key = QString::number(periodStart) + QLatin1Char('|') + QString::number(hit.freqHz) +
+                        QLatin1Char('|') + hit.text;
+    if (heard_.contains(key))
+      continue;
+    heard_.append(key);
+    while (heard_.size() > 32)
+      heard_.removeFirst();
+    emit textReady(hit.text, hit.snrDb, hit.freqHz);
   }
-  if (text != last_) {
-    last_ = text;
-    emit textReady(text);
-  }
-  pending_.clear();
 }

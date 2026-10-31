@@ -8,6 +8,8 @@
 
 #include "DominoModem.h"
 
+#include "modem/ToneClock.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -376,12 +378,15 @@ const short kDecode[4096] = {
 
 class NibbleRx {
 public:
-  void setPrev(int tone) { prev_ = tone; }
+  void setPrevBin(int bin) { prev_ = bin; }
 
-  QString pushTone(int tone) {
-    int diff = tone - prev_;
-    prev_ = tone;
-    int nibble = int(std::floor(double(diff) + 0.5)) - 2;
+  void setMuted(bool muted) { muted_ = muted; }
+
+  // bin is a pickIfk index. One tone step is kIfkPaths bins.
+  QString pushTone(int bin) {
+    const double diff = double(bin - prev_) / double(kIfkPaths);
+    prev_ = bin;
+    int nibble = int(std::floor(diff + 0.5)) - 2;
     if (nibble < 0)
       nibble += kTones;
     if (nibble < 0 || nibble > 15) {
@@ -400,8 +405,8 @@ private:
         for (int i = 0; i < count_; ++i)
           symbol |= unsigned(buf_[i]) << (4 * i);
         const int ch = kDecode[symbol & 0xFFFu];
-        if (ch >= 32 && ch < 127)
-          out = QString(QChar::fromLatin1(char(ch)));
+        if (!muted_)
+          out = latin1Rx(ch);
       }
       count_ = 0;
     }
@@ -416,7 +421,8 @@ private:
 
   unsigned char buf_[3] = {};
   int count_ = 0;
-  int prev_ = 0;
+  int prev_ = ifkToneBin(0, kTones);
+  bool muted_ = false;
 };
 
 class ToneTx {
@@ -472,26 +478,16 @@ double lowHz(const Spec& spec, int centerHz) {
   return double(centerHz) - double(kTones - 1) * spacingHz(spec) / 2.0;
 }
 
-int peakTone(const double* magnitude) {
-  int best = 0;
-  for (int tone = 1; tone < kTones; ++tone) {
-    if (magnitude[tone] > magnitude[best])
-      best = tone;
-  }
-  return best;
-}
-
 QString textFromAudio(const Spec& spec, const float* samples, int count, int sampleRateHz, int centerHz) {
   const int separ = std::max(8, int(std::lround(double(sampleRateHz) / spec.baud)));
   const int symbols = count / separ;
   NibbleRx rx;
   QString text;
-  double magnitude[kTones];
   const double low = lowHz(spec, centerHz);
   const double spacing = spacingHz(spec);
   for (int s = 0; s < symbols; ++s) {
-    toneMagnitude(samples, count, s * separ, separ, low, spacing, sampleRateHz, 1, magnitude);
-    text += rx.pushTone(peakTone(magnitude));
+    const IfkPick ifk = pickIfk(samples, count, s * separ, separ, low, spacing, kTones, sampleRateHz);
+    text += rx.pushTone(ifk.bin);
   }
   return text;
 }
@@ -567,6 +563,9 @@ struct DominoEngine::Private {
   int since = 0;
   std::vector<float> pending;
   std::unique_ptr<NibbleRx> rx;
+  Rate8k decim;
+  SymbolClock clock;
+  double metric = 0.0;
 
   void reset() {
     locked = false;
@@ -575,6 +574,9 @@ struct DominoEngine::Private {
     since = 0;
     pending.clear();
     rx.reset();
+    decim.reset();
+    clock.resetTrack();
+    metric = 0.0;
   }
 };
 
@@ -611,6 +613,10 @@ void DominoEngine::setSquelch(bool on, int level) {
   d_->squelch = std::clamp(level, 0, 100);
 }
 
+void DominoEngine::setAfc(bool on) {
+  d_->clock.setAfcEnabled(on);
+}
+
 void DominoEngine::clear() {
   d_->reset();
 }
@@ -618,29 +624,26 @@ void DominoEngine::clear() {
 void DominoEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
   if (!d_->armed || !samples || count < 1 || sampleRateHz < 1000 || dominoBandwidthHz(d_->mode) < 1)
     return;
-  if (d_->squelchOn && d_->squelch >= 90)
-    return;
   const Spec* spec = specFor(d_->mode);
   if (!spec)
     return;
-  const int separ = std::max(8, int(std::lround(double(sampleRateHz) / spec->baud)));
-  d_->pending.insert(d_->pending.end(), samples, samples + count);
+  d_->decim.push(samples, count, sampleRateHz, &d_->pending);
+  constexpr int rate = 8000;
+  const int separ = std::max(8, int(std::lround(double(rate) / spec->baud)));
+  const double spacing = spacingHz(*spec);
   d_->since += count;
   if (int(d_->pending.size()) < separ * 12)
     return;
-  const double low = lowHz(*spec, d_->center);
-  const double spacing = spacingHz(*spec);
   double magnitude[kTones];
+  const auto lowNow = [&] { return lowHz(*spec, d_->center) + d_->clock.afcHz(); };
   if (!d_->locked) {
-    if (d_->since < separ * 4)
+    if (d_->since < sampleRateHz / 4)
       return;
     d_->since = 0;
-    double best = -1.0;
-    int bestAt = 0;
-    const int step = std::max(1, separ / 4);
-    for (int off = 0; off + separ <= int(d_->pending.size()) && off < separ; off += step) {
-      toneMagnitude(d_->pending.data(), int(d_->pending.size()), off, separ, low, spacing, sampleRateHz, 4,
-                    magnitude);
+    const double low = lowNow();
+    const int pending = int(d_->pending.size());
+    const SymbolLock symbolLock = lockSymbolPhase(separ, pending, [&](int pos) {
+      toneMagnitude(d_->pending.data(), pending, pos, separ, low, spacing, rate, 1, magnitude);
       double peak = 0.0;
       double second = 0.0;
       for (int tone = 0; tone < kTones; ++tone) {
@@ -650,30 +653,63 @@ void DominoEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
         } else if (magnitude[tone] > second)
           second = magnitude[tone];
       }
-      const double score = peak > 0.0 ? (peak - second) / peak : 0.0;
-      if (score > best) {
-        best = score;
-        bestAt = off;
-      }
-    }
-    if (best < 0.45)
+      if (peak < 1.0)
+        return -1.0;
+      return (peak - second) / peak;
+    });
+    if (symbolLock.rank < 0.45)
       return;
     d_->locked = true;
-    d_->lock = bestAt;
+    d_->lock = symbolLock.at;
     d_->next = 0;
     d_->rx = std::make_unique<NibbleRx>();
-    if (bestAt >= separ) {
-      toneMagnitude(d_->pending.data(), int(d_->pending.size()), bestAt - separ, separ, low, spacing,
-                    sampleRateHz, 1, magnitude);
-      d_->rx->setPrev(peakTone(magnitude));
+    if (symbolLock.at >= separ) {
+      const IfkPick seeded =
+          pickIfk(d_->pending.data(), pending, symbolLock.at - separ, separ, low, spacing, kTones, rate);
+      d_->rx->setPrevBin(seeded.bin);
     }
   }
   if (!d_->rx)
     return;
-  while (d_->lock + (d_->next + 1) * separ <= int(d_->pending.size())) {
-    toneMagnitude(d_->pending.data(), int(d_->pending.size()), d_->lock + d_->next * separ, separ, low,
-                  spacing, sampleRateHz, 1, magnitude);
-    const QString text = d_->rx->pushTone(peakTone(magnitude));
+  const int probe = std::max(1, separ / 8);
+  const int size = int(d_->pending.size());
+  while (d_->lock + (d_->next + 1) * separ <= size) {
+    int at = d_->lock + d_->next * separ;
+    const auto peakOnly = [&](int pos) {
+      if (pos < 0 || pos + separ > size)
+        return 0.0;
+      toneMagnitude(d_->pending.data(), size, pos, separ, lowNow(), spacing, rate, 1, magnitude);
+      double peak = 0.0;
+      for (int tone = 0; tone < kTones; ++tone)
+        peak = std::max(peak, magnitude[tone]);
+      return peak;
+    };
+    const double early = peakOnly(at - probe);
+    const double late = peakOnly(at + probe);
+    toneMagnitude(d_->pending.data(), size, at, separ, lowNow(), spacing, rate, 1, magnitude);
+    BinPick bin = pickBin(magnitude, kTones);
+    const bool strong = binStrong(bin, kTones);
+    const bool transition = d_->clock.tone() < 0 || bin.index != d_->clock.tone();
+    const int shift = d_->clock.nudge(early, bin.peak, late, probe, strong, transition);
+    if (shift != 0 && at + shift >= 0 && at + shift + separ <= size) {
+      at += shift;
+      d_->lock += shift;
+      toneMagnitude(d_->pending.data(), size, at, separ, lowNow(), spacing, rate, 1, magnitude);
+      bin = pickBin(magnitude, kTones);
+    }
+    d_->clock.setTone(bin.index);
+    const double instant = toneQuality(bin.peak, bin.sum, kTones);
+    d_->metric += (instant - d_->metric) / 8.0;
+    d_->rx->setMuted(d_->squelchOn && d_->metric < double(d_->squelch));
+    const IfkPick ifk = pickIfk(d_->pending.data(), size, at, separ, lowNow(), spacing, kTones, rate);
+    // IFK tones never repeat, so AFC reads the fine-grid peak against the
+    // nearest nominal tone instead of a half-symbol phase slope.
+    if (binStrong(bin, kTones) && ifk.peak > 0.0) {
+      const double base = lowNow();
+      const double nearest = base + std::round((ifk.hz - base) / spacing) * spacing;
+      d_->clock.observeOffset(ifk.hz - nearest, spacing, true);
+    }
+    const QString text = d_->rx->pushTone(ifk.bin);
     ++d_->next;
     if (!text.isEmpty())
       emit textReady(text);
