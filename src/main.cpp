@@ -1070,6 +1070,24 @@ int shellReady(MainWindow& window) {
       !mfsk16->toolTip().contains(QLatin1String("START")) ||
       mfsk16->toolTip().contains(QLatin1String("does not key yet")))
     return fail("MFSK16 is missing");
+  {
+    std::vector<float> wave;
+    if (!buildTxWave(QStringLiteral("MFSK16"), QStringLiteral("CQ CQ CQ"), 1500, &wave) || wave.size() < 1000)
+      return fail("MFSK modulator is missing");
+    // MFSK16 tone 8 sits 7.8 Hz above the cursor. A louder steady carrier
+    // there has to be punctured or the whole block is that one tone.
+    const double step = 2.0 * 3.14159265358979323846 * 1507.8125 / 48000.0;
+    double phase = 0.0;
+    for (float& carrier : wave) {
+      carrier += 1.2f * float(std::sin(phase));
+      phase += step;
+    }
+    const QString back = mfskDecode(QStringLiteral("MFSK16"), wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1String("CQ"))) {
+      qCritical("MFSK carrier [%s]", qPrintable(back));
+      return fail("MFSK carrier puncture did not decode");
+    }
+  }
   for (const char* name : {"DominoEX 16", "DominoEX 8"}) {
     std::vector<float> wave;
     if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)

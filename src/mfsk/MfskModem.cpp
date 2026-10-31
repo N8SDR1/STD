@@ -353,7 +353,9 @@ private:
 class ToneRx {
 public:
   explicit ToneRx(const Spec& spec)
-      : spec_(spec), inlv_(spec.bits, spec.depth, true), dec1_(), dec2_() {}
+      : spec_(spec), inlv_(spec.bits, spec.depth, true), dec1_(), dec2_() {
+    cwi_.assign(static_cast<size_t>(std::max(1, spec.tones)), 0);
+  }
 
   void setSquelch(bool on, int level) {
     squelchOn_ = on;
@@ -361,15 +363,45 @@ public:
   }
 
   QString push(const double* magnitude) {
+    // fldigi softdecode: a tone that wins more than six symbols in a row
+    // is a carrier. Replace it with the average, and give the hard peak
+    // a double vote. Tone 0 is left alone, matching that loop.
+    int hard = 0;
+    double peak = magnitude ? magnitude[0] : 0.0;
+    for (int tone = 1; tone < spec_.tones; ++tone) {
+      if (magnitude[tone] > peak) {
+        peak = magnitude[tone];
+        hard = tone;
+      }
+    }
+    constexpr int kCwiMax = 6;
     double sum = 0.0;
-    for (int tone = 0; tone < spec_.tones; ++tone)
-      sum += magnitude[tone];
-    if (sum < 1e-12)
-      sum = 1e-12;
+    for (int tone = 0; tone < spec_.tones; ++tone) {
+      if (cwi_[static_cast<size_t>(tone)] < kCwiMax)
+        sum += magnitude[tone];
+    }
+    const double avg = sum / double(std::max(1, spec_.tones));
+    if (sum < 1e-10)
+      sum = 1e-10;
+    for (int tone = 1; tone < spec_.tones; ++tone) {
+      int& count = cwi_[static_cast<size_t>(tone)];
+      if (tone == hard)
+        ++count;
+      else
+        --count;
+      if (count < 0)
+        count = 0;
+      if (count > kCwiMax)
+        count = kCwiMax + 1;
+    }
     double bits[8] = {};
     for (int tone = 0; tone < spec_.tones; ++tone) {
       const int symbol = grayDecode(tone);
-      const double mag = magnitude[tone];
+      double mag = magnitude[tone];
+      if (cwi_[static_cast<size_t>(tone)] > kCwiMax)
+        mag = avg;
+      else if (tone == hard)
+        mag *= 2.0;
       int mask = 1 << (spec_.bits - 1);
       for (int bit = 0; bit < spec_.bits; ++bit) {
         bits[bit] += (symbol & mask) ? mag : -mag;
@@ -455,6 +487,7 @@ private:
   bool squelchOn_ = false;
   int squelch_ = 0;
   unsigned datashreg_ = 0;
+  std::vector<int> cwi_;
 };
 
 void toneMagnitude(const float* samples, int count, int begin, int length, double lowHz, double spacing,
