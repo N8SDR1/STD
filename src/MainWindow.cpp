@@ -2172,11 +2172,33 @@ QWidget* MainWindow::makeReceivePanel() {
   faxSave->setToolTip(QStringLiteral(
       "Save the WEFAX picture received so far. WEFAX does not key. START is never sent."));
   faxSave->hide();
+  auto* faxSlantLabel = new QLabel(QStringLiteral("Slant"), panel);
+  faxSlantLabel->setObjectName(QStringLiteral("wefaxSlantLabel"));
+  faxSlantLabel->setFont(interfaceFont(12));
+  faxSlantLabel->setToolTip(QStringLiteral(
+      "Slant corrects a sound-card clock error, in percent. Zero is 120 lines per minute. "
+      "This does not key. START is never sent."));
+  faxSlantLabel->hide();
+  auto* faxSlant = new QSpinBox(panel);
+  faxSlant->setObjectName(QStringLiteral("wefaxSlant"));
+  faxSlant->setRange(-20, 20);
+  faxSlant->setSuffix(QStringLiteral(" %"));
+  faxSlant->setFont(interfaceFont(12));
+  faxSlant->setFixedWidth(72);
+  faxSlant->setFocusPolicy(Qt::ClickFocus);
+  faxSlant->setToolTip(faxSlantLabel->toolTip());
+  faxSlant->hide();
+  const int savedSlant = std::clamp(QSettings().value(QStringLiteral("wefax/slant"), 0).toInt(), -20, 20);
+  faxSlant->setValue(savedSlant);
+  if (wefax_)
+    wefax_->setSlant(savedSlant);
   tools->addWidget(filter, 1);
   tools->addWidget(clear);
   tools->addWidget(clrRx);
   tools->addWidget(faxFolder);
   tools->addWidget(faxSave);
+  tools->addWidget(faxSlantLabel);
+  tools->addWidget(faxSlant);
   layout->addLayout(tools);
   connect(faxFolder, &QPushButton::clicked, this, [this] {
     const QString picked = QFileDialog::getExistingDirectory(
@@ -2192,6 +2214,11 @@ QWidget* MainWindow::makeReceivePanel() {
     const QString path = wefax_->saveNow();
     if (path.isEmpty())
       setTxStatus(QStringLiteral("No WEFAX picture yet. Nothing was keyed. START was not sent."));
+  });
+  connect(faxSlant, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+    QSettings().setValue(QStringLiteral("wefax/slant"), value);
+    if (wefax_)
+      wefax_->setSlant(value);
   });
   connect(clrRx, &QPushButton::clicked, this, [this] {
     if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
@@ -2279,7 +2306,8 @@ QWidget* MainWindow::makeReceivePanel() {
   faxView->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   faxView->setToolTip(QStringLiteral(
       "WEFAX-576 picture. IOC 576, 120 lines per minute. Black is 400 Hz below the cursor and white "
-      "is 400 Hz above it. Pictures save to the folder. This does not key and does not send START."));
+      "is 400 Hz above it. A 300 Hz start tone opens the picture and a 450 Hz stop tone saves it. "
+      "Slant corrects the clock. Pictures save to the folder. This does not key and does not send START."));
   faxView->hide();
   layout->addWidget(faxView, 1);
 
@@ -3076,7 +3104,8 @@ void MainWindow::buildMenus() {
   faxAction->setObjectName(QStringLiteral("modeWefax576"));
   faxAction->setToolTip(QStringLiteral(
       "Fldigi WEFAX-576 receive. IOC 576, 120 lines per minute. Black is 400 Hz below the cursor and "
-      "white is 400 Hz above it. Pictures save to the folder. This does not key. START is never sent."));
+      "white is 400 Hz above it. A 300 Hz start tone opens the picture and a 450 Hz stop tone saves it. "
+      "Slant corrects the clock. Pictures save to the folder. This does not key. START is never sent."));
   modes->addAction(faxAction);
   connect(faxAction, &QAction::triggered, this,
           [this] { activateDigitalMode(QStringLiteral("WEFAX-576")); });
@@ -3381,6 +3410,10 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
     folder->setVisible(fax);
   if (auto* save = findChild<QPushButton*>(QStringLiteral("wefaxSave")))
     save->setVisible(fax);
+  if (auto* slantLabel = findChild<QLabel*>(QStringLiteral("wefaxSlantLabel")))
+    slantLabel->setVisible(fax);
+  if (auto* slant = findChild<QSpinBox*>(QStringLiteral("wefaxSlant")))
+    slant->setVisible(fax);
 }
 
 void MainWindow::cycleDigitalMode() {
@@ -3545,7 +3578,10 @@ void MainWindow::showGuide() {
        "Mode → WEFAX-576 receives only. It does not key and it does not send START. IOC is 576 and "
        "the rate is 120 lines per minute, the Fldigi WEFAX-576 numbers. Black is 400 Hz below the "
        "receive cursor and white is 400 Hz above it. The cursor starts at 1900 Hz, so black is 1500 Hz "
-       "and white is 2300 Hz until you move it. Folder picks the directory. Until you pick one, pictures "
+       "and white is 2300 Hz until you move it. Reception mixes to the cursor, filters, then reads the FM. "
+       "A 300 Hz start tone opens a picture and a 450 Hz stop tone saves it and clears the screen for the next one. "
+       "Slant, next to Save, corrects a sound-card clock error in percent. Zero is 120 lines per minute. "
+       "Folder picks the directory. Until you pick one, pictures "
        "save under Documents\\STD\\wefax. Save writes the picture received so far as a PNG. A stop tone "
        "also writes that file. CLR RX clears the picture and does not unkey. TX and Tune do not key "
        "in this mode. Olivia, Contestia, MFSK, DominoEX, Thor, QPSK, MT63, and JS8 are on the mode menu and they do key. "

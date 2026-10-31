@@ -1655,6 +1655,111 @@ int shellReady(MainWindow& window) {
   const int faxRow = faxBack.height - 1;
   if (faxAt(faxRow, 0.02) > 80 || faxAt(faxRow, 0.20) > 80 || faxAt(faxRow, 0.60) < 180)
     return fail("WEFAX picture is inverted");
+  std::vector<float> faxDirty = faxAudio;
+  for (size_t i = 0; i < faxDirty.size(); ++i)
+    faxDirty[i] += 0.8f * float(std::sin(2.0 * 3.141592653589793 * 400.0 * double(i) / 48000.0));
+  const WefaxImage faxNoisy = wefaxDecode(faxSpec, faxDirty.data(), int(faxDirty.size()), 48000);
+  if (faxNoisy.width != faxPixels || faxNoisy.height < 4)
+    return fail("WEFAX filtered demod lost the picture");
+  const auto faxLevel = [](const WefaxImage& picture, int row, double pos) {
+    int x = int(pos * double(picture.width));
+    if (x < 0)
+      x = 0;
+    if (x >= picture.width)
+      x = picture.width - 1;
+    return int(picture.gray[static_cast<size_t>(row * picture.width + x)]);
+  };
+  const int noisyRow = faxNoisy.height - 1;
+  if (faxLevel(faxNoisy, noisyRow, 0.02) > 80 || faxLevel(faxNoisy, noisyRow, 0.20) > 80 ||
+      faxLevel(faxNoisy, noisyRow, 0.60) < 180)
+    return fail("WEFAX filtered demod is noisy");
+  const std::vector<float> faxFast =
+      wefaxModulateTest(faxSpec, 48000, faxGray, faxPixels, faxRows, 1.01);
+  const WefaxImage faxFixed = wefaxDecode(faxSpec, faxFast.data(), int(faxFast.size()), 48000, 1.0);
+  const WefaxImage faxDrift = wefaxDecode(faxSpec, faxFast.data(), int(faxFast.size()), 48000, 0.0);
+  if (faxFixed.height < 4 || faxLevel(faxFixed, faxFixed.height - 1, 0.02) > 80 ||
+      faxLevel(faxFixed, faxFixed.height - 1, 0.60) < 180)
+    return fail("WEFAX slant did not hold the picture");
+  if (faxDrift.height < 4 || faxLevel(faxDrift, faxDrift.height - 1, 0.02) < 140)
+    return fail("WEFAX slant was a no-op");
+  std::vector<unsigned char> faxWmo(static_cast<size_t>(faxPixels * faxRows), 0);
+  for (int y = 0; y < faxRows; ++y) {
+    for (int x = 0; x < faxPixels; ++x) {
+      if ((double(x) + 0.5) / double(faxPixels) < 0.045)
+        faxWmo[static_cast<size_t>(y * faxPixels + x)] = 255;
+    }
+  }
+  const std::vector<float> faxWmoAudio = wefaxModulateTest(faxSpec, 48000, faxWmo, faxPixels, faxRows);
+  const WefaxImage faxWmoBack = wefaxDecode(faxSpec, faxWmoAudio.data(), int(faxWmoAudio.size()), 48000);
+  if (faxWmoBack.height < 4 || faxLevel(faxWmoBack, faxWmoBack.height - 1, 0.02) < 180 ||
+      faxLevel(faxWmoBack, faxWmoBack.height - 1, 0.50) > 80)
+    return fail("WEFAX white phasing did not align");
+  const auto* faxSlant = window.findChild<QSpinBox*>(QStringLiteral("wefaxSlant"));
+  if (!faxSlant || faxSlant->minimum() != -20 || faxSlant->maximum() != 20 ||
+      !faxSlant->toolTip().contains(QLatin1String("does not key")) ||
+      !faxSlant->toolTip().contains(QLatin1String("START")))
+    return fail("WEFAX slant is missing");
+  auto appendFaxTone = [](std::vector<float>* out, int hz, double seconds) {
+    constexpr double kPiTone = 3.141592653589793;
+    double phase = 0.0;
+    const int n = int(48000.0 * seconds);
+    for (int i = 0; i < n; ++i) {
+      const bool high = std::fmod(double(i) / 48000.0 * double(hz), 1.0) < 0.5;
+      const double freq = high ? 2300.0 : 1500.0;
+      out->push_back(float(0.6 * std::sin(phase)));
+      phase += 2.0 * kPiTone * freq / 48000.0;
+      if (phase > 2.0 * kPiTone)
+        phase -= 2.0 * kPiTone;
+    }
+  };
+  auto feedFax = [](WefaxEngine* engine, const std::vector<float>& wave) {
+    for (size_t i = 0; i < wave.size(); i += 2048) {
+      const int n = std::min(2048, int(wave.size() - i));
+      engine->pushAudio(wave.data() + i, n, 48000);
+    }
+  };
+  WefaxEngine faxEng;
+  faxEng.setArmed(true);
+  faxEng.setCenterHz(1900);
+  std::vector<float> faxNoise(static_cast<size_t>(48000 * 2));
+  for (size_t i = 0; i < faxNoise.size(); ++i) {
+    faxNoise[i] = 0.3f * float(std::sin(2.0 * 3.141592653589793 * 700.0 * double(i) / 48000.0)) +
+                  0.3f * float(std::sin(2.0 * 3.141592653589793 * 2500.0 * double(i) / 48000.0));
+  }
+  feedFax(&faxEng, faxNoise);
+  if (faxEng.rowCount() != 0)
+    return fail("WEFAX locked onto noise");
+  std::vector<float> faxLive;
+  appendFaxTone(&faxLive, 300, 1.2);
+  faxLive.insert(faxLive.end(), faxAudio.begin(), faxAudio.end());
+  feedFax(&faxEng, faxLive);
+  if (faxEng.rowCount() < 4 || faxEng.image().isNull())
+    return fail("WEFAX start did not open a picture");
+  bool faxLiveOk = false;
+  for (int row = 0; row < faxEng.rowCount() && !faxLiveOk; ++row) {
+    const unsigned char* liveScan = faxEng.image().scanLine(row);
+    const auto liveAt = [&](double pos) {
+      int x = int(pos * double(faxEng.image().width()));
+      if (x < 0)
+        x = 0;
+      if (x >= faxEng.image().width())
+        x = faxEng.image().width() - 1;
+      return int(liveScan[x]);
+    };
+    faxLiveOk = liveAt(0.02) <= 80 && liveAt(0.20) <= 80 && liveAt(0.60) >= 180;
+  }
+  if (!faxLiveOk) {
+    qCritical("WEFAX live rows %d", faxEng.rowCount());
+    return fail("WEFAX live picture is wrong");
+  }
+  std::vector<float> faxStop;
+  appendFaxTone(&faxStop, 450, 2.0);
+  feedFax(&faxEng, faxStop);
+  if (faxEng.rowCount() != 0)
+    return fail("WEFAX stop did not reset");
+  feedFax(&faxEng, faxAudio);
+  if (faxEng.rowCount() < 4)
+    return fail("WEFAX phasing did not start");
   const struct {
     const char* mode;
     int minute;

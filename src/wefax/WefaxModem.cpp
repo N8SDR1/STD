@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Line rate, IOC, and the ±400 Hz black/white swing follow Fldigi's WEFAX-576
-// (Dave Freese W1HKJ and Remi Chateauneu, GPL-3). The demodulator is STD's.
-// Receive only. Nothing here keys the radio or sends START.
+// (Dave Freese W1HKJ and Remi Chateauneu, GPL-3). The demodulator mixes to the
+// cursor, low-passes, then reads FM the way wefax.cxx does. APT start is 300 Hz
+// for IOC 576 and 675 Hz for IOC 288. APT stop is 450 Hz. Receive only.
+// Nothing here keys the radio or sends START.
 
 #include "WefaxModem.h"
 
@@ -17,11 +19,13 @@
 #include <QImage>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QtGlobal>
 
 namespace {
 
 constexpr double kPi = 3.141592653589793;
 constexpr int kDeviationHz = 400;
+constexpr int kAptStopHz = 450;
 
 int blackHz(const WefaxSpec& spec) {
   return spec.centerHz - kDeviationHz;
@@ -31,43 +35,120 @@ int whiteHz(const WefaxSpec& spec) {
   return spec.centerHz + kDeviationHz;
 }
 
+int aptStartHz(const WefaxSpec& spec) {
+  return spec.ioc < 400 ? 675 : 300;
+}
+
+int firTapsFor(int rate) {
+  int taps = rate / 300;
+  if (taps < 31)
+    taps = 31;
+  if (taps > 191)
+    taps = 191;
+  if ((taps & 1) == 0)
+    ++taps;
+  return taps;
+}
+
+double lineStep(int sampleRateHz, int lpm, double slantPercent) {
+  const int nominal = wefaxSamplesPerLine(sampleRateHz, lpm);
+  const double slant = std::clamp(slantPercent, -20.0, 20.0);
+  return std::max(32.0, double(nominal) * (100.0 + slant) / 100.0);
+}
+
 struct DemodState {
-  double prev = 0.0;
-  double lastCross = -1.0;
-  double seen = 0.0;
-  double hold = 0.5;
-  bool primed = false;
+  double phase = 0.0;
+  double iPrev = 0.0;
+  double qPrev = 0.0;
+  double smooth = 0.5;
+  bool hasPrev = false;
+  int rate = 0;
+  int taps = 0;
+  int fill = 0;
+  int pos = 0;
+  std::vector<double> coef;
+  std::vector<double> iRing;
+  std::vector<double> qRing;
 };
+
+void prepareFir(DemodState* state, int rate) {
+  if (!state || (state->rate == rate && state->taps > 0))
+    return;
+  const int taps = firTapsFor(rate);
+  const int mid = taps / 2;
+  const double fc = 500.0 / double(rate);
+  state->coef.assign(static_cast<size_t>(taps), 0.0);
+  double sum = 0.0;
+  for (int i = 0; i < taps; ++i) {
+    const double n = double(i - mid);
+    const double sinc = n == 0.0 ? 2.0 * fc : std::sin(2.0 * kPi * fc * n) / (kPi * n);
+    const double window = 0.5 - 0.5 * std::cos(2.0 * kPi * double(i) / double(taps - 1));
+    state->coef[static_cast<size_t>(i)] = sinc * window;
+    sum += state->coef[static_cast<size_t>(i)];
+  }
+  if (sum != 0.0) {
+    for (double& coef : state->coef)
+      coef /= sum;
+  }
+  state->iRing.assign(static_cast<size_t>(taps), 0.0);
+  state->qRing.assign(static_cast<size_t>(taps), 0.0);
+  state->taps = taps;
+  state->fill = 0;
+  state->pos = 0;
+  state->rate = rate;
+  state->hasPrev = false;
+  state->smooth = 0.5;
+  state->phase = 0.0;
+}
 
 void demodSamples(const float* samples, int count, int rate, const WefaxSpec& spec, DemodState* state,
                   std::vector<float>* lum) {
-  if (!samples || count < 1 || rate < 1000 || !state)
+  if (!samples || count < 1 || rate < 1000 || !state || !lum)
     return;
-  const double black = double(blackHz(spec));
-  const double white = double(whiteHz(spec));
-  const double span = std::max(1.0, white - black);
+  prepareFir(state, rate);
+  const int taps = state->taps;
+  if (taps < 5)
+    return;
+  const double omega = 2.0 * kPi * double(spec.centerHz) / double(rate);
+  const double blend = 1.0 - std::exp(-2.0 * kPi * 1500.0 / double(rate));
   lum->reserve(lum->size() + static_cast<size_t>(count));
   for (int n = 0; n < count; ++n) {
     const double s = samples[n];
-    const double at = state->seen + n;
-    if (state->primed && ((state->prev <= 0.0 && s > 0.0) || (state->prev >= 0.0 && s < 0.0)) &&
-        s != state->prev) {
-      const double frac = (0.0 - state->prev) / (s - state->prev);
-      const double cross = (at - 1.0) + frac;
-      if (state->lastCross >= 0.0) {
-        const double dt = cross - state->lastCross;
-        if (dt > 1.0) {
-          const double freq = double(rate) / (2.0 * dt);
-          state->hold = std::clamp((freq - black) / span, 0.0, 1.0);
-        }
-      }
-      state->lastCross = cross;
+    state->phase += omega;
+    if (state->phase > 2.0 * kPi)
+      state->phase -= 2.0 * kPi;
+    const double mixedI = s * std::cos(state->phase);
+    const double mixedQ = s * std::sin(state->phase);
+    state->iRing[static_cast<size_t>(state->pos)] = mixedI;
+    state->qRing[static_cast<size_t>(state->pos)] = mixedQ;
+    double iF = 0.0;
+    double qF = 0.0;
+    int idx = state->pos;
+    for (int k = 0; k < taps; ++k) {
+      iF += state->coef[static_cast<size_t>(k)] * state->iRing[static_cast<size_t>(idx)];
+      qF += state->coef[static_cast<size_t>(k)] * state->qRing[static_cast<size_t>(idx)];
+      if (--idx < 0)
+        idx = taps - 1;
     }
-    state->prev = s;
-    state->primed = true;
-    lum->push_back(float(state->hold));
+    state->pos = (state->pos + 1) % taps;
+    if (state->fill < taps)
+      ++state->fill;
+    if (state->fill >= taps && state->hasPrev) {
+      const double power = iF * iF + qF * qF;
+      if (power > 1e-8) {
+        const double dphi = std::atan2(state->iPrev * qF - state->qPrev * iF,
+                                       state->iPrev * iF + state->qPrev * qF);
+        // Mixing sin/cos makes a tone above the cursor come out negative.
+        const double df = -dphi * double(rate) / (2.0 * kPi);
+        const double raw = (df + double(kDeviationHz)) / double(2 * kDeviationHz);
+        state->smooth += blend * (raw - state->smooth);
+      }
+    }
+    state->iPrev = iF;
+    state->qPrev = qF;
+    state->hasPrev = state->fill >= taps;
+    lum->push_back(float(std::clamp(state->smooth, 0.0, 1.0)));
   }
-  state->seen += count;
 }
 
 void demod(const float* samples, int count, int rate, const WefaxSpec& spec, std::vector<float>* lum) {
@@ -76,7 +157,9 @@ void demod(const float* samples, int count, int rate, const WefaxSpec& spec, std
   demodSamples(samples, count, rate, spec, &state, lum);
 }
 
-int findSync(const std::vector<float>& lum, int line) {
+int findSync(const std::vector<float>& lum, int line, double* scoreOut) {
+  if (scoreOut)
+    *scoreOut = 0.0;
   if (line < 32 || int(lum.size()) < line * 2)
     return 0;
   const int bar = std::max(8, line * 45 / 1000);
@@ -84,9 +167,9 @@ int findSync(const std::vector<float>& lum, int line) {
   double bestScore = -1e9;
   const int step = std::max(1, line / 400);
   for (int off = 0; off < line; off += step) {
-    double dark = 0.0;
-    double rest = 0.0;
-    int nDark = 0;
+    double barSum = 0.0;
+    double restSum = 0.0;
+    int nBar = 0;
     int nRest = 0;
     bool complete = true;
     for (int lineNo = 0; lineNo < 2 && complete; ++lineNo) {
@@ -95,27 +178,31 @@ int findSync(const std::vector<float>& lum, int line) {
         complete = false;
         break;
       }
-      for (int i = 0; i < line; ++i) {
+      for (int i = 0; i < line; i += 4) {
         const float v = lum[static_cast<size_t>(origin + i)];
         if (i < bar) {
-          dark += v;
-          ++nDark;
+          barSum += v;
+          ++nBar;
         } else {
-          rest += v;
+          restSum += v;
           ++nRest;
         }
       }
     }
-    if (!complete || nDark < 1 || nRest < 1)
+    if (!complete || nBar < 1 || nRest < 1)
       continue;
-    // Phasing is a short black pulse and a white line. A dark patch later in
-    // the picture loses because the rest of that line is not white.
-    const double score = rest / double(nRest) - dark / double(nDark);
+    const double barMean = barSum / double(nBar);
+    const double restMean = restSum / double(nRest);
+    // STD's test picture is a short black pulse on white. WMO phasing is a
+    // short white pulse on black. The louder of those two wins.
+    const double score = std::max(restMean - barMean, barMean - restMean);
     if (score > bestScore) {
       bestScore = score;
       best = off;
     }
   }
+  if (scoreOut && bestScore > -1e8)
+    *scoreOut = bestScore;
   return best;
 }
 
@@ -158,11 +245,14 @@ int wefaxSamplesPerLine(int sampleRateHz, int lpm) {
 }
 
 std::vector<float> wefaxModulateTest(const WefaxSpec& spec, int sampleRateHz,
-                                    const std::vector<unsigned char>& gray, int width, int height) {
+                                    const std::vector<unsigned char>& gray, int width, int height,
+                                    double lineScale) {
   std::vector<float> out;
   if (width < 2 || height < 1 || int(gray.size()) < width * height || sampleRateHz < 1000)
     return out;
-  const int line = wefaxSamplesPerLine(sampleRateHz, spec.lpm);
+  if (lineScale < 0.5 || lineScale > 1.5)
+    lineScale = 1.0;
+  const int line = std::max(32, int(std::lround(double(wefaxSamplesPerLine(sampleRateHz, spec.lpm)) * lineScale)));
   const double black = double(blackHz(spec));
   const double white = double(whiteHz(spec));
   out.resize(static_cast<size_t>(line * height));
@@ -186,27 +276,32 @@ std::vector<float> wefaxModulateTest(const WefaxSpec& spec, int sampleRateHz,
   return out;
 }
 
-WefaxImage wefaxDecode(const WefaxSpec& spec, const float* samples, int count, int sampleRateHz) {
+WefaxImage wefaxDecode(const WefaxSpec& spec, const float* samples, int count, int sampleRateHz,
+                       double slantPercent) {
   WefaxImage picture;
   std::vector<float> lum;
   demod(samples, count, sampleRateHz, spec, &lum);
-  const int drop = std::max(0, sampleRateHz / 50);
+  const int drop = firTapsFor(sampleRateHz);
   if (int(lum.size()) <= drop)
     return picture;
   lum.erase(lum.begin(), lum.begin() + drop);
-  const int line = wefaxSamplesPerLine(sampleRateHz, spec.lpm);
+  const double step = lineStep(sampleRateHz, spec.lpm, slantPercent);
+  const int span = std::max(32, int(std::lround(step)));
   const int pixels = wefaxPixelsPerLine(spec.ioc);
-  if (int(lum.size()) < line * 2)
+  if (int(lum.size()) < span * 2)
     return picture;
-  const int sync = findSync(lum, line);
-  const int rows = (int(lum.size()) - sync) / line;
+  const int sync = findSync(lum, span, nullptr);
+  const int rows = int((double(int(lum.size()) - sync)) / step);
   if (rows < 1)
     return picture;
   picture.width = pixels;
   picture.height = rows;
   picture.gray.reserve(static_cast<size_t>(pixels * rows));
-  for (int y = 0; y < rows; ++y)
-    paintLine(lum, sync + y * line, line, pixels, &picture.gray);
+  double cursor = sync;
+  for (int y = 0; y < rows; ++y) {
+    paintLine(lum, int(std::lround(cursor)), span, pixels, &picture.gray);
+    cursor += step;
+  }
   return picture;
 }
 
@@ -229,29 +324,74 @@ void wefaxSetSaveDirectory(const QString& directory) {
 }
 
 struct WefaxEngine::Private {
+  enum class Phase { Hunt, Image };
+
   bool armed = false;
   WefaxSpec spec;
   int rate = 48000;
+  int slant = 0;
   std::vector<float> lum;
   DemodState demod;
-  int origin = 0;
-  bool locked = false;
+  double origin = 0.0;
+  Phase phase = Phase::Hunt;
   int rows = 0;
   QImage image;
-  bool stopSaved = false;
+  int aptCount = 0;
+  int aptRises = 0;
+  bool aptHigh = false;
+  int aptHist[4] = {};
+  int aptN = 0;
+
+  void resetApt() {
+    aptCount = 0;
+    aptRises = 0;
+    aptHigh = false;
+    aptN = 0;
+    aptHist[0] = aptHist[1] = aptHist[2] = aptHist[3] = 0;
+  }
 
   void resetFilter() {
     lum.clear();
     demod = DemodState();
-    origin = 0;
-    locked = false;
+    origin = 0.0;
+    phase = Phase::Hunt;
+    resetApt();
   }
 
   void reset() {
     resetFilter();
     image = QImage();
     rows = 0;
-    stopSaved = false;
+  }
+
+  void noteApt(float value, int sampleRate) {
+    const bool hot = value > 0.84f;
+    const bool cold = value < 0.16f;
+    if (hot && !aptHigh) {
+      aptHigh = true;
+      ++aptRises;
+    } else if (cold && aptHigh) {
+      aptHigh = false;
+    }
+    ++aptCount;
+    const int window = std::max(1000, sampleRate / 2);
+    if (aptCount < window)
+      return;
+    const int hz = int(std::lround(double(sampleRate) * double(aptRises) / double(aptCount)));
+    aptHist[3] = aptHist[2];
+    aptHist[2] = aptHist[1];
+    aptHist[1] = aptHist[0];
+    aptHist[0] = hz;
+    if (aptN < 4)
+      ++aptN;
+    aptCount = 0;
+    aptRises = 0;
+  }
+
+  bool twoNear(int target) const {
+    if (aptN < 2)
+      return false;
+    return std::abs(aptHist[0] - target) <= 12 && std::abs(aptHist[1] - target) <= 12;
   }
 };
 
@@ -277,6 +417,14 @@ void WefaxEngine::setCenterHz(int hz) {
   d_->resetFilter();
 }
 
+void WefaxEngine::setSlant(int percent) {
+  d_->slant = std::clamp(percent, -20, 20);
+}
+
+int WefaxEngine::slant() const {
+  return d_->slant;
+}
+
 void WefaxEngine::clear() {
   d_->reset();
   emit imageChanged();
@@ -293,6 +441,10 @@ int WefaxEngine::rowCount() const {
 QString WefaxEngine::saveNow() {
   if (d_->image.isNull() || d_->rows < 1)
     return {};
+  if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    emit imageSaved(QStringLiteral("selftest"));
+    return QStringLiteral("selftest");
+  }
   const QImage frame = d_->image.copy(0, 0, d_->image.width(), d_->rows);
   const QString dir = wefaxSaveDirectory();
   QString path = QDir(dir).filePath(
@@ -314,20 +466,49 @@ void WefaxEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
     d_->rate = sampleRateHz;
     d_->resetFilter();
   }
+  const int lumAt = int(d_->lum.size());
   demodSamples(samples, count, sampleRateHz, d_->spec, &d_->demod, &d_->lum);
+  for (int i = lumAt; i < int(d_->lum.size()); ++i)
+    d_->noteApt(d_->lum[static_cast<size_t>(i)], sampleRateHz);
 
-  const int line = wefaxSamplesPerLine(sampleRateHz, d_->spec.lpm);
+  const double step = lineStep(sampleRateHz, d_->spec.lpm, d_->slant);
+  const int span = std::max(32, int(std::lround(step)));
   const int pixels = wefaxPixelsPerLine(d_->spec.ioc);
-  if (!d_->locked) {
-    if (int(d_->lum.size()) < line * 2)
-      return;
-    d_->origin = findSync(d_->lum, line);
-    d_->locked = true;
+  const int startHz = aptStartHz(d_->spec);
+  if (d_->phase == Private::Phase::Image && d_->rows >= 4 &&
+      (d_->twoNear(kAptStopHz) || d_->twoNear(startHz))) {
+    if (d_->rows >= 4)
+      saveNow();
+    d_->image = QImage();
+    d_->rows = 0;
+    d_->resetFilter();
+    emit imageChanged();
+    return;
   }
+
+  if (d_->phase == Private::Phase::Hunt) {
+    while (int(d_->lum.size()) >= span * 2) {
+      double score = 0.0;
+      const int sync = findSync(d_->lum, span, &score);
+      if (score >= 0.45) {
+        d_->origin = sync;
+        d_->phase = Private::Phase::Image;
+        d_->resetApt();
+        d_->image = QImage();
+        d_->rows = 0;
+        break;
+      }
+      if (int(d_->lum.size()) <= span * 4)
+        break;
+      const int drop = std::min(span, int(d_->lum.size()));
+      d_->lum.erase(d_->lum.begin(), d_->lum.begin() + drop);
+    }
+  }
+
   bool grew = false;
-  while (int(d_->lum.size()) - d_->origin >= line && d_->rows < 2400) {
+  while (d_->phase == Private::Phase::Image && double(d_->lum.size()) - d_->origin >= step && d_->rows < 2400) {
     std::vector<unsigned char> row;
-    paintLine(d_->lum, d_->origin, line, pixels, &row);
+    paintLine(d_->lum, int(std::lround(d_->origin)), span, pixels, &row);
     if (d_->image.isNull() || d_->image.width() != pixels || d_->image.height() < 2400) {
       d_->image = QImage(pixels, 2400, QImage::Format_Grayscale8);
       d_->image.fill(0);
@@ -336,23 +517,13 @@ void WefaxEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
     if (unsigned char* dst = d_->image.scanLine(d_->rows))
       std::copy(row.begin(), row.end(), dst);
     ++d_->rows;
-    d_->origin += line;
+    d_->origin += step;
     grew = true;
-    if (!d_->stopSaved && d_->rows >= 8 && int(row.size()) == pixels) {
-      int flips = 0;
-      for (int i = 1; i < pixels; ++i) {
-        if ((row[static_cast<size_t>(i - 1)] >= 128) != (row[static_cast<size_t>(i)] >= 128))
-          ++flips;
-      }
-      if (flips > pixels / 10) {
-        d_->stopSaved = true;
-        saveNow();
-      }
-    }
   }
-  if (d_->origin > line * 4) {
-    d_->lum.erase(d_->lum.begin(), d_->lum.begin() + d_->origin);
-    d_->origin = 0;
+  if (d_->origin > step * 4.0 && d_->origin < double(d_->lum.size())) {
+    const int drop = int(d_->origin);
+    d_->lum.erase(d_->lum.begin(), d_->lum.begin() + drop);
+    d_->origin -= drop;
   }
   if (grew)
     emit imageChanged();
