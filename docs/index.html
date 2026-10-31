@@ -265,18 +265,23 @@ layout: null
 
     <section>
       <h2>What it sends</h2>
-      <p class="marquee-sub">TX sends these when you press TX or Tune. Opening the radio does not key.</p>
+      <p class="marquee-sub">TX sends these when you press TX or Tune. Opening the radio does not key. The text command START is never sent.</p>
       <div class="grid">
-        <div class="card"><h3><span class="ico">📡</span> FT8, FT4, FT2</h3><p>15&nbsp;s, 7.5&nbsp;s, and 3.75&nbsp;s. DIGU. The MSHV generator. JT65 is 60&nbsp;s, tone 0 near 1270&nbsp;Hz. Q65 is 30&nbsp;s and the tone follows the cursor. Contest lines Tx1–Tx6 are messages, not extra modes. The line that goes out next is a green biohazard sign.</p></div>
-        <div class="card"><h3><span class="ico">🖋️</span> Hell</h3><p>Feld, Slow, X5, X9, FSK, FSK-105, and Hell&nbsp;80, each at its Fldigi column rate. Feld Hell is 17.5&nbsp;columns/s, 14&nbsp;pixels, a 2&nbsp;ms raised cosine. <a href="https://github.com/N8SDR1/STD/wiki/Hell">Hell notes</a>.</p></div>
-        <div class="card"><h3><span class="ico">⌨️</span> RTTY</h3><p>One menu row. Shift, baud, shaped keying, Reverse, and ITA-2 sit on the transmit pane. 45.45&nbsp;baud and 170&nbsp;Hz are selected. Mark is high unless Reverse is on. 5&nbsp;bits, 1.5&nbsp;stop. A space sends LTRS, then the space.</p></div>
-        <div class="card"><h3><span class="ico">〰️</span> BPSK and QPSK</h3><p>PSK31 through 1000. A zero reverses the phase. QPSK31 through QPSK500 use a K=5 code. 8PSK is not in this build. RTTY and PSK squelch and AFC are on the status strip. AFC stays off until you turn it on.</p></div>
-        <div class="card"><h3><span class="ico">🎼</span> Olivia and Contestia</h3><p>4/250, 8/250, 8/500, 16/500, 16/1000, and 32/1000. Gray-coded tones.</p></div>
-        <div class="card"><h3><span class="ico">🎚️</span> MFSK, DominoEX, Thor</h3><p>MFSK4 through 128, plus 64L and 128L. DominoEX Micro and 4–22, FEC off. Thor 4–22 are K=7. Thor 25x4, 50x1, 50x2, and 100 are K=15.</p></div>
-        <div class="card"><h3><span class="ico">🌊</span> MT63</h3><p>500, 1000, and 2000&nbsp;Hz, short and long. Sixty-four carriers and a Walsh code. TX sends it, and a character comes back out of the audio.</p></div>
-        <div class="card"><h3><span class="ico">📻</span> JS8</h3><p>JS8Call-improved Normal. 15&nbsp;s, 50&nbsp;Hz, on the cursor. TX waits for the next 15&nbsp;s UTC period and sends one frame, starting half a second in. A longer message continues on the following periods. Changing mode clears the receive and transmit panes. Fast, Turbo, Slow, and Ultra are not in this build.</p></div>
-        <div class="card"><h3><span class="ico">🌐</span> WSPR</h3><p>WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Tx power, Tx Pct, and band hopping. The locator is the one in Options → User. Receive titles stay above the scrolling rows: Time, dB, DT, Frequency, Drift, Call, Locator, Report. Heard stations can be posted to WSPRnet when WSPRnet is set to On. WSPRnet does not ask for a password. The reports page lists stations this callsign reported.</p></div>
-        <div class="card"><h3><span class="ico">🗺️</span> PSK Reporter</h3><p>In this build. The map uses the callsign already saved under Options → User. Upload after a decode stays off until Enable is checked. Antenna is the description sent with each spot. WSPR spots stay off PSK Reporter until that checkbox is on. There is no second callsign. It does not send START.</p></div>
+        <div class="card"><h3><span class="ico">📡</span> FT8, FT4, FT2</h3><p>FT8 is 15&nbsp;s, FT4 is 7.5&nbsp;s, FT2 is 3.75&nbsp;s. DIGU. The MSHV generator. Contest lines Tx1–Tx6 are messages, not extra modes. The line that goes out next is a green biohazard sign.</p></div>
+        <div class="card"><h3><span class="ico">📡</span> JT65</h3><p>JT65A, JT65B, and JT65C. 60&nbsp;s. DIGU. Tone 0 stays near 1270&nbsp;Hz. B and C use a wider tone spacing than A.</p></div>
+        <div class="card"><h3><span class="ico">📡</span> Q65</h3><p>Q65A, Q65B, Q65C, and Q65D. 30&nbsp;s. DIGU. The tone follows the cursor. B, C, and D use a wider tone spacing than A.</p></div>
+        <div class="card"><h3><span class="ico">📻</span> JS8</h3><p>One row, JS8 Normal. JS8Call-improved, 15&nbsp;s, 50&nbsp;Hz, on the cursor. TX waits for the next 15&nbsp;s UTC period and sends one frame, starting half a second in. A longer message continues on the following periods. Changing mode clears the receive and transmit panes. Fast, Turbo, Slow, and Ultra are not on the menu.</p></div>
+        <div class="card"><h3><span class="ico">🌐</span> WSPR</h3><p>One row, WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Tx power, Tx Pct, and band hopping. The locator is the one in Options → User. Receive titles stay above the scrolling rows: Time, dB, DT, Frequency, Drift, Call, Locator, Report.</p></div>
+        <div class="card"><h3><span class="ico">🖋️</span> Hell</h3><p>Feld Hell, Slow Hell, Feld Hell X5, Feld Hell X9, FSK Hell, FSK Hell-105, and Hell&nbsp;80, each at its Fldigi column rate. Feld Hell is 17.5&nbsp;columns/s, 14&nbsp;pixels, a 2&nbsp;ms raised cosine. <a href="https://github.com/N8SDR1/STD/wiki/Hell">Hell notes</a>.</p></div>
+        <div class="card"><h3><span class="ico">⌨️</span> RTTY</h3><p>One row. Shift, Baud, Shape, Reverse, and ITA-2 sit on the transmit pane. Shape is on, Reverse is off, and ITA-2 is off. 45.45&nbsp;baud and 170&nbsp;Hz are selected. Mark is high unless Reverse is on. 5&nbsp;bits, 1.5&nbsp;stop. A space sends LTRS, then the space.</p></div>
+        <div class="card"><h3><span class="ico">〰️</span> PSK</h3><p>PSK31, PSK63, PSK125, PSK250, PSK500, and PSK1000. BPSK at 31.25, 62.5, 125, 250, 500, and 1000 baud. A zero reverses the phase. Squelch and AFC are on the status strip. AFC stays off until you turn it on.</p></div>
+        <div class="card"><h3><span class="ico">〰️</span> QPSK</h3><p>QPSK31, QPSK63, QPSK125, QPSK250, and QPSK500. K=5 convolutional code, one dibit per varicode bit. 8PSK is not on the menu.</p></div>
+        <div class="card"><h3><span class="ico">🎼</span> Olivia</h3><p>4/250, 8/250, 8/500, 16/500, 16/1000, and 32/1000. Gray-coded tones, centered on the cursor.</p></div>
+        <div class="card"><h3><span class="ico">🎼</span> Contestia</h3><p>The same six rows as Olivia, with the Contestia scramble. Capitals on receive.</p></div>
+        <div class="card"><h3><span class="ico">🎚️</span> MFSK</h3><p>MFSK4, MFSK8, MFSK11, MFSK16, MFSK22, MFSK31, MFSK32, MFSK64, MFSK64L, MFSK128, and MFSK128L. The L rows use the long interleaver.</p></div>
+        <div class="card"><h3><span class="ico">🎚️</span> DominoEX</h3><p>DominoEX Micro, 4, 5, 8, 11, 16, and 22. Eighteen-tone incremental keying. FEC is off. Micro is 2 baud.</p></div>
+        <div class="card"><h3><span class="ico">🎚️</span> Thor</h3><p>Thor 4, 5, 8, 11, 16, and 22 are K=7. Thor 25x4, 50x1, 50x2, and 100 are K=15. Thor Micro is not in this build.</p></div>
+        <div class="card"><h3><span class="ico">🌊</span> MT63</h3><p>MT63-500S, MT63-500L, MT63-1000S, MT63-1000L, MT63-2000S, and MT63-2000L. Sixty-four carriers and a Walsh code, short or long interleave, centered on the cursor.</p></div>
         <div class="card"><h3><span class="ico">📝</span> Macros</h3><p>Supports importing Fldigi custom macros. <a href="https://github.com/N8SDR1/STD/wiki/Macros">Macro notes</a>.</p></div>
       </div>
     </section>
@@ -284,16 +289,30 @@ layout: null
     <section>
       <h2>Receive only</h2>
       <div class="grid">
-        <div class="card"><h3><span class="ico">🗞️</span> WEFAX-576</h3><p>IOC 576, 120 lines per minute. Black is 400&nbsp;Hz below the cursor and white is 400&nbsp;Hz above it. A 300&nbsp;Hz start tone opens a picture, a 450&nbsp;Hz stop tone saves it, and Slant is parts per million. It does not key, and it does not send START.</p></div>
+        <div class="card"><h3><span class="ico">🗞️</span> WEFAX-576</h3><p>IOC 576, 120 lines per minute. Black is 400&nbsp;Hz below the cursor and white is 400&nbsp;Hz above it. A 300&nbsp;Hz start tone opens a picture, a 450&nbsp;Hz stop tone saves it, and Slant is parts per million. TX does not send this mode, and START is never sent.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Spots, the log, and a copy of your settings</h2>
+      <p class="marquee-sub">None of these key the radio, and none of them send START.</p>
+      <div class="grid">
+        <div class="card"><h3><span class="ico">🌐</span> WSPRnet</h3><p>Options → Network Configuration. Off and On. On posts each WSPR station STD decodes. Off posts nothing. No password. It does not post your own transmission. The reports page lists stations reported by the callsign in Options → User.</p></div>
+        <div class="card"><h3><span class="ico">🗺️</span> PSK Reporter</h3><p>Upload stays off until Enable is checked. Antenna is the description sent with each spot. Also send WSPR spots to PSK Reporter stays off until that box is checked. The map uses the callsign already saved under Options → User. There is no second callsign.</p></div>
+        <div class="card"><h3><span class="ico">📒</span> GridTracker</h3><p>Options → Log Options. A UDP option sends live decode packets, the same packets GridTracker reads, to the saved host and port. The first address is 127.0.0.1 port 2237. UDP stays off until you enable it.</p></div>
+        <div class="card"><h3><span class="ico">💾</span> Backup and export</h3><p>File → Backup settings saves layouts and the callsign and locator already stored under Options → User. It does not copy the TCI host or port. File → Import settings restores that file. File → Backup logbook copies the ADIF file. File → Export ADIF writes a copy another logger can import.</p></div>
       </div>
     </section>
 
     <section>
       <h2>Still spreading</h2>
-      <p class="marquee-sub">Not on the Mode menu. They do not key. The outbreak is incomplete on purpose.</p>
+      <p class="marquee-sub">Not on the Mode menu. They do not key. CW stays in Lyra.</p>
       <div class="grid">
-        <div class="card road-card"><span class="pill-planned">Later</span><h3><span class="ico">✳️</span> 8PSK</h3><p>A different constellation from QPSK. Not on the menu, and not keying.</p></div>
-        <div class="card road-card"><span class="pill-planned">Queued</span><h3><span class="ico">📋</span> FLD-88</h3><p>On the list. Not in the menu, and not keying.</p></div>
+        <div class="card road-card"><span class="pill-planned">Later</span><h3><span class="ico">✳️</span> 8PSK</h3><p>A different constellation from QPSK. Not on the menu.</p></div>
+        <div class="card road-card"><span class="pill-planned">Later</span><h3><span class="ico">✳️</span> Thor Micro</h3><p>Not in this build. Thor 4 through 100 are on the menu.</p></div>
+        <div class="card road-card"><span class="pill-planned">Later</span><h3><span class="ico">📻</span> JS8 speeds</h3><p>Fast, Turbo, Slow, and Ultra are a different symbol clock. Only Normal is on the menu.</p></div>
+        <div class="card road-card"><span class="pill-planned">Queued</span><h3><span class="ico">📋</span> FLD-88</h3><p>On the list. Not in the menu.</p></div>
+        <div class="card road-card"><span class="pill-planned">Later</span><h3><span class="ico">📡</span> Other MSHV modes</h3><p>MSK144, MSKMS, JTMS, FSK441, FSK315, ISCAT-A, ISCAT-B, JT6M, and PI4. Listed in the MSHV notes until they are implemented. JT65 and Q65 are already on the menu.</p></div>
       </div>
     </section>
 
