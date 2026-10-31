@@ -8,6 +8,8 @@
 
 #include "MfskModem.h"
 
+#include "modem/ToneClock.h"
+
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -353,6 +355,11 @@ public:
   explicit ToneRx(const Spec& spec)
       : spec_(spec), inlv_(spec.bits, spec.depth, true), dec1_(), dec2_() {}
 
+  void setSquelch(bool on, int level) {
+    squelchOn_ = on;
+    squelch_ = std::clamp(level, 0, 100);
+  }
+
   QString push(const double* magnitude) {
     double sum = 0.0;
     for (int tone = 0; tone < spec_.tones; ++tone)
@@ -398,22 +405,34 @@ private:
         met1_ = ((double(metric) - met1_) / 50.0) + met1_;
         if (met1_ < met2_)
           return {};
-      } else {
-        bit = dec2_.decode(pair_[0], pair_[1], &metric);
-        if (bit < 0)
-          return {};
-        met2_ = ((double(metric) - met2_) / 50.0) + met2_;
-        if (met2_ < met1_)
-          return {};
+        return finishBit(bit, met1_);
       }
-    } else {
-      if (symcounter_)
-        return {};
       bit = dec2_.decode(pair_[0], pair_[1], &metric);
       if (bit < 0)
         return {};
+      met2_ = ((double(metric) - met2_) / 50.0) + met2_;
+      if (met2_ < met1_)
+        return {};
+      return finishBit(bit, met2_);
     }
-    return takeBit(bit);
+    if (symcounter_)
+      return {};
+    bit = dec2_.decode(pair_[0], pair_[1], &metric);
+    if (bit < 0)
+      return {};
+    met2_ = ((double(metric) - met2_) / 50.0) + met2_;
+    return finishBit(bit, met2_);
+  }
+
+  QString finishBit(int bit, double smoothed) {
+    // fldigi rescales the Viterbi metric onto the 0..100 squelch slider.
+    // The bit still enters the varicode register. Gating it drops the
+    // 001 frame and the rest of the over prints as garbage.
+    const double shown = std::clamp((smoothed - 60.0) * 0.5, 0.0, 100.0);
+    const QString text = takeBit(bit);
+    if (squelchOn_ && shown < double(squelch_))
+      return {};
+    return text;
   }
 
   QString takeBit(int bit) {
@@ -422,9 +441,7 @@ private:
       return {};
     const int ch = varidec(datashreg_ >> 1);
     datashreg_ = 1;
-    if (ch < 32 || ch >= 127)
-      return {};
-    return QString(QChar::fromLatin1(char(ch)));
+    return latin1Rx(ch);
   }
 
   Spec spec_;
@@ -435,6 +452,8 @@ private:
   int symcounter_ = 0;
   double met1_ = 0.0;
   double met2_ = 0.0;
+  bool squelchOn_ = false;
+  int squelch_ = 0;
   unsigned datashreg_ = 0;
 };
 
@@ -557,6 +576,8 @@ struct MfskEngine::Private {
   int since = 0;
   std::vector<float> pending;
   std::unique_ptr<ToneRx> rx;
+  Rate8k decim;
+  SymbolClock clock;
 
   void reset() {
     locked = false;
@@ -565,6 +586,8 @@ struct MfskEngine::Private {
     since = 0;
     pending.clear();
     rx.reset();
+    decim.reset();
+    clock.resetTrack();
   }
 };
 
@@ -601,6 +624,10 @@ void MfskEngine::setSquelch(bool on, int level) {
   d_->squelch = std::clamp(level, 0, 100);
 }
 
+void MfskEngine::setAfc(bool on) {
+  d_->clock.setAfcEnabled(on);
+}
+
 void MfskEngine::clear() {
   d_->reset();
 }
@@ -608,58 +635,88 @@ void MfskEngine::clear() {
 void MfskEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
   if (!d_->armed || !samples || count < 1 || sampleRateHz < 1000 || mfskBandwidthHz(d_->mode) < 1)
     return;
-  if (d_->squelchOn && d_->squelch >= 90)
-    return;
   const Spec* spec = specFor(d_->mode);
   if (!spec)
     return;
-  const int separ = std::max(8, int(std::lround(double(sampleRateHz) / spec->baud)));
-  d_->pending.insert(d_->pending.end(), samples, samples + count);
+  d_->decim.push(samples, count, sampleRateHz, &d_->pending);
+  constexpr int rate = 8000;
+  const int separ = std::max(8, int(std::lround(double(rate) / spec->baud)));
+  const int tones = spec->tones;
   d_->since += count;
-  const int need = separ * 12;
-  if (int(d_->pending.size()) < need)
+  if (int(d_->pending.size()) < separ * 12)
     return;
+  double magnitude[32];
+  const auto lowNow = [&] { return lowHz(*spec, d_->center) + d_->clock.afcHz(); };
   if (!d_->locked) {
-    if (d_->since < separ * 4)
+    if (d_->since < sampleRateHz / 4)
       return;
     d_->since = 0;
-    double best = -1.0;
-    int bestAt = 0;
-    const int step = std::max(1, separ / 4);
-    double magnitude[32];
-    const double low = lowHz(*spec, d_->center);
-    for (int off = 0; off + separ <= int(d_->pending.size()) && off < separ; off += step) {
-      toneMagnitude(d_->pending.data(), int(d_->pending.size()), off, separ, low, spec->baud, spec->tones,
-                    sampleRateHz, 4, magnitude);
+    const double low = lowNow();
+    const int pending = int(d_->pending.size());
+    const SymbolLock symbolLock = lockSymbolPhase(separ, pending, [&](int pos) {
+      toneMagnitude(d_->pending.data(), pending, pos, separ, low, spec->baud, tones, rate, 1, magnitude);
       double peak = 0.0;
       double second = 0.0;
-      for (int tone = 0; tone < spec->tones; ++tone) {
+      for (int tone = 0; tone < tones; ++tone) {
         if (magnitude[tone] > peak) {
           second = peak;
           peak = magnitude[tone];
         } else if (magnitude[tone] > second)
           second = magnitude[tone];
       }
-      const double score = peak > 0.0 ? (peak - second) / peak : 0.0;
-      if (score > best) {
-        best = score;
-        bestAt = off;
-      }
-    }
-    if (best < 0.45)
+      if (peak < 1.0)
+        return -1.0;
+      return (peak - second) / peak;
+    });
+    if (symbolLock.rank < 0.45)
       return;
     d_->locked = true;
-    d_->lock = bestAt;
+    d_->lock = symbolLock.at;
     d_->next = 0;
     d_->rx = std::make_unique<ToneRx>(*spec);
   }
   if (!d_->rx)
     return;
-  const double low = lowHz(*spec, d_->center);
-  double magnitude[32];
-  while (d_->lock + (d_->next + 1) * separ <= int(d_->pending.size())) {
-    toneMagnitude(d_->pending.data(), int(d_->pending.size()), d_->lock + d_->next * separ, separ, low,
-                  spec->baud, spec->tones, sampleRateHz, 1, magnitude);
+  d_->rx->setSquelch(d_->squelchOn, d_->squelch);
+  const int probe = std::max(1, separ / 8);
+  const int size = int(d_->pending.size());
+  while (d_->lock + (d_->next + 1) * separ <= size) {
+    int at = d_->lock + d_->next * separ;
+    const auto peakOnly = [&](int pos) {
+      if (pos < 0 || pos + separ > size)
+        return 0.0;
+      toneMagnitude(d_->pending.data(), size, pos, separ, lowNow(), spec->baud, tones, rate, 1, magnitude);
+      double peak = 0.0;
+      for (int tone = 0; tone < tones; ++tone)
+        peak = std::max(peak, magnitude[tone]);
+      return peak;
+    };
+    const double early = peakOnly(at - probe);
+    const double late = peakOnly(at + probe);
+    toneMagnitude(d_->pending.data(), size, at, separ, lowNow(), spec->baud, tones, rate, 1, magnitude);
+    BinPick bin = pickBin(magnitude, tones);
+    const bool strong = binStrong(bin, tones);
+    const bool transition = d_->clock.tone() < 0 || bin.index != d_->clock.tone();
+    const int shift = d_->clock.nudge(early, bin.peak, late, probe, strong, transition);
+    if (shift != 0 && at + shift >= 0 && at + shift + separ <= size) {
+      at += shift;
+      d_->lock += shift;
+      toneMagnitude(d_->pending.data(), size, at, separ, lowNow(), spec->baud, tones, rate, 1, magnitude);
+      bin = pickBin(magnitude, tones);
+    }
+    const bool repeat = d_->clock.tone() >= 0 && bin.index == d_->clock.tone();
+    if (repeat && binStrong(bin, tones)) {
+      const int half = std::max(4, separ / 2);
+      const double freq = lowNow() + double(bin.index) * spec->baud;
+      double si0 = 0.0;
+      double sq0 = 0.0;
+      double si1 = 0.0;
+      double sq1 = 0.0;
+      toneIq(d_->pending.data(), size, at, half, freq, rate, &si0, &sq0);
+      toneIq(d_->pending.data(), size, at + half, half, freq, rate, &si1, &sq1);
+      d_->clock.observeFreq(si0, sq0, si1, sq1, half, rate, spec->baud, true, true);
+    }
+    d_->clock.setTone(bin.index);
     const QString text = d_->rx->push(magnitude);
     ++d_->next;
     if (!text.isEmpty())

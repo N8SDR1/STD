@@ -8,9 +8,12 @@
 
 #include "OliviaModem.h"
 
+#include "modem/ToneClock.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -305,17 +308,22 @@ public:
   QString take() {
     QString text;
     for (int freq = 0; freq < spec_.bits; ++freq) {
-      const int ch = character(freq);
+      int ch = character(freq);
+      if (!spec_.contestia) {
+        if (escape_) {
+          escape_ = false;
+          ch = (ch & 127) + 128;
+        } else if (ch == 127) {
+          escape_ = true;
+          continue;
+        }
+      }
       if (ch == 8) {
         if (!text.isEmpty())
           text.chop(1);
         continue;
       }
-      if (ch < 32 && ch != '\n' && ch != '\r')
-        continue;
-      if (ch >= 127)
-        continue;
-      text.append(QChar::fromLatin1(char(ch)));
+      text += latin1Rx(ch);
     }
     return text;
   }
@@ -334,6 +342,7 @@ private:
   Spec spec_;
   std::vector<double> buffer_;
   int ptr_ = 0;
+  bool escape_ = false;
 };
 
 double lowHz(const Spec& spec, int centerHz) {
@@ -356,17 +365,34 @@ OliviaPlan planOlivia(const QString& mode, const QString& text, int centerHz) {
   if (separ < 8)
     return plan;
   const QByteArray latin = body.toLatin1();
+  struct Byte {
+    unsigned char value;
+    int source;
+  };
+  std::vector<Byte> bytes;
+  bytes.reserve(static_cast<size_t>(std::max(0, int(latin.size()) * 2)));
+  for (int i = 0; i < latin.size(); ++i) {
+    const auto u = static_cast<unsigned char>(latin.at(i));
+    if (!spec.contestia && u >= 128) {
+      bytes.push_back(Byte{127, -1});
+      bytes.push_back(Byte{static_cast<unsigned char>(u & 127), i});
+    } else {
+      bytes.push_back(Byte{u, i});
+    }
+  }
   std::vector<int> symbols;
   const int idle[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   encodeBlock(idle, spec, &symbols);
   plan.echoAt.assign(static_cast<size_t>(latin.size()), 0);
-  for (int i = 0; i < latin.size();) {
+  for (int i = 0; i < int(bytes.size());) {
     int block[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     const int blockIndex = 1 + i / spec.bits;
     const int at = blockIndex * spec.symbolsPerBlock * separ;
-    for (int bit = 0; bit < spec.bits && i < latin.size(); ++bit, ++i) {
-      block[bit] = unsigned char(latin.at(i));
-      plan.echoAt[static_cast<size_t>(i)] = at;
+    for (int bit = 0; bit < spec.bits && i < int(bytes.size()); ++bit, ++i) {
+      block[bit] = bytes[static_cast<size_t>(i)].value;
+      const int source = bytes[static_cast<size_t>(i)].source;
+      if (source >= 0)
+        plan.echoAt[static_cast<size_t>(source)] = at;
     }
     encodeBlock(block, spec, &symbols);
   }
@@ -437,15 +463,25 @@ struct OliviaEngine::Private {
   bool locked = false;
   int lock = 0;
   int sinceDecode = 0;
+  int origin = 0;
+  int fed = 0;
+  double quality = 0.0;
   std::vector<float> pending;
-  QString shown;
+  std::unique_ptr<BlockDecoder> rx;
+  Rate8k decim;
+  SymbolClock clock;
 
   void reset() {
     locked = false;
     lock = 0;
     sinceDecode = 0;
+    origin = 0;
+    fed = 0;
+    quality = 0.0;
     pending.clear();
-    shown.clear();
+    rx.reset();
+    decim.reset();
+    clock.resetTrack();
   }
 };
 
@@ -482,6 +518,10 @@ void OliviaEngine::setSquelch(bool on, int level) {
   d_->squelch = std::clamp(level, 0, 100);
 }
 
+void OliviaEngine::setAfc(bool on) {
+  d_->clock.setAfcEnabled(on);
+}
+
 void OliviaEngine::clear() {
   d_->reset();
 }
@@ -491,25 +531,31 @@ void OliviaEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
     return;
   if (oliviaBandwidthHz(d_->mode) < 125)
     return;
-  if (d_->squelchOn && d_->squelch >= 90)
-    return;
   const Spec spec = specFor(d_->mode);
-  const int separ = separAt(spec, sampleRateHz);
+  if (spec.tones < 2)
+    return;
+  d_->decim.push(samples, count, sampleRateHz, &d_->pending);
+  constexpr int rate = 8000;
+  d_->rate = rate;
+  const int separ = separAt(spec, rate);
   if (separ < 8)
     return;
-  d_->rate = sampleRateHz;
-  d_->pending.insert(d_->pending.end(), samples, samples + count);
   d_->sinceDecode += count;
   const int need = (spec.symbolsPerBlock + 4) * separ;
-  if (int(d_->pending.size()) < need || d_->sinceDecode < separ)
+  if (int(d_->pending.size()) < need)
     return;
-  d_->sinceDecode = 0;
+  double energy[256];
+  double bits[8];
+  const auto lowNow = [&] { return lowHz(spec, d_->center) + d_->clock.afcHz(); };
   if (!d_->locked) {
+    if (d_->sinceDecode < sampleRateHz / 2)
+      return;
+    d_->sinceDecode = 0;
     double best = -1.0;
     int bestAt = 0;
     const int step = std::max(1, separ / 4);
     const int probe = std::min(16, spec.symbolsPerBlock);
-    double energy[256];
+    const double low = lowNow();
     for (int off = 0; off < separ; off += step) {
       double score = 0.0;
       int used = 0;
@@ -517,8 +563,8 @@ void OliviaEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
         const int begin = off + s * separ + separ / 2;
         if (begin + separ > int(d_->pending.size()))
           break;
-        toneEnergy(d_->pending.data(), int(d_->pending.size()), begin, separ, lowHz(spec, d_->center),
-                   spec.spacing, spec.tones, sampleRateHz, energy);
+        toneEnergy(d_->pending.data(), int(d_->pending.size()), begin, separ, low, spec.spacing, spec.tones,
+                   rate, energy);
         double peak = 0.0;
         double second = 0.0;
         for (int tone = 0; tone < spec.tones; ++tone) {
@@ -533,7 +579,7 @@ void OliviaEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
           score += (peak - second) / peak;
         ++used;
       }
-      if (used >= 8 && score > best) {
+      if (used >= 8 && score > best + 0.5) {
         best = score;
         bestAt = off;
       }
@@ -541,44 +587,72 @@ void OliviaEngine::pushAudio(const float* samples, int count, int sampleRateHz) 
     if (best < 4.0)
       return;
     d_->locked = true;
-    d_->lock = bestAt;
+    d_->origin = bestAt;
+    d_->fed = 0;
+    d_->quality = 0.0;
+    d_->rx = std::make_unique<BlockDecoder>(spec);
   }
-  const QString text = oliviaDecode(d_->mode, d_->pending.data() + d_->lock,
-                                    int(d_->pending.size()) - d_->lock, sampleRateHz, d_->center);
-  const int keep = (spec.symbolsPerBlock * 2 + 4) * separ;
-  if (int(d_->pending.size()) > keep * 2) {
-    const int drop = int(d_->pending.size()) - keep;
+  if (!d_->rx)
+    return;
+  const int size = int(d_->pending.size());
+  const int edge = std::max(1, separ / 8);
+  while (d_->origin + separ + separ / 2 <= size) {
+    int begin = d_->origin + separ / 2;
+    const auto peakOnly = [&](int pos) {
+      if (pos < 0 || pos + separ > size)
+        return 0.0;
+      toneEnergy(d_->pending.data(), size, pos, separ, lowNow(), spec.spacing, spec.tones, rate, energy);
+      double peak = 0.0;
+      for (int tone = 0; tone < spec.tones; ++tone)
+        peak = std::max(peak, energy[tone]);
+      return peak;
+    };
+    const double early = peakOnly(begin - edge);
+    const double late = peakOnly(begin + edge);
+    toneEnergy(d_->pending.data(), size, begin, separ, lowNow(), spec.spacing, spec.tones, rate, energy);
+    BinPick bin = pickBin(energy, spec.tones);
+    const bool strong = binStrong(bin, spec.tones);
+    const bool transition = d_->clock.tone() < 0 || bin.index != d_->clock.tone();
+    const int shift = d_->clock.nudge(early, bin.peak, late, edge, strong, transition);
+    if (shift != 0 && begin + shift >= 0 && begin + shift + separ <= size) {
+      begin += shift;
+      d_->origin += shift;
+      toneEnergy(d_->pending.data(), size, begin, separ, lowNow(), spec.spacing, spec.tones, rate, energy);
+      bin = pickBin(energy, spec.tones);
+    }
+    const bool repeat = d_->clock.tone() >= 0 && bin.index == d_->clock.tone();
+    if (repeat && binStrong(bin, spec.tones)) {
+      const int half = std::max(4, separ / 2);
+      const double freq = lowNow() + double(bin.index) * spec.spacing;
+      double si0 = 0.0;
+      double sq0 = 0.0;
+      double si1 = 0.0;
+      double sq1 = 0.0;
+      toneIq(d_->pending.data(), size, begin, half, freq, rate, &si0, &sq0);
+      toneIq(d_->pending.data(), size, begin + half, half, freq, rate, &si1, &sq1);
+      d_->clock.observeFreq(si0, sq0, si1, sq1, half, rate, spec.spacing, true, true);
+    }
+    d_->clock.setTone(bin.index);
+    const double instant = toneQuality(bin.peak, bin.sum, spec.tones);
+    d_->quality += (instant - d_->quality) / 16.0;
+    softBits(energy, spec, bits);
+    d_->rx->push(bits);
+    d_->origin += separ;
+    ++d_->fed;
+    if (d_->fed % spec.symbolsPerBlock == 0) {
+      QString text = d_->rx->take();
+      if (d_->squelchOn && d_->quality < double(d_->squelch))
+        text.clear();
+      if (!text.isEmpty())
+        emit textReady(text);
+    }
+  }
+  const int margin = separ * 4;
+  if (d_->origin > margin * 8) {
+    const int drop = d_->origin - margin;
     d_->pending.erase(d_->pending.begin(), d_->pending.begin() + drop);
-    d_->lock -= drop;
-    if (d_->lock < 0) {
-      d_->locked = false;
-      d_->lock = 0;
-      d_->shown.clear();
-    }
+    d_->origin -= drop;
+    if (d_->origin < 0)
+      d_->reset();
   }
-  if (text.isEmpty())
-    return;
-  if (d_->shown.isEmpty()) {
-    emit textReady(text);
-    d_->shown = text;
-    return;
-  }
-  if (text.startsWith(d_->shown)) {
-    const QString extra = text.mid(d_->shown.size());
-    if (!extra.isEmpty())
-      emit textReady(extra);
-    d_->shown = text;
-    return;
-  }
-  int overlap = 0;
-  const int max = std::min(d_->shown.size(), text.size());
-  for (int n = max; n > 0; --n) {
-    if (d_->shown.right(n) == text.left(n)) {
-      overlap = n;
-      break;
-    }
-  }
-  if (text.size() > overlap)
-    emit textReady(text.mid(overlap));
-  d_->shown = text;
 }

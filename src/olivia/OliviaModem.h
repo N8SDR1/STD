@@ -37,6 +37,7 @@ public:
   void setMode(const QString& mode);
   void setCenterHz(int hz);
   void setSquelch(bool on, int level);
+  void setAfc(bool on);
   void clear();
   void pushAudio(const float* samples, int count, int sampleRateHz);
 

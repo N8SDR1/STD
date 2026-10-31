@@ -101,6 +101,15 @@ inline bool keyedPsk(const QString& mode) {
   return (pskMode(mode) && pskBaud(mode) > 0.0) || qpskBaud(mode) > 0.0;
 }
 
+// Olivia, Contestia, MFSK, DominoEX, and Thor share the SQL slider and the AFC switch.
+inline bool multiToneText(const QString& mode) {
+  return mode.startsWith(QLatin1String("Olivia "), Qt::CaseInsensitive) ||
+         mode.startsWith(QLatin1String("Contestia "), Qt::CaseInsensitive) ||
+         mode.startsWith(QLatin1String("MFSK"), Qt::CaseInsensitive) ||
+         mode.startsWith(QLatin1String("DominoEX "), Qt::CaseInsensitive) ||
+         mode.startsWith(QLatin1String("Thor "), Qt::CaseInsensitive);
+}
+
 // HF WEFAX receive. The name is the Fldigi menu label. It does not key.
 inline bool wefaxMode(const QString& mode) {
   return mode.startsWith(QLatin1String("WEFAX"), Qt::CaseInsensitive);

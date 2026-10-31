@@ -10,6 +10,7 @@
 #include "ThorModem.h"
 
 #include "mfsk/MfskModem.h"
+#include "modem/ToneClock.h"
 
 #include <algorithm>
 #include <climits>
@@ -318,6 +319,11 @@ public:
 
   void setPrev(int tone) { prev_ = tone; }
 
+  void setSquelch(bool on, int level) {
+    squelchOn_ = on;
+    squelch_ = std::clamp(level, 0, 100);
+  }
+
   // A negative tone is a puncture: no carrier, so the interleaver and the
   // K=7 traceback keep moving without a new nibble. fldigi does this on a
   // flat bin. A finished buffer has no bins after the last tone, and the
@@ -407,7 +413,12 @@ private:
     const int bit = dec_.decode(pair_[0], pair_[1], &metric);
     if (bit < 0)
       return {};
-    return takeBit(bit);
+    met_ = ((double(metric) - met_) / 50.0) + met_;
+    const double shown = std::clamp((met_ - 60.0) * 0.5, 0.0, 100.0);
+    const QString text = takeBit(bit);
+    if (squelchOn_ && shown < double(squelch_))
+      return {};
+    return text;
   }
 
   QString takeBit(int bit) {
@@ -416,9 +427,7 @@ private:
       return {};
     const int ch = mfskVaridec(datashreg_ >> 1);
     datashreg_ = 1;
-    if (ch < 32 || ch >= 127)
-      return {};
-    return QString(QChar::fromLatin1(char(ch)));
+    return latin1Rx(ch);
   }
 
   Interleave inlv_;
@@ -426,6 +435,9 @@ private:
   unsigned char pair_[2] = {};
   int symcounter_ = 0;
   unsigned datashreg_ = 1;
+  double met_ = 0.0;
+  bool squelchOn_ = false;
+  int squelch_ = 0;
   int prev_ = 0;
   int twoCount_ = 0;
   int preambleCheck_ = 0;
@@ -558,6 +570,8 @@ struct ThorEngine::Private {
   int since = 0;
   std::vector<float> pending;
   std::unique_ptr<ToneRx> rx;
+  Rate8k decim;
+  SymbolClock clock;
 
   void reset() {
     locked = false;
@@ -566,6 +580,8 @@ struct ThorEngine::Private {
     since = 0;
     pending.clear();
     rx.reset();
+    decim.reset();
+    clock.resetTrack();
   }
 };
 
@@ -602,6 +618,10 @@ void ThorEngine::setSquelch(bool on, int level) {
   d_->squelch = std::clamp(level, 0, 100);
 }
 
+void ThorEngine::setAfc(bool on) {
+  d_->clock.setAfcEnabled(on);
+}
+
 void ThorEngine::clear() {
   d_->reset();
 }
@@ -609,29 +629,26 @@ void ThorEngine::clear() {
 void ThorEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
   if (!d_->armed || !samples || count < 1 || sampleRateHz < 1000 || thorBandwidthHz(d_->mode) < 1)
     return;
-  if (d_->squelchOn && d_->squelch >= 90)
-    return;
   const Spec* spec = specFor(d_->mode);
   if (!spec)
     return;
-  const int separ = std::max(8, int(std::lround(double(sampleRateHz) / spec->baud)));
-  d_->pending.insert(d_->pending.end(), samples, samples + count);
+  d_->decim.push(samples, count, sampleRateHz, &d_->pending);
+  constexpr int rate = 8000;
+  const int separ = std::max(8, int(std::lround(double(rate) / spec->baud)));
+  const double spacing = spacingHz(*spec);
   d_->since += count;
   if (int(d_->pending.size()) < separ * 12)
     return;
-  const double low = lowHz(*spec, d_->center);
-  const double spacing = spacingHz(*spec);
   double magnitude[kTones];
+  const auto lowNow = [&] { return lowHz(*spec, d_->center) + d_->clock.afcHz(); };
   if (!d_->locked) {
-    if (d_->since < separ * 4)
+    if (d_->since < sampleRateHz / 4)
       return;
     d_->since = 0;
-    double best = -1.0;
-    int bestAt = 0;
-    const int step = std::max(1, separ / 4);
-    for (int off = 0; off + separ <= int(d_->pending.size()) && off < separ; off += step) {
-      toneMagnitude(d_->pending.data(), int(d_->pending.size()), off, separ, low, spacing, sampleRateHz, 4,
-                    magnitude);
+    const double low = lowNow();
+    const int pending = int(d_->pending.size());
+    const SymbolLock symbolLock = lockSymbolPhase(separ, pending, [&](int pos) {
+      toneMagnitude(d_->pending.data(), pending, pos, separ, low, spacing, rate, 1, magnitude);
       double peak = 0.0;
       double second = 0.0;
       for (int tone = 0; tone < kTones; ++tone) {
@@ -641,38 +658,65 @@ void ThorEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
         } else if (magnitude[tone] > second)
           second = magnitude[tone];
       }
-      const double score = peak > 0.0 ? (peak - second) / peak : 0.0;
-      if (score > best) {
-        best = score;
-        bestAt = off;
-      }
-    }
-    if (best < 0.45)
+      if (peak < 1.0)
+        return -1.0;
+      return (peak - second) / peak;
+    });
+    if (symbolLock.rank < 0.45)
       return;
     d_->locked = true;
-    d_->lock = bestAt;
+    d_->lock = symbolLock.at;
     d_->next = 0;
     d_->rx = std::make_unique<ToneRx>(*spec);
-    if (bestAt >= separ) {
-      toneMagnitude(d_->pending.data(), int(d_->pending.size()), bestAt - separ, separ, low, spacing,
-                    sampleRateHz, 1, magnitude);
+    if (symbolLock.at >= separ) {
+      toneMagnitude(d_->pending.data(), pending, symbolLock.at - separ, separ, low, spacing, rate, 1, magnitude);
       d_->rx->setPrev(peakTone(magnitude));
     }
   }
   if (!d_->rx)
     return;
-  while (d_->lock + (d_->next + 1) * separ <= int(d_->pending.size())) {
-    toneMagnitude(d_->pending.data(), int(d_->pending.size()), d_->lock + d_->next * separ, separ, low, spacing,
-                  sampleRateHz, 1, magnitude);
-    double sum = 0.0;
-    double peak = 0.0;
-    for (int tone = 0; tone < kTones; ++tone) {
-      sum += magnitude[tone];
-      if (magnitude[tone] > peak)
-        peak = magnitude[tone];
+  d_->rx->setSquelch(d_->squelchOn, d_->squelch);
+  const int probe = std::max(1, separ / 8);
+  const int size = int(d_->pending.size());
+  while (d_->lock + (d_->next + 1) * separ <= size) {
+    int at = d_->lock + d_->next * separ;
+    const auto peakOnly = [&](int pos) {
+      if (pos < 0 || pos + separ > size)
+        return 0.0;
+      toneMagnitude(d_->pending.data(), size, pos, separ, lowNow(), spacing, rate, 1, magnitude);
+      double peak = 0.0;
+      for (int tone = 0; tone < kTones; ++tone)
+        peak = std::max(peak, magnitude[tone]);
+      return peak;
+    };
+    const double early = peakOnly(at - probe);
+    const double late = peakOnly(at + probe);
+    toneMagnitude(d_->pending.data(), size, at, separ, lowNow(), spacing, rate, 1, magnitude);
+    BinPick bin = pickBin(magnitude, kTones);
+    const bool strong = binStrong(bin, kTones);
+    const bool transition = d_->clock.tone() < 0 || bin.index != d_->clock.tone();
+    const int shift = d_->clock.nudge(early, bin.peak, late, probe, strong, transition);
+    if (shift != 0 && at + shift >= 0 && at + shift + separ <= size) {
+      at += shift;
+      d_->lock += shift;
+      toneMagnitude(d_->pending.data(), size, at, separ, lowNow(), spacing, rate, 1, magnitude);
+      bin = pickBin(magnitude, kTones);
     }
-    const bool flat = sum < 1e-6 || peak * double(kTones) < sum * 1.2;
-    const QString text = d_->rx->pushTone(flat ? -1 : peakTone(magnitude));
+    const bool repeat = d_->clock.tone() >= 0 && bin.index == d_->clock.tone();
+    if (repeat && binStrong(bin, kTones)) {
+      const int half = std::max(4, separ / 2);
+      const double freq = lowNow() + double(bin.index) * spacing;
+      double si0 = 0.0;
+      double sq0 = 0.0;
+      double si1 = 0.0;
+      double sq1 = 0.0;
+      toneIq(d_->pending.data(), size, at, half, freq, rate, &si0, &sq0);
+      toneIq(d_->pending.data(), size, at + half, half, freq, rate, &si1, &sq1);
+      d_->clock.observeFreq(si0, sq0, si1, sq1, half, rate, spacing, true, true);
+    }
+    d_->clock.setTone(bin.index);
+    const bool flat = bin.sum < 1e-6 || bin.peak * double(kTones) < bin.sum * 1.2;
+    const QString text = d_->rx->pushTone(flat ? -1 : bin.index);
     ++d_->next;
     if (!text.isEmpty())
       emit textReady(text);

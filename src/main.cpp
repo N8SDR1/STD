@@ -671,6 +671,12 @@ int shellReady(MainWindow& window) {
     if (!afc->isEnabled() || !squelch->isEnabled() ||
         !squelch->toolTip().contains(QLatin1String("PSK")))
       return fail("PSK AFC or squelch is not available");
+    strip->setDigitalMode(QStringLiteral("MFSK16"));
+    if (!afc->isEnabled() || !squelch->isEnabled() || squelchLevel->isHidden() ||
+        !afc->toolTip().contains(QLatin1String("MFSK")) ||
+        !squelch->toolTip().contains(QLatin1String("does not key")) ||
+        !squelch->toolTip().contains(QLatin1String("START")))
+      return fail("MFSK AFC or squelch is not available");
     strip->setDigitalMode(QStringLiteral("FT8"));
     if (squelch->isEnabled() || !squelchLevel->isHidden() ||
         !window.findChild<QPushButton*>(QStringLiteral("digitalModeChip")) ||
@@ -1114,6 +1120,79 @@ int shellReady(MainWindow& window) {
       !thor16->toolTip().contains(QLatin1String("START")) ||
       thor16->toolTip().contains(QLatin1String("does not key yet")))
     return fail("Thor 16 is missing");
+  {
+    const QString body = QStringLiteral("A\nB") + QChar(0x00E9);
+    const MfskPlan mfskLatin = planMfsk(QStringLiteral("MFSK16"), body, 1500);
+    const QString mfskBack = mfskDecode(QStringLiteral("MFSK16"), mfskLatin.samples.data(),
+                                        int(mfskLatin.samples.size()), 48000, 1500);
+    if (!mfskBack.contains(QStringLiteral("A\nB")) || !mfskBack.contains(QChar(0x00E9)) ||
+        mfskBack.contains(QLatin1Char('\r'))) {
+      qCritical("MFSK latin [%s]", qPrintable(mfskBack));
+      return fail("MFSK newline or Latin-1 did not decode");
+    }
+    const DominoPlan dominoLatin = planDomino(QStringLiteral("DominoEX 16"), body, 1500);
+    const QString dominoBack = dominoDecode(QStringLiteral("DominoEX 16"), dominoLatin.samples.data(),
+                                            int(dominoLatin.samples.size()), 48000, 1500);
+    if (!dominoBack.contains(QStringLiteral("A\nB")) || !dominoBack.contains(QChar(0x00E9))) {
+      qCritical("Domino latin [%s]", qPrintable(dominoBack));
+      return fail("DominoEX newline or Latin-1 did not decode");
+    }
+    const ThorPlan thorLatin = planThor(QStringLiteral("Thor 16"), body, 1500);
+    const QString thorBack = thorDecode(QStringLiteral("Thor 16"), thorLatin.samples.data(),
+                                        int(thorLatin.samples.size()), 48000, 1500);
+    if (!thorBack.contains(QStringLiteral("A\nB")) || !thorBack.contains(QChar(0x00E9))) {
+      qCritical("Thor latin [%s]", qPrintable(thorBack));
+      return fail("Thor newline or Latin-1 did not decode");
+    }
+    const OliviaPlan oliviaLatin = planOlivia(QStringLiteral("Olivia 8/250"), body, 1500);
+    const QString oliviaBack = oliviaDecode(QStringLiteral("Olivia 8/250"), oliviaLatin.samples.data(),
+                                            int(oliviaLatin.samples.size()), 48000, 1500);
+    if (!oliviaBack.contains(QStringLiteral("A\nB")) || !oliviaBack.contains(QChar(0x00E9)) ||
+        oliviaBack.contains(QLatin1Char('\r'))) {
+      qCritical("Olivia latin [%s]", qPrintable(oliviaBack));
+      return fail("Olivia newline or Latin-1 did not decode");
+    }
+    auto feed = [](auto* engine, const std::vector<float>& wave) {
+      engine->setCenterHz(1500);
+      engine->setSquelch(true, 15);
+      engine->setAfc(true);
+      engine->setArmed(true);
+      const int chunk = 2048;
+      for (int i = 0; i < int(wave.size()); i += chunk)
+        engine->pushAudio(wave.data() + i, std::min(chunk, int(wave.size()) - i), 48000);
+    };
+    MfskEngine mfskLive;
+    QString mfskGot;
+    QObject::connect(&mfskLive, &MfskEngine::textReady, [&](const QString& text) { mfskGot += text; });
+    mfskLive.setMode(QStringLiteral("MFSK16"));
+    feed(&mfskLive, mfskLatin.samples);
+    if (!mfskGot.contains(QStringLiteral("A\nB")) || !mfskGot.contains(QChar(0x00E9))) {
+      qCritical("MFSK live [%s]", qPrintable(mfskGot));
+      return fail("MFSK live receive did not decode");
+    }
+    std::vector<float> noise(48000 * 2);
+    std::mt19937 noiseRng(7);
+    std::uniform_real_distribution<float> noiseDist(-0.25f, 0.25f);
+    for (float& noiseSample : noise)
+      noiseSample = noiseDist(noiseRng);
+    MfskEngine mfskNoise;
+    QString noiseGot;
+    QObject::connect(&mfskNoise, &MfskEngine::textReady, [&](const QString& text) { noiseGot += text; });
+    mfskNoise.setMode(QStringLiteral("MFSK16"));
+    mfskNoise.setCenterHz(1500);
+    mfskNoise.setSquelch(true, 70);
+    mfskNoise.setArmed(true);
+    mfskNoise.pushAudio(noise.data(), int(noise.size()), 48000);
+    bool noiseLetter = false;
+    for (const QChar ch : noiseGot) {
+      if (ch.isLetter())
+        noiseLetter = true;
+    }
+    if (noiseLetter) {
+      qCritical("MFSK noise [%s]", qPrintable(noiseGot));
+      return fail("MFSK squelch printed noise");
+    }
+  }
   for (const char* name : {"QPSK31", "QPSK63", "QPSK125", "QPSK250", "QPSK500"}) {
     std::vector<float> wave;
     if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)

@@ -354,10 +354,12 @@ void StatusStrip::applyDecoderControls(const QString& mode) {
   const bool hell = hellFamily(mode);
   const bool ftFamily = sequencedFamily(mode);
   const bool track = rttyMode(mode) || keyedPsk(mode);
+  const bool tone = multiToneText(mode);
+  const bool follow = track || tone;
   if (auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"))) {
     const QSignalBlocker block(afc);
-    afc->setEnabled(track);
-    if (!track) {
+    afc->setEnabled(follow);
+    if (!follow) {
       afc->setChecked(false);
       afc->setText(QStringLiteral("Off"));
     } else {
@@ -373,6 +375,11 @@ void StatusStrip::applyDecoderControls(const QString& mode) {
       afc->setToolTip(QStringLiteral(
           "AFC follows the RTTY or PSK signal and moves the waterfall cursor. "
           "Off leaves the cursor where you clicked. "
+          "This does not key and does not send START."));
+    else if (tone)
+      afc->setToolTip(QStringLiteral(
+          "AFC follows MFSK, DominoEX, Thor, or Olivia inside the passband. "
+          "The cursor stays where you clicked. Off leaves the tones on the cursor. "
           "This does not key and does not send START."));
     else if (ftFamily)
       afc->setToolTip(QStringLiteral(
@@ -413,6 +420,21 @@ void StatusStrip::applyDecoderControls(const QString& mode) {
       level->setToolTip(QStringLiteral(
           "Squelch level, 0 to 100. RTTY uses the signal-to-noise meter. "
           "PSK uses the quality meter. This does not key and does not send START."));
+    }
+    return;
+  }
+  if (tone) {
+    sql->setEnabled(true);
+    sql->setText(sql->isChecked() ? QStringLiteral("On") : QStringLiteral("Off"));
+    sql->setToolTip(QStringLiteral(
+        "Squelch for MFSK, DominoEX, Thor, and Olivia. On drops a character at or below the level. "
+        "Off prints. This does not key and does not send START."));
+    if (level) {
+      level->setVisible(true);
+      level->setEnabled(true);
+      level->setToolTip(QStringLiteral(
+          "Squelch level, 0 to 100. MFSK and Thor use the Viterbi meter. "
+          "DominoEX and Olivia use the tone meter. This does not key and does not send START."));
     }
     return;
   }

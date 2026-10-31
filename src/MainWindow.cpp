@@ -659,6 +659,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(domino_, &DominoEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   thor_ = new ThorEngine(this);
   connect(thor_, &ThorEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
+  applyHellSquelch();
+  applyAfc();
   js8_ = new Js8Engine(this);
   connect(js8_, &Js8Engine::textReady, this, [this](const QString& text, int snrDb) {
     appendRxEcho(text);
@@ -3465,7 +3467,12 @@ void MainWindow::showGuide() {
        "prints capitals. TX sends those. Mode → MFSK is MFSK4, MFSK8, MFSK11, MFSK16, MFSK22, "
        "MFSK31, MFSK32, MFSK64, MFSK64L, MFSK128, and MFSK128L. Tones are Gray coded. Each character is IZ8BLY "
        "varicode, a NASA K=7 convolutional code, and the fldigi diagonal interleaver, centered "
-       "on the cursor. The L speeds use the long interleaver. TX sends those. Mode → DominoEX is DominoEX Micro, 4, 5, 8, 11, 16, and 22. "
+       "on the cursor. The L speeds use the long interleaver. TX sends those. "
+       "Olivia, Contestia, MFSK, DominoEX, and Thor keep a received line break and print Latin-1. "
+       "Olivia sends a byte above 127 as 127 and then the low 7 bits. "
+       "SQL on the status row drops a character when the level is above the decoder meter. "
+       "AFC stays off until you turn it on. It follows those tones inside the passband and leaves the cursor. "
+       "Mode → DominoEX is DominoEX Micro, 4, 5, 8, 11, 16, and 22. "
        "Eighteen tones, incremental frequency keying, and the DominoEX nibble varicode. FEC is off. "
        "Micro is 2 baud. TX sends those. Mode → Thor is Thor 4, 5, 8, 11, 16, 22, 25x4, 50x1, 50x2, and 100. Each character is the IZ8BLY "
        "varicode and 18-tone incremental keying centered on the cursor. The slow speeds are NASA K=7 with a 4 by 10 interleaver. "
@@ -3696,6 +3703,8 @@ void MainWindow::syncWfHellControls() {
   const QString mode = profile_ ? profile_->digitalMode() : QString();
   const bool hell = hellFamily(mode);
   const bool track = rttyMode(mode) || keyedPsk(mode);
+  const bool tone = multiToneText(mode);
+  const bool follow = track || tone;
   const bool sqlOn = [&] {
     const auto* sql = findChild<QPushButton*>(QStringLiteral("squelchToggle"));
     return sql && sql->isChecked();
@@ -3706,28 +3715,35 @@ void MainWindow::syncWfHellControls() {
   }();
   if (auto* afc = findChild<QPushButton*>(QStringLiteral("wfAfc"))) {
     const QSignalBlocker block(afc);
-    afc->setEnabled(track);
-    afc->setChecked(track && afcOn);
+    afc->setEnabled(follow);
+    afc->setChecked(follow && afcOn);
     afc->setToolTip(hell ? QStringLiteral(
                                "Feld Hell has no AFC switch. Fldigi leaves AFC off. "
                                "This does not key and does not send START.")
                     : track ? QStringLiteral(
                                   "AFC follows the RTTY or PSK signal and moves this cursor. "
                                   "This does not key and does not send START.")
+                    : tone ? QStringLiteral(
+                                 "AFC follows MFSK, DominoEX, Thor, or Olivia inside the passband. "
+                                 "This cursor stays. This does not key and does not send START.")
                             : QStringLiteral(
                                   "FT8, FT4, and FT2 have no AFC switch. "
                                   "This does not key and does not send START."));
   }
   if (auto* sql = findChild<QPushButton*>(QStringLiteral("wfSql"))) {
     const QSignalBlocker block(sql);
-    sql->setEnabled(hell || track);
-    sql->setChecked((hell || track) && sqlOn);
+    sql->setEnabled(hell || follow);
+    sql->setChecked((hell || follow) && sqlOn);
     sql->setToolTip(hell ? QStringLiteral(
                                "Fldigi squelch. On drops a Hell column at or below the level. "
                                "Off prints the tape. This does not key and does not send START.")
                     : track ? QStringLiteral(
                                   "Squelch for RTTY and PSK. On drops a character at or below the level. "
                                   "This does not key and does not send START.")
+                    : tone ? QStringLiteral(
+                                 "Squelch for MFSK, DominoEX, Thor, and Olivia. "
+                                 "On drops a character at or below the level. "
+                                 "This does not key and does not send START.")
                             : QStringLiteral(
                                   "Squelch is for Feld Hell, RTTY, and PSK. This mode has no squelch slider. "
                                   "This does not key and does not send START."));
@@ -3744,6 +3760,14 @@ void MainWindow::applyAfc() {
     rtty_->setAfc(on);
   if (psk_)
     psk_->setAfc(on);
+  if (olivia_)
+    olivia_->setAfc(on);
+  if (mfsk_)
+    mfsk_->setAfc(on);
+  if (domino_)
+    domino_->setAfc(on);
+  if (thor_)
+    thor_->setAfc(on);
 }
 
 void MainWindow::arrangeDefault() {
