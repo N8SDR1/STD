@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include <QDateTime>
+
 namespace {
 
 constexpr int kRate = 48000;
@@ -286,91 +288,357 @@ void writeFrame(const int* tones, int toneHz, std::vector<float>* out) {
   }
 }
 
-int bestTone(const float* samples, int count, int toneHz) {
-  int best = 0;
-  double bestMag = -1.0;
-  for (int tone = 0; tone < kTones; ++tone) {
-    const double freq = double(toneHz) + tone * kSpacing;
-    const double w = 2.0 * 3.141592653589793 * freq / double(kRate);
-    double re = 0.0;
-    double im = 0.0;
-    for (int n = 0; n < count; n += 8) {
-      re += samples[n] * std::cos(w * n);
-      im += samples[n] * std::sin(w * n);
-    }
-    const double mag = re * re + im * im;
-    if (mag > bestMag) {
-      bestMag = mag;
-      best = tone;
-    }
+double tonePowerHz(const float* samples, int count, double baseHz, int tone, int stride) {
+  if (!samples || count < 8 || stride < 1)
+    return 0.0;
+  const double freq = baseHz + tone * kSpacing;
+  const double w = 2.0 * 3.141592653589793 * freq / double(kRate);
+  double re = 0.0;
+  double im = 0.0;
+  for (int n = 0; n < count; n += stride) {
+    re += samples[n] * std::cos(w * n);
+    im += samples[n] * std::sin(w * n);
   }
-  return best;
+  return re * re + im * im;
 }
 
-bool costasAt(const float* samples, int count, int offset, int toneHz) {
-  if (offset < 0 || offset + kSymbols * kSymbol > count)
-    return false;
-  int hits = 0;
-  for (int block = 0; block < 3; ++block) {
-    for (int i = 0; i < 7; ++i) {
-      const int at = offset + (kCostasAt[block] + i) * kSymbol;
-      if (bestTone(samples + at, kSymbol, toneHz) == kCostas[i])
-        ++hits;
-    }
-  }
-  return hits >= 18;
+double tonePower(const float* samples, int count, int toneHz, int tone) {
+  return tonePowerHz(samples, count, double(toneHz), tone, 8);
 }
 
-QString textAt(const float* samples, int count, int offset, int toneHz) {
-  if (!costasAt(samples, count, offset, toneHz))
-    return {};
-  int tones[kSymbols];
-  for (int i = 0; i < kSymbols; ++i)
-    tones[i] = bestTone(samples + offset + i * kSymbol, kSymbol, toneHz);
-  std::string bits;
-  bits.reserve(87);
-  for (int i = 0; i < 29; ++i) {
-    const int word = tones[43 + i] & 7;
-    bits.push_back((word & 4) ? '1' : '0');
-    bits.push_back((word & 2) ? '1' : '0');
-    bits.push_back((word & 1) ? '1' : '0');
+// Excess of the chosen tone over the other seven, then referred to
+// 2500 Hz the way FT8 and JS8Call report SNR. One bin is 6.25 Hz.
+int frameSnrDb(const float* samples, int count, int offset, int toneHz) {
+  if (!samples || offset < 0 || offset + kSymbols * kSymbol > count)
+    return -30;
+  double sig = 0.0;
+  double noise = 0.0;
+  for (int i = 0; i < kSymbols; ++i) {
+    const float* symbol = samples + offset + i * kSymbol;
+    int best = 0;
+    double bestMag = -1.0;
+    double rest = 0.0;
+    for (int tone = 0; tone < kTones; ++tone) {
+      const double mag = tonePower(symbol, kSymbol, toneHz, tone);
+      rest += mag;
+      if (mag > bestMag) {
+        bestMag = mag;
+        best = tone;
+      }
+    }
+    sig += bestMag;
+    noise += (rest - bestMag) / double(kTones - 1);
   }
-  if (bits.size() < 75)
+  if (sig <= 0.0 || noise <= 1e-12)
+    return 40;
+  const double bin = 10.0 * std::log10(sig / noise);
+  const double snr = bin - 10.0 * std::log10(2500.0 / kSpacing);
+  return int(std::lround(std::clamp(snr, -40.0, 40.0)));
+}
+
+struct LdpcGraph {
+  std::vector<std::vector<int>> checks;
+  std::vector<std::vector<int>> vars;
+};
+
+const LdpcGraph& ldpcGraph() {
+  static LdpcGraph graph;
+  if (!graph.checks.empty())
+    return graph;
+  graph.checks.resize(87);
+  graph.vars.resize(174);
+  for (int row = 0; row < 87; ++row) {
+    for (int col = 0; col < 87; ++col) {
+      if (!parityBit(row, col))
+        continue;
+      graph.checks[static_cast<std::size_t>(row)].push_back(col);
+      graph.vars[static_cast<std::size_t>(col)].push_back(row);
+    }
+    graph.checks[static_cast<std::size_t>(row)].push_back(87 + row);
+    graph.vars[static_cast<std::size_t>(87 + row)].push_back(row);
+  }
+  return graph;
+}
+
+QString textFromBits(const int* bits) {
+  if (!bits)
     return {};
   std::array<uint8_t, 11> bytes{};
+  std::string textBits;
+  textBits.reserve(87);
   for (int i = 0; i < 87; ++i) {
-    if (bits[static_cast<std::size_t>(i)] == '1')
-      bytes[static_cast<std::size_t>(i / 8)] =
-          static_cast<uint8_t>(bytes[static_cast<std::size_t>(i / 8)] | (0x80 >> (i % 8)));
+    const bool one = bits[i] != 0;
+    textBits.push_back(one ? '1' : '0');
+    if (one) {
+      bytes[static_cast<std::size_t>(i / 8)] = static_cast<uint8_t>(
+          bytes[static_cast<std::size_t>(i / 8)] | (0x80 >> (i % 8)));
+    }
   }
   const uint16_t got = static_cast<uint16_t>(((bytes[9] & 0x1F) << 7) | (bytes[10] >> 1));
   bytes[9] = static_cast<uint8_t>(bytes[9] & 0xE0);
   bytes[10] = 0;
   if (got != crc12(bytes.data(), int(bytes.size())))
     return {};
-  return unpack72(bits.substr(0, 72));
+  return unpack72(textBits.substr(0, 72));
 }
 
-int findOffset(const float* samples, int count, int toneHz) {
+bool ldpcBelief(const double* channel, int* bits) {
+  const LdpcGraph& graph = ldpcGraph();
+  std::vector<double> message(static_cast<std::size_t>(87 * 174), 0.0);
+  auto at = [&](int check, int var) -> double& {
+    return message[static_cast<std::size_t>(check * 174 + var)];
+  };
+  for (int iter = 0; iter < 25; ++iter) {
+    for (int check = 0; check < 87; ++check) {
+      const std::vector<int>& neighbors = graph.checks[static_cast<std::size_t>(check)];
+      std::vector<double> inbound(neighbors.size(), 0.0);
+      for (std::size_t n = 0; n < neighbors.size(); ++n) {
+        const int var = neighbors[n];
+        double sum = channel[var];
+        for (int other : graph.vars[static_cast<std::size_t>(var)]) {
+          if (other != check)
+            sum += at(other, var);
+        }
+        inbound[n] = sum;
+      }
+      for (std::size_t n = 0; n < neighbors.size(); ++n) {
+        double mag = 1e9;
+        int sign = 1;
+        for (std::size_t other = 0; other < neighbors.size(); ++other) {
+          if (other == n)
+            continue;
+          const double value = inbound[other];
+          if (value < 0.0)
+            sign = -sign;
+          mag = std::min(mag, std::fabs(value));
+        }
+        if (mag > 1e8)
+          mag = 0.0;
+        at(check, neighbors[n]) = 0.75 * double(sign) * mag;
+      }
+    }
+    for (int var = 0; var < 87; ++var) {
+      double sum = channel[var];
+      for (int check : graph.vars[static_cast<std::size_t>(var)])
+        sum += at(check, var);
+      bits[var] = sum < 0.0 ? 1 : 0;
+    }
+    if (!textFromBits(bits).isEmpty())
+      return true;
+  }
+  return !textFromBits(bits).isEmpty();
+}
+
+double syncScore(const float* samples, int count, int offset, double baseHz, int stride) {
+  const int need = kSymbols * kSymbol;
+  if (!samples || offset < 0 || offset + need > count)
+    return 0.0;
+  double score = 0.0;
+  for (int block = 0; block < 3; ++block) {
+    for (int i = 0; i < 7; ++i) {
+      const float* symbol = samples + offset + (kCostasAt[block] + i) * kSymbol;
+      double total = 0.0;
+      for (int tone = 0; tone < kTones; ++tone)
+        total += tonePowerHz(symbol, kSymbol, baseHz, tone, stride);
+      const double expect = tonePowerHz(symbol, kSymbol, baseHz, kCostas[i], stride);
+      score += expect / (total + 1e-12);
+    }
+  }
+  return score;
+}
+
+QString decodeAt(const float* samples, int count, int offset, double baseHz) {
+  const int need = kSymbols * kSymbol;
+  if (!samples || offset < 0 || offset + need > count)
+    return {};
+  double channel[174];
+  for (int i = 0; i < 174; ++i)
+    channel[i] = 0.0;
+  auto llr = [&](const float* symbol, int bit) {
+    const int mask = 4 >> bit;
+    double zero = 1e-12;
+    double one = 1e-12;
+    for (int tone = 0; tone < kTones; ++tone) {
+      const double power = tonePowerHz(symbol, kSymbol, baseHz, tone, 8);
+      if (tone & mask)
+        one += power;
+      else
+        zero += power;
+    }
+    return std::clamp(std::log(zero) - std::log(one), -10.0, 10.0);
+  };
+  for (int i = 0; i < 87; ++i) {
+    const int symbol = i / 3;
+    const int bit = i % 3;
+    channel[i] = llr(samples + offset + (43 + symbol) * kSymbol, bit);
+    channel[87 + i] = llr(samples + offset + (7 + symbol) * kSymbol, bit);
+  }
+  int bits[87];
+  for (int i = 0; i < 87; ++i)
+    bits[i] = channel[i] < 0.0 ? 1 : 0;
+  const QString hard = textFromBits(bits);
+  if (!hard.isEmpty())
+    return hard;
+  if (syncScore(samples, count, offset, baseHz, 16) < 8.0)
+    return {};
+  if (!ldpcBelief(channel, bits))
+    return {};
+  return textFromBits(bits);
+}
+
+int findBestTime(const float* samples, int count, double baseHz, int prefer) {
   const int need = kSymbols * kSymbol;
   if (count < need)
     return -1;
-  const int candidates[] = {kDelay, 0};
-  for (int offset : candidates) {
-    if (textAt(samples, count, offset, toneHz).isEmpty() && !costasAt(samples, count, offset, toneHz))
-      continue;
-    if (!textAt(samples, count, offset, toneHz).isEmpty())
-      return offset;
-  }
   const int last = count - need;
-  for (int offset = 0; offset <= last; offset += kSymbol) {
-    if (costasAt(samples, count, offset, toneHz))
-      return offset;
+  const int from = std::max(0, prefer - 2 * kRate);
+  const int to = std::min(last, prefer + 2 * kRate);
+  const int step = std::max(1, kSymbol / 4);
+  int best = -1;
+  double bestScore = 8.0;
+  for (int offset = from; offset <= to; offset += step) {
+    const double score = syncScore(samples, count, offset, baseHz, 32);
+    if (score > bestScore) {
+      bestScore = score;
+      best = offset;
+    }
   }
-  return -1;
+  if (best < 0)
+    return -1;
+  const int fine = std::max(1, step / 4);
+  const int fineFrom = std::max(0, best - step);
+  const int fineTo = std::min(last, best + step);
+  for (int offset = fineFrom; offset <= fineTo; offset += fine) {
+    const double score = syncScore(samples, count, offset, baseHz, 16);
+    if (score > bestScore) {
+      bestScore = score;
+      best = offset;
+    }
+  }
+  return best;
 }
 
+struct Js8Hit {
+  int freq = 0;
+  QString text;
+  int snr = 0;
+};
+
+QString decodeNear(const float* samples, int count, int offset, double baseHz, int* snr) {
+  QString text = decodeAt(samples, count, offset, baseHz);
+  int bestOffset = offset;
+  double bestHz = baseHz;
+  if (text.isEmpty()) {
+    double bestScore = 8.0;
+    const int half = kSymbol / 2;
+    const int fine = std::max(1, kSymbol / 8);
+    for (int df = -8; df <= 8; ++df) {
+      for (int dt = -half; dt <= half; dt += fine) {
+        const int at = offset + dt;
+        const double score = syncScore(samples, count, at, baseHz + df, 32);
+        if (score > bestScore) {
+          bestScore = score;
+          bestOffset = at;
+          bestHz = baseHz + df;
+        }
+      }
+    }
+    if (bestScore <= 8.0)
+      return {};
+    text = decodeAt(samples, count, bestOffset, bestHz);
+  }
+  if (text.isEmpty())
+    return {};
+  if (snr)
+    *snr = frameSnrDb(samples, count, bestOffset, int(std::lround(bestHz)));
+  return text;
+}
+
+void collectFrame(const float* samples, int count, int toneHz, int prefer, int* timeUsed,
+                  std::vector<Js8Hit>* hits, int* snrOut) {
+  if (timeUsed)
+    *timeUsed = 0;
+  if (!hits)
+    return;
+  hits->clear();
+  const int need = kSymbols * kSymbol;
+  if (!samples || count < need)
+    return;
+  if (prefer < 0 || prefer + need > count)
+    prefer = kDelay + need <= count ? kDelay : 0;
+  int time = prefer;
+  int cursorSnr = 0;
+  QString cursorText = decodeNear(samples, count, prefer, double(toneHz), &cursorSnr);
+  if (!cursorText.isEmpty()) {
+    time = prefer;
+  } else {
+    const int searched = findBestTime(samples, count, double(toneHz), prefer);
+    if (searched >= 0) {
+      time = searched;
+      cursorText = decodeNear(samples, count, time, double(toneHz), &cursorSnr);
+    } else if (kDelay + need <= count) {
+      time = kDelay;
+    } else {
+      return;
+    }
+  }
+  auto taken = [&](int hz) {
+    for (const Js8Hit& hit : *hits) {
+      if (std::abs(hit.freq - hz) < 6)
+        return true;
+    }
+    return false;
+  };
+  if (!cursorText.isEmpty())
+    hits->push_back(Js8Hit{toneHz, cursorText, cursorSnr});
+  for (double hz = 400.0; hz <= 2600.0; hz += kSpacing) {
+    const int rounded = int(std::lround(hz));
+    if (taken(rounded))
+      continue;
+    const double score = syncScore(samples, count, time, hz, 32);
+    if (score < 12.0)
+      continue;
+    if (syncScore(samples, count, time, hz - kSpacing, 32) >= score)
+      continue;
+    if (syncScore(samples, count, time, hz + kSpacing, 32) > score)
+      continue;
+    double bestHz = hz;
+    double bestScore = score;
+    for (int df = -2; df <= 2; ++df) {
+      const double trial = syncScore(samples, count, time, hz + df, 32);
+      if (trial > bestScore) {
+        bestScore = trial;
+        bestHz = hz + df;
+      }
+    }
+    const QString text = decodeAt(samples, count, time, bestHz);
+    const int found = int(std::lround(bestHz));
+    if (text.isEmpty() || taken(found))
+      continue;
+    const int snr = frameSnrDb(samples, count, time, found);
+    hits->push_back(Js8Hit{found, text, snr});
+  }
+  std::sort(hits->begin(), hits->end(), [](const Js8Hit& a, const Js8Hit& b) { return a.freq < b.freq; });
+  if (timeUsed)
+    *timeUsed = time;
+  if (snrOut && !hits->empty()) {
+    *snrOut = hits->front().snr;
+    for (const Js8Hit& hit : *hits) {
+      if (std::abs(hit.freq - toneHz) <= 8) {
+        *snrOut = hit.snr;
+        break;
+      }
+    }
+  }
+}
+
+static_assert(kDelay + kSymbols * kSymbol == 24000 + 79 * 7680, "JS8 frame length");
+
 }  // namespace
+
+int js8FrameSamples() {
+  return 24000 + 79 * 7680;
+}
 
 bool js8Mode(const QString& mode) {
   return mode.compare(QLatin1String("JS8"), Qt::CaseInsensitive) == 0;
@@ -419,12 +687,17 @@ QString js8SuggestedPlace(int bandIndex) {
   return QString::fromLatin1(kSuggested[bandIndex].place);
 }
 
-Js8Plan planJs8(const QString& text, int toneHz) {
+Js8Plan planJs8(const QString& text, int toneHz, int maxFrames, int* consumed, bool messageStart) {
   Js8Plan plan;
   const int tone = std::clamp(toneHz, 200, 3000);
   QString left = text.toUpper();
-  bool first = true;
+  plan.echoAt.assign(static_cast<std::size_t>(text.size()), -1);
+  bool first = messageStart;
+  int frames = 0;
+  int total = 0;
   while (!left.isEmpty()) {
+    if (maxFrames > 0 && frames >= maxFrames)
+      break;
     int used = 0;
     const std::string bits = pack72(left, &used);
     if (used < 1 || bits.size() != 72)
@@ -439,36 +712,50 @@ Js8Plan planJs8(const QString& text, int toneHz) {
     int tones[kSymbols];
     if (!encodeFrame(symbols, type, tones))
       break;
-    if (first)
-      plan.echoAt.assign(static_cast<std::size_t>(text.size()), -1);
     const int at = int(plan.samples.size()) + kDelay;
-    for (int i = 0; i < used && i < text.size(); ++i) {
+    for (int i = 0; i < used; ++i) {
       const int index = text.size() - left.size() + i;
       if (index >= 0 && index < text.size())
         plan.echoAt[static_cast<std::size_t>(index)] = at;
     }
     writeFrame(tones, tone, &plan.samples);
     left = left.mid(used);
+    total += used;
     first = false;
+    ++frames;
   }
+  if (consumed)
+    *consumed = total;
   return plan;
 }
 
-QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz) {
+QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz, int* snrDb) {
+  if (snrDb)
+    *snrDb = 0;
   if (!samples || count < kSymbols * kSymbol || sampleRateHz != kRate)
     return {};
   const int tone = std::clamp(toneHz, 200, 3000);
   QString text;
   int offset = 0;
-  while (offset + kSymbols * kSymbol <= count) {
-    const int found = findOffset(samples + offset, count - offset, tone);
-    if (found < 0)
+  bool haveSnr = false;
+  const int frame = kSymbols * kSymbol;
+  while (offset + frame <= count) {
+    std::vector<Js8Hit> hits;
+    int time = 0;
+    int snr = 0;
+    collectFrame(samples + offset, count - offset, tone, kDelay, &time, &hits, &snr);
+    if (hits.empty())
       break;
-    const QString part = textAt(samples + offset, count - offset, found, tone);
-    if (part.isEmpty())
+    if (!haveSnr && snrDb) {
+      *snrDb = snr;
+      haveSnr = true;
+    }
+    for (const Js8Hit& hit : hits)
+      text.append(hit.text);
+    const int step = time + frame;
+    if (step < frame)
       break;
-    text.append(part);
-    offset += found + kSymbols * kSymbol;
+    offset += step;
   }
   return text;
 }
@@ -486,30 +773,62 @@ void Js8Engine::setToneHz(int hz) {
 }
 
 void Js8Engine::clear() {
-  pending_.clear();
-  last_.clear();
+  ring_.clear();
+  total_ = 0;
+  newestMs_ = 0;
+  decodedPeriod_ = -1;
+  heard_.clear();
 }
 
 void Js8Engine::pushAudio(const float* samples, int count, int sampleRateHz) {
   if (!armed_ || !samples || count < 1 || sampleRateHz < 1000)
     return;
   if (sampleRateHz != rate_) {
-    pending_.clear();
+    clear();
     rate_ = sampleRateHz;
+    armed_ = true;
   }
-  pending_.insert(pending_.end(), samples, samples + count);
-  const int need = 24000 + 79 * 7680;
-  if (int(pending_.size()) < need || rate_ != kRate)
+  if (rate_ != 48000)
     return;
-  const QString text = js8Decode(pending_.data(), int(pending_.size()), kRate, toneHz_);
-  if (text.isEmpty()) {
-    if (int(pending_.size()) > need + kRate)
-      pending_.erase(pending_.begin(), pending_.begin() + kRate);
+  constexpr int kRing = 48000 * 22;
+  constexpr qint64 kPeriod = 15000;
+  if (int(ring_.size()) != kRing)
+    ring_.assign(static_cast<std::size_t>(kRing), 0.0f);
+  for (int i = 0; i < count; ++i) {
+    ring_[static_cast<std::size_t>(total_ % kRing)] = samples[i];
+    ++total_;
+  }
+  newestMs_ = QDateTime::currentMSecsSinceEpoch();
+  qint64 periodStart = (newestMs_ / kPeriod) * kPeriod;
+  // The frame ends 13.14 s after the boundary. Wait until 16 s so a late
+  // start of up to 2 s is still inside the ring.
+  if (newestMs_ < periodStart + 16000)
+    periodStart -= kPeriod;
+  if (periodStart < 0 || periodStart == decodedPeriod_)
     return;
+  const qint64 sliceStart = periodStart - 2000;
+  const int slice = 18 * 48000;
+  const qint64 ago = (newestMs_ - sliceStart) * 48000 / 1000;
+  const qint64 start = (total_ - 1) - ago;
+  const qint64 oldest = total_ > kRing ? total_ - kRing : 0;
+  if (start < oldest || start + slice > total_)
+    return;
+  decodedPeriod_ = periodStart;
+  std::vector<float> window(static_cast<std::size_t>(slice));
+  for (int i = 0; i < slice; ++i)
+    window[static_cast<std::size_t>(i)] = ring_[static_cast<std::size_t>((start + i) % kRing)];
+  std::vector<Js8Hit> hits;
+  int time = 0;
+  int snr = 0;
+  collectFrame(window.data(), slice, toneHz_, 2 * 48000 + kDelay, &time, &hits, &snr);
+  for (const Js8Hit& hit : hits) {
+    const QString key = QString::number(periodStart) + QLatin1Char('|') + QString::number(hit.freq) +
+                        QLatin1Char('|') + hit.text;
+    if (heard_.contains(key))
+      continue;
+    heard_.append(key);
+    while (heard_.size() > 32)
+      heard_.removeFirst();
+    emit textReady(hit.text, hit.snr);
   }
-  if (text != last_) {
-    last_ = text;
-    emit textReady(text);
-  }
-  pending_.clear();
 }

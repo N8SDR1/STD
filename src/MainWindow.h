@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "MaEngine.h"
 #include "MacroFile.h"
 
 #include <QByteArray>
@@ -31,6 +32,7 @@ class WefaxEngine;
 class Js8Engine;
 class WsprEngine;
 class PskUploader;
+class WsprNetUploader;
 class UpdateChecker;
 class ModeProfile;
 class QAction;
@@ -71,6 +73,7 @@ private:
   void showGuide();
   void tuneActiveBand();
   void activateDigitalMode(const QString& modeName);
+  void clearModePanes();
   void cycleDigitalMode();
   void offerLayoutSave();
   void captureLayoutBaseline();
@@ -94,6 +97,11 @@ private:
   void openNetworkDialog();
   void openUserDialog();
   void openLogDialog();
+  void backupSettings();
+  void importSettings();
+  void backupLogbook();
+  void exportAdif();
+  QString logbookPath() const;
   void rememberQso(const QString& call, const QString& grid, const QString& theirReport, bool fresh,
                    const QString& rxMessage = QString());
   QString maybeLogQso(const QString& sent);
@@ -116,8 +124,10 @@ private:
   void refreshDecodes();
   void applyChannelWidth();
   void applyHellSquelch();
+  void applyAfc();
   void syncWfHellControls();
   void alignDecodeHeader();
+  void alignWsprHeader();
   void setUserTx(bool on);
   void setTune(bool on);
   void haltTx();
@@ -162,6 +172,13 @@ private:
   void applyTheirReply(const QString& time, int db, const QString& message);
   void enqueueCaller(const QString& call, int db, int dist, int slot = 1);
   bool queueFollows() const;
+  // MSHV Multi Answering engine (MA Std / MA DX) for FT8, FT4, FT2, Q65.
+  bool maActive() const { return ma_.active(); }
+  void syncMaEngine();
+  bool maRestrictedDial() const;
+  void logMaQsos(const QVector<MaEngine::Logged>& done);
+  // MSHV xplaymessage delay before the first symbol, in ms.
+  int txStartLeadMs(const QString& mode) const;
   void startQueueHead(const QString& time);
   // Removes the station just finished from Queue and Now. A later decode
   // does not put that call back; CLR Queue, CLR Now, or a clicked answer does.
@@ -188,7 +205,9 @@ private:
   QString stationCall() const;
   QString stationGrid() const;
   void openPskReporterMap() const;
-  void noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz);
+  void openWsprnetReports() const;
+  void noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz,
+                      const QString& dt = QString(), const QString& utc = QString());
   void checkForUpdates(bool manual);
   void onUpdateAvailable(const QString& tag, const QString& url, const QString& body);
   void onNoUpdate();
@@ -258,6 +277,7 @@ private:
   QVector<DecodeRow> decodes_;
   QString dialText_ = QString::fromUtf8("—");
   qint64 liveDialHz_ = 0;
+  MaEngine ma_;
   QDockWidget* waterfallDock_ = nullptr;
   QDockWidget* receiveDock_ = nullptr;
   QDockWidget* transmitDock_ = nullptr;
@@ -320,6 +340,12 @@ private:
   int txTuneSent_ = 0;
   int txSymbolSamples_ = 0;
   QString txSentText_;
+  // JS8 snapshot taken when TX is pressed. One frame leaves per 15 s
+  // period; txJs8Next_ is how far into that snapshot has already gone out.
+  QString txJs8Text_;
+  QString txJs8Part_;
+  int txJs8Next_ = 0;
+  int txJs8Pending_ = 0;
   int txEchoCount_ = 0;
   int txEchoSamples_ = 0;
   std::vector<int> txEchoAt_;
@@ -336,6 +362,7 @@ private:
   int wsprHopMark_ = -1;
   bool wsprHopTune_ = false;
   PskUploader* spots_ = nullptr;
+  WsprNetUploader* wsprnet_ = nullptr;
   UpdateChecker* updates_ = nullptr;
   QAction* updateAction_ = nullptr;
   QString pendingUpdateUrl_;

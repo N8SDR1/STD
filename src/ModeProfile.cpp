@@ -306,14 +306,27 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   filters->setText(filters->isChecked() ? QStringLiteral("FILTERS ON") : QStringLiteral("FILTERS OFF"));
   filters->setContextMenuPolicy(Qt::CustomContextMenu);
 
-  auto* multi = new QCheckBox(QStringLiteral("Multi"), bar_);
+  auto* multi = new QComboBox(bar_);
   multi->setObjectName(QStringLiteral("profileMultiAnswer"));
   multi->setFont(barFont());
-  multi->setChecked(settings.value(QStringLiteral("profile/multiAnswer"), false).toBool());
+  multi->addItem(QStringLiteral("MA Off"), 0);
+  multi->addItem(QStringLiteral("MA Std"), 1);
+  multi->addItem(QStringLiteral("MA DX"), 2);
   multi->setToolTip(QStringLiteral(
-      "MSHV multi-answer. The decoder keeps a-priori state for more than one caller. "
-      "Transmit stays off. This does not key."));
-  multiAnswer_ = multi->isChecked();
+      "MSHV Multi Answering Auto Seq Protocol. "
+      "MA Std (MSHV Ctrl+Q): stations answering your CQ wait in the Queue and are worked from it, "
+      "one TX slot (two off the standard FT8/FT4 frequencies). "
+      "MA DX (MSHV Ctrl+`): DXpedition, several QSOs in one transmission, one message per slot, "
+      "60 Hz apart. Standard activity type only. This does not key."));
+  {
+    // Earlier builds stored a single on/off. On was the queue, MA Std.
+    int stored = settings.value(QStringLiteral("profile/multiAnswerMode"), -1).toInt();
+    if (stored < 0)
+      stored = settings.value(QStringLiteral("profile/multiAnswer"), false).toBool() ? 1 : 0;
+    multiMode_ = std::clamp(stored, 0, 2);
+    const QSignalBlocker block(multi);
+    multi->setCurrentIndex(multiMode_);
+  }
 
   region_ = new QComboBox(bar_);
   region_->setObjectName(QStringLiteral("profileRegion"));
@@ -443,10 +456,10 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   halfClock->start(250);
   half->setText((QDateTime::currentDateTimeUtc().time().second() % 30) < 15 ? QStringLiteral("1st")
                                                                               : QStringLiteral("2nd"));
-  connect(multi, &QCheckBox::toggled, this, [this](bool on) {
-    multiAnswer_ = on;
+  connect(multi, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, multi](int) {
+    multiMode_ = std::clamp(multi->currentData().toInt(), 0, 2);
     remember();
-    emit multiAnswerChanged(on);
+    emit multiAnswerChanged(multiMode_ != 0);
   });
   connect(region_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
     regionChoice_ = region_->currentData().toString();
@@ -494,6 +507,7 @@ void ModeProfile::setDigitalMode(const QString& mode) {
   refreshBands();
   const bool hell = hellFamily(mode_);
   const bool keyboard = keyboardTextMode(mode_);
+  const bool rtty = rttyMode(mode_);
   const bool js8 = mode_.compare(QLatin1String("JS8"), Qt::CaseInsensitive) == 0;
   const bool keys = rttyMode(mode_) || keyedPsk(mode_) ||
                     oliviaBandwidthHz(mode_) > 0 || mfskBandwidthHz(mode_) > 0 ||
@@ -501,11 +515,16 @@ void ModeProfile::setDigitalMode(const QString& mode) {
   if (auto* label = qobject_cast<QLabel*>(keyboard_)) {
     const QString js8Hint = QStringLiteral(
         "JS8 uses the transmit box and the receive echo. Band buttons move the radio to the "
-        "JS8Call-improved calling dial. CLR RX and CLR TX clear those. TX sends the box. "
+        "JS8Call-improved calling dial. CLR RX and CLR TX clear those. TX waits for the next "
+        "15 second UTC period and sends one frame, starting half a second in. A longer message "
+        "continues on the following periods. Changing mode clears both panes. "
         "START is never sent.");
     label->setText(!keyboard || hell ? QStringLiteral(
                                            "Keyboard modes keep their own controls. None are loaded yet.")
                     : js8       ? js8Hint
+                    : rtty      ? QStringLiteral(
+                                      "RTTY uses the transmit box and the receive echo. "
+                                      "CLR RX and CLR TX clear those. TX sends it.")
                     : keys      ? QStringLiteral("%1 uses the transmit box and the receive echo. "
                                                  "CLR RX and CLR TX clear those. TX sends it. "
                                                  "START is never sent.")
@@ -535,7 +554,7 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     second->setVisible(sequenced);
   if (auto* filters = findChild<QPushButton*>(QStringLiteral("decodeFilters")))
     filters->setVisible(sequenced);
-  if (auto* multi = findChild<QCheckBox*>(QStringLiteral("profileMultiAnswer")))
+  if (auto* multi = findChild<QComboBox*>(QStringLiteral("profileMultiAnswer")))
     multi->setVisible(sequenced);
 }
 
@@ -665,7 +684,7 @@ void ModeProfile::setTxFirstLocked(bool locked) {
 }
 
 bool ModeProfile::multiAnswer() const {
-  return multiAnswer_;
+  return multiMode_ != 0;
 }
 
 qint64 ModeProfile::tableHz(int index) const {
@@ -787,7 +806,8 @@ void ModeProfile::remember() const {
   settings.setValue(QStringLiteral("profile/superHound"), hound_);
   settings.setValue(QStringLiteral("profile/superFox"), fox_);
   settings.setValue(QStringLiteral("profile/txFirst"), txFirst_);
-  settings.setValue(QStringLiteral("profile/multiAnswer"), multiAnswer_);
+  settings.setValue(QStringLiteral("profile/multiAnswerMode"), multiMode_);
+  settings.setValue(QStringLiteral("profile/multiAnswer"), multiMode_ != 0);
   settings.setValue(QStringLiteral("profile/band"), band_);
   settings.setValue(QStringLiteral("profile/region"), regionChoice_);
 }

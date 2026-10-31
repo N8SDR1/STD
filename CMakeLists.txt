@@ -68,6 +68,8 @@ qt_add_executable(std
   WIN32
   src/main.cpp
   src/MainWindow.cpp
+  src/MaEngine.cpp
+  src/MaEngine.h
   src/MainWindow.h
   src/WaterfallWidget.cpp
   src/WaterfallWidget.h
@@ -85,6 +87,8 @@ qt_add_executable(std
   src/TxWave.h
   src/QsoLog.cpp
   src/QsoLog.h
+  src/StationFiles.cpp
+  src/StationFiles.h
   src/MacroFile.cpp
   src/MacroFile.h
   src/hell/HellEngine.cpp
@@ -115,6 +119,8 @@ qt_add_executable(std
   src/wspr/WsprModem.h
   src/spot/PskReporter.cpp
   src/spot/PskReporter.h
+  src/spot/WsprNet.cpp
+  src/spot/WsprNet.h
   src/UpdateChecker.cpp
   src/UpdateChecker.h
   src/mt63/fldigi/dsp.cxx

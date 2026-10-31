@@ -46,12 +46,16 @@ QString pskReporterModeName(const QString& mode);
 
 // Queues a spot and sends one UDP datagram a few seconds later.
 // Does nothing while STD_SELFTEST is set, or while upload is off.
+// status reports a send or a failure. It does not key and does not send START.
 class PskUploader : public QObject {
   Q_OBJECT
 
 public:
   explicit PskUploader(QObject* parent = nullptr);
   void note(const PskSpot& spot, const QString& rxCall, const QString& rxGrid);
+
+signals:
+  void status(const QString& text);
 
 private:
   void flush();

@@ -12,17 +12,17 @@ Connect sends `AUDIO_START:0`. The text command START is never sent. CW stays in
 | --- | --- | --- |
 | FT8, FT4, FT2 | one each | MSHV generator. 15 s, 7.5 s, 3.75 s. DIGU. |
 | Hell | Feld Hell, Slow Hell, Feld Hell X5, Feld Hell X9, FSK Hell, FSK Hell-105, Hell 80 | Fldigi column rates. [Hell notes](hell.html). |
-| RTTY | one row, labeled RTTY | 45.45 baud, 170 Hz, 5 bits, 1.5 stop, mark high, reverse off. USOS: a space sends LTRS, then the space. There is no baud or shift submenu. |
-| PSK | PSK31, PSK63, PSK125, PSK250, PSK500, PSK1000 | BPSK. Symbol rates 31.25, 62.5, 125, 250, 500, 1000 baud. A zero reverses the phase. |
-| QPSK | QPSK31, QPSK63, QPSK125, QPSK250, QPSK500 | K=5 convolutional code. One dibit per varicode bit. 8PSK is not on the menu. |
+| RTTY | one row, labeled RTTY | The transmit pane has Shift, Baud, Shape, Reverse, and ITA-2. Shape is on, Reverse is off, and ITA-2 is off. 45.45 baud and 170 Hz are selected. The lists are Fldigi's: baud 45, 45.45, 50, 56, 75, 100, 110, 150, 200, 300, and shift 23, 85, 160, 170, 182, 200, 240, 350, 425, 850. Fldigi lists 45 baud first; 45.45 is the usual amateur speed. Five bits, 1.5 stop, mark high unless Reverse is on. US TTY figures unless ITA-2 is on. USOS: a space sends LTRS, then the space. Squelch gates the print on the signal-to-noise meter. AFC, off until you turn it on, moves the waterfall cursor. |
+| PSK | PSK31, PSK63, PSK125, PSK250, PSK500, PSK1000 | BPSK. Symbol rates 31.25, 62.5, 125, 250, 500, 1000 baud. A zero reverses the phase. The preamble is reversals and the tail is steady carrier, so the other station can open and close DCD. Latin-1 characters above ASCII 127 are sent. Squelch and AFC are the same switches as RTTY. |
+| QPSK | QPSK31, QPSK63, QPSK125, QPSK250, QPSK500 | K=5 convolutional code. One dibit per varicode bit. The phase blend covers the whole symbol. 8PSK is not on the menu. |
 | Olivia | 4/250, 8/250, 8/500, 16/500, 16/1000, 32/1000 | Gray-coded tones. Baud 62.5, 31.25, 62.5, 31.25, 62.5, 31.25. |
 | Contestia | the same six | Same shape as Olivia, Contestia scramble. |
 | MFSK | MFSK4, 8, 11, 16, 22, 31, 32, 64, 64L, 128, 128L | NASA K=7, varicode, diagonal interleaver. The L rows use the long interleaver. |
 | DominoEX | Micro, 4, 5, 8, 11, 16, 22 | 18-tone incremental keying. FEC is off. Micro is 2 baud. |
 | Thor | 4, 5, 8, 11, 16, 22, 25x4, 50x1, 50x2, 100 | Slow speeds are NASA K=7. 25x4, 50x1, 50x2, and 100 are IEEE K=15. 18-tone incremental keying. |
 | MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L | 64 carriers, Walsh code, short or long interleave. Centered on the cursor. |
-| JS8 | one row, labeled JS8 | JS8Call-improved Normal. 15 s, 50 Hz, JS8 Costas. The transmit box is the payload. Band buttons QSY to the suggested calling dials, 160 m through 6 m. 2 m is in that guide and is not on the row. |
-| WSPR | one row, labeled WSPR | WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Band buttons QSY to the WSPR dials. Tx power, Tx Pct, Band Hopping. No macro bar. Locator is Options → User. |
+| JS8 | one row, labeled JS8 | JS8Call-improved Normal. 15 s, 50 Hz, JS8 Costas. TX waits for the next 15 s UTC period and sends one frame, starting half a second in. A longer message continues on the following periods, one frame each. The transmit box is the payload. Band buttons QSY to the suggested calling dials, 160 m through 6 m. 2 m is in that guide and is not on the row. Changing mode clears the receive and transmit panes. |
+| WSPR | one row, labeled WSPR | WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Band buttons QSY to the WSPR dials. Tx power, Tx Pct, Band Hopping. No macro bar. Locator is Options → User. Receive titles stay above the scrolling rows: Time, dB, DT, Frequency, Drift, Call, Locator, Report. DT is the time offset. Report is the dBm in the message. Options → Network can post each heard station to WSPRnet. That post is off until WSPRnet is set to On. WSPRnet does not ask for a password. The reports page lists stations this callsign reported. |
 
 TX or Tune is what sends `trx`. An empty line does not key.
 

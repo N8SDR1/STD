@@ -19,9 +19,11 @@
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
 #include "spot/PskReporter.h"
+#include "spot/WsprNet.h"
 #include "UpdateChecker.h"
 #include "ModeProfile.h"
 #include "QsoLog.h"
+#include "StationFiles.h"
 #include "StatusStrip.h"
 #include "TciClient.h"
 #include "TxWave.h"
@@ -77,9 +79,12 @@
 #include <QTextBrowser>
 #include <QTextCharFormat>
 #include <QTextEdit>
+#include <QTime>
 #include <QTimeZone>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -374,6 +379,51 @@ protected:
   }
 };
 
+QString withoutWsprTitleLine(const QString& body) {
+  if (!body.startsWith(QLatin1String("Time")))
+    return body;
+  const int nl = body.indexOf(QLatin1Char('\n'));
+  return nl < 0 ? QString() : body.mid(nl + 1);
+}
+
+int comboIndexNear(const QComboBox* box, double value, double tol) {
+  if (!box)
+    return -1;
+  int best = -1;
+  double err = 1.0e9;
+  for (int i = 0; i < box->count(); ++i) {
+    const double delta = std::fabs(box->itemData(i).toDouble() - value);
+    if (delta < err) {
+      err = delta;
+      best = i;
+    }
+  }
+  return err <= tol ? best : -1;
+}
+
+RttyOptions rttyOptionsOf(const QWidget* window) {
+  RttyOptions opt;
+  if (!window)
+    return opt;
+  if (const auto* box = window->findChild<QComboBox*>(QStringLiteral("rttyBaud"))) {
+    const double baud = box->currentData().toDouble();
+    if (baud >= 45.0)
+      opt.baud = baud;
+  }
+  if (const auto* box = window->findChild<QComboBox*>(QStringLiteral("rttyShift"))) {
+    const double shift = box->currentData().toDouble();
+    if (shift >= 23.0)
+      opt.shiftHz = shift;
+  }
+  if (const auto* box = window->findChild<QCheckBox*>(QStringLiteral("rttyShape")))
+    opt.shaped = box->isChecked();
+  if (const auto* box = window->findChild<QCheckBox*>(QStringLiteral("rttyReverse")))
+    opt.reverse = box->isChecked();
+  if (const auto* box = window->findChild<QCheckBox*>(QStringLiteral("rttyIta2")))
+    opt.ita2 = box->isChecked();
+  return opt;
+}
+
 QString formatDial(qint64 hz) {
   if (hz < 0)
     return QString::fromUtf8("—");
@@ -556,6 +606,23 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         applyHellSquelch();
       });
     }
+    if (auto* afc = statusStrip_->findChild<QPushButton*>(QStringLiteral("afcToggle"))) {
+      connect(afc, &QPushButton::toggled, this, [this](bool on) {
+        QSettings().setValue(QStringLiteral("dx/afcOn"), on);
+        if (auto* button = findChild<QPushButton*>(QStringLiteral("afcToggle")))
+          button->setText(on ? QStringLiteral("On") : QStringLiteral("Off"));
+        applyAfc();
+        syncWfHellControls();
+      });
+    }
+    if (auto* wfAfc = findChild<QPushButton*>(QStringLiteral("wfAfc"))) {
+      connect(wfAfc, &QPushButton::toggled, this, [this](bool on) {
+        if (auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"))) {
+          if (afc->isChecked() != on)
+            afc->setChecked(on);
+        }
+      });
+    }
   }
   applyHellSquelch();
   syncWfHellControls();
@@ -564,9 +631,24 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       raster->addColumn(column);
   });
   rtty_ = new RttyEngine(this);
+  rtty_->setOptions(rttyOptionsOf(this));
   psk_ = new PskEngine(this);
   connect(rtty_, &RttyEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   connect(psk_, &PskEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
+  auto followTone = [this](int hz) {
+    if (!waterfall_ || !profile_)
+      return;
+    const QString mode = profile_->digitalMode();
+    if (!rttyMode(mode) && !keyedPsk(mode))
+      return;
+    const auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"));
+    if (!afc || !afc->isChecked() || waterfall_->rxHz() == hz)
+      return;
+    waterfall_->setRxHz(hz);
+  };
+  connect(rtty_, &RttyEngine::toneTracked, this, followTone);
+  connect(psk_, &PskEngine::toneTracked, this, followTone);
+  applyAfc();
   olivia_ = new OliviaEngine(this);
   connect(olivia_, &OliviaEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   mt63_ = new Mt63Engine(this);
@@ -577,15 +659,53 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(domino_, &DominoEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
   thor_ = new ThorEngine(this);
   connect(thor_, &ThorEngine::textReady, this, [this](const QString& text) { appendRxEcho(text); });
+  applyHellSquelch();
+  applyAfc();
   js8_ = new Js8Engine(this);
-  connect(js8_, &Js8Engine::textReady, this, [this](const QString& text) {
+  connect(js8_, &Js8Engine::textReady, this, [this](const QString& text, int snrDb) {
     appendRxEcho(text);
-    noteDecodeSpot(QStringLiteral("JS8"), text, 0, waterfall_ ? waterfall_->rxHz() : 1500);
+    noteDecodeSpot(QStringLiteral("JS8"), text, snrDb, waterfall_ ? waterfall_->rxHz() : 1500);
   });
   wspr_ = new WsprEngine(this);
-  connect(wspr_, &WsprEngine::textReady, this, [this](const QString& text) {
-    appendRxEcho(text + QLatin1Char('\n'));
-    noteDecodeSpot(QStringLiteral("WSPR"), text, 0, waterfall_ ? waterfall_->rxHz() : 1500);
+  connect(wspr_, &WsprEngine::spotDecoded, this, [this](const WsprSpot& spot, qint64 periodStartMs) {
+    // Time, dB, DT, Frequency, Drift, Call, Locator, Report (the dBm).
+    qint64 dial = liveDialHz_;
+    if (dial < 100000 && profile_)
+      dial = profile_->dialHz();
+    const QString utc =
+        QDateTime::fromMSecsSinceEpoch(periodStartMs, QTimeZone::utc()).toString(QStringLiteral("HHmm"));
+    const QString freq = dial >= 100000
+                             ? QString::number((double(dial) + spot.audioHz) / 1.0e6, 'f', 6)
+                             : QStringLiteral("%1 Hz").arg(spot.audioHz, 0, 'f', 1);
+    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
+      const QString body = withoutWsprTitleLine(echo->toPlainText());
+      if (body != echo->toPlainText())
+        echo->setPlainText(body);
+      echo->append(wsprActivityLine(utc, spot.snrDb, spot.dtSec, freq.trimmed(), spot.drift, spot.message));
+      alignWsprHeader();
+    }
+    noteDecodeSpot(QStringLiteral("WSPR"), spot.message, spot.snrDb, int(std::lround(spot.audioHz)),
+                   QString::number(spot.dtSec, 'f', 1), utc);
+    if (wsprnet_ && dial >= 100000) {
+      const QString date =
+          QDateTime::fromMSecsSinceEpoch(periodStartMs, QTimeZone::utc()).toString(QStringLiteral("yyMMdd"));
+      wsprnet_->note(stationCall(), stationGrid(), dial, spot.audioHz, date, utc, spot.snrDb, spot.dtSec,
+                     spot.drift, spot.message);
+    }
+    if (qsoLog_) {
+      QString call;
+      QString grid;
+      int dbm = 0;
+      if (wsprSplitMessage(spot.message, &call, &grid, &dbm)) {
+        qint64 base = dial;
+        const qint64 hz = base >= 100000 ? base + qint64(std::llround(spot.audioHz)) : 0;
+        QTime clock = QTime::fromString(utc, QStringLiteral("HHmm"));
+        if (!clock.isValid())
+          clock = QTime::fromString(utc, QStringLiteral("hhmm"));
+        qsoLog_->sendWsprDecode(spot.snrDb, float(spot.dtSec), quint64(std::max<qint64>(0, hz)), spot.drift,
+                                call, grid, dbm, clock);
+      }
+    }
   });
   wefax_ = new WefaxEngine(this);
   connect(wefax_, &WefaxEngine::imageChanged, this, [this] {
@@ -603,6 +723,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setTxStatus(QStringLiteral("WEFAX saved %1. Nothing was keyed. START was not sent.").arg(path));
   });
   if (waterfall_) {
+    connect(waterfall_, &WaterfallWidget::frequenciesChanged, this, [this](int, int txHz) {
+      // WSJT-X and JTDX keep the WSPR Tx frequency inside 1400 to 1600 Hz.
+      if (profile_ && wsprMode(profile_->digitalMode()) && wsprClampTxHz(txHz) != txHz)
+        QMetaObject::invokeMethod(
+            this,
+            [this] {
+              if (waterfall_ && profile_ && wsprMode(profile_->digitalMode()))
+                waterfall_->setTxHz(wsprClampTxHz(waterfall_->txHz()));
+            },
+            Qt::QueuedConnection);
+    });
     connect(waterfall_, &WaterfallWidget::frequenciesChanged, this, [this](int rxHz, int) {
       if (rtty_)
         rtty_->setToneHz(rxHz);
@@ -618,8 +749,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         thor_->setCenterHz(rxHz);
       if (js8_)
         js8_->setToneHz(rxHz);
-      if (wspr_)
-        wspr_->setToneHz(rxHz);
       if (mt63_)
         mt63_->setCenterHz(rxHz);
       if (wefax_)
@@ -662,7 +791,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
               decodes_.remove(0, decodes_.size() - 499);
             decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
             noteTheirReply(time, db, message);
-            noteDecodeSpot(profile_ ? profile_->digitalMode() : QString(), message, db, freqHz);
+            noteDecodeSpot(profile_ ? profile_->digitalMode() : QString(), message, db, freqHz, dt, time);
             refreshDecodes();
           },
           Qt::QueuedConnection);
@@ -671,8 +800,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(waterfall_, &WaterfallWidget::frequenciesChanged, ft8_, &Ft8Decode::setSpot);
   }
   if (profile_) {
-    ft8_->setMultiAnswer(profile_->multiAnswer());
-    connect(profile_, &ModeProfile::multiAnswerChanged, ft8_, &Ft8Decode::setMultiAnswer);
+    // MSHV TDecoderMs->SetMultiAnswerMod follows MA DX only, not MA Std.
+    ft8_->setMultiAnswer(profile_->multiAnswerDx());
+    connect(profile_, &ModeProfile::multiAnswerChanged, ft8_,
+            [this](bool) { ft8_->setMultiAnswer(profile_ && profile_->multiAnswerDx()); });
     connect(profile_, &ModeProfile::houndChanged, this, [this](bool on) {
       if (on && waterfall_)
         waterfall_->setRxHz(750);
@@ -738,6 +869,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
   applyDxOptions();
   spots_ = new PskUploader(this);
+  connect(spots_, &PskUploader::status, this, [this](const QString& text) { setTxStatus(text); });
+  wsprnet_ = new WsprNetUploader(this);
+  connect(wsprnet_, &WsprNetUploader::status, this, [this](const QString& text) { setTxStatus(text); });
   updates_ = new UpdateChecker(this);
   connect(updates_, &UpdateChecker::updateAvailable, this, [this](const QString& tag, const QString& url,
                                                                   const QString& body) {
@@ -850,7 +984,7 @@ void MainWindow::buildDocks() {
       "transmitText",
       "Transmit text.",
       false,
-      "Double-click a decode to arm the other slot. Halt ends TX now. Tune stops itself. START is never sent."));
+      "Double-click a decode to arm the other slot. Halt ends TX now. Tune stops itself."));
   transmitDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
   placeDockTitle(transmitDock_, QStringLiteral("Transmit"), {"txClrQueue", "txClrNow", "clrTx"});
 
@@ -1057,6 +1191,148 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     js8Bands->hide();
     layout->addWidget(js8Bands);
 
+    auto* rttyRow = new QWidget(panel);
+    rttyRow->setObjectName(QStringLiteral("rttyOptions"));
+    auto* rttyLayout = new QHBoxLayout(rttyRow);
+    rttyLayout->setContentsMargins(0, 0, 0, 0);
+    rttyLayout->setSpacing(8);
+    // Waterfall labels are 12 px. This is a step brighter than the first
+    // RTTY row, without the filled cyan boxes.
+    const QString rttyText = QStringLiteral("color: #d7e6f2;");
+    auto* shiftLabel = new QLabel(QStringLiteral("Shift"), rttyRow);
+    shiftLabel->setObjectName(QStringLiteral("rttyShiftLabel"));
+    shiftLabel->setFont(interfaceFont(12));
+    shiftLabel->setStyleSheet(rttyText);
+    rttyLayout->addWidget(shiftLabel);
+    auto* rttyShift = new QComboBox(rttyRow);
+    rttyShift->setObjectName(QStringLiteral("rttyShift"));
+    rttyShift->setFont(interfaceFont(12));
+    rttyShift->setStyleSheet(rttyText);
+    rttyShift->setFocusPolicy(Qt::NoFocus);
+    rttyShift->setToolTip(QStringLiteral(
+        "Fldigi shift list. 170 Hz is the usual amateur shift. Mark and space sit half of this "
+        "either side of the cursor. This does not key. START is never sent."));
+    for (int i = 0; i < kRttyShiftCount; ++i)
+      rttyShift->addItem(QString::number(kRttyShifts[i], 'f', 0), kRttyShifts[i]);
+    rttyLayout->addWidget(rttyShift);
+    auto* baudLabel = new QLabel(QStringLiteral("Baud"), rttyRow);
+    baudLabel->setObjectName(QStringLiteral("rttyBaudLabel"));
+    baudLabel->setFont(interfaceFont(12));
+    baudLabel->setStyleSheet(rttyText);
+    rttyLayout->addWidget(baudLabel);
+    auto* rttyBaud = new QComboBox(rttyRow);
+    rttyBaud->setObjectName(QStringLiteral("rttyBaud"));
+    rttyBaud->setFont(interfaceFont(12));
+    rttyBaud->setStyleSheet(rttyText);
+    rttyBaud->setFocusPolicy(Qt::NoFocus);
+    rttyBaud->setToolTip(QStringLiteral(
+        "Fldigi baud list. 45.45 is the usual amateur speed. Fldigi lists 45 first. "
+        "This does not key. START is never sent."));
+    for (int i = 0; i < kRttyBaudCount; ++i) {
+      const double baud = kRttyBauds[i];
+      const QString label = std::fabs(baud - 45.45) < 0.001 ? QStringLiteral("45.45")
+                                                            : QString::number(baud, 'f', 0);
+      rttyBaud->addItem(label, baud);
+    }
+    rttyLayout->addWidget(rttyBaud);
+    auto* rttyShape = new QCheckBox(QStringLiteral("Shape"), rttyRow);
+    rttyShape->setObjectName(QStringLiteral("rttyShape"));
+    rttyShape->setFont(interfaceFont(12));
+    rttyShape->setStyleSheet(rttyText);
+    rttyShape->setFocusPolicy(Qt::NoFocus);
+    rttyShape->setToolTip(QStringLiteral(
+        "Shape the transmit signal. On rounds the keying edges, the Fldigi default. "
+        "This does not key. START is never sent."));
+    rttyLayout->addWidget(rttyShape);
+    auto* rttyReverse = new QCheckBox(QStringLiteral("Reverse"), rttyRow);
+    rttyReverse->setObjectName(QStringLiteral("rttyReverse"));
+    rttyReverse->setFont(interfaceFont(12));
+    rttyReverse->setStyleSheet(rttyText);
+    rttyReverse->setFocusPolicy(Qt::NoFocus);
+    rttyReverse->setToolTip(QStringLiteral(
+        "Swap mark and space. Off keeps mark as the higher tone on DIGU. "
+        "This does not key. START is never sent."));
+    rttyLayout->addWidget(rttyReverse);
+    auto* rttyIta2 = new QCheckBox(QStringLiteral("ITA-2"), rttyRow);
+    rttyIta2->setObjectName(QStringLiteral("rttyIta2"));
+    rttyIta2->setFont(interfaceFont(12));
+    rttyIta2->setStyleSheet(rttyText);
+    rttyIta2->setFocusPolicy(Qt::NoFocus);
+    rttyIta2->setToolTip(QStringLiteral(
+        "ITA-2 figures. Off keeps the US TTY figures. On swaps the bell and the single quote "
+        "and changes a few other symbols. This does not key. START is never sent."));
+    rttyLayout->addWidget(rttyIta2);
+    rttyLayout->addStretch(1);
+    {
+      QSettings store;
+      const int shiftIndex =
+          comboIndexNear(rttyShift, store.value(QStringLiteral("rtty/shift"), 170.0).toDouble(), 0.6);
+      rttyShift->setCurrentIndex(shiftIndex >= 0 ? shiftIndex : comboIndexNear(rttyShift, 170.0, 0.6));
+      const int baudIndex =
+          comboIndexNear(rttyBaud, store.value(QStringLiteral("rtty/baud"), 45.45).toDouble(), 0.02);
+      rttyBaud->setCurrentIndex(baudIndex >= 0 ? baudIndex : comboIndexNear(rttyBaud, 45.45, 0.02));
+      rttyShape->setChecked(store.value(QStringLiteral("rtty/shaped"), true).toBool());
+      rttyReverse->setChecked(store.value(QStringLiteral("rtty/reverse"), false).toBool());
+      rttyIta2->setChecked(store.value(QStringLiteral("rtty/ita2"), false).toBool());
+    }
+    auto pushRtty = [this] {
+      const RttyOptions opt = rttyOptionsOf(this);
+      QSettings store;
+      store.setValue(QStringLiteral("rtty/shift"), opt.shiftHz);
+      store.setValue(QStringLiteral("rtty/baud"), opt.baud);
+      store.setValue(QStringLiteral("rtty/shaped"), opt.shaped);
+      store.setValue(QStringLiteral("rtty/reverse"), opt.reverse);
+      store.setValue(QStringLiteral("rtty/ita2"), opt.ita2);
+      if (rtty_)
+        rtty_->setOptions(opt);
+      applyChannelWidth();
+    };
+    connect(rttyShift, &QComboBox::currentIndexChanged, this, pushRtty);
+    connect(rttyBaud, &QComboBox::currentIndexChanged, this, pushRtty);
+    connect(rttyShape, &QCheckBox::toggled, this, pushRtty);
+    connect(rttyReverse, &QCheckBox::toggled, this, pushRtty);
+    connect(rttyIta2, &QCheckBox::toggled, this, pushRtty);
+    rttyRow->hide();
+    layout->addWidget(rttyRow);
+
+    auto* toneRow = new QWidget(panel);
+    toneRow->setObjectName(QStringLiteral("startToneOptions"));
+    auto* toneLayout = new QHBoxLayout(toneRow);
+    toneLayout->setContentsMargins(0, 0, 0, 0);
+    toneLayout->setSpacing(8);
+    auto* oliviaTones = new QCheckBox(QStringLiteral("Start tones"), toneRow);
+    oliviaTones->setObjectName(QStringLiteral("oliviaStartTones"));
+    oliviaTones->setFont(interfaceFont(12));
+    oliviaTones->setStyleSheet(rttyText);
+    oliviaTones->setFocusPolicy(Qt::NoFocus);
+    oliviaTones->setToolTip(QStringLiteral(
+        "Olivia and Contestia band-edge tones before and after the text. On is the Fldigi default. "
+        "This does not key. START is never sent."));
+    auto* mt63Tones = new QCheckBox(QStringLiteral("Start tones"), toneRow);
+    mt63Tones->setObjectName(QStringLiteral("mt63StartTones"));
+    mt63Tones->setFont(interfaceFont(12));
+    mt63Tones->setStyleSheet(rttyText);
+    mt63Tones->setFocusPolicy(Qt::NoFocus);
+    mt63Tones->setToolTip(QStringLiteral(
+        "MT63 lower and upper tuning tones for 4 seconds before the text. On is the Fldigi default. "
+        "This does not key. START is never sent."));
+    toneLayout->addWidget(oliviaTones);
+    toneLayout->addWidget(mt63Tones);
+    toneLayout->addStretch(1);
+    {
+      QSettings store;
+      oliviaTones->setChecked(store.value(QStringLiteral("olivia/startTones"), true).toBool());
+      mt63Tones->setChecked(store.value(QStringLiteral("mt63/startTones"), true).toBool());
+    }
+    connect(oliviaTones, &QCheckBox::toggled, this, [](bool on) {
+      QSettings().setValue(QStringLiteral("olivia/startTones"), on);
+    });
+    connect(mt63Tones, &QCheckBox::toggled, this, [](bool on) {
+      QSettings().setValue(QStringLiteral("mt63/startTones"), on);
+    });
+    toneRow->hide();
+    layout->addWidget(toneRow);
+
     auto* hellText = new QPlainTextEdit(panel);
     hellText->setObjectName(QStringLiteral("txHell"));
     hellText->setFont(monoFont(13));
@@ -1154,11 +1430,11 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     power->setFont(interfaceFont(12));
     power->setFocusPolicy(Qt::NoFocus);
     power->setToolTip(QStringLiteral(
-        "Tx power in dBm. The same list as WSJT-X and JTDX. "
-        "Changing it does not key. START is never sent."));
+        "Tx power in dBm, with the approximate RF watts WSJT-X uses. "
+        "37 dBm is about 5 W. Changing it does not key. START is never sent."));
     const int powers[] = {0, 3, 7, 10, 13, 17, 20, 23, 27, 30, 33, 37, 40, 43, 47, 50, 53, 57, 60};
     for (int dbm : powers)
-      power->addItem(QStringLiteral("%1 dBm").arg(dbm), dbm);
+      power->addItem(wsprPowerLabel(dbm), dbm);
     {
       const int saved = QSettings().value(QStringLiteral("wspr/power"), 37).toInt();
       const int index = power->findData(saved);
@@ -1175,6 +1451,21 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "Tx Pct. Share of the 2-minute sequences that transmit, as in WSJT-X and JTDX. "
         "Even UTC minutes only. This does not key. START is never sent."));
     wsprForm->addRow(QStringLiteral("Tx Pct"), pct);
+    auto* depth = new QComboBox(wspr);
+    depth->setObjectName(QStringLiteral("wsprDepth"));
+    depth->addItem(QStringLiteral("Fast"), 1);
+    depth->addItem(QStringLiteral("Normal"), 2);
+    depth->addItem(QStringLiteral("Deep"), 3);
+    depth->setCurrentIndex(
+        std::max(0, depth->findData(std::clamp(QSettings().value(QStringLiteral("wspr/depth"), 2).toInt(), 1, 3))));
+    depth->setToolTip(QStringLiteral(
+        "WSJT-X WSPR decode depth. Fast: two passes, no block detection. "
+        "Normal: three passes, block detection, and the ordered-statistics decoder. "
+        "Deep: Normal plus more candidates, slower. This does not key."));
+    wsprForm->addRow(QStringLiteral("Decode"), depth);
+    connect(depth, qOverload<int>(&QComboBox::currentIndexChanged), this, [depth](int) {
+      QSettings().setValue(QStringLiteral("wspr/depth"), depth->currentData().toInt());
+    });
     auto* hopRow = new QWidget(wspr);
     auto* hopLayout = new QHBoxLayout(hopRow);
     hopLayout->setContentsMargins(0, 0, 0, 0);
@@ -1409,6 +1700,25 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     cqRow->addWidget(useFree);
     cqRow->addWidget(sort);
     settingsLayout->addLayout(cqRow);
+    auto* txSm = new QCheckBox(QStringLiteral("TX RR73; next"), settings);
+    txSm->setObjectName(QStringLiteral("txSm"));
+    txSm->setFont(interfaceFont(11));
+    txSm->setChecked(QSettings().value(QStringLiteral("tx/maTxSm"), false).toBool());
+    txSm->setToolTip(QStringLiteral(
+        "MA DX, as MSHV: when every slot is busy, the RR73 to one station also carries the "
+        "report to the next queued caller, \"A RR73; B <MY> -10\". This does not key."));
+    settingsLayout->addWidget(txSm);
+    connect(txSm, &QCheckBox::toggled, this, [this](bool on) {
+      QSettings().setValue(QStringLiteral("tx/maTxSm"), on);
+      syncMaEngine();
+    });
+    for (auto* spin : {queueLimit, slotCount, maxPeriods})
+      connect(spin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { syncMaEngine(); });
+    for (auto* box : {cns, cqFree})
+      connect(box, &QCheckBox::toggled, this, [this](bool) { syncMaEngine(); });
+    for (auto* combo : {sort, cqType})
+      connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) { syncMaEngine(); });
+    connect(freeCq, &QLineEdit::textChanged, this, [this](const QString&) { syncMaEngine(); });
     auto* clrQueue = new QPushButton(QStringLiteral("CLR Queue"), panel);
     clrQueue->setObjectName(QStringLiteral("txClrQueue"));
     clrQueue->setFont(interfaceFont(11));
@@ -1478,6 +1788,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     connect(clrQueue, &QPushButton::clicked, this, [this] {
       txFinishedCalls_.clear();
       txQueue_.clear();
+      ma_.clearQueue();
       if (auto* entry = findChild<QLineEdit*>(QStringLiteral("txQueueEntry")))
         entry->clear();
       paintMultiLists();
@@ -1488,6 +1799,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     connect(clrNow, &QPushButton::clicked, this, [this] {
       txFinishedCalls_.clear();
       txNow_.clear();
+      ma_.clearNow();
       txHisCall_.clear();
       txReport_.clear();
       txFreeArmed_ = false;
@@ -1536,16 +1848,15 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     tx->setToolTip(QStringLiteral(
         "Send the selected line on its slot and hold TRX until that slot ends. "
         "Max Periods is how many times it keys. Stops on 73, when someone else answers, "
-        "or when the try limit is reached. CQ on free continues with CQ. CNS ignores the limit. "
-        "START is never sent."));
+        "or when the try limit is reached. CQ on free continues with CQ. CNS ignores the limit."));
     connect(tx, &QPushButton::toggled, this, [this](bool on) { setUserTx(on); });
     auto* halt = new QPushButton(QStringLiteral("Halt"), panel);
     halt->setObjectName(QStringLiteral("txHalt"));
     halt->setFont(interfaceFont(12));
     halt->setFocusPolicy(Qt::NoFocus);
     halt->setToolTip(QStringLiteral(
-        "MSHV STOP TX. Ends this transmission now, even mid-slot, and stops the sequence. "
-        "Does not key. START is never sent."));
+        "Ends this transmission now, even mid-slot, and stops the sequence. "
+        "Does not key."));
     connect(halt, &QPushButton::clicked, this, [this] { haltTx(); });
     buttons->addWidget(tune);
     buttons->addWidget(tx);
@@ -1603,7 +1914,7 @@ void MainWindow::beginWsprTune() {
     return;
   if (qEnvironmentVariableIsSet("STD_SELFTEST"))
     return;
-  txTuneHz_ = std::clamp(waterfall_ ? waterfall_->txHz() : 1500, 200, 3000);
+  txTuneHz_ = wsprClampTxHz(waterfall_ ? waterfall_->txHz() : 1500);
   txTunePhase_ = 0.0;
   txTuneSent_ = 0;
   txLastPullMs_ = 0;
@@ -1681,7 +1992,22 @@ void MainWindow::openPskReporterMap() const {
   QDesktopServices::openUrl(QUrl(pskReporterMapUrl(stationCall())));
 }
 
-void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz) {
+void MainWindow::openWsprnetReports() const {
+  QDesktopServices::openUrl(QUrl(wsprnetReportsUrl(stationCall())));
+}
+
+void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz,
+                                const QString& dt, const QString& utc) {
+  QTime clock = QTime::fromString(utc, QStringLiteral("HHmmss"));
+  if (!clock.isValid())
+    clock = QTime::fromString(utc, QStringLiteral("hhmmss"));
+  if (!clock.isValid())
+    clock = QTime::fromString(utc, QStringLiteral("HHmm"));
+  if (!clock.isValid())
+    clock = QDateTime::currentDateTimeUtc().time();
+  if (qsoLog_ && mode.compare(QLatin1String("WSPR"), Qt::CaseInsensitive) != 0)
+    qsoLog_->sendDecode(pskReporterModeName(mode), db, dt.toFloat(), quint32(std::max(0, audioHz)), message,
+                        clock);
   if (!spots_ || mode.trimmed().isEmpty())
     return;
   QString call;
@@ -1798,8 +2124,7 @@ void MainWindow::applyStationLock() {
     tx->setToolTip(haveCall
                        ? QStringLiteral(
                              "Send the selected line on its slot and hold TRX until that slot ends. "
-                             "Halt ends it now. TRX goes out only after this is pressed. "
-                             "START is never sent.")
+                             "Halt ends it now. TRX goes out only after this is pressed.")
                        : QStringLiteral(
                              "Set your callsign under Options → User before TX. This does not key."));
   }
@@ -1847,11 +2172,33 @@ QWidget* MainWindow::makeReceivePanel() {
   faxSave->setToolTip(QStringLiteral(
       "Save the WEFAX picture received so far. WEFAX does not key. START is never sent."));
   faxSave->hide();
+  auto* faxSlantLabel = new QLabel(QStringLiteral("Slant"), panel);
+  faxSlantLabel->setObjectName(QStringLiteral("wefaxSlantLabel"));
+  faxSlantLabel->setFont(interfaceFont(12));
+  faxSlantLabel->setToolTip(QStringLiteral(
+      "Slant corrects a sound-card clock error, in percent. Zero is 120 lines per minute. "
+      "This does not key. START is never sent."));
+  faxSlantLabel->hide();
+  auto* faxSlant = new QSpinBox(panel);
+  faxSlant->setObjectName(QStringLiteral("wefaxSlant"));
+  faxSlant->setRange(-20, 20);
+  faxSlant->setSuffix(QStringLiteral(" %"));
+  faxSlant->setFont(interfaceFont(12));
+  faxSlant->setFixedWidth(72);
+  faxSlant->setFocusPolicy(Qt::ClickFocus);
+  faxSlant->setToolTip(faxSlantLabel->toolTip());
+  faxSlant->hide();
+  const int savedSlant = std::clamp(QSettings().value(QStringLiteral("wefax/slant"), 0).toInt(), -20, 20);
+  faxSlant->setValue(savedSlant);
+  if (wefax_)
+    wefax_->setSlant(savedSlant);
   tools->addWidget(filter, 1);
   tools->addWidget(clear);
   tools->addWidget(clrRx);
   tools->addWidget(faxFolder);
   tools->addWidget(faxSave);
+  tools->addWidget(faxSlantLabel);
+  tools->addWidget(faxSlant);
   layout->addLayout(tools);
   connect(faxFolder, &QPushButton::clicked, this, [this] {
     const QString picked = QFileDialog::getExistingDirectory(
@@ -1867,6 +2214,11 @@ QWidget* MainWindow::makeReceivePanel() {
     const QString path = wefax_->saveNow();
     if (path.isEmpty())
       setTxStatus(QStringLiteral("No WEFAX picture yet. Nothing was keyed. START was not sent."));
+  });
+  connect(faxSlant, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+    QSettings().setValue(QStringLiteral("wefax/slant"), value);
+    if (wefax_)
+      wefax_->setSlant(value);
   });
   connect(clrRx, &QPushButton::clicked, this, [this] {
     if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
@@ -1930,7 +2282,22 @@ QWidget* MainWindow::makeReceivePanel() {
   echo->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   echo->document()->setDocumentMargin(4);
   echo->hide();
+
+  auto* wsprHeadHost = new QWidget(panel);
+  wsprHeadHost->setObjectName(QStringLiteral("wsprRxHeaderHost"));
+  wsprHeadHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  wsprHeadHost->setFixedHeight(monoFont(13).pixelSize() + 4);
+  auto* wsprHead = new QLabel(wsprActivityHeader(), wsprHeadHost);
+  wsprHead->setObjectName(QStringLiteral("wsprRxHeader"));
+  wsprHead->setFont(monoFont(13));
+  wsprHead->setTextInteractionFlags(Qt::NoTextInteraction);
+  wsprHead->setToolTip(QStringLiteral(
+      "WSPR column titles. They stay put while the rows scroll. "
+      "Report is the dBm in the message. This does not key and does not send START."));
+  wsprHeadHost->hide();
+  layout->addWidget(wsprHeadHost);
   layout->addWidget(echo, 1);
+  connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
   auto* faxView = new QLabel(panel);
   faxView->setObjectName(QStringLiteral("wefaxView"));
@@ -1939,7 +2306,8 @@ QWidget* MainWindow::makeReceivePanel() {
   faxView->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   faxView->setToolTip(QStringLiteral(
       "WEFAX-576 picture. IOC 576, 120 lines per minute. Black is 400 Hz below the cursor and white "
-      "is 400 Hz above it. Pictures save to the folder. This does not key and does not send START."));
+      "is 400 Hz above it. A 300 Hz start tone opens the picture and a 450 Hz stop tone saves it. "
+      "Slant corrects the clock. Pictures save to the folder. This does not key and does not send START."));
   faxView->hide();
   layout->addWidget(faxView, 1);
 
@@ -2074,6 +2442,34 @@ void MainWindow::buildMenus() {
       "Save the macros in use as a Fldigi .mdf. This does not key and does not send START."));
   connect(macroSave, &QAction::triggered, this, [this] { saveMacroFile(); });
   fileMenu->addSeparator();
+  auto* backupSettingsAction = fileMenu->addAction(QStringLiteral("Backup settings…"));
+  backupSettingsAction->setObjectName(QStringLiteral("backupSettings"));
+  backupSettingsAction->setToolTip(QStringLiteral(
+      "Save layouts and the callsign and locator already stored under Options → User. "
+      "Does not copy the TCI host or port. Does not add a callsign field. "
+      "Does not key. START is never sent."));
+  connect(backupSettingsAction, &QAction::triggered, this, [this] { backupSettings(); });
+  auto* importSettingsAction = fileMenu->addAction(QStringLiteral("Import settings…"));
+  importSettingsAction->setObjectName(QStringLiteral("importSettings"));
+  importSettingsAction->setToolTip(QStringLiteral(
+      "Restore layouts from a settings file. The callsign and locator change only when "
+      "that file contains them. The TCI host and port stay. Does not add a callsign field. "
+      "Does not key. START is never sent."));
+  connect(importSettingsAction, &QAction::triggered, this, [this] { importSettings(); });
+  fileMenu->addSeparator();
+  auto* backupLogAction = fileMenu->addAction(QStringLiteral("Backup logbook…"));
+  backupLogAction->setObjectName(QStringLiteral("backupLogbook"));
+  backupLogAction->setToolTip(QStringLiteral(
+      "Copy the ADIF logbook to another file. The original stays in place. "
+      "Does not key. START is never sent."));
+  connect(backupLogAction, &QAction::triggered, this, [this] { backupLogbook(); });
+  auto* exportAdifAction = fileMenu->addAction(QStringLiteral("Export ADIF…"));
+  exportAdifAction->setObjectName(QStringLiteral("exportAdif"));
+  exportAdifAction->setToolTip(QStringLiteral(
+      "Write an ADIF file another logger can import. The logbook stays in place. "
+      "Does not key. START is never sent."));
+  connect(exportAdifAction, &QAction::triggered, this, [this] { exportAdif(); });
+  fileMenu->addSeparator();
   auto* quit = fileMenu->addAction("Quit");
   quit->setShortcut(QKeySequence::Quit);
   connect(quit, &QAction::triggered, this, &QWidget::close);
@@ -2205,7 +2601,9 @@ void MainWindow::buildMenus() {
   auto* networkConfig = optionsMenu->addAction(QStringLiteral("Network Configuration"));
   networkConfig->setObjectName(QStringLiteral("networkConfig"));
   networkConfig->setToolTip(QStringLiteral(
-      "PSK Reporter. Upload stays off until Enable is checked. Does not key and does not send START."));
+      "PSK Reporter and WSPRnet. PSK Reporter stays off until Enable is checked. "
+      "WSPRnet stays off until On is selected. "
+      "WSPRnet does not ask for a password. Does not key and does not send START."));
   connect(networkConfig, &QAction::triggered, this, [this] { openNetworkDialog(); });
 
   auto* pskMap = optionsMenu->addAction(QStringLiteral("PSK Reporter map"));
@@ -2214,6 +2612,13 @@ void MainWindow::buildMenus() {
       "Opens pskreporter.info for the callsign saved under Options → User. Does not upload, does not "
       "key, and does not send START."));
   connect(pskMap, &QAction::triggered, this, [this] { openPskReporterMap(); });
+
+  auto* wsprReports = optionsMenu->addAction(QStringLiteral("WSPRnet reports"));
+  wsprReports->setObjectName(QStringLiteral("wsprnetReports"));
+  wsprReports->setToolTip(QStringLiteral(
+      "Opens wsprnet.org for stations reported by the callsign saved under Options → User. "
+      "WSPRnet does not ask for a password. Does not upload, does not key, and does not send START."));
+  connect(wsprReports, &QAction::triggered, this, [this] { openWsprnetReports(); });
 
   auto graphicsLabel = [](const QString& key) {
     if (key == QLatin1String("d3d11"))
@@ -2396,6 +2801,7 @@ void MainWindow::buildMenus() {
   logFile->setObjectName(QStringLiteral("logFileDialog"));
   logFile->setToolTip(QStringLiteral(
       "Choose the ADIF file and the WSJT-X UDP or DXKeeper TCP logger. "
+      "When a UDP option is on, live decodes go to that address as GridTracker reads them. "
       "The path is saved. This does not key and does not send START."));
   connect(logFile, &QAction::triggered, this, [this] { openLogDialog(); });
 
@@ -2452,7 +2858,10 @@ void MainWindow::buildMenus() {
   js8Action->setObjectName(QStringLiteral("modeJs8"));
   js8Action->setToolTip(QStringLiteral(
       "JS8Call-improved Normal. 15 second period, 50 Hz, the JS8 Costas array. "
-      "Band buttons QSY to the suggested calling dials. TX sends the transmit box. "
+      "Band buttons QSY to the suggested calling dials. TX waits for the next UTC period "
+      "and sends one frame, starting half a second in. A longer message continues on the "
+      "following periods. Receive follows that same 15 second boundary, searches a fraction "
+      "of a symbol and a couple of hertz, and prints every JS8 signal in the passband. "
       "START is never sent. Fast, Turbo, Slow, Ultra, and 8PSK are not here."));
   modes->addAction(js8Action);
   connect(js8Action, &QAction::triggered, this, [this] { activateDigitalMode(QStringLiteral("JS8")); });
@@ -2495,8 +2904,9 @@ void MainWindow::buildMenus() {
   rttyAction->setCheckable(true);
   rttyAction->setObjectName(QStringLiteral("modeRtty"));
   rttyAction->setToolTip(QStringLiteral(
-      "Fldigi RTTY on DIGU. 45.45 baud, 170 Hz shift. Mark is the higher tone and space is the lower "
-      "tone. TX sends it. START is never sent."));
+      "Fldigi RTTY on DIGU. Mark is the higher tone unless Reverse is on. "
+      "The RTTY row sets shift, baud, shaped keying, Reverse, and ITA-2 figures. "
+      "45.45 baud and 170 Hz are the usual amateur pair. TX sends it. START is never sent."));
   modes->addAction(rttyAction);
   connect(rttyAction, &QAction::triggered, this, [this] { activateDigitalMode(QStringLiteral("RTTY")); });
   auto* pskMenu = modeMenu->addMenu(QStringLiteral("PSK"));
@@ -2696,7 +3106,8 @@ void MainWindow::buildMenus() {
   faxAction->setObjectName(QStringLiteral("modeWefax576"));
   faxAction->setToolTip(QStringLiteral(
       "Fldigi WEFAX-576 receive. IOC 576, 120 lines per minute. Black is 400 Hz below the cursor and "
-      "white is 400 Hz above it. Pictures save to the folder. This does not key. START is never sent."));
+      "white is 400 Hz above it. A 300 Hz start tone opens the picture and a 450 Hz stop tone saves it. "
+      "Slant corrects the clock. Pictures save to the folder. This does not key. START is never sent."));
   modes->addAction(faxAction);
   connect(faxAction, &QAction::triggered, this,
           [this] { activateDigitalMode(QStringLiteral("WEFAX-576")); });
@@ -2777,7 +3188,46 @@ void eachModeAction(QMenu* menu, const std::function<void(QAction*)>& visit) {
 
 }  // namespace
 
+void MainWindow::clearModePanes() {
+  if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
+    echo->clear();
+  if (auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell")))
+    box->clear();
+  if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
+    tape->clear();
+  if (auto* view = findChild<QLabel*>(QStringLiteral("wefaxView")))
+    view->clear();
+  if (rtty_)
+    rtty_->clear();
+  if (psk_)
+    psk_->clear();
+  if (olivia_)
+    olivia_->clear();
+  if (mfsk_)
+    mfsk_->clear();
+  if (domino_)
+    domino_->clear();
+  if (thor_)
+    thor_->clear();
+  if (js8_)
+    js8_->clear();
+  if (wspr_)
+    wspr_->clear();
+  if (mt63_)
+    mt63_->clear();
+  if (wefax_)
+    wefax_->clear();
+  if (ft8_)
+    ft8_->clear();
+  decodes_.clear();
+  refreshDecodes();
+}
+
 void MainWindow::activateDigitalMode(const QString& modeName) {
+  const QString previous = profile_ ? profile_->digitalMode() : QString();
+  const bool changed = !previous.isEmpty() && previous.compare(modeName, Qt::CaseInsensitive) != 0;
+  if (changed)
+    stopUserTx(true);
   eachModeAction(findChild<QMenu*>(QStringLiteral("modeMenu")), [modeName](QAction* action) {
     const bool on = action->text() == modeName;
     if (action->isChecked() == on)
@@ -2834,6 +3284,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     hell_->setArmed(autoMonitor_ && hell);
   }
   if (rtty_) {
+    rtty_->setOptions(rttyOptionsOf(this));
     rtty_->setToneHz(waterfall_ ? waterfall_->rxHz() : 1500);
     rtty_->setArmed(autoMonitor_ && rtty);
   }
@@ -2871,10 +3322,8 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     js8_->setToneHz(waterfall_ ? waterfall_->rxHz() : 1500);
     js8_->setArmed(autoMonitor_ && js8);
   }
-  if (wspr_) {
-    wspr_->setToneHz(waterfall_ ? waterfall_->txHz() : 1500);
+  if (wspr_)
     wspr_->setArmed(autoMonitor_ && wspr);
-  }
   if (wspr && waterfall_)
     waterfall_->setTxHz(1500);
   if (wefax_) {
@@ -2890,16 +3339,21 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   refreshTxChrome();
   applyMacroBar();
   syncWfHellControls();
+  applyAfc();
+  if (changed)
+    clearModePanes();
   if (family)
     tuneActiveBand();
   if (wspr)
     setTxStatus(QStringLiteral(
         "WSPR. Band buttons move the radio to that WSPR dial. "
+        "Decodes 1390-1610 Hz after each 2-minute period. TX stays inside 1400-1600 Hz. "
         "No macros. Locator is Options → User. This does not key. START was not sent."));
   else if (js8)
     setTxStatus(QStringLiteral(
         "JS8. Band buttons move the radio to the JS8Call-improved calling dial. "
-        "The transmit box is the message. This does not key. START was not sent."));
+        "TX waits for the next 15 second UTC period and sends one frame, starting half a second in. "
+        "A longer message continues on the following periods. This does not key. START was not sent."));
 }
 
 void MainWindow::showKeyboardReceive(const QString& mode) {
@@ -2914,14 +3368,21 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
     echo->setVisible(text || wspr);
+    const QString body = withoutWsprTitleLine(echo->toPlainText());
+    if (body != echo->toPlainText())
+      echo->setPlainText(body);
     if (wspr) {
+      echo->setLineWrapMode(QTextEdit::NoWrap);
+      echo->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
       echo->setPlaceholderText(QStringLiteral(
-          "WSPR spots print here. Call, locator, and dBm. "
-          "Nothing is uploaded until Options → Network enables PSK Reporter."));
+          "Decodes appear under the titles. Report is the dBm in the message. "
+          "WSPRnet and PSK Reporter stay off until Enable is checked under Options → Network."));
       echo->setToolTip(QStringLiteral(
-          "WSPR receive reports. There is no macro bar in this mode. "
+          "WSPR rows: time, dB, DT, frequency, drift, call, locator, and the dBm report. "
+          "The titles stay above this list. There is no macro bar in this mode. "
           "This does not key and does not send START."));
     } else {
+      echo->setLineWrapMode(QTextEdit::WidgetWidth);
       echo->setPlaceholderText(QStringLiteral(
           "Sent text prints here in red as it goes out."));
       echo->setToolTip(QStringLiteral(
@@ -2929,6 +3390,11 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
           "Hell keeps the tape. RTTY, BPSK, QPSK, Olivia, Contestia, MFSK, DominoEX, and Thor print received text here too. "
           "This does not key and does not send START."));
     }
+  }
+  if (auto* wsprHead = findChild<QWidget*>(QStringLiteral("wsprRxHeaderHost"))) {
+    wsprHead->setVisible(wspr);
+    if (wspr)
+      alignWsprHeader();
   }
   if (auto* clrRx = findChild<QPushButton*>(QStringLiteral("clrRx")))
     clrRx->setVisible(text || fax || wspr);
@@ -2946,6 +3412,10 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
     folder->setVisible(fax);
   if (auto* save = findChild<QPushButton*>(QStringLiteral("wefaxSave")))
     save->setVisible(fax);
+  if (auto* slantLabel = findChild<QLabel*>(QStringLiteral("wefaxSlantLabel")))
+    slantLabel->setVisible(fax);
+  if (auto* slant = findChild<QSpinBox*>(QStringLiteral("wefaxSlant")))
+    slant->setVisible(fax);
 }
 
 void MainWindow::cycleDigitalMode() {
@@ -3054,10 +3524,14 @@ void MainWindow::showGuide() {
       {"Keyboard text",
        "RTTY and the BPSK speeds use that same transmit box, receive echo, CLR RX, and CLR TX. "
        "Hell keeps the pixel tape. RTTY and BPSK show the echo. Characters print as the audio goes "
-       "out. RTTY follows Fldigi on DIGU with Reverse off: 45.45 baud, 170 Hz shift, mark the higher "
-       "tone (the cursor plus 85 Hz) and space the lower tone (the cursor minus 85 Hz). The frame "
-       "is one start bit (space), five data bits LSB first, and 1.5 stop bits (mark). A space sends "
-       "LTRS and then the space code. TX sends RTTY. Received text prints in the echo. "
+       "out. RTTY follows Fldigi on DIGU. The row above the transmit box is Shift, Baud, Shape, "
+       "Reverse, and ITA-2, the same controls Fldigi puts on its RTTY transmit and text pages. "
+       "Shape is on, Reverse is off, and ITA-2 is off until you change them. 45.45 baud and 170 Hz "
+       "are selected. Fldigi lists 45 baud first; 45.45 is the usual amateur speed. Mark is the "
+       "higher tone (the cursor plus half the shift) and space is the lower tone, unless Reverse "
+       "is on. The frame is one start bit (space), five data bits LSB first, and 1.5 stop bits "
+       "(mark). A space sends LTRS and then the space code. US TTY figures stay in use until ITA-2 "
+       "is checked. TX sends RTTY. Received text prints in the echo. "
        "Mode → PSK is PSK31, PSK63, PSK125, PSK250, PSK500, and PSK1000. The baud is 31.25, 62.5, "
        "125, 250, 500, or 1000. A zero reverses the phase. Two zeros separate characters. TX sends "
        "those speeds. Mode → Olivia and Mode → Contestia are the Fldigi tone sets 4/250, 8/250, "
@@ -3066,7 +3540,15 @@ void MainWindow::showGuide() {
        "prints capitals. TX sends those. Mode → MFSK is MFSK4, MFSK8, MFSK11, MFSK16, MFSK22, "
        "MFSK31, MFSK32, MFSK64, MFSK64L, MFSK128, and MFSK128L. Tones are Gray coded. Each character is IZ8BLY "
        "varicode, a NASA K=7 convolutional code, and the fldigi diagonal interleaver, centered "
-       "on the cursor. The L speeds use the long interleaver. TX sends those. Mode → DominoEX is DominoEX Micro, 4, 5, 8, 11, 16, and 22. "
+       "on the cursor. The L speeds use the long interleaver. TX sends those. "
+       "Olivia, Contestia, MFSK, DominoEX, and Thor keep a received line break and print Latin-1. "
+       "Olivia sends a byte above 127 as 127 and then the low 7 bits. "
+       "SQL on the status row drops a character when the level is above the decoder meter. "
+       "AFC stays off until you turn it on. It follows those tones inside the passband and leaves the cursor. "
+       "Start tones, on the transmit row, sends the Olivia and Contestia band-edge tones and the "
+       "MT63 tuning tones. It stays on until you turn it off. Thor rounds each symbol by 4 ms. "
+       "Shaped RTTY finishes the last character and then ramps off. "
+       "Mode → DominoEX is DominoEX Micro, 4, 5, 8, 11, 16, and 22. "
        "Eighteen tones, incremental frequency keying, and the DominoEX nibble varicode. FEC is off. "
        "Micro is 2 baud. TX sends those. Mode → Thor is Thor 4, 5, 8, 11, 16, 22, 25x4, 50x1, 50x2, and 100. Each character is the IZ8BLY "
        "varicode and 18-tone incremental keying centered on the cursor. The slow speeds are NASA K=7 with a 4 by 10 interleaver. "
@@ -3074,13 +3556,24 @@ void MainWindow::showGuide() {
        "MT63-1000L, MT63-2000S, and MT63-2000L. Sixty-four carriers, a Walsh code, and the fldigi "
        "short or long interleaver, centered on the cursor. TX sends those. Mode → QPSK is QPSK31, QPSK63, QPSK125, QPSK250, and QPSK500. "
        "Each varicode bit is a K=5 dibit. 8PSK is a different constellation and is not on this menu. "
+       "Changing the mode clears the receive pane, the Hell tape, the WEFAX picture, and the "
+       "transmit box. Text from the previous mode does not stay. Clicking the mode that is already "
+       "on, which cycles an FT8 dial, does not clear. "
        "Mode → JS8 is JS8Call-improved Normal, a 15 second 50 Hz frame on the cursor. "
        "Band buttons QSY to the JS8Call-improved suggested dials, 160 m through 6 m. "
-       "2 m is in that guide and is not on the row. TX sends the transmit box. "
+       "2 m is in that guide and is not on the row. TX waits for the next 15 second UTC period. "
+       "The frame starts half a second into that period. One frame goes out per period. A message "
+       "that needs more than one frame continues on the following periods. "
+       "Receive uses that same boundary. It searches a fraction of a symbol and a couple of hertz, "
+       "corrects the frame with the LDPC code, and prints every JS8 signal in the passband. "
        "Fast, Turbo, Slow, and Ultra are not on this menu. "
        "Mode → WSPR is WSPR-2 from WSJT-X and JTDX. Even UTC minutes. "
        "Band buttons QSY to the WSPR dials. There is no macro bar. Tx power, Tx Pct, "
        "and Band Hopping. The locator is the one in Options → User. TX sends that message. "
+       "Receive titles Time, dB, DT, Frequency, Drift, Call, Locator, and Report stay on screen "
+       "while the rows scroll. DT is the time offset. Report is the dBm the other station sent. "
+       "Options → Network can post those heard stations to WSPRnet. That post stays off until "
+       "WSPRnet is set to On. There is no password. The callsign and locator stay in Options → User. "
        "A macro copies into the transmit box on the keyboard modes. WSPR has no macro bar. "
        "TX macro also presses TX when it is on. Hell, RTTY, BPSK, QPSK, "
        "Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
@@ -3089,7 +3582,10 @@ void MainWindow::showGuide() {
        "Mode → WEFAX-576 receives only. It does not key and it does not send START. IOC is 576 and "
        "the rate is 120 lines per minute, the Fldigi WEFAX-576 numbers. Black is 400 Hz below the "
        "receive cursor and white is 400 Hz above it. The cursor starts at 1900 Hz, so black is 1500 Hz "
-       "and white is 2300 Hz until you move it. Folder picks the directory. Until you pick one, pictures "
+       "and white is 2300 Hz until you move it. Reception mixes to the cursor, filters, then reads the FM. "
+       "A 300 Hz start tone opens a picture and a 450 Hz stop tone saves it and clears the screen for the next one. "
+       "Slant, next to Save, corrects a sound-card clock error in percent. Zero is 120 lines per minute. "
+       "Folder picks the directory. Until you pick one, pictures "
        "save under Documents\\STD\\wefax. Save writes the picture received so far as a PNG. A stop tone "
        "also writes that file. CLR RX clears the picture and does not unkey. TX and Tune do not key "
        "in this mode. Olivia, Contestia, MFSK, DominoEX, Thor, QPSK, MT63, and JS8 are on the mode menu and they do key. "
@@ -3125,7 +3621,7 @@ void MainWindow::showGuide() {
       {"Halt",
        "Halt ends the transmission immediately, even in the middle of a slot, turns TRX off, and stops "
        "the sequence. If nothing is transmitting, Halt does not key. It leaves Tx1 through Tx6 as they "
-       "are. It does not send START."},
+       "are."},
       {"User callsign",
        "Options → User stores the callsign and the locator. DIST is the distance from that locator to "
        "the grid in a message. Tx1 through Tx5 and the CQ on Tx6 use that locator. TX and Tune stay "
@@ -3139,6 +3635,10 @@ void MainWindow::showGuide() {
        "Logged ADIF datagrams to the saved host and port. The first address is 127.0.0.1 port 2237. "
        "TCP sends a DXKeeper log command to 127.0.0.1 port 52001 until you change it. UDP and TCP stay "
        "off until you enable them. A heartbeat goes to the UDP port only while one of those is on. "
+       "File → Backup logbook copies that ADIF file and leaves the original in place. "
+       "File → Export ADIF writes a copy another logger can import. File → Backup settings "
+       "and Import settings save and restore layouts and the callsign and locator from "
+       "Options → User. They do not copy the TCI host or port, and they do not add a field. "
        "None of this keys the radio or sends START."},
       {"Tune",
        "Tune sends a tone at the TX marker so the waterfall can show it and TX gain can be set. It "
@@ -3193,7 +3693,14 @@ void MainWindow::showGuide() {
        "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Time "
        "Synchronization calibrates the period clock. Macros are a Fldigi .mdf; see Macros. Network "
        "Configuration can upload a PSK Reporter spot after a decode. That upload is off until Enable "
-       "is checked. PSK Reporter map opens the map for the saved callsign. Decode List Options "
+       "is checked. Antenna is the description sent with the spot. The status line says when a "
+       "spot packet is sent or when the send fails. PSK Reporter map opens the map for the saved "
+       "callsign and does not upload. WSPRnet On, in that same dialog, posts each WSPR station "
+       "STD decodes. It does not post your own transmission. WSPRnet does not ask for a password or "
+       "a key. WSPRnet reports opens the page of stations reported by the callsign saved under "
+       "Options → User. PSK Reporter stays off until Enable is checked. WSPRnet stays off until On "
+       "is selected. A UDP option under Log Options also sends live decode packets "
+       "for GridTracker. Decode List Options "
        "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
        "decode is on by default. Log options, the ADIF path, the logger addresses, ASeq, TX "
        "confirmation, and Auto RESET QSO are saved. Those options do not key."},
@@ -3274,32 +3781,74 @@ void MainWindow::applyMacroBar() {
 }
 
 void MainWindow::syncWfHellControls() {
-  const bool hell = profile_ && hellFamily(profile_->digitalMode());
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  const bool hell = hellFamily(mode);
+  const bool track = rttyMode(mode) || keyedPsk(mode);
+  const bool tone = multiToneText(mode);
+  const bool follow = track || tone;
   const bool sqlOn = [&] {
     const auto* sql = findChild<QPushButton*>(QStringLiteral("squelchToggle"));
     return sql && sql->isChecked();
   }();
+  const bool afcOn = [&] {
+    const auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"));
+    return afc && afc->isChecked();
+  }();
   if (auto* afc = findChild<QPushButton*>(QStringLiteral("wfAfc"))) {
-    afc->setEnabled(false);
-    afc->setChecked(false);
+    const QSignalBlocker block(afc);
+    afc->setEnabled(follow);
+    afc->setChecked(follow && afcOn);
     afc->setToolTip(hell ? QStringLiteral(
                                "Feld Hell has no AFC switch. Fldigi leaves AFC off. "
                                "This does not key and does not send START.")
-                         : QStringLiteral(
-                               "FT8, FT4, and FT2 have no AFC switch. "
-                               "This does not key and does not send START."));
+                    : track ? QStringLiteral(
+                                  "AFC follows the RTTY or PSK signal and moves this cursor. "
+                                  "This does not key and does not send START.")
+                    : tone ? QStringLiteral(
+                                 "AFC follows MFSK, DominoEX, Thor, or Olivia inside the passband. "
+                                 "This cursor stays. This does not key and does not send START.")
+                            : QStringLiteral(
+                                  "FT8, FT4, and FT2 have no AFC switch. "
+                                  "This does not key and does not send START."));
   }
   if (auto* sql = findChild<QPushButton*>(QStringLiteral("wfSql"))) {
     const QSignalBlocker block(sql);
-    sql->setEnabled(hell);
-    sql->setChecked(hell && sqlOn);
+    sql->setEnabled(hell || follow);
+    sql->setChecked((hell || follow) && sqlOn);
     sql->setToolTip(hell ? QStringLiteral(
                                "Fldigi squelch. On drops a Hell column at or below the level. "
                                "Off prints the tape. This does not key and does not send START.")
-                         : QStringLiteral(
-                               "Squelch is for Feld Hell. This mode has no squelch slider. "
-                               "This does not key and does not send START."));
+                    : track ? QStringLiteral(
+                                  "Squelch for RTTY and PSK. On drops a character at or below the level. "
+                                  "This does not key and does not send START.")
+                    : tone ? QStringLiteral(
+                                 "Squelch for MFSK, DominoEX, Thor, and Olivia. "
+                                 "On drops a character at or below the level. "
+                                 "This does not key and does not send START.")
+                            : QStringLiteral(
+                                  "Squelch is for Feld Hell, RTTY, and PSK. This mode has no squelch slider. "
+                                  "This does not key and does not send START."));
   }
+}
+
+void MainWindow::applyAfc() {
+  bool on = false;
+  if (statusStrip_) {
+    if (const auto* afc = statusStrip_->findChild<QPushButton*>(QStringLiteral("afcToggle")))
+      on = afc->isEnabled() && afc->isChecked();
+  }
+  if (rtty_)
+    rtty_->setAfc(on);
+  if (psk_)
+    psk_->setAfc(on);
+  if (olivia_)
+    olivia_->setAfc(on);
+  if (mfsk_)
+    mfsk_->setAfc(on);
+  if (domino_)
+    domino_->setAfc(on);
+  if (thor_)
+    thor_->setAfc(on);
 }
 
 void MainWindow::arrangeDefault() {
@@ -3848,6 +4397,10 @@ void MainWindow::applyHellSquelch() {
     thor_->setSquelch(on, level);
   if (mt63_)
     mt63_->setSquelch(on, level);
+  if (rtty_)
+    rtty_->setSquelch(on, level);
+  if (psk_)
+    psk_->setSquelch(on, level);
 }
 
 void MainWindow::applyChannelWidth() {
@@ -3865,8 +4418,15 @@ void MainWindow::applyChannelWidth() {
     width = q65ChannelHz(mode);
   else if (hellFamily(mode))
     width = 245;
-  else if (rttyMode(mode))
-    width = 200;
+  else if (rttyMode(mode)) {
+    double shift = 170.0;
+    if (const auto* box = findChild<QComboBox*>(QStringLiteral("rttyShift"))) {
+      const double saved = box->currentData().toDouble();
+      if (saved >= 23.0)
+        shift = saved;
+    }
+    width = std::max(50, int(std::lround(shift + 40.0)));
+  }
   else if (keyedPsk(mode)) {
     const double baud = pskBaud(mode) > 0.0 ? pskBaud(mode) : qpskBaud(mode);
     width = std::max(80, int(std::lround(baud * 1.5)));
@@ -3925,6 +4485,7 @@ void MainWindow::alignDecodeHeader() {
   edit->document()->rootFrame()->setFrameFormat(cleared);
   QTimer::singleShot(0, this, [this] {
     headerAlignQueued_ = false;
+    alignWsprHeader();
     auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader"));
     auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
     if (!header || !edit || !edit->viewport() || !header->parentWidget())
@@ -3944,6 +4505,25 @@ void MainWindow::alignDecodeHeader() {
       edit->document()->rootFrame()->setFrameFormat(format);
     }
   });
+}
+
+void MainWindow::alignWsprHeader() {
+  auto* host = findChild<QWidget*>(QStringLiteral("wsprRxHeaderHost"));
+  auto* header = findChild<QLabel*>(QStringLiteral("wsprRxHeader"));
+  auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+  if (!host || !header || !echo || !echo->viewport() || !host->isVisible())
+    return;
+  const QFontMetrics metrics(header->font());
+  const int line = std::max(metrics.height(), 1);
+  if (host->height() != line)
+    host->setFixedHeight(line);
+  header->setFixedHeight(line);
+  const int wide = std::max(header->sizeHint().width(), metrics.horizontalAdvance(header->text()) + 4);
+  header->resize(wide, line);
+  const QPoint origin = echo->viewport()->mapTo(host, QPoint(0, 0));
+  const int margin = int(std::lround(echo->document()->documentMargin()));
+  const int x = origin.x() + margin - echo->horizontalScrollBar()->value();
+  header->move(x, 0);
 }
 
 namespace {
@@ -4048,6 +4628,8 @@ QString MainWindow::transmitMessage() const {
     const auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
     return edit ? edit->toPlainText().trimmed() : QString();
   }
+  if (maActive())
+    return ma_.message();
   const int slot = selectedTxSlot();
   const QString name =
       slot == 6 ? QStringLiteral("txExtra") : QStringLiteral("tx%1").arg(slot + 1);
@@ -4171,6 +4753,32 @@ void MainWindow::paintMultiLists() {
     if (current >= 0 && current < list->count())
       list->setCurrentRow(current);
   };
+  if (maActive()) {
+    auto paintMa = [](QListWidget* list, const QVector<MaEngine::Row>& rows) {
+      if (!list)
+        return;
+      const int current = list->currentRow();
+      const QSignalBlocker block(list);
+      list->clear();
+      for (const MaEngine::Row& row : rows) {
+        list->addItem(QStringLiteral("%1  %2  %3  %4")
+                          .arg(row.call, -10)
+                          .arg(row.txRpt.isEmpty() ? QStringLiteral("   ") : row.txRpt)
+                          .arg(row.grid.isEmpty() ? QStringLiteral("    ") : row.grid)
+                          .arg(row.dist.isEmpty() || row.dist == QLatin1String("?") ? QString()
+                                                                                   : row.dist + QStringLiteral(" km")));
+      }
+      if (current >= 0 && current < list->count())
+        list->setCurrentRow(current);
+    };
+    paintMa(findChild<QListWidget*>(QStringLiteral("txQueueList")), ma_.queue());
+    paintMa(findChild<QListWidget*>(QStringLiteral("txNowList")), ma_.now());
+    if (tabs) {
+      tabs->setTabText(0, QStringLiteral("Queue %1").arg(ma_.queue().size()));
+      tabs->setTabText(1, QStringLiteral("Now %1").arg(ma_.now().size()));
+    }
+    return;
+  }
   paint(findChild<QListWidget*>(QStringLiteral("txQueueList")), txQueue_);
   paint(findChild<QListWidget*>(QStringLiteral("txNowList")), txNow_);
   if (!tabs)
@@ -4198,6 +4806,17 @@ void MainWindow::addTypedQueue() {
   if (!entry)
     return;
   const QString call = entry->text().trimmed().toUpper().section(QLatin1Char(' '), 0, 0);
+  if (maActive()) {
+    if (!ma_.addManual(call)) {
+      setTxStatus(QStringLiteral("%1 was not added. It is not a call, or it is already listed. Nothing was keyed.")
+                      .arg(call));
+      return;
+    }
+    entry->clear();
+    paintMultiLists();
+    setTxStatus(QStringLiteral("%1 added. Nothing was keyed. START was not sent.").arg(call));
+    return;
+  }
   if (!isCall(call)) {
     setTxStatus(QStringLiteral(
         "That is not a callsign. Nothing was added and nothing was keyed. START was not sent."));
@@ -4237,6 +4856,15 @@ void MainWindow::deleteQueueRow(bool nowList) {
   if (!list)
     return;
   const int row = list->currentRow();
+  if (maActive()) {
+    if (nowList)
+      ma_.removeNow(row);
+    else
+      ma_.removeQueue(row);
+    paintMultiLists();
+    setTxStatus(QStringLiteral("Row removed. Nothing was unkeyed. START was not sent."));
+    return;
+  }
   if (row < 0 || row >= rows.size()) {
     setTxStatus(QStringLiteral("Select a row to delete. Nothing was unkeyed. START was not sent."));
     return;
@@ -4281,7 +4909,7 @@ void MainWindow::enqueueCaller(const QString& call, int db, int dist, int slot) 
 }
 
 bool MainWindow::queueFollows() const {
-  if (!profile_ || !profile_->multiAnswer())
+  if (!profile_ || !profile_->multiAnswer() || maActive())
     return false;
   return sequencedFamily(profile_->digitalMode());
 }
@@ -4327,7 +4955,7 @@ void MainWindow::startQueueHead(const QString& time) {
 }
 
 void MainWindow::promoteNow() {
-  if (!profile_ || !profile_->multiAnswer())
+  if (!profile_ || !profile_->multiAnswer() || maActive())
     return;
   const QString call = txHisCall_.trimmed().toUpper();
   if (call.isEmpty())
@@ -4350,6 +4978,146 @@ void MainWindow::promoteNow() {
   }
   txNow_.push_back(QueuedCall{call, db, dist});
   paintMultiLists();
+}
+
+bool MainWindow::maRestrictedDial() const {
+  // MSHV HvTxW::RefreshLRestrict: within 3 kHz of a standard FT8 or FT4
+  // dial (1.8 through 28 MHz), or on a WSPR dial, MA uses one TX slot.
+  static const qint64 kFt[] = {1840000,  3573000,  7074000,  10136000, 14074000, 18100000, 21074000,
+                               24915000, 28074000, 3575000,  7047000,  10140000, 14080000, 18104000,
+                               21140000, 24919000, 28180000};
+  static const qint64 kWspr[] = {1836600,  5364700,  3568600,  7038600,  10138700,
+                                 14095600, 18104600, 21094600, 24924600, 28124600};
+  qint64 dial = liveDialHz_;
+  if (dial < 100000 && profile_)
+    dial = profile_->dialHz();
+  if (dial < 1000000)
+    return false;
+  for (qint64 f : kFt) {
+    if (std::llabs(dial - f) < 3000)
+      return true;
+  }
+  for (qint64 f : kWspr) {
+    const qint64 d = dial - f;
+    if (d > -3500 && d < 300)
+      return true;
+  }
+  return false;
+}
+
+void MainWindow::syncMaEngine() {
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  const bool ftFamily = mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
+                        mode == QLatin1String("FT2") || q65Mode(mode);
+  MaEngine::Mode want = MaEngine::Mode::Off;
+  // MSHV enables both modes only in the Standard activity type, and not
+  // with Super Fox or Super Hound.
+  if (profile_ && ftFamily && txActivityId() == 0 && !profile_->superFox() && !profile_->superHound()) {
+    if (profile_->multiAnswerMode() == 1)
+      want = MaEngine::Mode::Standard;
+    else if (profile_->multiAnswerMode() == 2)
+      want = MaEngine::Mode::Dxpedition;
+  }
+  ma_.setDigitalMode(mode);
+  ma_.setRestricted(maRestrictedDial());
+  ma_.setStation(stationCall(), stationGrid());
+  const bool wasActive = ma_.active();
+  ma_.setMode(want);
+  if (!ma_.active()) {
+    if (wasActive)
+      paintMultiLists();
+    if (auto* sm = findChild<QCheckBox*>(QStringLiteral("txSm")))
+      sm->setVisible(false);
+    return;
+  }
+  if (auto* spin = findChild<QSpinBox*>(QStringLiteral("txSlots"))) {
+    const QSignalBlocker block(spin);
+    spin->setRange(1, ma_.maxSlots());
+    spin->setEnabled(ma_.maxSlots() > 1);
+    ma_.setSlotCount(spin->value());
+  }
+  if (const auto* limit = findChild<QSpinBox*>(QStringLiteral("txQueueLimit")))
+    ma_.setQueueLimit(limit->value());
+  if (const auto* spin = findChild<QSpinBox*>(QStringLiteral("txMaxPeriods"))) {
+    const bool periods = spin->prefix().startsWith(QLatin1String("Periods"));
+    ma_.setMaxTry(spin->value(), periods, periodLengthMs(mode) / 1000.0);
+  }
+  if (const auto* sort = findChild<QComboBox*>(QStringLiteral("txSort")))
+    ma_.setSort(sort->currentIndex());
+  ma_.setCns(cnsOn());
+  ma_.setCqOnFreeSlot(cqOnFreeOn());
+  if (auto* sm = findChild<QCheckBox*>(QStringLiteral("txSm"))) {
+    sm->setVisible(ma_.mode() == MaEngine::Mode::Dxpedition);
+    ma_.setTxSm(sm->isChecked());
+  }
+  // The CQ the engine sends is the Tx6 line, CQ type and free CQ included.
+  if (const auto* tx6 = findChild<QLineEdit*>(QStringLiteral("tx6")))
+    ma_.setCqLine(tx6->text());
+  if (!ma_.dupeCheckSet()) {
+    // MSHV Cb_dupes: No Limit lets a worked call back in.
+    ma_.setDupeCheck([this](const QString& call) {
+      const auto* dupes = findChild<QComboBox*>(QStringLiteral("txDupes"));
+      return dupes && dupes->currentIndex() > 0 && txFinishedCalls_.contains(call);
+    });
+  }
+  paintMultiLists();
+}
+
+void MainWindow::logMaQsos(const QVector<MaEngine::Logged>& done) {
+  const QString mine = stationCall().trimmed().toUpper();
+  QStringList notes;
+  for (const MaEngine::Logged& q : done) {
+    if (!txFinishedCalls_.contains(q.call))
+      txFinishedCalls_.push_back(q.call);
+    rememberQso(q.call, q.grid, q.rxRpt, true);
+    const QDateTime started = QDateTime::fromString(q.started, QStringLiteral("yyyyMMdd hh:mm"));
+    if (started.isValid()) {
+      QDateTime utc = started;
+      utc.setTimeZone(QTimeZone::utc());
+      qsoStartedMs_ = utc.toMSecsSinceEpoch();
+    }
+    const QString keep = txReport_;
+    txReport_ = q.txRpt;
+    const QString note = maybeLogQso(q.call + QLatin1Char(' ') + mine + QStringLiteral(" RR73"));
+    txReport_ = keep;
+    if (!note.isEmpty())
+      notes << q.call;
+  }
+  if (!notes.isEmpty())
+    setTxStatus(QStringLiteral("Logged %1. START was not sent.").arg(notes.join(QStringLiteral(", "))));
+}
+
+int MainWindow::txStartLeadMs(const QString& mode) const {
+  // MSHV MsPlayerHV::xplaymessage. Inside the first second of a period the
+  // audio starts at a fixed offset; any later start waits 200 ms.
+  const int period = periodLengthMs(mode);
+  if (period <= 0)
+    return 0;
+  // The JS8 wave already begins with 500 ms of silence, so playback starts
+  // on the UTC boundary and the first symbol lands half a second in.
+  if (js8Mode(mode))
+    return 0;
+  if (jt65Mode(mode))
+    return 700;
+  int target = 0;
+  if (mode == QLatin1String("FT8"))
+    target = 450;
+  else if (mode == QLatin1String("FT4") || mode == QLatin1String("FT2"))
+    target = 350;
+  else if (q65Mode(mode))
+    target = period >= 60000 ? 950 : 450;
+  else
+    return 0;
+  const int into = utcIntoPeriodMs(period);
+  int lead = 200;
+  if (into < 1000) {
+    const int x = target - into;
+    if (x > 50)
+      lead = x;
+    if (mode == QLatin1String("FT2") && lead > 700)
+      lead = 200;
+  }
+  return lead;
 }
 
 void MainWindow::appendQso(const QString& side, const QString& text) {
@@ -4375,6 +5143,13 @@ void MainWindow::noteTheirReply(const QString& time, int db, const QString& mess
   appendQso(QStringLiteral("RX"), message);
   if (!txSequence_ || qEnvironmentVariableIsSet("STD_SELFTEST"))
     return;
+  if (maActive()) {
+    // MSHV SetTextForAutoSeq: with TX on, every decode to us feeds the engine.
+    ma_.decoded(message, db, 0, false);
+    logMaQsos(ma_.takeLogged());
+    paintMultiLists();
+    return;
+  }
   applyTheirReply(time, db, message);
 }
 
@@ -4395,7 +5170,7 @@ bool MainWindow::halfIsFirst(const QString& mode) const {
 int MainWindow::periodLengthMs(const QString& mode) const {
   if (wsprMode(mode))
     return 120000;
-  if (mode == QLatin1String("FT8"))
+  if (js8Mode(mode) || mode == QLatin1String("FT8"))
     return 15000;
   if (mode == QLatin1String("FT4"))
     return 7500;
@@ -4569,12 +5344,26 @@ void MainWindow::retargetLiveTx() {
                     .arg(txSlotName()));
 }
 
+bool startTonesOf(const QWidget* window, const QString& mode) {
+  if (!window)
+    return true;
+  if (oliviaBandwidthHz(mode) > 0) {
+    if (auto* box = window->findChild<QCheckBox*>(QStringLiteral("oliviaStartTones")))
+      return box->isChecked();
+  }
+  if (mt63BandwidthHz(mode) > 0) {
+    if (auto* box = window->findChild<QCheckBox*>(QStringLiteral("mt63StartTones")))
+      return box->isChecked();
+  }
+  return true;
+}
+
 bool MainWindow::rebuildTxWave() {
   if (!profile_)
     return false;
   const QString mode = profile_->digitalMode();
   const QString text = transmitMessage();
-  if (text.isEmpty())
+  if (text.isEmpty() && txJs8Text_.isEmpty())
     return false;
   const int tone = waterfall_ ? waterfall_->txHz() : 1500;
   txCursor_ = 0;
@@ -4585,7 +5374,29 @@ bool MainWindow::rebuildTxWave() {
   txLastPullMs_ = 0;
   txGuardDeadlineMs_ = 0;
   txPeriodEndMs_ = 0;
-  const bool built = buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_) && !txSamples_.empty();
+  if (js8Mode(mode)) {
+    if (txJs8Text_.isEmpty())
+      txJs8Text_ = text;
+    const QString left = txJs8Text_.mid(txJs8Next_);
+    if (left.isEmpty())
+      return false;
+    int used = 0;
+    const Js8Plan plan = planJs8(left, tone, 1, &used, txJs8Next_ == 0);
+    if (plan.samples.empty() || used < 1)
+      return false;
+    txJs8Pending_ = used;
+    txJs8Part_ = left.left(used);
+    txSamples_ = plan.samples;
+    txEchoAt_ = plan.echoAt;
+    txSymbolSamples_ = tonalSamples(txSamples_);
+    return true;
+  }
+  if (text.isEmpty())
+    return false;
+  const RttyOptions rtty = rttyOptionsOf(this);
+  const bool built = buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_, rttyMode(mode) ? &rtty : nullptr,
+                                 startTonesOf(this, mode)) &&
+                     !txSamples_.empty();
   txSymbolSamples_ = built ? tonalSamples(txSamples_) : 0;
   return built;
 }
@@ -4595,6 +5406,17 @@ void MainWindow::refreshTxChrome() {
   const bool textMode = keyboardTextMode(mode);
   const bool wspr = wsprMode(mode);
   const bool hell = hellFamily(mode);
+  if (auto* rttyRow = findChild<QWidget*>(QStringLiteral("rttyOptions")))
+    rttyRow->setVisible(rttyMode(mode));
+  if (auto* toneRow = findChild<QWidget*>(QStringLiteral("startToneOptions"))) {
+    const bool olivia = oliviaBandwidthHz(mode) > 0;
+    const bool mt63 = mt63BandwidthHz(mode) > 0;
+    toneRow->setVisible(olivia || mt63);
+    if (auto* oliviaBox = toneRow->findChild<QCheckBox*>(QStringLiteral("oliviaStartTones")))
+      oliviaBox->setVisible(olivia);
+    if (auto* mt63Box = toneRow->findChild<QCheckBox*>(QStringLiteral("mt63StartTones")))
+      mt63Box->setVisible(mt63);
+  }
   if (auto* text = findChild<QPlainTextEdit*>(QStringLiteral("txHell"))) {
     text->setVisible(textMode);
     text->setPlaceholderText(
@@ -4668,6 +5490,7 @@ void MainWindow::refreshTxChrome() {
     qrg->setVisible(activity == 0 || activity == 1);
   syncCqEditor(false);
   refreshTxFields();
+  syncMaEngine();
 }
 
 void MainWindow::primeGraphics() {
@@ -4864,6 +5687,14 @@ int MainWindow::selectedTxSlot() const {
 }
 
 bool MainWindow::periodReady(const QString& mode) {
+  if (js8Mode(mode)) {
+    // JS8Call copies a frame that starts on the 15 s boundary. Do not join
+    // a period that has already opened.
+    const int into = utcIntoPeriodMs(15000);
+    const bool crossed = txPeriodMark_ >= 0 && into < txPeriodMark_;
+    txPeriodMark_ = into;
+    return crossed || into < 200;
+  }
   if (keyboardTextMode(mode))
     return true;
   if (wsprMode(mode)) {
@@ -4973,6 +5804,30 @@ void MainWindow::loadReplyFromLine(int line) {
     setTxStatus(QStringLiteral("That decode has no call to answer. Nothing was keyed."));
     return;
   }
+  if (maActive()) {
+    // MSHV DecListTextAll with f_double_click. MA Std starts a QSO with
+    // anyone; MA DX only takes stations calling us.
+    const QString mine = stationCall().trimmed().toUpper();
+    const bool toMe = row.message.contains(mine, Qt::CaseInsensitive);
+    if (ma_.mode() == MaEngine::Mode::Dxpedition && !toMe) {
+      setTxStatus(QStringLiteral(
+          "MA DX works stations that call you. Double-click a line with your call. Nothing was keyed."));
+      return;
+    }
+    ma_.decoded(row.message, row.db, row.freqHz, true);
+    logMaQsos(ma_.takeLogged());
+    paintMultiLists();
+    int msgPos = 0;
+    for (int i = 0; i < words.size(); ++i) {
+      if (isCall(words.at(i)) && words.at(i).compare(mine, Qt::CaseInsensitive) != 0) {
+        msgPos = i;
+        break;
+      }
+    }
+    armAnswerSlot(row.time, msgPos);
+    armUserTx();
+    return;
+  }
   const bool cq = words.at(0).compare(QLatin1String("CQ"), Qt::CaseInsensitive) == 0;
   QStringList calls;
   QString report;
@@ -5072,9 +5927,9 @@ void MainWindow::haltTx() {
   stopUserTx(true);
   if (live || armed)
     setTxStatus(QStringLiteral(
-        "Halted. TRX is off and the sequence stopped. Nothing was keyed. START was not sent."));
+        "Halted. TRX is off and the sequence stopped. Nothing was keyed."));
   else
-    setTxStatus(QStringLiteral("Nothing is transmitting. Halt did not key. START was not sent."));
+    setTxStatus(QStringLiteral("Nothing is transmitting. Halt did not key."));
 }
 
 void MainWindow::setTune(bool on) {
@@ -5187,6 +6042,10 @@ void MainWindow::setUserTx(bool on) {
   }
   const QString mode = profile_->digitalMode();
   const QString text = transmitMessage();
+  txJs8Text_.clear();
+  txJs8Part_.clear();
+  txJs8Next_ = 0;
+  txJs8Pending_ = 0;
   if (text.isEmpty()) {
     release();
     setTxStatus(wsprMode(mode)
@@ -5201,7 +6060,15 @@ void MainWindow::setUserTx(bool on) {
     return;
   }
   const int tone = waterfall_ ? waterfall_->txHz() : 1500;
-  if (!buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_) || txSamples_.empty()) {
+  const RttyOptions rtty = rttyOptionsOf(this);
+  if (js8Mode(mode))
+    txJs8Text_ = text;
+  const bool waveOk = js8Mode(mode)
+                          ? rebuildTxWave()
+                          : buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_,
+                                        rttyMode(mode) ? &rtty : nullptr, startTonesOf(this, mode)) &&
+                                !txSamples_.empty();
+  if (!waveOk || txSamples_.empty()) {
     txEchoAt_.clear();
     release();
     setTxStatus(QStringLiteral(
@@ -5229,8 +6096,13 @@ void MainWindow::setUserTx(bool on) {
   txSeqStartMs_ = QDateTime::currentMSecsSinceEpoch();
   txJoinOpen_ = txSequence_ && slotStillOpen(mode);
   if (button)
-    button->setText(keyboardTextMode(mode) ? QStringLiteral("TX") : QStringLiteral("WAIT"));
-  if (keyboardTextMode(mode))
+    button->setText((keyboardTextMode(mode) && !js8Mode(mode)) ? QStringLiteral("TX")
+                                                                : QStringLiteral("WAIT"));
+  if (js8Mode(mode))
+    setTxStatus(QStringLiteral(
+        "Armed for the next 15 second UTC period. The frame starts half a second in. "
+        "A longer message continues on the following periods, one frame each. START was not sent."));
+  else if (keyboardTextMode(mode))
     setTxStatus(QStringLiteral(
         "Sending. Sent characters print in the receive pane as they go out. START was not sent."));
   else if (wsprMode(mode))
@@ -5400,7 +6272,7 @@ void MainWindow::pushRealtimeTx() {
   constexpr int kRate = 48000;
   constexpr int kChunk = 960;
   const qint64 origin = txTune_ ? txTuneStartMs_ : txPlayOriginMs_;
-  if (origin <= 0)
+  if (origin <= 0 || now < origin)
     return;
   const int sent = txTune_ ? txTuneSent_ : txCursor_;
   const int allowed = int((now - origin) * kRate / 1000) + kChunk;
@@ -5453,6 +6325,18 @@ void MainWindow::pumpUserTx() {
   if (!txKeySent_) {
     if (!periodReady(mode))
       return;
+    // MSHV builds the message when the period opens (SetTxRxMsg, then the
+    // generator), so what goes out is the line as it stands now.
+    if (maActive()) {
+      syncMaEngine();
+      ma_.txStarted();
+      paintMultiLists();
+    }
+    if (!rebuildTxWave()) {
+      setTxStatus(QStringLiteral("The selected line is empty. Nothing was keyed. START was not sent."));
+      stopUserTx(true);
+      return;
+    }
     if (!tci_->setTransmit(true)) {
       setTxStatus(QStringLiteral("Radio is not connected. TX did not key. START was not sent."));
       stopUserTx(true);
@@ -5467,8 +6351,16 @@ void MainWindow::pumpUserTx() {
     txJoinOpen_ = false;
     txCursor_ = 0;
     txLastPullMs_ = 0;
-    txPlayOriginMs_ = now;
-    txSentText_ = txEchoAt_.empty() ? transmitMessage() : transmitMessage().trimmed();
+    // MSHV MsPlayerHV::xplaymessage: first symbol 450 ms into an FT8
+    // period (350 ms FT4 / FT2), 200 ms after a late start.
+    txPlayOriginMs_ = now + txStartLeadMs(mode);
+    if (js8Mode(mode)) {
+      txJs8Next_ += txJs8Pending_;
+      txJs8Pending_ = 0;
+      txSentText_ = txJs8Part_;
+    } else {
+      txSentText_ = txEchoAt_.empty() ? transmitMessage() : transmitMessage().trimmed();
+    }
     txEchoCount_ = 0;
     txEchoSamples_ = textModeSamplesPerChar(mode);
     if (const int period = periodLengthMs(mode)) {
@@ -5493,7 +6385,14 @@ void MainWindow::pumpUserTx() {
     const bool periods = !spin || spin->prefix().startsWith(QLatin1String("Periods"));
     const QString count =
         periods ? QStringLiteral("try %1 of %2").arg(txTries_ + 1).arg(n) : QStringLiteral("Max Time");
-    if (keyboardTextMode(mode))
+    if (js8Mode(mode))
+      setTxStatus(txJs8Next_ < txJs8Text_.size()
+                      ? QStringLiteral(
+                            "On the air. This JS8 frame is one part. The rest waits for the next "
+                            "15 second period. START was not sent.")
+                      : QStringLiteral(
+                            "On the air. This JS8 frame is the whole message. START was not sent."));
+    else if (keyboardTextMode(mode))
       setTxStatus(QStringLiteral(
           "On the air. Sent characters print in the receive pane as they go out. START was not sent."));
     else if (wsprMode(mode))
@@ -5522,7 +6421,7 @@ void MainWindow::finishTxPass() {
     tci_->setTransmit(false);
   txKeySent_ = false;
   markWaterfallTx();
-  const QString logNote = (!retargeted && keyed) ? maybeLogQso(sent) : QString();
+  const QString logNote = (!retargeted && keyed && !maActive()) ? maybeLogQso(sent) : QString();
   txHold_ = 0;
   txLoggedThisPass_ = false;
   txSamples_.clear();
@@ -5557,6 +6456,49 @@ void MainWindow::finishTxPass() {
       txTimer_->start(20);
     setTxStatus(QStringLiteral(
         "WSPR cycle ended. Waiting for the next even minute. Tx Pct decides that slot. "
+        "TRX is off. START was not sent."));
+    return;
+  }
+  if (maActive() && txSequence_ && sequencedMode(mode) && !qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    // MSHV SetTxRxMsg(false) / SetTxMsgEnd: RR73 and 73 rows that went out
+    // are logged and leave Now; the Queue tops Now back up.
+    logMaQsos(ma_.txEnded());
+    paintMultiLists();
+    if (ma_.takeStop()) {
+      setTxStatus(QStringLiteral(
+          "MA Std: Now and the Queue are empty and CNS is off. Stopped. TRX is off. START was not sent."));
+      stopUserTx(true);
+      return;
+    }
+    if (button)
+      button->setText(QStringLiteral("WAIT"));
+    if (txTimer_ && !txTimer_->isActive())
+      txTimer_->start(20);
+    const int working = ma_.now().size();
+    setTxStatus(working > 0
+                    ? QStringLiteral("%1 working %2, %3 waiting. Next %4 slot. TRX is off. START was not sent.")
+                          .arg(ma_.mode() == MaEngine::Mode::Dxpedition ? QStringLiteral("MA DX")
+                                                                         : QStringLiteral("MA Std"))
+                          .arg(working)
+                          .arg(ma_.queue().size())
+                          .arg(txSlotName())
+                    : QStringLiteral("Calling CQ on the next %1 slot. TRX is off. START was not sent.")
+                          .arg(txSlotName()));
+    return;
+  }
+  if (js8Mode(mode) && button && button->isChecked() && txJs8Next_ < txJs8Text_.size() &&
+      !qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    if (!rebuildTxWave()) {
+      setTxStatus(QStringLiteral(
+          "The rest of the JS8 message did not build. Stopped. TRX is off. START was not sent."));
+      stopUserTx(true);
+      return;
+    }
+    button->setText(QStringLiteral("WAIT"));
+    if (txTimer_ && !txTimer_->isActive())
+      txTimer_->start(20);
+    setTxStatus(QStringLiteral(
+        "JS8 frame sent. The next part waits for the following 15 second period. "
         "TRX is off. START was not sent."));
     return;
   }
@@ -5832,6 +6774,10 @@ void MainWindow::stopUserTx(bool uncheck) {
   txSentText_.clear();
   txEchoCount_ = 0;
   txEchoSamples_ = 0;
+  txJs8Text_.clear();
+  txJs8Part_.clear();
+  txJs8Next_ = 0;
+  txJs8Pending_ = 0;
   if (auto* button = findChild<QPushButton*>(QStringLiteral("txSend"))) {
     if (uncheck) {
       const QSignalBlocker block(button);
@@ -6098,6 +7044,8 @@ void MainWindow::applyTextStyle() {
     edit->setFont(font);
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
     echo->setFont(font);
+  if (auto* wsprHead = findChild<QLabel*>(QStringLiteral("wsprRxHeader")))
+    wsprHead->setFont(font);
   if (auto* hellText = findChild<QPlainTextEdit*>(QStringLiteral("txHell")))
     hellText->setFont(font);
   const char* txNames[] = {"tx1", "tx2", "tx3", "tx4", "tx5", "tx6", "txExtra", "txQrg"};
@@ -6700,28 +7648,87 @@ void MainWindow::openNetworkDialog() {
   auto* port = new QSpinBox(&dialog);
   port->setRange(1, 65535);
   port->setValue(settings.value(QStringLiteral("dx/reportPort"), 4739).toInt());
+  auto* antenna = new QLineEdit(settings.value(QStringLiteral("dx/reportAntenna")).toString(), &dialog);
+  antenna->setObjectName(QStringLiteral("reportAntenna"));
+  antenna->setPlaceholderText(QStringLiteral("dipole, vertical, EFHW"));
+  antenna->setMaxLength(64);
+  antenna->setToolTip(QStringLiteral(
+      "Antenna description sent with each PSK Reporter spot, the same field WSJT-X calls Antenna "
+      "Description. This is not a callsign or a locator. Changing it does not key. START is never sent."));
   auto* form = new QFormLayout;
   form->addRow(QStringLiteral("Region"), region);
   form->addRow(QStringLiteral("Server"), host);
   form->addRow(QStringLiteral("UDP port"), port);
+  form->addRow(QStringLiteral("Antenna"), antenna);
   auto* note = new QLabel(
       QStringLiteral("Callsign and locator stay in Options → User. This dialog does not ask for them again. "
                      "A portable suffix such as N8SDR/VE sets Auto to that country; Region 1, 2, or 3 "
                      "overrides it. Enable uploads a spot a few seconds after an FT8, FT4, FT2, JT65, Q65, "
-                     "JS8, or WSPR decode. Leave it off and nothing is uploaded. View spots opens the map. "
-                     "This does not send START and does not key."),
+                     "JS8, or WSPR decode. The spot is the station that transmitted, including a hashed "
+                     "call once it is known. The status line says when the UDP write works or fails. "
+                     "Leave Enable off and nothing is uploaded. View spots opens the map and does not upload. "
+                     "Live decodes also go to the logger UDP address when a UDP option under Log Options is on, "
+                     "the same packets GridTracker reads. This does not send START and does not key."),
       &dialog);
   note->setWordWrap(true);
+  auto* wsprChoice = new QWidget(&dialog);
+  wsprChoice->setObjectName(QStringLiteral("wsprnetChoice"));
+  auto* wsprOff = new QRadioButton(QStringLiteral("Off"), wsprChoice);
+  auto* wsprOn = new QRadioButton(QStringLiteral("On"), wsprChoice);
+  wsprOff->setObjectName(QStringLiteral("wsprnetOff"));
+  wsprOn->setObjectName(QStringLiteral("wsprnetOn"));
+  const QString wsprRadioStyle = QStringLiteral(
+      "QRadioButton { color: #f7ffff; font-size: 14px; spacing: 8px; }"
+      "QRadioButton::indicator { width: 18px; height: 18px; border: 2px solid #00e5ff; "
+      "border-radius: 11px; background: #071018; }"
+      "QRadioButton::indicator:checked { background: #00e5ff; border: 2px solid #f7ffff; }");
+  wsprOff->setStyleSheet(wsprRadioStyle);
+  wsprOn->setStyleSheet(wsprRadioStyle);
+  auto* wsprGroup = new QButtonGroup(wsprChoice);
+  wsprGroup->setExclusive(true);
+  wsprGroup->addButton(wsprOff);
+  wsprGroup->addButton(wsprOn);
+  const bool wsprSaved = settings.value(QStringLiteral("dx/wsprnetEnabled"), false).toBool();
+  wsprOn->setChecked(wsprSaved);
+  wsprOff->setChecked(!wsprSaved);
+  const QString wsprTip = QStringLiteral(
+      "On posts each WSPR station STD decodes to wsprnet.org. Off posts nothing. "
+      "WSPRnet does not ask for a password or a key. Does not key. START is never sent.");
+  wsprOff->setToolTip(wsprTip);
+  wsprOn->setToolTip(wsprTip);
+  auto* wsprLabel = new QLabel(QStringLiteral("WSPRnet"), wsprChoice);
+  wsprLabel->setStyleSheet(QStringLiteral("color: #f7ffff; font-size: 14px;"));
+  auto* wsprRow = new QHBoxLayout(wsprChoice);
+  wsprRow->setContentsMargins(0, 6, 0, 0);
+  wsprRow->setSpacing(14);
+  wsprRow->addWidget(wsprLabel);
+  wsprRow->addWidget(wsprOff);
+  wsprRow->addWidget(wsprOn);
+  wsprRow->addStretch(1);
+  auto* wsprNote = new QLabel(
+      QStringLiteral("WSPRnet posts the station STD heard, not your own transmission. "
+                     "There is no password and no key. The receiver callsign and locator are the ones "
+                     "in Options → User. View reports opens the page of stations reported by that callsign. "
+                     "Choose Off and nothing is posted. This does not send START and does not key."),
+      &dialog);
+  wsprNote->setWordWrap(true);
   auto* map = new QPushButton(QStringLiteral("View spots"), &dialog);
   map->setObjectName(QStringLiteral("pskReporterMap"));
   map->setToolTip(QStringLiteral(
       "Opens pskreporter.info for the callsign in Options → User. Does not upload, does not key, and "
       "does not send START."));
   connect(map, &QPushButton::clicked, this, [this] { openPskReporterMap(); });
+  auto* reports = new QPushButton(QStringLiteral("View reports"), &dialog);
+  reports->setObjectName(QStringLiteral("wsprnetView"));
+  reports->setToolTip(QStringLiteral(
+      "Opens wsprnet.org for stations reported by the callsign in Options → User. "
+      "Does not upload, does not key, and does not send START."));
+  connect(reports, &QPushButton::clicked, this, [this] { openWsprnetReports(); });
   auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
   auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
   auto* buttons = new QHBoxLayout;
   buttons->addWidget(map);
+  buttons->addWidget(reports);
   buttons->addStretch(1);
   buttons->addWidget(ok);
   buttons->addWidget(cancel);
@@ -6729,6 +7736,8 @@ void MainWindow::openNetworkDialog() {
   layout->addWidget(enable);
   layout->addLayout(form);
   layout->addWidget(note);
+  layout->addWidget(wsprChoice);
+  layout->addWidget(wsprNote);
   layout->addLayout(buttons);
   connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
   connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -6736,8 +7745,10 @@ void MainWindow::openNetworkDialog() {
     return;
   QSettings store;
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
+  store.setValue(QStringLiteral("dx/wsprnetEnabled"), wsprOn->isChecked());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
+  store.setValue(QStringLiteral("dx/reportAntenna"), antenna->text().trimmed());
   if (profile_) {
     profile_->setRegionOverride(region->currentData().toString());
     profile_->refreshStation();
@@ -6911,6 +7922,121 @@ QString MainWindow::maybeLogQso(const QString& sent) {
   const QString dup = again ? QStringLiteral(" This call was already in the file.") : QString();
   return QStringLiteral("Logged %1 to %2.%3 TRX is off. START was not sent.")
       .arg(qsoCall_, where.join(QStringLiteral(", ")), dup);
+}
+
+QString MainWindow::logbookPath() const {
+  QString path = QSettings().value(QStringLiteral("log/adifPath")).toString().trimmed();
+  if (path.isEmpty())
+    path = QsoLog::defaultAdifPath();
+  return path;
+}
+
+void MainWindow::backupSettings() {
+  const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("Backup settings"),
+      QDir(documents).filePath(QStringLiteral("STD-settings.ini")),
+      QStringLiteral("STD settings (*.ini)"));
+  if (path.isEmpty())
+    return;
+  QFile::remove(path);
+  QSettings live;
+  QSettings dest(path, QSettings::IniFormat);
+  const int count = copyStationSettings(live, dest, false);
+  if (count < 1) {
+    QFile::remove(path);
+    QMessageBox::information(
+        this, QStringLiteral("Backup settings"),
+        QStringLiteral("Nothing was saved. There is no layout, and Options → User has no callsign "
+                       "or locator yet. Nothing was keyed. START was not sent."));
+    return;
+  }
+  setTxStatus(QStringLiteral("Settings saved. Nothing was keyed. START was not sent."));
+  QMessageBox::information(
+      this, QStringLiteral("Backup settings"),
+      QStringLiteral("Saved %1 layout and user entries to\n%2\n\nThe TCI host and port were not copied. "
+                     "Nothing was keyed. START was not sent.")
+          .arg(count)
+          .arg(path));
+}
+
+void MainWindow::importSettings() {
+  const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  const QString path = QFileDialog::getOpenFileName(
+      this, QStringLiteral("Import settings"), documents, QStringLiteral("STD settings (*.ini)"));
+  if (path.isEmpty())
+    return;
+  QSettings backup(path, QSettings::IniFormat);
+  QSettings live;
+  const int count = copyStationSettings(backup, live, true);
+  if (count < 1) {
+    QMessageBox::information(
+        this, QStringLiteral("Import settings"),
+        QStringLiteral("That file has no STD layouts or user info. Nothing was changed. "
+                       "Nothing was keyed. START was not sent."));
+    return;
+  }
+  if (profile_)
+    profile_->refreshStation();
+  refreshDecodes();
+  applyStationLock();
+  refreshTxFields();
+  restoreModeLayout();
+  applyMacroBar();
+  refreshTxChrome();
+  setTxStatus(QStringLiteral("Settings imported. Nothing was keyed. START was not sent."));
+  QMessageBox::information(
+      this, QStringLiteral("Import settings"),
+      QStringLiteral("Restored %1 layout and user entries from\n%2\n\nThe TCI host and port were left "
+                     "as they are. Nothing was keyed. START was not sent.")
+          .arg(count)
+          .arg(path));
+}
+
+void MainWindow::backupLogbook() {
+  const QString source = logbookPath();
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("Backup logbook"),
+      QDir(QFileInfo(source).absolutePath()).filePath(QStringLiteral("std-logbook-backup.adi")),
+      QStringLiteral("ADIF (*.adi)"));
+  if (path.isEmpty())
+    return;
+  QString error;
+  if (!backupLogbookFile(source, path, &error)) {
+    QMessageBox::warning(this, QStringLiteral("Backup logbook"),
+                         error + QStringLiteral(" Nothing was keyed. START was not sent."));
+    return;
+  }
+  setTxStatus(QStringLiteral("Logbook copied. Nothing was keyed. START was not sent."));
+  QMessageBox::information(
+      this, QStringLiteral("Backup logbook"),
+      QStringLiteral("Copied the logbook to\n%1\n\nThe original stays at\n%2\n\nNothing was keyed. "
+                     "START was not sent.")
+          .arg(path, source));
+}
+
+void MainWindow::exportAdif() {
+  const QString source = logbookPath();
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("Export ADIF"),
+      QDir(QFileInfo(source).absolutePath()).filePath(QStringLiteral("std-logbook-export.adi")),
+      QStringLiteral("ADIF (*.adi)"));
+  if (path.isEmpty())
+    return;
+  int records = 0;
+  QString error;
+  if (!exportAdifForLogger(source, path, &records, &error)) {
+    QMessageBox::warning(this, QStringLiteral("Export ADIF"),
+                         error + QStringLiteral(" Nothing was keyed. START was not sent."));
+    return;
+  }
+  setTxStatus(QStringLiteral("ADIF exported. Nothing was keyed. START was not sent."));
+  QMessageBox::information(
+      this, QStringLiteral("Export ADIF"),
+      QStringLiteral("Wrote %1 QSO(s) for another logger to\n%2\n\nThe logbook stays in place. "
+                     "Nothing was keyed. START was not sent.")
+          .arg(records)
+          .arg(path));
 }
 
 void MainWindow::openLogDialog() {
@@ -7153,8 +8279,8 @@ Licensed under the <b>GNU General Public License, version 3</b> or any later ver
 <p><b>Sources and references.</b> These projects were read for conventions. Each stays under its own license.</p>
 <ul>
 <li><b>MSHV</b> (Christo, LZ2HV) — FT8, FT4, and FT2 decoder, periods, and contest messages.</li>
-<li><b>WSJT-X</b> (Joe Taylor, K1JT, GPL-3) and <b>JTDX-improved</b> — WSPR-2 and the PSK Reporter datagram (Edson Pereira, PY2SDR). Tx power, Tx Pct, and band hopping. Not MSHV.</li>
-<li><b>Fldigi</b> (Dave Freese, W1HKJ, GPL-3) — Feld Hell tape, macro files (.mdf), RTTY mark/space (45.45 baud, 170 Hz, mark high on DIGU), BPSK varicode, Olivia and Contestia (Pawel Jalocha's block code), MFSK (NASA K=7, IZ8BLY varicode, diagonal interleaver), DominoEX (18-tone IFK+, FEC off), Thor (K=7, 18-tone IFK+), and WEFAX-576 receive.</li>
+<li><b>WSJT-X</b> (Joe Taylor, K1JT, GPL-3) and <b>JTDX-improved</b> — WSPR-2, the WSPRnet post, and the PSK Reporter datagram (Edson Pereira, PY2SDR). Tx power, Tx Pct, and band hopping. Not MSHV.</li>
+<li><b>Fldigi</b> (Dave Freese, W1HKJ, GPL-3) — Feld Hell tape, macro files (.mdf), RTTY mark/space (45.45 baud, 170 Hz, mark high on DIGU, shaped keying, Reverse, ITA-2, and the Fldigi baud and shift lists), BPSK varicode, Olivia and Contestia (Pawel Jalocha's block code), MFSK (NASA K=7, IZ8BLY varicode, diagonal interleaver), DominoEX (18-tone IFK+, FEC off), Thor (K=7, 18-tone IFK+), and WEFAX-576 receive.</li>
 <li><b>TCIdigi</b> — TCI audio for a Fldigi-style keyboard. STD does not include that tree.</li>
 <li><b>Lyra</b> (N8SDR, GPL-3) — the TCI client this socket follows. CW stays there.</li>
 </ul>

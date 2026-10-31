@@ -230,10 +230,11 @@ QLabel#panelNote, QLabel#macroEmpty {
   color: #6d8496;
 }
 
-QLabel#decodeHeader {
+QLabel#decodeHeader, QLabel#wsprRxHeader {
   color: #9fb4c4;
   padding: 0;
   margin: 0;
+  background: transparent;
 }
 
 QPlainTextEdit#receiveText, QTextEdit#rxEcho {
