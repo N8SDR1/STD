@@ -3557,6 +3557,9 @@ void MainWindow::showGuide() {
        "Lock is on. That click does not key. A double-click fills Tx1 through Tx5 for that station and "
        "Tx6 as CQ, then arms TX. With Multi on, a station that answers your CQ waits in the queue. "
        "The first waiting call is worked next, or the furthest when the queue sort is Distance. "
+       "The marker on each Tx line is a biohazard sign, glowing green on the line that goes out next. "
+       "With Multi on, the Tx lines name the station being worked, and the next pass is built again "
+       "after each one. DIST follows Options → Decode List Options, miles or kilometers. "
        "Periods, or Max Time, is how long to keep calling that station before the next one in the "
        "queue. A reply from that station starts the count over. If the queue is empty, CNS calls CQ. "
        "CNS off stops. FT8, FT4, FT2, JT65, and Q65 wait for the slot, or join the one that is still open. "
@@ -3734,7 +3737,7 @@ void MainWindow::showGuide() {
       {"Docking and layouts",
        "Waterfall, Receive, Transmit, Macros, and the status strip are docks. Drag a title to move a "
        "pane or float it. Close hides it. The View menu lists those panes and shows a hidden one again. "
-       "Macros stays hidden on FT8, FT4, and FT2. Hell and the other keyboard modes show the macro row. "
+       "Macros stays hidden on FT8, FT4, FT2, JT65, Q65, and WSPR. Hell and the other keyboard modes show the macro row. "
        "Each mode keeps its own dock arrangement, window "
        "geometry, and waterfall Floor, Range, and Auto. View → Save layout writes the mode that is open. The next "
        "time that mode opens, including after a restart, those panes come back. Leaving a mode, or "
@@ -3768,7 +3771,8 @@ void MainWindow::showGuide() {
       {"Graphics",
        "Options → Graphics chooses the waterfall backend. Auto uses Vulkan. Direct3D 11, "
        "Direct3D 12, OpenGL, and Painter are explicit. The Graphics line names the backend in "
-       "use, and choosing one replaces it immediately. It does not key and does not send START."},
+       "use. Choosing a different graphics API restarts STD so that backend is selected. Choosing the "
+       "backend already in use replaces the picture immediately. It does not key and does not send START."},
       {"Fox and Hound",
        "Super Hound or Super Fox, on the mode bar, sets 40 m to 7.056 MHz DIGU and moves the RX marker "
        "to 750 Hz. That is the fox. It is still 15 second FT8. TX FIRST and TX SECOND only remember a "
@@ -3776,8 +3780,10 @@ void MainWindow::showGuide() {
        "caller. Turning those on does not key, and it does not send START."},
       {"DX options",
        "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Fast/Normal/Deep "
-       "and AP also apply to Q65, and AP to JT65. Decode → JT65 and Q65 holds averaging, Q65 single "
-       "signal and drift correction, JT65 VHF/UHF, and the JT65 signal cap. Time "
+       "and AP also apply to Q65, and AP to JT65. Decode → JT65 and Q65 holds averaging, auto clear "
+       "after a Q65 decode, Clear Averaging Now, Q65 single signal, EME delay, drift correction, "
+       "JT65 VHF/UHF, deep search against the ADIF log, and the JT65 signal cap. Averages clear "
+       "on a mode change or a dial move of more than 1 kHz. Time "
        "Synchronization calibrates the period clock. Macros are a Fldigi .mdf; see Macros. Network "
        "Configuration can upload a PSK Reporter spot after a decode. That upload is off until Enable "
        "is checked. Antenna is the description sent with the spot. The status line says when a "

@@ -249,7 +249,7 @@ void QsoLog::sendWsprDecode(int snr, float deltaTime, quint64 freqHz, qint32 dri
 void QsoLog::sendHeartbeat() {
   if (qEnvironmentVariableIsSet("STD_SELFTEST") || (!udpQso_ && !udpAdif_))
     return;
-  sendUdp(heartbeatDatagram(QStringLiteral("0.1.0")));
+  sendUdp(heartbeatDatagram(QStringLiteral(STD_VERSION)));
 }
 
 QsoLog::Result QsoLog::store(const Record& qso) {
