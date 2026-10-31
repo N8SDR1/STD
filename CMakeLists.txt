@@ -157,6 +157,7 @@ if(WIN32)
       "${CMAKE_SOURCE_DIR}/src/ft8/decoderms_ft8.h"
       "${CMAKE_SOURCE_DIR}/src/ft8/decoderms_jt65.h"
       "${CMAKE_SOURCE_DIR}/src/ft8/jt65_bridge.cpp"
+      "${CMAKE_SOURCE_DIR}/src/ft8/patch_unpack_text.py"
       "${CMAKE_SOURCE_DIR}/src/ft8/qt6_compat.h"
       "${CMAKE_SOURCE_DIR}/src/ft8/patch_qt_import.py"
       "${CMAKE_SOURCE_DIR}/src/ft8/patch_moc_undef.py"

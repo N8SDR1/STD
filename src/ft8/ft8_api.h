@@ -69,6 +69,37 @@ int jt65_generate(const char* message, int submode, int* samples, int capacity);
 int q65_generate(const char* message, double toneHz, int submode, int periodSec, int* samples,
                  int capacity);
 
+/* MSHV's Decode menu for JT65 and Q65. Call from the decoding thread just
+   before jt65_decode_wave or q65_decode_wave; the next decode uses it.
+   depth 1 fast, 2 normal, 3 deep (Q65). ap enables a-priori decoding and
+   uses myCall, hisCall and hisGrid. averaging keeps a running average of
+   failed periods. autoClearAverage clears it after a decode (Q65).
+   singleSignal stops after the first Q65 decode. driftCorrection is MSHV's
+   +/- 100 Hz Q65 drift search. vhfUhf turns on JT65 VHF/UHF features.
+   maxCandidates is the JT65 cap: 1, 4, 8, 16, or 32. clearAverage drops
+   both averages once. emeDelay is MSHV's Q65 Decode After EME Delay.
+   deepSearch turns on JT65 deep search against deepSearchDb, lines of
+   "CALL,GRID4" separated by '\n' (MSHV's msloc_db format, at most 15000).
+   Strings may be null. */
+typedef struct SlowDecodeOptions {
+  int depth;
+  int ap;
+  int averaging;
+  int autoClearAverage;
+  int singleSignal;
+  int driftCorrection;
+  int vhfUhf;
+  int maxCandidates;
+  int clearAverage;
+  int emeDelay;
+  int deepSearch;
+  const char* deepSearchDb;
+  const char* myCall;
+  const char* hisCall;
+  const char* hisGrid;
+} SlowDecodeOptions;
+void slow_set_options(const SlowDecodeOptions* options);
+
 /* 12 kHz doubles, already scaled the way MSHV scales int16 audio.
    JT65 count should be 60*12000. nfqso is the audio center (1270).
    submode is 1, 2, or 4. fn is called as each line is found. */

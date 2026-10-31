@@ -64,6 +64,29 @@ void takeQ65(const QStringList& list) {
   gQ65.reported += 1;
 }
 
+// The JT65/Q65 Decode menu, set by slow_set_options() on the decoding
+// thread and read by the next decode on that same thread.
+struct SlowOptions {
+  int depth = 1;
+  bool ap = false;
+  bool averaging = false;
+  bool autoClearAverage = true;
+  bool singleSignal = false;
+  bool driftCorrection = false;
+  bool vhfUhf = false;
+  int maxCandidates = 8;
+  bool clearJt65 = false;
+  bool clearQ65 = false;
+  bool emeDelay = false;
+  bool deepSearch = false;
+  QByteArray deepSearchKey;
+  QStringList deepSearchDb;
+  QString myCall;
+  QString hisCall;
+  QString hisGrid;
+};
+SlowOptions gSlow;
+
 DecoderMs* jt65Decoder() {
   if (gJt65.ms)
     return gJt65.ms;
@@ -109,11 +132,25 @@ void DecoderMs::prepare65(double nfqso, int ntol, QString time) {
   s_nfqso_all = nfqso;
   G_DfTolerance = ntol;
   s_mousebutton = 0;
-  s_bVHF_jt65 = false;
+  // MSHV's AvgDecodeChanged and SetMaxCandidats65 also reach into the
+  // Q65 and FT2 decoders, which this DecoderMs does not own. Set the same
+  // fields directly.
+  s_bVHF_jt65 = gSlow.vhfUhf;
   s_decoder_deep = 1;
-  s_avg_jt65 = false;
-  s_deep_search_jt65 = false;
-  s_lapon = false;
+  s_avg_jt65 = gSlow.averaging;
+  s_deep_search_jt65 = gSlow.deepSearch && !gSlow.deepSearchDb.isEmpty();
+  db_call_loc4_list = gSlow.deepSearchDb;
+  s_max65_cand_for_dec = gSlow.maxCandidates;
+  if (gSlow.clearJt65) {
+    clearave_jt65 = true;
+    gSlow.clearJt65 = false;
+  }
+  s_lapon = gSlow.ap && !gSlow.myCall.isEmpty();
+  s_MyCall = gSlow.myCall;
+  s_MyBaseCall = gSlow.myCall.contains(QLatin1Char('/')) ? gSlow.myCall.section(QLatin1Char('/'), 0, 0)
+                                                         : gSlow.myCall;
+  s_HisCall = gSlow.hisCall;
+  HisGridLoc = gSlow.hisGrid;
   s_time = time.isEmpty() ? QStringLiteral("000000") : time;
 }
 
@@ -253,6 +290,46 @@ extern "C" __declspec(dllexport) int jt65_decode_wave(double* samples, int count
   return reported;
 }
 
+extern "C" __declspec(dllexport) void slow_set_options(const SlowDecodeOptions* options) {
+  if (!options)
+    return;
+  gSlow.depth = options->depth < 1 ? 1 : (options->depth > 3 ? 3 : options->depth);
+  gSlow.ap = options->ap != 0;
+  gSlow.averaging = options->averaging != 0;
+  gSlow.autoClearAverage = options->autoClearAverage != 0;
+  gSlow.singleSignal = options->singleSignal != 0;
+  gSlow.driftCorrection = options->driftCorrection != 0;
+  gSlow.vhfUhf = options->vhfUhf != 0;
+  const int cap = options->maxCandidates;
+  gSlow.maxCandidates = (cap == 1 || cap == 4 || cap == 8 || cap == 16 || cap == 32) ? cap : 8;
+  if (options->clearAverage) {
+    gSlow.clearJt65 = true;
+    gSlow.clearQ65 = true;
+  }
+  gSlow.emeDelay = options->emeDelay != 0;
+  gSlow.deepSearch = options->deepSearch != 0;
+  const QByteArray db(options->deepSearchDb ? options->deepSearchDb : "");
+  if (db != gSlow.deepSearchKey) {
+    // MSHV's Refr65DeepSearchDb: CALL,GRID4, no portable calls, no repeats.
+    gSlow.deepSearchKey = db;
+    gSlow.deepSearchDb.clear();
+    QString last;
+    for (const QString& line : QString::fromLatin1(db).split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+      const QStringList parts = line.trimmed().toUpper().split(QLatin1Char(','));
+      if (parts.size() < 2 || parts.at(0).isEmpty() || parts.at(1).size() < 4 ||
+          parts.at(0).contains(QLatin1Char('/')) || parts.at(0) == last)
+        continue;
+      last = parts.at(0);
+      gSlow.deepSearchDb.append(parts.at(0) + QLatin1Char(',') + parts.at(1).left(4));
+      if (gSlow.deepSearchDb.size() >= 15000)
+        break;
+    }
+  }
+  gSlow.myCall = QString::fromLatin1(options->myCall ? options->myCall : "").trimmed().toUpper();
+  gSlow.hisCall = QString::fromLatin1(options->hisCall ? options->hisCall : "").trimmed().toUpper();
+  gSlow.hisGrid = QString::fromLatin1(options->hisGrid ? options->hisGrid : "").trimmed().toUpper();
+}
+
 extern "C" __declspec(dllexport) int q65_decode_wave(double* samples, int count, int lowHz, int highHz,
                                                      int rxHz, int modid, int periodSec, const char* hhmmss,
                                                      Ft8LineFn fn, void* user) {
@@ -282,8 +359,19 @@ extern "C" __declspec(dllexport) int q65_decode_wave(double* samples, int count,
   gQ65.user = user;
   gQ65.reported = 0;
   dec->SetPeriod(periodSec);
-  dec->SetStDecoderDeep(1);
-  dec->SetStApDecode(false);
+  dec->SetStDecoderDeep(gSlow.depth);
+  dec->SetStApDecode(gSlow.ap && !gSlow.myCall.isEmpty());
+  dec->AvgDecodeChanged(gSlow.averaging);
+  dec->AutoClrAvgChanged(gSlow.autoClearAverage);
+  dec->SetSingleDecQ65(gSlow.singleSignal);
+  dec->SetMaxDrift(gSlow.driftCorrection);
+  dec->SetDecAftEMEDelay(gSlow.emeDelay);
+  dec->SetStWords(gSlow.myCall, gSlow.myCall, 0, 0, QString());
+  dec->SetStHisCallGrid(gSlow.hisCall, gSlow.hisGrid);
+  if (gSlow.clearQ65) {
+    dec->SetClearAvgQ65all();
+    gSlow.clearQ65 = false;
+  }
   dec->SetStDecode(QString::fromLatin1(hhmmss && hhmmss[0] ? hhmmss : "000000"), 0, false);
   dec->SetTxFreq(rxHz);
   bool have = false;

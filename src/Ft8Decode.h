@@ -29,6 +29,24 @@ public:
   void setMode(Period mode);
   // MSHV multi-answer a-priori state. This does not transmit.
   void setMultiAnswer(bool on);
+  // MSHV's JT65 and Q65 Decode options. Depth and AP come from setOptions.
+  // The calls and grid feed a-priori decoding. They do not transmit.
+  struct SlowOptions {
+    bool averaging = false;
+    bool autoClearAverage = true;
+    bool singleSignal = false;
+    bool driftCorrection = false;
+    bool vhfUhf = false;
+    int maxCandidates = 8;
+    bool emeDelay = false;
+    bool deepSearch = false;
+  };
+  void setSlowOptions(const SlowOptions& options);
+  void setApCalls(const QString& myCall, const QString& hisCall, const QString& hisGrid);
+  // JT65 deep search list: "CALL,GRID4" lines. It does not transmit.
+  void setDeepSearchCalls(const QStringList& callGrid);
+  // Drops the JT65 and Q65 averages before the next decode.
+  void clearAverages();
   void clear();
 
 signals:

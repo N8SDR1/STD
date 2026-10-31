@@ -192,6 +192,10 @@ private:
   void flipMaxPeriods();
   int txActivityId() const;
   QString serialText() const;
+  // Why the selected contest can't be sent as set up, or empty. Field Day
+  // and roundup exchanges must pack into a 77-bit message, and EU VHF needs
+  // a 6-character locator in Options → User.
+  QString contestSetupProblem() const;
   void advanceLoggedSerial();
   void openContestTags();
   QString composedCq(const QString& kind) const;

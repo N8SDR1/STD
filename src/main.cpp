@@ -255,6 +255,64 @@ int shellReady(MainWindow& window) {
     }
     box->setCurrentIndex(was);
   }
+  // Exchanges that can't pack into a 77-bit message are flagged when the
+  // contest is chosen; ones MSHV accepts are not. EU VHF wants six locator
+  // characters. Settings are put back afterwards.
+  {
+    auto* box = const_cast<QComboBox*>(activity);
+    auto* status = window.findChild<QLabel*>(QStringLiteral("txStatus"));
+    if (!status)
+      return fail("TX status line is missing");
+    QSettings store;
+    const QVariant fdWas = store.value(QStringLiteral("tx/fdExch"));
+    const QVariant ruWas = store.value(QStringLiteral("tx/ruExch"));
+    const int was = box->currentIndex();
+    const QString statusWas = status->text();
+    const auto flagged = [&](int id, const char* key, const char* exchange) {
+      store.setValue(QLatin1String(key), QLatin1String(exchange));
+      box->setCurrentIndex(0);
+      status->clear();
+      box->setCurrentIndex(box->findData(id));
+      return status->text();
+    };
+    const struct {
+      int id;
+      const char* key;
+      const char* exchange;
+      bool bad;
+    } exchanges[] = {
+        {4, "tx/fdExch", "2A OH", false},   {4, "tx/fdExch", "3F ENY", false}, {4, "tx/fdExch", "32A DX", false},
+        {4, "tx/fdExch", "2X OH", true},    {4, "tx/fdExch", "33A OH", true},  {4, "tx/fdExch", "2A OHIO", true},
+        {4, "tx/fdExch", "2A", true},       {9, "tx/ruExch", "DX", false},     {9, "tx/ruExch", "ON", false},
+        {9, "tx/ruExch", "7999", false},    {10, "tx/ruExch", "X42", false},   {9, "tx/ruExch", "8000", true},
+        {11, "tx/ruExch", "OHIO", true},    {12, "tx/ruExch", "X00", true},
+    };
+    for (const auto& e : exchanges) {
+      const QString text = flagged(e.id, e.key, e.exchange);
+      if (text.isEmpty() == e.bad) {
+        qCritical("contest %d exchange [%s] status [%s]", e.id, e.exchange, qPrintable(text));
+        return fail("contest exchange check is wrong");
+      }
+    }
+    status->clear();
+    box->setCurrentIndex(0);
+    box->setCurrentIndex(box->findData(3));
+    const bool euWarned = status->text().contains(QLatin1String("6-character"));
+    store.setValue(QStringLiteral("tx/fdExch"), fdWas);
+    store.setValue(QStringLiteral("tx/ruExch"), ruWas);
+    box->setCurrentIndex(was);
+    status->setText(statusWas);
+    if (euWarned != (window.findChild<QLabel*>(QStringLiteral("wsprLocator"))->text().size() < 6))
+      return fail("EU VHF locator warning is wrong");
+  }
+  // MSHV's JT65 / Q65 Decode entries, and the WSPR PSK Reporter switch.
+  for (const char* name : {"decodeSlowMenu", "decodeAveraging", "decodeAutoClearAvg", "decodeClearAvg",
+                           "decodeQ65Single", "decodeQ65Drift", "decodeJt65Vhf", "decodeJt65Max8"}) {
+    if (!window.findChild<QObject*>(QLatin1String(name))) {
+      qCritical("missing %s", name);
+      return fail("JT65/Q65 decode option is missing");
+    }
+  }
   const auto* cqType = window.findChild<QComboBox*>("txCqType");
   const char* cqNames[] = {"CQ", "CQ MDX", "CQ DX", "CQ UP", "CQ IOTA", "CQ POTA", "CQ SOTA",
                            "CQ BOTA", "CQ WWFF", "CQ AF"};
@@ -2052,6 +2110,27 @@ int shellReady(MainWindow& window) {
   qInfo("Q65A %s", qPrintable(q65Back));
   if (!q65Back.contains(QLatin1String("N8SDR")))
     return fail("Q65A did not decode");
+  // JT65 free text goes through MSHV's unpacktext(), which wrote past the
+  // end of its string under Qt 6 until the build padded it.
+  {
+    std::vector<float> jtText;
+    if (!buildTxWave(QStringLiteral("JT65A"), QStringLiteral("TNX RICK 73"), 1500, &jtText) ||
+        jtText.size() < 48000)
+      return fail("JT65 free-text encoder is missing");
+    const QString textBack = decodeSequencedMessage(QStringLiteral("JT65A"), jtText);
+    qInfo("JT65A text %s", qPrintable(textBack));
+    if (!textBack.contains(QLatin1String("TNX RICK 73")))
+      return fail("JT65A free text did not decode");
+  }
+  // Every JT65/Q65 Decode option on: the MSHV decoders must still copy.
+  const QString jt65All = decodeSequencedMessage(QStringLiteral("JT65A"), jt65, true);
+  qInfo("JT65A all options %s", qPrintable(jt65All));
+  if (!jt65All.contains(QLatin1String("CQ N8SDR EM79")))
+    return fail("JT65A did not decode with every Decode option on");
+  const QString q65All = decodeSequencedMessage(QStringLiteral("Q65A"), q65, true);
+  qInfo("Q65A all options %s", qPrintable(q65All));
+  if (!q65All.contains(QLatin1String("CQ N8SDR EM79")))
+    return fail("Q65A did not decode with every Decode option on");
   for (const auto& row : halves) {
     if (txStampIsFirstHalf(QString::fromLatin1(row.mode), row.minute, row.second) != row.first)
       return fail("period half is wrong");

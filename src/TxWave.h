@@ -25,7 +25,10 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
 
 // Decimate a 48 kHz JT65 or Q65 wave to 12 kHz and run the MSHV decoder.
 // Empty when the mode is not one of those or nothing prints.
-QString decodeSequencedMessage(const QString& mode, const std::vector<float>& wave48k);
+// allOptions turns on every JT65/Q65 Decode option first (Deep, AP,
+// averaging, drift, VHF/UHF, 32 signals, deep search), then puts the
+// defaults back. Self-test only.
+QString decodeSequencedMessage(const QString& mode, const std::vector<float>& wave48k, bool allOptions = false);
 
 // 48 kHz samples for one transmitted character. Hell, RTTY, and PSK stay
 // 0 here and pace the echo from the echoAt list buildTxWave fills. A mode

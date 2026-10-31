@@ -558,6 +558,7 @@ class SequencedDecodeThread : public QThread {
 public:
   QString mode;
   const std::vector<float>* wave = nullptr;
+  bool allOptions = false;
   QString message;
 
   void run() override {
@@ -579,6 +580,28 @@ public:
                          LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (!module)
       return;
+    auto setSlow = reinterpret_cast<decltype(&slow_set_options)>(GetProcAddress(module, "slow_set_options"));
+    if (allOptions && !setSlow)
+      return;
+    if (setSlow) {
+      SlowDecodeOptions slow{};
+      slow.depth = allOptions ? 3 : 1;
+      slow.ap = allOptions ? 1 : 0;
+      slow.averaging = allOptions ? 1 : 0;
+      slow.autoClearAverage = 1;
+      slow.singleSignal = 0;
+      slow.driftCorrection = allOptions ? 1 : 0;
+      slow.vhfUhf = allOptions ? 1 : 0;
+      slow.maxCandidates = allOptions ? 32 : 8;
+      slow.clearAverage = 1;
+      slow.emeDelay = 0;
+      slow.deepSearch = allOptions ? 1 : 0;
+      slow.deepSearchDb = allOptions ? "W1AW,FN31\nN8SDR,EM79\nK1JT,FN20" : "";
+      slow.myCall = allOptions ? "W1AW" : "";
+      slow.hisCall = "";
+      slow.hisGrid = "";
+      setSlow(&slow);
+    }
     SequencedHit hit;
     const char* stamp = "000000";
     if (jt) {
@@ -597,17 +620,26 @@ public:
              takeSequencedHit, &hit);
     }
     message = hit.message;
+    if (setSlow && allOptions) {
+      SlowDecodeOptions defaults{};
+      defaults.depth = 1;
+      defaults.autoClearAverage = 1;
+      defaults.maxCandidates = 8;
+      defaults.clearAverage = 1;
+      setSlow(&defaults);
+    }
   }
 };
 
 }  // namespace
 
-QString decodeSequencedMessage(const QString& mode, const std::vector<float>& wave48k) {
+QString decodeSequencedMessage(const QString& mode, const std::vector<float>& wave48k, bool allOptions) {
   if (!jt65Mode(mode) && !q65Mode(mode))
     return {};
   SequencedDecodeThread thread;
   thread.mode = mode;
   thread.wave = &wave48k;
+  thread.allOptions = allOptions;
   thread.setStackSize(64 * 1024 * 1024);
   thread.start();
   if (!thread.wait(180000))

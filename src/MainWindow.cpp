@@ -30,6 +30,7 @@
 #include "WaterfallWidget.h"
 
 #include <algorithm>
+#include <iterator>
 #include <cmath>
 #include <functional>
 #include <vector>
@@ -83,6 +84,7 @@
 #include <QTimeZone>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QShowEvent>
@@ -1106,6 +1108,9 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     connect(activity, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
       QSettings().setValue(QStringLiteral("tx/activity"), txActivityId());
       refreshTxChrome();
+      const QString problem = contestSetupProblem();
+      if (!problem.isEmpty())
+        setTxStatus(problem);
     });
 
     QHBoxLayout* txRows[6] = {};
@@ -2011,6 +2016,9 @@ void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int
                         clock);
   if (!spots_ || mode.trimmed().isEmpty())
     return;
+  if (mode.compare(QLatin1String("WSPR"), Qt::CaseInsensitive) == 0 &&
+      !QSettings().value(QStringLiteral("dx/reportWspr"), false).toBool())
+    return;
   QString call;
   QString grid;
   const bool js8 = mode.startsWith(QLatin1String("JS8"), Qt::CaseInsensitive);
@@ -2554,7 +2562,7 @@ void MainWindow::buildMenus() {
     action->setCheckable(true);
     action->setChecked(savedDepth == row.depth);
     action->setData(row.depth);
-    action->setToolTip(QStringLiteral("FT8 decoder depth. Deep is slower. Does not key."));
+    action->setToolTip(QStringLiteral("FT8, FT4, FT2, and Q65 decoder depth. Deep is slower. Does not key."));
     depthGroup->addAction(action);
     connect(action, &QAction::triggered, this, [this, depth = row.depth] {
       QSettings store;
@@ -2563,7 +2571,8 @@ void MainWindow::buildMenus() {
     });
   }
   addCheck(decodeMenu, "decodeAp", QStringLiteral("Enable AP"), "dx/ap", true,
-           QStringLiteral("A-priori FT8 decode. Does not key."));
+           QStringLiteral("A-priori decode for FT8, FT4, FT2, JT65, and Q65. JT65 and Q65 use your call "
+                          "from Options → User and the station you are working. Does not key."));
   auto* maxMenu = decodeMenu->addMenu(QStringLiteral("Max decoded signals"));
   auto* maxGroup = new QActionGroup(this);
   maxGroup->setExclusive(true);
@@ -2582,6 +2591,57 @@ void MainWindow::buildMenus() {
     connect(action, &QAction::triggered, this, [this, count = row.count] {
       QSettings store;
       store.setValue(QStringLiteral("dx/maxSignals"), count);
+      applyDxOptions();
+    });
+  }
+
+  // MSHV's JT65 and Q65 entries on its Decode menu.
+  auto* slowMenu = decodeMenu->addMenu(QStringLiteral("JT65 and Q65"));
+  slowMenu->setObjectName(QStringLiteral("decodeSlowMenu"));
+  slowMenu->setToolTipsVisible(true);
+  addCheck(slowMenu, "decodeAveraging", QStringLiteral("Enable Averaging JT65 Q65"), "slow/averaging", false,
+           QStringLiteral("Average periods that did not decode, so a weak repeating station copies after "
+                          "a few tries. The EME setting. Does not key."));
+  addCheck(slowMenu, "decodeAutoClearAvg", QStringLiteral("Auto Clear Averaging After Decode Q65"),
+           "slow/autoClearAverage", true,
+           QStringLiteral("Start a new Q65 average once one decodes. Does not key."));
+  auto* clearAvg = slowMenu->addAction(QStringLiteral("Clear Averaging Now"));
+  clearAvg->setObjectName(QStringLiteral("decodeClearAvg"));
+  clearAvg->setToolTip(QStringLiteral("Drop the JT65 and Q65 averages. Does not key."));
+  connect(clearAvg, &QAction::triggered, this, [this] {
+    if (ft8_)
+      ft8_->clearAverages();
+  });
+  slowMenu->addSeparator();
+  addCheck(slowMenu, "decodeQ65Single", QStringLiteral("Single Decoded Signal Q65"), "slow/q65Single", false,
+           QStringLiteral("Stop after the first Q65 decode in a period. Does not key."));
+  addCheck(slowMenu, "decodeQ65EmeDelay", QStringLiteral("Decode After EME Delay Q65"), "slow/q65EmeDelay",
+           false,
+           QStringLiteral("Search Q65 timing for the 2.5 s Earth-Moon-Earth echo delay. Leave it off "
+                          "on terrestrial paths. Does not key."));
+  addCheck(slowMenu, "decodeQ65Drift", QStringLiteral("Use Drift Correction +/- 100 Hz Q65"), "slow/q65Drift",
+           false, QStringLiteral("Search for a Q65 signal drifting up to 100 Hz in a period. Does not key."));
+  slowMenu->addSeparator();
+  addCheck(slowMenu, "decodeJt65Vhf", QStringLiteral("VHF/UHF Features JT65 (Uncheck for HF)"),
+           "slow/jt65VhfUhf", false,
+           QStringLiteral("MSHV's JT65 VHF/UHF decoding. Leave it off on HF. Does not key."));
+  addCheck(slowMenu, "decodeJt65Deep", QStringLiteral("Enable Deep Search JT65"), "slow/jt65DeepSearch", false,
+           QStringLiteral("Try every call and grid in your ADIF log against weak JT65 signals, as MSHV "
+                          "does with its call database. A call with a / is skipped. Does not key."));
+  auto* candMenu = slowMenu->addMenu(QStringLiteral("Max Decoded Signals JT65"));
+  auto* candGroup = new QActionGroup(this);
+  candGroup->setExclusive(true);
+  const int savedCand = dxSettings.value(QStringLiteral("slow/jt65MaxCandidates"), 8).toInt();
+  for (int count : {1, 4, 8, 16, 32}) {
+    auto* action = candMenu->addAction(count == 1 ? QStringLiteral("Single") : QString::number(count));
+    action->setObjectName(QStringLiteral("decodeJt65Max%1").arg(count));
+    action->setCheckable(true);
+    action->setChecked(savedCand == count);
+    action->setToolTip(QStringLiteral("How many JT65 signals one period tries. Does not key."));
+    candGroup->addAction(action);
+    connect(action, &QAction::triggered, this, [this, count] {
+      QSettings store;
+      store.setValue(QStringLiteral("slow/jt65MaxCandidates"), count);
       applyDxOptions();
     });
   }
@@ -3696,7 +3756,9 @@ void MainWindow::showGuide() {
        "slot. Multi turns on MSHV multi-answer so the decoder keeps a-priori state for more than one "
        "caller. Turning those on does not key, and it does not send START."},
       {"DX options",
-       "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Time "
+       "Options → Decode sets three-stage FT8, Fast/Normal/Deep, AP, and a cap on lines. Fast/Normal/Deep "
+       "and AP also apply to Q65, and AP to JT65. Decode → JT65 and Q65 holds averaging, Q65 single "
+       "signal and drift correction, JT65 VHF/UHF, and the JT65 signal cap. Time "
        "Synchronization calibrates the period clock. Macros are a Fldigi .mdf; see Macros. Network "
        "Configuration can upload a PSK Reporter spot after a decode. That upload is off until Enable "
        "is checked. Antenna is the description sent with the spot. The status line says when a "
@@ -3704,7 +3766,8 @@ void MainWindow::showGuide() {
        "callsign and does not upload. WSPRnet On, in that same dialog, posts each WSPR station "
        "STD decodes. It does not post your own transmission. WSPRnet does not ask for a password or "
        "a key. WSPRnet reports opens the page of stations reported by the callsign saved under "
-       "Options → User. PSK Reporter stays off until Enable is checked. WSPRnet stays off until On "
+       "Options → User. PSK Reporter stays off until Enable is checked. WSPR stations go to PSK "
+       "Reporter only when Also send WSPR spots is checked. WSPRnet stays off until On "
        "is selected. A UDP option under Log Options also sends live decode packets "
        "for GridTracker. Decode List Options "
        "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
@@ -4581,6 +4644,104 @@ QString reportText(int db) {
   return QStringLiteral("%1%2").arg(sign).arg(std::abs(db), 2, 10, QLatin1Char('0'));
 }
 
+// The exchanges the 77-bit FT message can carry, from MSHV config_str_exc.h
+// (csec_77 for Field Day, cmult_77 for roundup; X01..X99 are added below).
+const char* const kFieldDaySections[] = {
+    "AB", "AK", "AL", "AR", "AZ", "BC", "CO", "CT", "DE", "EB", "EMA", "ENY",
+    "EPA", "EWA", "GA", "GH", "IA", "ID", "IL", "IN", "KS", "KY", "LA", "LAX",
+    "NS", "MB", "MDC", "ME", "MI", "MN", "MO", "MS", "MT", "NC", "ND", "NE",
+    "NFL", "NH", "NL", "NLI", "NM", "NNJ", "NNY", "TER", "NTX", "NV", "OH", "OK",
+    "ONE", "ONN", "ONS", "OR", "ORG", "PAC", "PR", "QC", "RI", "SB", "SC", "SCV",
+    "SD", "SDG", "SF", "SFL", "SJV", "SK", "SNJ", "STX", "SV", "TN", "UT", "VA",
+    "VI", "VT", "WCF", "WI", "WMA", "WNY", "WPA", "WTX", "WV", "WWA", "WY", "DX",
+    "PE", "NB",
+};
+
+const char* const kRoundupMults[] = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+    "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+    "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+    "WI", "WY", "NB", "NS", "QC", "ON", "MB", "SK", "AB", "BC", "NWT", "NF",
+    "LB", "NU", "YT", "PEI", "DC", "DR", "FR", "GD", "GR", "OV", "ZH", "ZL",
+};
+
+bool inList(const QString& word, const char* const* list, int count) {
+  for (int i = 0; i < count; ++i) {
+    if (word == QLatin1String(list[i]))
+      return true;
+  }
+  return false;
+}
+
+// "2A OH": 1 to 32 transmitters, class A to F, then an ARRL/RAC section.
+QString fieldDayProblem(const QString& exchange) {
+  const QStringList parts = exchange.trimmed().toUpper().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+  const QString usage = QStringLiteral(" Use the class and section, such as 2A OH.");
+  if (parts.size() != 2)
+    return QStringLiteral("Field Day exchange \"%1\" is not class and section.").arg(exchange.trimmed()) + usage;
+  const QString& cls = parts.at(0);
+  bool ok = false;
+  const int count = cls.left(cls.size() - 1).toInt(&ok);
+  const QChar letter = cls.isEmpty() ? QChar() : cls.back();
+  if (!ok || count < 1 || count > 32 || letter < QLatin1Char('A') || letter > QLatin1Char('F'))
+    return QStringLiteral("Field Day class \"%1\" must be 1 to 32 and A to F.").arg(cls) + usage;
+  if (!inList(parts.at(1), kFieldDaySections, int(std::size(kFieldDaySections))))
+    return QStringLiteral("Field Day section \"%1\" is not an ARRL or RAC section.").arg(parts.at(1)) + usage;
+  return {};
+}
+
+// DX (then the serial is sent), a state or province, X01 to X99, or a
+// number from 1 to 7999.
+QString roundupProblem(const QString& exchange) {
+  const QString word = exchange.trimmed().toUpper();
+  if (word.isEmpty() || word == QLatin1String("DX") ||
+      inList(word, kRoundupMults, int(std::size(kRoundupMults))))
+    return {};
+  if (word.size() == 3 && word.at(0) == QLatin1Char('X') && word.at(1).isDigit() && word.at(2).isDigit() &&
+      word != QLatin1String("X00"))
+    return {};
+  bool ok = false;
+  const int number = word.toInt(&ok);
+  if (ok && word.size() <= 4 && number >= 1 && number <= 7999)
+    return {};
+  return QStringLiteral("Roundup exchange \"%1\" can't be sent. Use DX, a state or province such as OH "
+                        "or ON, or a number from 1 to 7999.")
+      .arg(word);
+}
+
+// CALL,GRID4 for every logged station with a grid, newest first, the
+// list MSHV's JT65 deep search uses (it builds msloc_db the same way).
+QStringList adifCallGrids(const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly))
+    return {};
+  const QString text = QString::fromLatin1(file.readAll());
+  static const QRegularExpression eor(QStringLiteral("<EOR>"), QRegularExpression::CaseInsensitiveOption);
+  const auto field = [](const QString& record, const char* name) {
+    const QRegularExpression tag(QStringLiteral("<%1:(\\d+)(?::[^>]*)?>").arg(QLatin1String(name)),
+                                 QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch match = tag.match(record);
+    if (!match.hasMatch())
+      return QString();
+    return record.mid(match.capturedEnd(), match.captured(1).toInt()).trimmed().toUpper();
+  };
+  QStringList out;
+  QSet<QString> seen;
+  const QStringList records = text.split(eor);
+  for (auto it = records.crbegin(); it != records.crend(); ++it) {
+    const QString call = field(*it, "CALL");
+    const QString grid = field(*it, "GRIDSQUARE");
+    if (call.isEmpty() || grid.size() < 4 || call.contains(QLatin1Char('/')) || seen.contains(call))
+      continue;
+    seen.insert(call);
+    out << call + QLatin1Char(',') + grid.left(4);
+    if (out.size() >= 15000)
+      break;
+  }
+  return out;
+}
+
 QString heardExchange(const QString& message) {
   const QStringList words =
       message.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
@@ -4646,6 +4807,20 @@ QString MainWindow::transmitMessage() const {
 int MainWindow::txActivityId() const {
   const auto* box = findChild<QComboBox*>(QStringLiteral("txActivity"));
   return box ? box->currentData().toInt() : 0;
+}
+
+QString MainWindow::contestSetupProblem() const {
+  const int activity = txActivityId();
+  QSettings settings;
+  if (activity == 4)
+    return fieldDayProblem(settings.value(QStringLiteral("tx/fdExch")).toString());
+  if (activity >= 9 && activity <= 12)
+    return roundupProblem(settings.value(QStringLiteral("tx/ruExch"), QStringLiteral("DX")).toString());
+  if (activity == 3 && stationGrid().trimmed().size() < 6)
+    return QStringLiteral("EU VHF sends a 6-character locator. Options → User has \"%1\"; set all six "
+                          "characters there.")
+        .arg(stationGrid().trimmed().toUpper());
+  return {};
 }
 
 QString MainWindow::serialText() const {
@@ -5510,6 +5685,8 @@ void MainWindow::placeAnswer(const QString& call) {
 }
 
 void MainWindow::refreshTxFields() {
+  if (ft8_)
+    ft8_->setApCalls(stationCall(), txHisCall_, qsoGrid_);
   if (auto* loc = findChild<QLabel*>(QStringLiteral("wsprLocator"))) {
     const QString grid = stationGrid().trimmed().toUpper();
     loc->setText(grid.isEmpty() ? QStringLiteral("—") : grid);
@@ -6929,6 +7106,27 @@ void MainWindow::openContestTags() {
   form->addRow(QStringLiteral("Field Day"), fd);
   form->addRow(QStringLiteral("Roundup"), ru);
   form->addRow(QStringLiteral("Serial"), serial);
+  auto* check = new QLabel(&dialog);
+  check->setObjectName(QStringLiteral("contestTagsCheck"));
+  check->setWordWrap(true);
+  auto recheck = [fd, ru, check] {
+    const QString fdText = fd->text();
+    const QString fdBad = fdText.trimmed().isEmpty() ? QString() : fieldDayProblem(fdText);
+    const QString ruBad = roundupProblem(ru->text());
+    const QString warn = QStringLiteral("QLineEdit{background-color:rgb(255,255,200);color:rgb(200,0,0)}");
+    fd->setStyleSheet(fdBad.isEmpty() ? QString() : warn);
+    ru->setStyleSheet(ruBad.isEmpty() ? QString() : warn);
+    QStringList lines;
+    if (!fdBad.isEmpty())
+      lines << fdBad;
+    if (!ruBad.isEmpty())
+      lines << ruBad;
+    check->setText(lines.join(QLatin1Char('\n')));
+    check->setVisible(!lines.isEmpty());
+  };
+  connect(fd, &QLineEdit::textChanged, &dialog, recheck);
+  connect(ru, &QLineEdit::textChanged, &dialog, recheck);
+  recheck();
   auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
   ok->setObjectName(QStringLiteral("contestTagsOk"));
   auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
@@ -6939,6 +7137,7 @@ void MainWindow::openContestTags() {
   auto* layout = new QVBoxLayout(&dialog);
   layout->addWidget(note);
   layout->addLayout(form);
+  layout->addWidget(check);
   layout->addWidget(which);
   layout->addLayout(buttons);
   connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
@@ -6949,6 +7148,9 @@ void MainWindow::openContestTags() {
   settings.setValue(QStringLiteral("tx/ruExch"), ru->text().trimmed().toUpper());
   settings.setValue(QStringLiteral("tx/serial"), serial->value());
   refreshTxFields();
+  const QString problem = contestSetupProblem();
+  if (!problem.isEmpty())
+    setTxStatus(problem);
 }
 
 void MainWindow::openDecodeFilters() {
@@ -7096,8 +7298,27 @@ void MainWindow::applyDxOptions() {
   maxSignals_ = settings.value(QStringLiteral("dx/maxSignals"), 0).toInt();
   if (maxSignals_ < 0)
     maxSignals_ = 0;
-  if (ft8_)
+  if (ft8_) {
     ft8_->setOptions(threeStage, depth, ap, offset);
+    Ft8Decode::SlowOptions slow;
+    slow.averaging = settings.value(QStringLiteral("slow/averaging"), false).toBool();
+    slow.autoClearAverage = settings.value(QStringLiteral("slow/autoClearAverage"), true).toBool();
+    slow.singleSignal = settings.value(QStringLiteral("slow/q65Single"), false).toBool();
+    slow.driftCorrection = settings.value(QStringLiteral("slow/q65Drift"), false).toBool();
+    slow.vhfUhf = settings.value(QStringLiteral("slow/jt65VhfUhf"), false).toBool();
+    slow.maxCandidates = settings.value(QStringLiteral("slow/jt65MaxCandidates"), 8).toInt();
+    slow.emeDelay = settings.value(QStringLiteral("slow/q65EmeDelay"), false).toBool();
+    slow.deepSearch = settings.value(QStringLiteral("slow/jt65DeepSearch"), false).toBool();
+    ft8_->setSlowOptions(slow);
+    if (slow.deepSearch) {
+      QString path = settings.value(QStringLiteral("log/adifPath")).toString().trimmed();
+      if (path.isEmpty())
+        path = QsoLog::defaultAdifPath();
+      ft8_->setDeepSearchCalls(adifCallGrids(path));
+    } else {
+      ft8_->setDeepSearchCalls({});
+    }
+  }
   refreshDecodeHeader();
   refreshDecodes();
 }
@@ -7641,6 +7862,12 @@ void MainWindow::openNetworkDialog() {
   dialog.setMinimumWidth(460);
   auto* enable = new QCheckBox(QStringLiteral("Enable PSK Reporter style spots"), &dialog);
   enable->setChecked(settings.value(QStringLiteral("dx/reportEnabled"), false).toBool());
+  auto* reportWspr = new QCheckBox(QStringLiteral("Also send WSPR spots to PSK Reporter"), &dialog);
+  reportWspr->setObjectName(QStringLiteral("reportWspr"));
+  reportWspr->setChecked(settings.value(QStringLiteral("dx/reportWspr"), false).toBool());
+  reportWspr->setToolTip(QStringLiteral(
+      "Off: WSPR stations go to WSPRnet only, which is where WSPR spots belong. On: they also go to "
+      "PSK Reporter, as duplicates. Does not key."));
   auto* region = new QComboBox(&dialog);
   region->setObjectName(QStringLiteral("profileRegionSetting"));
   region->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
@@ -7744,6 +7971,7 @@ void MainWindow::openNetworkDialog() {
   buttons->addWidget(cancel);
   auto* layout = new QVBoxLayout(&dialog);
   layout->addWidget(enable);
+  layout->addWidget(reportWspr);
   layout->addLayout(form);
   layout->addWidget(note);
   layout->addWidget(wsprChoice);
@@ -7755,6 +7983,7 @@ void MainWindow::openNetworkDialog() {
     return;
   QSettings store;
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
+  store.setValue(QStringLiteral("dx/reportWspr"), reportWspr->isChecked());
   store.setValue(QStringLiteral("dx/wsprnetEnabled"), wsprOn->isChecked());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
