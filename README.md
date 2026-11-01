@@ -1,6 +1,6 @@
 # STD
 
-**Shift, Tone, Decode.** Software in testing. Version 0.1.2. Around the shack it also answers to **Sending Transmittal Disease**.
+**Shift, Tone, Decode.** Software in testing. Version 0.1.3. Around the shack it also answers to **Sending Transmittal Disease**.
 
 The real expansion is Shift, Tone, Decode. The other one is the joke. STD is a 64-bit Windows application, a Qt 6.11.1 MSVC digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air. [Lyra](https://n8sdr1.github.io/Lyra-SDR-cpp/) is the transceiver. [SDRLogger+](https://n8sdr1.github.io/SDRLoggerPlus/) is the logbook. CW stays in Lyra.
 
@@ -72,7 +72,7 @@ CW stays in Lyra. STD does not send CW.
 
 The RST/LOG macro does not log. Fldigi's `<LOG>` tag is not implemented. Pressing that button inserts text, and nothing is stored. Adding Fldigi-style `<LOG>` is a later change.
 
-`<MYCALL>` and `<MYLOC>` are filled from Options → User. Name, QTH (the station city, `<MYQTH>`), Antenna, Power, and RST on that same dialog fill `<MYNAME>`, `<MYQTH>`, `<ANTENNA>`, `<TX_PWR>`, and `<MYRST>`. An empty box erases the tag. `<LOG>` is deleted from the text. `<RST>` stays in the box as written, so a later TX can send the characters `<RST>`. `<CALL>` is left as written too.
+`<MYCALL>` and `<MYLOC>` are filled from Options → User. Name, QTH (the station city, `<MYQTH>`), Antenna, Power, and RST on that same dialog fill `<MYNAME>`, `<MYQTH>`, `<ANTENNA>`, `<TX_PWR>`, and `<MYRST>`. An empty box erases the tag. On a keyboard mode the QSO bar fills `<CALL>`, `<NAME>`, `<QTH>`, `<ST>`, `<PR>`, `<LOC>`, `<RST>`, and `<QSOTIME>` for the station being worked. `<LOG>` and `<LNW>` write that QSO and then leave the text. `<CLRQSO>` and `<CLRLOG>` clear the bar.
 
 A separate path, not the macro tag, stores a QSO when the sent line ends in `73` or `RR73`, that line contains the other station's call, and a log option is on (automatic, prompt, WSJT-X UDP, or DXKeeper TCP). That path writes ADIF.
 
@@ -97,13 +97,13 @@ STD is a 64-bit Windows application. The kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\
 
 ## Run
 
-The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.2.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
+The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.3.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
 
 A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_QPA_PLATFORM=offscreen`, then run `build\std.exe`. Exit status 0 prints `STD self-test ok`.
 
 ## More
 
 - Web version of this page: <https://n8sdr1.github.io/STD/>
-- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.2 pre-release, testing phase · highly transmissible)
+- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.3 pre-release, testing phase · highly transmissible)
 - Wiki: <https://github.com/N8SDR1/STD/wiki>
 - Longer notes: [modes](docs/modes.md), [Hell](docs/hell.md), [macros](docs/macros.md), [connect](docs/connect.md)
