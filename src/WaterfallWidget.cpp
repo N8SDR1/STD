@@ -274,7 +274,7 @@ void WaterfallWidget::setRadio(bool connected, const QString& dial) {
   else
     setAccessibleDescription(connected ? QStringLiteral("No signal. Connected.")
                                         : QStringLiteral("No signal. Radio not connected."));
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::clearAudio() {
@@ -302,7 +302,7 @@ void WaterfallWidget::resetView() {
   else {
     viewLoHz_ = 0.0f;
     viewHiHz_ = 0.0f;
-    update();
+    queueFrame();
   }
 }
 
@@ -364,7 +364,7 @@ void WaterfallWidget::setView(float loHz, float hiHz) {
     viewLoHz_ = loHz;
     viewHiHz_ = hiHz;
     zoomed_ = hiHz > loHz + 1.0f;
-    update();
+    queueFrame();
     return;
   }
   const int pixels = std::max(1, plotRect().width());
@@ -395,7 +395,7 @@ void WaterfallWidget::setView(float loHz, float hiHz) {
   viewLoHz_ = loHz;
   viewHiHz_ = hiHz;
   zoomed_ = viewLoHz_ > edgeLo + 0.5f || viewHiHz_ < edgeHi - 0.5f;
-  update();
+  queueFrame();
 }
 
 float WaterfallWidget::sampleAt(qint64 absolute) const {
@@ -490,7 +490,7 @@ void WaterfallWidget::setChannelWidth(int rxHz, int txHz) {
   rxWidthHz_ = std::clamp(rxHz, 6, 4000);
   txWidthHz_ = std::clamp(txHz, 6, 4000);
   clearTxHot();
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::setChannelCentered(bool on) {
@@ -499,7 +499,7 @@ void WaterfallWidget::setChannelCentered(bool on) {
   channelCentered_ = on;
   if (transmitting_)
     refreshTxTone();
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::setTransmitting(bool on) {
@@ -553,7 +553,7 @@ void WaterfallWidget::setRxHz(int hz) {
   clearTxHot();
   rememberFrequencies();
   emit frequenciesChanged(rxHz_, txHz_);
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::setTxHz(int hz) {
@@ -563,7 +563,7 @@ void WaterfallWidget::setTxHz(int hz) {
   clearTxHot();
   rememberFrequencies();
   emit frequenciesChanged(rxHz_, txHz_);
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::qsyAudio(int hz) {
@@ -574,7 +574,7 @@ void WaterfallWidget::qsyAudio(int hz) {
   clearTxHot();
   rememberFrequencies();
   emit frequenciesChanged(rxHz_, txHz_);
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::snapRxTx() {
@@ -586,7 +586,7 @@ void WaterfallWidget::snapRxTx() {
   rememberFrequencies();
   showRxTxChip();
   emit frequenciesChanged(rxHz_, txHz_);
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::cycleRxTx() {
@@ -642,7 +642,7 @@ void WaterfallWidget::applyFrequencyClick(int x, Qt::KeyboardModifiers mods) {
   }
   clearTxHot();
   rememberFrequencies();
-  update();
+  queueFrame();
   emit frequenciesChanged(rxHz_, txHz_);
 }
 
@@ -780,7 +780,7 @@ void WaterfallWidget::refreshTxTone() {
   if (!rowMatches(row))
     return;
   stampTxTone(&row);
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::writeAudio(const float* samples, int count, int sampleRateHz, bool blendTx) {
@@ -829,7 +829,7 @@ void WaterfallWidget::writeAudio(const float* samples, int count, int sampleRate
   if (drew) {
     setAccessibleDescription(QStringLiteral("Receiver audio. Nothing is decoded."));
     ensureGpu();
-    update();
+    queueFrame();
   }
 }
 
@@ -1120,14 +1120,14 @@ void WaterfallWidget::buildToneBar() {
     shownFloor_ = floorDb_;
     readout->setText(QStringLiteral("%1 dB").arg(floorDb_));
     QSettings().setValue(QStringLiteral("waterfall/floorDb"), floorDb_);
-    update();
+    queueFrame();
     emit toneChanged();
   });
   connect(range.first, &QSlider::valueChanged, this, [this, readout = range.second](int next) {
     rangeDb_ = std::clamp(next, kRangeMinDb, kRangeMaxDb);
     readout->setText(QStringLiteral("%1 dB").arg(rangeDb_));
     QSettings().setValue(QStringLiteral("waterfall/rangeDb"), rangeDb_);
-    update();
+    queueFrame();
     emit toneChanged();
   });
   floor.first->setEnabled(!autoFloor_);
@@ -1149,7 +1149,7 @@ void WaterfallWidget::buildToneBar() {
     settings.setValue(QStringLiteral("waterfall/floorDb"), floorDb_);
     shownFloor_ = 1 << 30;
     syncFloorReadout();
-    update();
+    queueFrame();
     emit toneChanged();
   });
   layout->addWidget(autoButton);
@@ -1167,7 +1167,7 @@ void WaterfallWidget::buildToneBar() {
     QSettings().setValue(QStringLiteral("waterfall/flatten"), on);
     ++analysisGen_;
     scheduleRebuild();
-    update();
+    queueFrame();
   });
   layout->addWidget(flattenButton);
   shownFloor_ = 1 << 30;
@@ -1218,7 +1218,7 @@ void WaterfallWidget::buildToneBar() {
     lock->setText(on ? QStringLiteral("Unlock") : QStringLiteral("Lock"));
     clearTxHot();
     rememberFrequencies();
-    update();
+    queueFrame();
     emit frequenciesChanged(rxHz_, txHz_);
   });
   auto* equal = new QPushButton(toneBar_);
@@ -1276,7 +1276,7 @@ void WaterfallWidget::buildToneBar() {
     tickButton->setText(QStringLiteral("%1 Hz").arg(tickHz_));
     QSettings saved;
     saved.setValue(QStringLiteral("waterfall/tickHz"), tickHz_);
-    update();
+    queueFrame();
   });
   tickButton->setMenu(tickMenu);
   layout->addWidget(tickLabel);
@@ -1313,7 +1313,7 @@ void WaterfallWidget::buildToneBar() {
     paletteButton->setText(QString::fromUtf8(kPalettes[palette_].name));
     QSettings saved;
     saved.setValue(QStringLiteral("waterfall/palette"), paletteButton->text());
-    update();
+    queueFrame();
   });
   paletteButton->setMenu(menu);
   layout->addWidget(paletteLabel);
@@ -1336,7 +1336,7 @@ void WaterfallWidget::setTone(int floorDb, int rangeDb, bool autoFloor) {
   }
   shownFloor_ = 1 << 30;
   syncFloorReadout();
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::placeToneBar() {
@@ -1427,7 +1427,7 @@ void WaterfallWidget::setGraphicsMode(const QString& mode) {
   releaseGpu(true);
   ensureGpu();
   emit graphicsModeChanged(graphicsMode());
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::gpuFallback(const QString& why) {
@@ -1440,7 +1440,7 @@ void WaterfallWidget::gpuFallback(const QString& why) {
     return;
   sessionMode_ = requested;
   emit graphicsModeChanged(requested);
-  update();
+  queueFrame();
 }
 
 void WaterfallWidget::ensureGpu() {
@@ -1487,6 +1487,7 @@ void WaterfallWidget::ensureGpu() {
   placeLayers();
   gpu_->show();
   chrome_->show();
+  queueFrame();
 }
 
 QImage WaterfallWidget::spectrumImage() const {
@@ -1541,7 +1542,7 @@ void WaterfallWidget::rebuildSome() {
     analyze(row.endSample, &row);
     stampTxTone(&row);
     --budget;
-    update();
+    queueFrame();
   }
   bool pending = false;
   for (int age = 0; age < rowCount_; ++age) {
@@ -1561,7 +1562,7 @@ void WaterfallWidget::setRenderSurface(QWindow* surface) {
     surfaceContainer_ = nullptr;
   }
   if (!surface) {
-    update();
+    queueFrame();
     return;
   }
 
@@ -1580,17 +1581,38 @@ QSize WaterfallWidget::minimumSizeHint() const {
   return QSize(280, 180);
 }
 
+void WaterfallWidget::queueFrame() {
+  if (!gpu_ || !gpu_->isVisible()) {
+    update();
+    return;
+  }
+  if (frameQueued_)
+    return;
+  frameQueued_ = true;
+  QTimer::singleShot(0, this, [this] {
+    frameQueued_ = false;
+    if (!gpu_ || !gpu_->isVisible()) {
+      update();
+      return;
+    }
+    if (rowCount_ > 0)
+      gpu_->present(spectrumImage());
+    if (chrome_)
+      chrome_->update();
+  });
+}
+
 void WaterfallWidget::paintEvent(QPaintEvent* event) {
   Q_UNUSED(event);
   if (surfaceContainer_)
     return;
   if (gpu_ && gpu_->isVisible()) {
+    // Only the background here. The overlay is a translucent child, so
+    // asking it to repaint from inside this paint repaints this widget
+    // again: an endless loop that kept the main thread and the GPU
+    // driver busy. queueFrame() feeds the GPU and the overlay instead.
     QPainter painter(this);
     painter.fillRect(rect(), QColor("#00020c"));
-    if (rowCount_ > 0)
-      gpu_->present(spectrumImage());
-    if (chrome_)
-      chrome_->update();
     return;
   }
   QPainter painter(this);
@@ -1608,6 +1630,7 @@ void WaterfallWidget::resizeEvent(QResizeEvent* event) {
   placeLayers();
   if (rowCount_ > 0)
     scheduleRebuild();
+  queueFrame();
 }
 
 void WaterfallWidget::paintPlaceholder(QPainter& painter) const {
