@@ -73,7 +73,7 @@ private:
   void showGuide();
   void tuneActiveBand();
   void activateDigitalMode(const QString& modeName);
-  void clearModePanes();
+  void clearModePanes(const QString& previous, const QString& next);
   void cycleDigitalMode();
   void offerLayoutSave();
   void captureLayoutBaseline();
@@ -117,12 +117,52 @@ private:
   void placeDockTitle(QDockWidget* dock, const QString& title, std::initializer_list<const char*> buttons);
   void applyMacroBar();
   void showKeyboardReceive(const QString& mode);
+
+  // JS8 operating screen (MainWindowJs8.cpp). Shown only in JS8 mode.
+  struct Js8BandRow {
+    int offset = 0;
+    QString message;
+    QString from;
+    int snr = 0;
+    qint64 lastMs = 0;
+    bool open = false;  // waiting for the frame that ends the message
+  };
+  struct Js8CallRow {
+    QString call;
+    QString grid;
+    int snr = 0;
+    int offset = 0;
+    qint64 lastMs = 0;
+  };
+  // WEFAX stations pane (MainWindowWefax.cpp). Shown only in WEFAX mode.
+  QWidget* makeWefaxStations(QWidget* parent);
+  void paintWefaxStations();
+  int wefaxRegion() const;
+  void showWefaxState();
+  void wefaxAutoSaveNow();
+  void installWefaxClick(QLabel* view);
+  QWidget* makeJs8Strip(QWidget* parent);
+  QWidget* makeJs8Receive(QWidget* parent);
+  QWidget* makeJs8Actions(QWidget* parent);
+  void wireJs8();
+  void showJs8Layout(bool on);
+  void tickJs8();
+  void js8FrameIn(const QString& text, int snrDb, int freqHz, bool last);
+  void js8Finish(const Js8BandRow& row);
+  void js8ConversationLine(const QString& text, const QColor& color, int offsetHz);
+  void js8NoteSent(const QString& text);
+  void js8Compose(const QString& text, bool send);
+  void js8Select(const QString& call);
+  void clearJs8Activity();
+  void paintJs8Activity();
   void revealSentEcho();
+  void breakHellEchoLine(bool onlyIfSent);
   void appendTxEcho(const QString& text);
   void appendRxEcho(const QString& text);
   QWidget* makeMacroRow();
   void refreshDecodes();
   void applyChannelWidth();
+  void applyHellReverse();
   void applyHellSquelch();
   void applyAfc();
   void syncWfHellControls();
@@ -364,6 +404,13 @@ private:
   ThorEngine* thor_ = nullptr;
   WefaxEngine* wefax_ = nullptr;
   Js8Engine* js8_ = nullptr;
+  QVector<Js8BandRow> js8Band_;
+  QHash<QString, Js8CallRow> js8Calls_;
+  QString js8Selected_;
+  QTimer* js8Clock_ = nullptr;
+  int js8LastAgeMinute_ = -1;
+  QString wsprLastUtc_;
+  QString wefaxLastSaved_;
   WsprEngine* wspr_ = nullptr;
   int wsprHopMark_ = -1;
   bool wsprHopTune_ = false;

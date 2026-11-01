@@ -10,7 +10,7 @@
 
 bool stationSettingsKey(const QString& key) {
   return key.startsWith(QLatin1String("layout/")) || key == QLatin1String("dx/reportCall") ||
-         key == QLatin1String("dx/reportGrid");
+         key == QLatin1String("dx/reportGrid") || key.startsWith(QLatin1String("user/"));
 }
 
 int copyStationSettings(const QSettings& from, QSettings& to, bool replaceLayouts) {

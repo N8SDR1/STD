@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "DigitalMode.h"
+#include "EchoLog.h"
 #include "hell/HellRaster.h"
 #include "MacroFile.h"
 #include "MaEngine.h"
 #include "MainWindow.h"
+#include "ModeProfile.h"
 #include "StatusStrip.h"
 
 #include "QsoLog.h"
@@ -43,15 +45,22 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QSettings>
+#include <QCoreApplication>
+#include <QDockWidget>
+#include <QTreeWidget>
 #include <QSignalBlocker>
 #include <QTemporaryDir>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QScrollArea>
 #include <QPalette>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QTextCursor>
 #include <QTextEdit>
+#include <QScrollBar>
+#include <QHash>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDate>
@@ -94,6 +103,79 @@ QPalette darkPalette() {
   palette.setColor(QPalette::Disabled, QPalette::ButtonText, muted);
   palette.setColor(QPalette::Disabled, QPalette::WindowText, muted);
   return palette;
+}
+
+// Contiguous width, in Hz, where the Welch spectrum stays within 26 dB of
+// its peak. The transform is checked against a 1500 Hz tone (bin 256).
+double occupiedWidthHz(const std::vector<float>& wave, double* peakOut, int* peakBinOut) {
+  constexpr int nfft = 8192;
+  if (int(wave.size()) < nfft)
+    return 0.0;
+  const double binHz = 48000.0 / nfft;
+  std::vector<double> re(nfft);
+  std::vector<double> im(nfft);
+  std::vector<double> power(nfft / 2, 0.0);
+  auto reverseBits = [](int value) {
+    int out = 0;
+    for (int bit = 0; bit < 13; ++bit) {
+      out = (out << 1) | (value & 1);
+      value >>= 1;
+    }
+    return out;
+  };
+  for (size_t off = 0; off + nfft <= wave.size(); off += nfft / 2) {
+    for (int i = 0; i < nfft; ++i) {
+      const int j = reverseBits(i);
+      const double window = 0.5 * (1.0 - std::cos(2.0 * 3.141592653589793 * i / (nfft - 1)));
+      re[static_cast<size_t>(j)] = double(wave[off + static_cast<size_t>(i)]) * window;
+      im[static_cast<size_t>(j)] = 0.0;
+    }
+    for (int len = 1; len < nfft; len <<= 1) {
+      const double theta = -3.141592653589793 / double(len);
+      const double wRe = std::cos(theta);
+      const double wIm = std::sin(theta);
+      for (int start = 0; start < nfft; start += len << 1) {
+        double curRe = 1.0;
+        double curIm = 0.0;
+        for (int j = 0; j < len; ++j) {
+          const int a = start + j;
+          const int b = a + len;
+          const double tRe = re[static_cast<size_t>(b)] * curRe - im[static_cast<size_t>(b)] * curIm;
+          const double tIm = re[static_cast<size_t>(b)] * curIm + im[static_cast<size_t>(b)] * curRe;
+          re[static_cast<size_t>(b)] = re[static_cast<size_t>(a)] - tRe;
+          im[static_cast<size_t>(b)] = im[static_cast<size_t>(a)] - tIm;
+          re[static_cast<size_t>(a)] += tRe;
+          im[static_cast<size_t>(a)] += tIm;
+          const double nextRe = curRe * wRe - curIm * wIm;
+          curIm = curRe * wIm + curIm * wRe;
+          curRe = nextRe;
+        }
+      }
+    }
+    for (int k = 0; k < nfft / 2; ++k)
+      power[static_cast<size_t>(k)] += re[static_cast<size_t>(k)] * re[static_cast<size_t>(k)] +
+                                       im[static_cast<size_t>(k)] * im[static_cast<size_t>(k)];
+  }
+  int peakBin = 1;
+  double peakPower = 0.0;
+  for (int k = 1; k < nfft / 2; ++k) {
+    if (power[static_cast<size_t>(k)] > peakPower) {
+      peakPower = power[static_cast<size_t>(k)];
+      peakBin = k;
+    }
+  }
+  const double limit = peakPower * std::pow(10.0, -26.0 / 10.0);
+  int low = peakBin;
+  int high = peakBin;
+  while (low > 1 && power[static_cast<size_t>(low - 1)] >= limit)
+    --low;
+  while (high + 1 < nfft / 2 && power[static_cast<size_t>(high + 1)] >= limit)
+    ++high;
+  if (peakOut)
+    *peakOut = 0.0;
+  if (peakBinOut)
+    *peakBinOut = peakBin;
+  return (high - low) * binHz;
 }
 
 int shellReady(MainWindow& window) {
@@ -412,6 +494,45 @@ int shellReady(MainWindow& window) {
   if (inserted.contains(QStringLiteral("<TX>")) || inserted.contains(QStringLiteral("<RX>")) ||
       !inserted.contains(QStringLiteral("N8SDR")))
     return fail("macro text did not convert");
+  bool sawPower = false;
+  bool sawName = false;
+  for (const MacroUserField& field : macroUserFields()) {
+    if (field.tag == QLatin1String("<MYCALL>") || field.tag == QLatin1String("<MYLOC>") ||
+        field.tag == QLatin1String("<MYGRID>") || field.objectName == QLatin1String("userCall") ||
+        field.objectName == QLatin1String("userGrid"))
+      return fail("a station tag duplicated the callsign or locator");
+    if (field.tag == QLatin1String("<MYNAME>"))
+      sawName = true;
+    if (field.tag == QLatin1String("<TX_PWR>"))
+      sawPower = true;
+  }
+  if (!sawName || !sawPower)
+    return fail("station tag fields are missing");
+  QHash<QString, QString> stationTags;
+  for (const MacroUserField& field : macroUserFields()) {
+    if (field.tag == QLatin1String("<MYNAME>"))
+      stationTags.insert(field.tag, QStringLiteral("Rick"));
+    else if (field.tag == QLatin1String("<MYQTH>"))
+      stationTags.insert(field.tag, QStringLiteral("Cincinnati"));
+    else if (field.tag == QLatin1String("<ANTENNA>"))
+      stationTags.insert(field.tag, QStringLiteral("dipole"));
+    else if (field.tag == QLatin1String("<TX_PWR>"))
+      stationTags.insert(field.tag, QStringLiteral("100"));
+    else
+      stationTags.insert(field.tag, field.label);
+  }
+  const QString expanded = macroInsertText(
+      QStringLiteral("<MYCALL> <MYLOC> <MYGRID> <myname> <MYQTH> <ANTENNA> <TX_PWR> <CALL>"),
+      QStringLiteral("N8SDR"), QStringLiteral("EM79"), stationTags);
+  if (expanded != QLatin1String("N8SDR EM79 EM79 Rick Cincinnati dipole 100 <CALL>")) {
+    qCritical("macro expand [%s]", qPrintable(expanded));
+    return fail("station tags did not expand");
+  }
+  QHash<QString, QString> emptyName;
+  emptyName.insert(QStringLiteral("<MYNAME>"), QString());
+  if (macroInsertText(QStringLiteral("de <MYNAME>."), QStringLiteral("N8SDR"), QStringLiteral("EM79"),
+                      emptyName) != QLatin1String("de ."))
+    return fail("an empty station tag stayed in the text");
   const QVector<MacroSlot> blank = blankMacroSet();
   if (blank.size() != 48 || blank.at(0).name != QLatin1String("F-1") ||
       blank.at(47).name != QLatin1String("F-48") || !blank.at(0).text.isEmpty())
@@ -566,6 +687,14 @@ int shellReady(MainWindow& window) {
       !wfAfc->toolTip().contains(QLatin1String("does not key")) ||
       !wfSql->toolTip().contains(QLatin1String("START")))
     return fail("Hell transmit pane or waterfall AFC SQL is missing");
+  const auto* hellRow = window.findChild<QWidget*>(QStringLiteral("hellOptions"));
+  const auto* hellReverse = window.findChild<QCheckBox*>(QStringLiteral("hellReverseVideo"));
+  if (!hellRow || !hellRow->isHidden() || !hellReverse || hellReverse->font().pixelSize() != 12 ||
+      !hellReverse->text().contains(QLatin1String("Reverse")) ||
+      !hellReverse->toolTip().contains(QLatin1String("does not key")) ||
+      !hellReverse->toolTip().contains(QLatin1String("START")) ||
+      !hellReverse->toolTip().contains(QLatin1String("white on black")))
+    return fail("Hell reverse video is missing");
   const auto* rxEcho = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
   const auto* clrRx = window.findChild<QPushButton*>(QStringLiteral("clrRx"));
   const auto* clrTx = window.findChild<QPushButton*>(QStringLiteral("clrTx"));
@@ -642,6 +771,33 @@ int shellReady(MainWindow& window) {
       hellColumnRate(QStringLiteral("Feld Hell X5")) != 87.5 ||
       hellColumnRate(QStringLiteral("Hell 80")) != 35.0)
     return fail("Hell column rate is wrong");
+  if (hellBandwidthHz(QStringLiteral("Feld Hell")) != 245 ||
+      hellBandwidthHz(QStringLiteral("Slow Hell")) != 30 ||
+      hellBandwidthHz(QStringLiteral("Feld Hell X9")) != 2205 ||
+      hellBandwidthHz(QStringLiteral("FSK Hell")) != 250 ||
+      hellBandwidthHz(QStringLiteral("Hell 80")) != 450)
+    return fail("Hell bandwidth is wrong");
+  float bandLo = 0.0f;
+  float bandHi = 0.0f;
+  channelBandHz(1102, 245, true, &bandLo, &bandHi);
+  if (std::fabs(bandLo - (1102.0f - 122.5f)) > 0.01f || std::fabs(bandHi - (1102.0f + 122.5f)) > 0.01f)
+    return fail("Hell marker is not centered on the carrier");
+  channelBandHz(1500, 50, false, &bandLo, &bandHi);
+  if (std::fabs(bandLo - 1500.0f) > 0.01f || std::fabs(bandHi - 1550.0f) > 0.01f)
+    return fail("FT8 marker does not start at the cursor");
+  const char* centeredModes[] = {"Feld Hell", "Slow Hell", "Feld Hell X5", "Feld Hell X9",
+                                  "FSK Hell", "FSK Hell-105", "Hell 80", "RTTY", "PSK31",
+                                  "QPSK31", "MFSK16", "DominoEX 16", "Thor 16", "Olivia 8/250",
+                                  "Contestia 8/250", "MT63-500S", "WSPR", "WEFAX-576"};
+  for (const char* name : centeredModes) {
+    if (!carrierCenteredMode(QString::fromLatin1(name)))
+      return fail("a carrier-centered mode starts at the cursor");
+  }
+  const char* lowEdgeModes[] = {"FT8", "FT4", "FT2", "JT65A", "Q65A", "JS8"};
+  for (const char* name : lowEdgeModes) {
+    if (carrierCenteredMode(QString::fromLatin1(name)))
+      return fail("an FT8-family marker is centered");
+  }
   std::vector<float> feldWave;
   std::vector<float> slowWave;
   std::vector<float> fastWave;
@@ -668,14 +824,40 @@ int shellReady(MainWindow& window) {
     later = std::max(later, std::fabs(feldWave[static_cast<size_t>(i)]));
   if (early > 0.45f || later < 0.5f)
     return fail("Feld Hell rise is not the 2 ms raised cosine");
+  {
+    std::vector<float> tone(16384);
+    for (int i = 0; i < int(tone.size()); ++i)
+      tone[static_cast<size_t>(i)] =
+          float(0.5 * std::sin(2.0 * 3.141592653589793 * 1500.0 * i / 48000.0));
+    int toneBin = 0;
+    const double toneWidth = occupiedWidthHz(tone, nullptr, &toneBin);
+    if (toneBin != 256 || toneWidth < 6.0 || toneWidth > 40.0)
+      return fail("spectrum bin is wrong");
+    std::vector<float> cq;
+    if (!buildTxWave(QStringLiteral("Feld Hell"), QStringLiteral("CQ CQ de N8SDR"), 1500, &cq, nullptr) ||
+        cq.size() < 16384)
+      return fail("Feld Hell CQ did not build");
+    float peak = 0.0f;
+    for (float value : cq)
+      peak = std::max(peak, std::fabs(value));
+    int cqBin = 0;
+    const double widthHz = occupiedWidthHz(cq, nullptr, &cqBin);
+    qInfo("Feld Hell CQ peak %.3f -26 dB width %.0f Hz at bin %d", peak, widthHz, cqBin);
+    if (peak > 0.95f)
+      return fail("Feld Hell TX samples clip");
+    if (std::fabs(cqBin * (48000.0 / 8192.0) - 1500.0) > 30.0)
+      return fail("Feld Hell carrier is not 1500 Hz");
+    if (widthHz < 200.0 || widthHz > 290.0)
+      return fail("Feld Hell occupied width is not about 245 Hz");
+  }
   const double slowRatio = double(slowWave.size()) / double(feldWave.size());
   const double fastRatio = double(feldWave.size()) / double(fastWave.size());
   if (slowRatio < 7.9 || slowRatio > 8.1 || fastRatio < 4.9 || fastRatio > 5.1)
     return fail("Hell family rates do not match Fldigi");
   {
-    // Slow Hell is Feld Hell at one eighth the speed. With full trailing
-    // pixels the same text carries about 10 times the keyed energy (the
-    // 2 ms edges cost Feld Hell more). Fldigi's 4 ms trailing pixel gives 6.9.
+    // Slow Hell is Feld Hell at one eighth the speed. Feld's envelope
+    // limit softens the short pixels, so the same text carries a bit
+    // more than ten times the keyed energy on Slow Hell.
     double feldEnergy = 0.0;
     double slowEnergy = 0.0;
     for (float v : feldWave)
@@ -683,7 +865,7 @@ int shellReady(MainWindow& window) {
     for (float v : slowWave)
       slowEnergy += double(v) * v;
     const double energyRatio = feldEnergy > 0.0 ? slowEnergy / feldEnergy : 0.0;
-    if (energyRatio < 9.5 || energyRatio > 10.8) {
+    if (energyRatio < 10.9 || energyRatio > 12.2) {
       qCritical("Slow Hell energy ratio %.2f", energyRatio);
       return fail("Slow Hell trailing pixels are cut short");
     }
@@ -765,6 +947,33 @@ int shellReady(MainWindow& window) {
     return fail("amplitude detector printed an FSK Hell tape");
   if (hellTapeRowFromTop(0, 40) != 39 || hellTapeRowFromTop(39, 40) != 0)
     return fail("Hell tape polarity is inverted");
+  {
+    HellRaster raster;
+    // Tape is 640x120. An 8 px margin on each side maps it 1:1, so the
+    // ink column is not blended with the dark widget chrome.
+    raster.resize(656, 136);
+    raster.addColumn(QByteArray(40, char(0)));
+    auto lumaAt = [](const QImage& image, int x, int y) {
+      const QRgb pixel = image.pixel(x, y);
+      return qRed(pixel) + qGreen(pixel) + qBlue(pixel);
+    };
+    QImage before(raster.size(), QImage::Format_ARGB32);
+    raster.render(&before);
+    const int y = before.height() / 2;
+    const int inkX = 8 + 638;
+    const int paperX = 8 + 40;
+    const int inkLuma = lumaAt(before, inkX, y);
+    const int paperLuma = lumaAt(before, paperX, y);
+    raster.setVideoReverse(true);
+    QImage after(raster.size(), QImage::Format_ARGB32);
+    raster.render(&after);
+    const int flipped = lumaAt(after, inkX, y);
+    const int paperFlip = lumaAt(after, paperX, y);
+    if (!raster.videoReverse() || flipped < inkLuma + 80 || paperFlip > paperLuma - 80) {
+      qCritical("hell reverse ink %d -> %d paper %d -> %d", inkLuma, flipped, paperLuma, paperFlip);
+      return fail("Hell reverse video did not invert the tape");
+    }
+  }
   const auto* mode = window.findChild<QLabel*>("modeValue");
   const auto* afc = window.findChild<QPushButton*>("afcToggle");
   const auto* squelch = window.findChild<QPushButton*>("squelchToggle");
@@ -876,9 +1085,13 @@ int shellReady(MainWindow& window) {
   if (!region || region->count() < 4 || !region->itemText(0).contains(QStringLiteral("Auto")))
     return fail("region control is missing");
   const auto* extra = window.findChild<QSpinBox*>("profileExtra");
-  if (!extra || extra->minimum() != 0 || !extra->toolTip().contains(QStringLiteral("DIGU")) ||
+  if (!extra || extra->minimum() != 0 || extra->specialValueText() != QLatin1String("default") ||
+      !extra->toolTip().contains(QStringLiteral("DIGU")) ||
       !extra->toolTip().contains(QStringLiteral("does not key"), Qt::CaseInsensitive))
     return fail("extra frequency is missing");
+  const auto* extraLabel = window.findChild<QLabel*>("profileExtraLabel");
+  if (!extraLabel || extraLabel->text() != QLatin1String("Extra") || extraLabel->font().pixelSize() != 12)
+    return fail("extra caption is missing");
   bool guide = false;
   if (window.menuBar()) {
     for (QAction* menuAction : window.menuBar()->actions()) {
@@ -1597,6 +1810,50 @@ int shellReady(MainWindow& window) {
         }
       }
     }
+    {
+      // JS8Call message structure built by STD: each message goes out and is
+      // read back by STD's own decoder the way JS8Call prints it.
+      struct Built {
+        const char* text;
+        const char* want;  // decoded text, or the start of it when partial
+        bool exact;
+      };
+      const Built built[] = {
+          {"@HB HEARTBEAT EM79", "N8SDR: @HB HEARTBEAT EM79 ", true},
+          {"HB", "N8SDR: @HB HEARTBEAT EM79 ", true},
+          {"CQ CQ CQ EM79", "N8SDR: @ALLCALL CQ CQ CQ EM79 ", true},
+          {"CQ DX", "N8SDR: @ALLCALL CQ DX EM79 ", true},
+          {"W4KUS SNR?", "N8SDR: W4KUS SNR? ", true},
+          {"W4KUS SNR -11", "N8SDR: W4KUS SNR -11 ", true},
+          {"W4KUS HEARTBEAT SNR -11", "N8SDR: W4KUS HEARTBEAT SNR -11 ", true},
+          {"W4KUS/P INFO?", "N8SDR: W4KUS/P INFO? ", true},
+          {"@ALLCALL STATUS?", "N8SDR: @ALLCALL STATUS? ", true},
+          {"KN4CRD 73", "N8SDR: KN4CRD 73 ", true},
+          {"W4KUS HELLO THERE", "N8SDR: W4KUS ", false},
+          {"HELLO WORLD", "HELLO WORLD", true},
+      };
+      for (const Built& b : built) {
+        const QString text = QString::fromLatin1(b.text);
+        int used = 0;
+        const Js8Plan plan = planJs8(text, 1500, 0, &used, true, QStringLiteral("N8SDR"), QStringLiteral("EM79AB"));
+        if (used != text.size())
+          return fail("JS8 message did not plan all its characters");
+        const QString got = js8Decode(plan.samples.data(), int(plan.samples.size()), 48000, 1500);
+        const bool ok = b.exact ? got == QLatin1String(b.want)
+                                : got.startsWith(QLatin1String(b.want)) && got.endsWith(QLatin1String("HELLO THERE"));
+        if (!ok) {
+          qCritical("JS8 built [%s]\n  got  [%s]\n  want [%s]", b.text, qPrintable(got), b.want);
+          return fail("a JS8Call message STD built did not decode the way JS8Call prints it");
+        }
+      }
+      // A directed header is its own 15 s part; the rest follows as text.
+      int headUsed = 0;
+      planJs8(QStringLiteral("W4KUS HELLO"), 1500, 1, &headUsed, true, QStringLiteral("N8SDR"), QString());
+      if (headUsed != 6)
+        return fail("JS8 directed header did not take TO and its space");
+      if (!js8Header(QStringLiteral("HELLO WORLD"), QStringLiteral("N8SDR"), QString()).bits.empty())
+        return fail("JS8 plain text was mistaken for a directed message");
+    }
     const Js8Plan low = planJs8(QStringLiteral("HELLO"), 1200);
     const Js8Plan high = planJs8(QStringLiteral("WORLD"), 1800);
     if (low.samples.size() != high.samples.size() || low.samples.size() < 1000)
@@ -1750,9 +2007,14 @@ int shellReady(MainWindow& window) {
                           box->toPlainText() == QLatin1String("OLD-TX") &&
                           list->toPlainText() == QLatin1String("OLD-LIST");
     rttyMode->trigger();
+    const auto* band = window.findChild<WaterfallWidget*>();
+    if (!band || !band->channelCentered())
+      return fail("RTTY marker is not centered on the carrier");
     const bool cleared = echo->toPlainText().isEmpty() && box->toPlainText().isEmpty() &&
                          list->toPlainText().isEmpty();
     ft8Mode->trigger();
+    if (band->channelCentered())
+      return fail("FT8 marker is centered");
     if (hellSaved.isValid())
       keep.setValue(QStringLiteral("tx/hellText"), hellSaved);
     else
@@ -1768,6 +2030,226 @@ int shellReady(MainWindow& window) {
       !js8->toolTip().contains(QLatin1String("START")) ||
       js8->toolTip().contains(QLatin1String("does not key yet")))
     return fail("JS8 is missing");
+  {
+    // JS8 operating screen: shown only in JS8, fed by heard frames.
+    QSettings keep;
+    const QVariant callSaved = keep.value(QStringLiteral("dx/reportCall"));
+    const QVariant gridSaved = keep.value(QStringLiteral("dx/reportGrid"));
+    keep.setValue(QStringLiteral("dx/reportCall"), QStringLiteral("N8SDR"));
+    keep.setValue(QStringLiteral("dx/reportGrid"), QStringLiteral("EM79"));
+    auto restore = [&] {
+      if (callSaved.isValid())
+        keep.setValue(QStringLiteral("dx/reportCall"), callSaved);
+      else
+        keep.remove(QStringLiteral("dx/reportCall"));
+      if (gridSaved.isValid())
+        keep.setValue(QStringLiteral("dx/reportGrid"), gridSaved);
+      else
+        keep.remove(QStringLiteral("dx/reportGrid"));
+      keep.sync();
+    };
+    auto* js8Action = window.findChild<QAction*>(QStringLiteral("modeJs8"));
+    auto* ft8Action = window.findChild<QAction*>(QStringLiteral("modeFt8"));
+    auto* engine = window.findChild<Js8Engine*>();
+    auto* strip = window.findChild<QWidget*>(QStringLiteral("js8Strip"));
+    auto* actions = window.findChild<QWidget*>(QStringLiteral("js8Actions"));
+    auto* screen = window.findChild<QWidget*>(QStringLiteral("js8Receive"));
+    auto* band = window.findChild<QTreeWidget*>(QStringLiteral("js8BandActivity"));
+    auto* calls = window.findChild<QTreeWidget*>(QStringLiteral("js8CallActivity"));
+    auto* talk = window.findChild<QTextEdit*>(QStringLiteral("js8Conversation"));
+    auto* offset = window.findChild<QSpinBox*>(QStringLiteral("js8Offset"));
+    auto* snrAsk = window.findChild<QPushButton*>(QStringLiteral("js8Snr"));
+    if (!js8Action || !ft8Action || !engine || !strip || !actions || !screen || !band || !calls || !talk ||
+        !offset || !snrAsk) {
+      restore();
+      return fail("the JS8 screen is missing");
+    }
+    ft8Action->trigger();
+    if (strip->isVisibleTo(&window) || actions->isVisibleTo(&window) || screen->isVisibleTo(&window)) {
+      restore();
+      return fail("the JS8 screen shows outside JS8");
+    }
+    js8Action->trigger();
+    const auto* echo = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+    if (!strip->isVisibleTo(&window) || !actions->isVisibleTo(&window) || !screen->isVisibleTo(&window) ||
+        (echo && echo->isVisibleTo(&window))) {
+      restore();
+      return fail("the JS8 screen does not replace the plain receive pane in JS8");
+    }
+    if (snrAsk->isEnabled()) {
+      restore();
+      return fail("JS8 directed buttons are live with no station picked");
+    }
+    offset->setValue(1500);
+    // W4KUS answers our heartbeat on our offset in one frame; KN4CRD
+    // sends a two-frame directed message elsewhere; a CQ gives a grid.
+    emit engine->frameHeard(QStringLiteral("W4KUS: N8SDR HEARTBEAT SNR -11 "), -9, 1502, true);
+    emit engine->frameHeard(QStringLiteral("KN4CRD: N8SDR  "), 3, 900, false);
+    emit engine->frameHeard(QStringLiteral("HELLO RICK"), 2, 901, true);
+    emit engine->frameHeard(QStringLiteral("K3ATA: @ALLCALL CQ CQ CQ FN20 "), -14, 2100, true);
+    if (band->topLevelItemCount() != 3 || calls->topLevelItemCount() != 4) {
+      qCritical("JS8 band %d calls %d", band->topLevelItemCount(), calls->topLevelItemCount());
+      restore();
+      return fail("JS8 activity lists did not fill");
+    }
+    if (!band->topLevelItem(0)->text(3).startsWith(QLatin1String("KN4CRD: N8SDR HELLO RICK"))) {
+      qCritical("JS8 band row [%s]", qPrintable(band->topLevelItem(0)->text(3)));
+      restore();
+      return fail("JS8 frames on one offset did not join into one message");
+    }
+    QString k3Grid;
+    for (int i = 0; i < calls->topLevelItemCount(); ++i) {
+      if (calls->topLevelItem(i)->text(0) == QLatin1String("K3ATA"))
+        k3Grid = calls->topLevelItem(i)->text(4);
+    }
+    if (calls->topLevelItem(0)->text(0) != QLatin1String("@ALLCALL") || k3Grid != QLatin1String("FN20")) {
+      restore();
+      return fail("JS8 call activity lost @ALLCALL or the CQ grid");
+    }
+    const QString said = talk->toPlainText();
+    if (!said.contains(QLatin1String("(1502) - W4KUS: N8SDR HEARTBEAT SNR -11")) ||
+        !said.contains(QLatin1String("KN4CRD: N8SDR HELLO RICK")) || said.contains(QLatin1String("K3ATA"))) {
+      qCritical("JS8 conversation [%s]", qPrintable(said));
+      restore();
+      return fail("JS8 conversation did not keep just the messages to us");
+    }
+    emit calls->itemClicked(calls->topLevelItem(1), 0);
+    const auto* to = window.findChild<QLabel*>(QStringLiteral("js8To"));
+    if (!snrAsk->isEnabled() || !to || !to->text().endsWith(calls->topLevelItem(1)->text(0))) {
+      restore();
+      return fail("picking a JS8 station did not arm the directed buttons");
+    }
+    emit calls->itemDoubleClicked(calls->topLevelItem(1), 0);
+    const auto* fall = window.findChild<WaterfallWidget*>();
+    if (!fall || fall->txHz() != offset->value() || fall->rxHz() != offset->value()) {
+      restore();
+      return fail("JS8 double-click did not move the offset");
+    }
+    if (auto* clr = window.findChild<QPushButton*>(QStringLiteral("clrRx")))
+      clr->click();
+    if (band->topLevelItemCount() != 0 || !talk->toPlainText().isEmpty()) {
+      restore();
+      return fail("CLR RX left JS8 activity behind");
+    }
+    ft8Action->trigger();
+    restore();
+  }
+  {
+    // WEFAX: the profile follows the mode, the transmit controls and the
+    // macros go away, and the stations pane tunes by region.
+    auto* faxAction = window.findChild<QAction*>(QStringLiteral("modeWefax576"));
+    auto* ft8Back = window.findChild<QAction*>(QStringLiteral("modeFt8"));
+    auto* hellAction = window.findChild<QAction*>(QStringLiteral("modeFeldHell"));
+    auto* profile = window.findChild<ModeProfile*>();
+    if (!faxAction || !ft8Back || !profile)
+      return fail("WEFAX mode action is missing");
+    if (hellAction)
+      hellAction->trigger();
+    faxAction->trigger();
+    if (profile->digitalMode() != QLatin1String("WEFAX-576")) {
+      qCritical("WEFAX profile mode [%s]", qPrintable(profile->digitalMode()));
+      return fail("WEFAX left the previous mode in charge");
+    }
+    const auto* macros = window.findChild<QDockWidget*>(QStringLiteral("macroDock"));
+    const auto* txBox = window.findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+    const auto* txKey = window.findChild<QPushButton*>(QStringLiteral("txSend"));
+    const auto* stations = window.findChild<QWidget*>(QStringLiteral("wefaxStations"));
+    auto* faxRegion = window.findChild<QComboBox*>(QStringLiteral("wefaxRegion"));
+    if ((macros && macros->isVisibleTo(&window)) || (txBox && txBox->isVisibleTo(&window)) ||
+        (txKey && txKey->isVisibleTo(&window)) || !stations || !stations->isVisibleTo(&window) || !faxRegion)
+      return fail("WEFAX shows transmit controls or macros, or no stations pane");
+    {
+      // Left-edge shift turns every line: pixel 100 of the raw picture
+      // becomes pixel 0 of the shown one.
+      WefaxEngine shifted;
+      shifted.setArmed(true);
+      shifted.startNow();
+      std::vector<unsigned char> gray(64 * 8);
+      for (size_t i = 0; i < gray.size(); ++i)
+        gray[i] = static_cast<unsigned char>((i % 64) < 32 ? 0 : 255);
+      WefaxSpec spec;
+      const std::vector<float> tone = wefaxModulateTest(spec, 48000, gray, 64, 8);
+      shifted.pushAudio(tone.data(), int(tone.size()), 48000);
+      const QImage raw = shifted.picture();
+      shifted.setShift(100);
+      const QImage moved = shifted.picture();
+      if (raw.isNull() || moved.size() != raw.size() || moved.pixel(0, 2) != raw.pixel(100, 2) ||
+          moved.pixel(raw.width() - 100, 2) != raw.pixel(0, 2))
+        return fail("WEFAX left-edge shift does not turn the lines");
+    }
+    for (const char* name : {"wefaxAutoSave", "wefaxFit", "wefaxOpen", "wefaxStart", "wefaxSave"}) {
+      const auto* w = window.findChild<QWidget*>(QLatin1String(name));
+      if (!w || !w->isVisibleTo(&window))
+        return fail("a WEFAX picture control is missing");
+    }
+    QSettings faxKeep;
+    const QVariant regionSaved = faxKeep.value(QStringLiteral("wefax/region"));
+    auto freqButtons = [&window] {
+      QStringList out;
+      for (auto* b : window.findChildren<QPushButton*>(QStringLiteral("wefaxFreq")))
+        out.append(QString::number(b->property("khz").toDouble(), 'f', 1));
+      return out;
+    };
+    faxRegion->setCurrentIndex(faxRegion->findData(QStringLiteral("1")));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    const QStringList europe = freqButtons();
+    faxRegion->setCurrentIndex(faxRegion->findData(QStringLiteral("2")));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    const QStringList americas = freqButtons();
+    QPushButton* boston = nullptr;
+    for (auto* b : window.findChildren<QPushButton*>(QStringLiteral("wefaxFreq"))) {
+      if (QString::number(b->property("khz").toDouble(), 'f', 1) == QLatin1String("4235.0"))
+        boston = b;
+    }
+    auto* fallFax = window.findChild<WaterfallWidget*>();
+    if (fallFax)
+      fallFax->setRxHz(1500);
+    if (boston)
+      boston->click();
+    if (regionSaved.isValid())
+      faxKeep.setValue(QStringLiteral("wefax/region"), regionSaved);
+    else
+      faxKeep.remove(QStringLiteral("wefax/region"));
+    if (!europe.contains(QLatin1String("3855.0")) || europe.contains(QLatin1String("4235.0")) ||
+        !americas.contains(QLatin1String("4235.0")) || !boston || !fallFax || fallFax->rxHz() != 1900)
+      return fail("WEFAX region stations or the 1900 Hz marker are wrong");
+    ft8Back->trigger();
+    if (profile->digitalMode() != QLatin1String("FT8") || !stations->isHidden())
+      return fail("leaving WEFAX did not restore the mode");
+  }
+  {
+    // WSPR rows stay in the receive colour after a red TX echo, and a rule
+    // separates one 2-minute period from the next.
+    auto* wsprAction = window.findChild<QAction*>(QStringLiteral("modeWspr"));
+    auto* ft8Back = window.findChild<QAction*>(QStringLiteral("modeFt8"));
+    auto* wsprEngine = window.findChild<WsprEngine*>();
+    auto* echo = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+    if (!wsprAction || !ft8Back || !wsprEngine || !echo)
+      return fail("WSPR receive pieces are missing");
+    wsprAction->trigger();
+    QTextCursor red(echo->document());
+    red.movePosition(QTextCursor::End);
+    QTextCharFormat redFormat;
+    redFormat.setForeground(txEchoColor());
+    red.insertText(QStringLiteral("N8SDR EM79 37"), redFormat);
+    WsprSpot spot;
+    spot.message = QStringLiteral("AB8EF EN63 37");
+    spot.audioHz = 1500.0;
+    const qint64 period = 1793000000000LL;
+    emit wsprEngine->spotDecoded(spot, period);
+    spot.message = QStringLiteral("WR4I FM08 23");
+    emit wsprEngine->spotDecoded(spot, period + 120000);
+    QTextCursor last(echo->document());
+    last.movePosition(QTextCursor::End);
+    last.movePosition(QTextCursor::PreviousCharacter);
+    const QColor shown = last.charFormat().foreground().color();
+    const QString text = echo->toPlainText();
+    ft8Back->trigger();
+    if (shown != rxEchoColor())
+      return fail("WSPR decodes took the red TX echo colour");
+    if (!text.contains(QChar(0x2500)) || text.indexOf(QChar(0x2500)) < text.indexOf(QLatin1String("AB8EF")))
+      return fail("WSPR periods are not separated by a rule");
+  }
   {
     std::vector<float> wave;
     if (!buildTxWave(QStringLiteral("WSPR"), QStringLiteral("N8SDR EM79 37"), 1500, &wave) ||
@@ -2567,6 +3049,114 @@ int shellReady(MainWindow& window) {
       !updateChip || updateChip->isVisible())
     return fail("update notice is missing");
 
+  {
+    bool userOk = false;
+    QString userWhy;
+    QTimer::singleShot(0, [&] {
+      auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+      if (!dialog) {
+        userWhy = QStringLiteral("user dialog did not open");
+        return;
+      }
+      const auto calls = dialog->findChildren<QLineEdit*>(QStringLiteral("userCall"));
+      const auto grids = dialog->findChildren<QLineEdit*>(QStringLiteral("userGrid"));
+      if (calls.size() != 1 || grids.size() != 1) {
+        userWhy = QStringLiteral("callsign or locator field changed");
+        dialog->reject();
+        return;
+      }
+      for (const MacroUserField& field : macroUserFields()) {
+        const auto* edit = dialog->findChild<QLineEdit*>(field.objectName);
+        if (!edit || !edit->toolTip().contains(field.tag) ||
+            !edit->toolTip().contains(QLatin1String("does not key")) ||
+            !edit->toolTip().contains(QLatin1String("START"))) {
+          userWhy = QStringLiteral("missing ") + field.tag;
+          dialog->reject();
+          return;
+        }
+      }
+      const auto* legend = dialog->findChild<QLabel*>(QStringLiteral("userTagLegend"));
+      if (!legend || !legend->text().contains(QLatin1String("<MYCALL>")) ||
+          !legend->text().contains(QLatin1String("<MYGRID>")) ||
+          !legend->text().contains(QLatin1String("<MYNAME>")) ||
+          !legend->text().contains(QLatin1String("<TX_PWR>"))) {
+        userWhy = QStringLiteral("tag legend missing");
+        dialog->reject();
+        return;
+      }
+      const auto* scroll = dialog->findChild<QScrollArea*>(QStringLiteral("userTagFields"));
+      if (!scroll || scroll->minimumHeight() < 120) {
+        userWhy = QStringLiteral("station tag scroller can collapse");
+        dialog->reject();
+        return;
+      }
+      const char* shown[] = {"userName", "userQth", "userAntenna", "userPower"};
+      for (const char* name : shown) {
+        const auto* edit = dialog->findChild<QLineEdit*>(QLatin1String(name));
+        if (!edit || edit->minimumHeight() < 24 || scroll->findChild<QLineEdit*>(QLatin1String(name))) {
+          userWhy = QStringLiteral("station field is not at full height");
+          dialog->reject();
+          return;
+        }
+      }
+      userOk = true;
+      dialog->reject();
+    });
+    if (auto* user = window.findChild<QAction*>(QStringLiteral("userSettings")))
+      user->trigger();
+    if (!userOk) {
+      qCritical("user dialog [%s]", qPrintable(userWhy));
+      return fail("Options User station tags are wrong");
+    }
+  }
+  {
+    const auto* echo = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+    if (!echo || echo->verticalScrollBarPolicy() != Qt::ScrollBarAsNeeded)
+      return fail("receive log has no vertical scrollbar");
+    QTextEdit log;
+    log.setReadOnly(true);
+    log.setLineWrapMode(QTextEdit::NoWrap);
+    log.setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    log.resize(220, 36);
+    log.show();
+    QString block;
+    for (int i = 0; i < 40; ++i)
+      block += QStringLiteral("line %1 received copy\n").arg(i);
+    appendKeyedEcho(&log, block, rxEchoColor());
+    QApplication::processEvents();
+    QScrollBar* bar = log.verticalScrollBar();
+    if (!bar || bar->maximum() <= 0)
+      return fail("receive log did not grow a vertical scrollbar");
+    bar->setValue(0);
+    QApplication::processEvents();
+    const int parked = bar->value();
+    appendKeyedEcho(&log, QStringLiteral("TX-ECHO"), txEchoColor());
+    QApplication::processEvents();
+    if (bar->value() != parked)
+      return fail("receive log jumped away from earlier text");
+    if (!log.toPlainText().contains(QLatin1String("line 0")) ||
+        !log.toPlainText().contains(QLatin1String("TX-ECHO")))
+      return fail("receive log replaced earlier text");
+    QTextCursor color(log.document());
+    color.setPosition(0);
+    const QColor rx = color.charFormat().foreground().color();
+    color.setPosition(log.toPlainText().lastIndexOf(QLatin1String("TX-ECHO")));
+    const QColor tx = color.charFormat().foreground().color();
+    if (rx != rxEchoColor() || tx != txEchoColor())
+      return fail("receive and echo colors are wrong");
+    breakEchoLine(&log);
+    if (!log.toPlainText().endsWith(QLatin1Char('\n')))
+      return fail("Hell echo did not break the line");
+    const QString held = log.toPlainText();
+    breakEchoLine(&log);
+    if (log.toPlainText() != held)
+      return fail("Hell echo added a second break");
+    bar->setValue(bar->maximum());
+    appendKeyedEcho(&log, QStringLiteral("MORE"), txEchoColor());
+    QApplication::processEvents();
+    if (bar->value() < bar->maximum() - 2)
+      return fail("receive log did not follow the bottom");
+  }
   qInfo("STD self-test ok");
   return 0;
 }

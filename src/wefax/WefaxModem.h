@@ -57,6 +57,19 @@ public:
   void setSlant(int ppm);
   int slant() const;
   void clear();
+  // Start a picture now, without waiting for the start tone and phasing.
+  // For tuning in mid-chart. The left edge may need Slant or a later chart.
+  void startNow();
+  // Save at the stop tone. On by default; Save always works by hand.
+  void setAutoSave(bool on);
+  // Left-edge shift in picture pixels. Each line is turned so that pixel
+  // `px` comes first. Set by clicking the chart; a phasing start resets it.
+  void setShift(int px);
+  int shift() const;
+  // The picture received so far, shifted, with only the rows that are in.
+  QImage picture() const;
+  // True while lines are being drawn, false while waiting for a start.
+  bool receiving() const;
   void pushAudio(const float* samples, int count, int sampleRateHz);
   const QImage& image() const;
   int rowCount() const;

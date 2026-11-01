@@ -38,6 +38,24 @@ inline double hellFskShiftHz(const QString& mode) {
   return 0.0;
 }
 
+// Fldigi HELL_BW defaults. The waterfall band is this wide and is drawn
+// around the carrier, not upward from it. Feld Hell is 245 Hz.
+inline int hellBandwidthHz(const QString& mode) {
+  if (mode == QLatin1String("Slow Hell"))
+    return 30;
+  if (mode == QLatin1String("Feld Hell X5"))
+    return 1225;
+  if (mode == QLatin1String("Feld Hell X9"))
+    return 2205;
+  if (mode == QLatin1String("FSK Hell"))
+    return 250;
+  if (mode == QLatin1String("FSK Hell-105"))
+    return 120;
+  if (mode == QLatin1String("Hell 80"))
+    return 450;
+  return 245;
+}
+
 // Fldigi keyboard text: one transmit box, a receive echo, CLR RX, and CLR TX.
 // FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. CW stays in Lyra.
 // A later menu item is covered when its name starts with one of these
@@ -203,4 +221,19 @@ inline bool keyboardTextMode(const QString& mode) {
       return true;
   }
   return false;
+}
+
+// The cursor is the carrier, and the signal sits on both sides of it.
+// FT8, FT4, FT2, JT65, Q65, and JS8 start at the cursor and run upward.
+inline bool carrierCenteredMode(const QString& mode) {
+  if (sequencedFamily(mode) || mode.startsWith(QLatin1String("JS8"), Qt::CaseInsensitive))
+    return false;
+  if (hellFamily(mode) || rttyMode(mode) || keyedPsk(mode) || wsprMode(mode) || wefaxMode(mode))
+    return true;
+  return mode.startsWith(QLatin1String("Olivia "), Qt::CaseInsensitive) ||
+         mode.startsWith(QLatin1String("Contestia "), Qt::CaseInsensitive) ||
+         mode.startsWith(QLatin1String("MFSK"), Qt::CaseInsensitive) ||
+         mode.startsWith(QLatin1String("DominoEX "), Qt::CaseInsensitive) ||
+         mode.startsWith(QLatin1String("Thor "), Qt::CaseInsensitive) ||
+         mode.startsWith(QLatin1String("MT63"), Qt::CaseInsensitive);
 }
