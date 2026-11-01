@@ -3,7 +3,10 @@
 
 #include "MacroFile.h"
 
+#include <algorithm>
+
 #include <QRegularExpression>
+#include <QStringList>
 
 namespace {
 
@@ -91,7 +94,8 @@ QString saveMacroDefinition(const QVector<MacroSlot>& rows) {
   return out;
 }
 
-QString macroInsertText(const QString& body, const QString& call, const QString& locator) {
+QString macroInsertText(const QString& body, const QString& call, const QString& locator,
+                        const QHash<QString, QString>& userTags) {
   QString text = body;
   const QStringList drop = {QStringLiteral("TX"), QStringLiteral("RX"), QStringLiteral("CLRTX"),
                             QStringLiteral("CLRRX"), QStringLiteral("LOG")};
@@ -103,7 +107,47 @@ QString macroInsertText(const QString& body, const QString& call, const QString&
   }
   text.replace(QStringLiteral("<MYCALL>"), call, Qt::CaseInsensitive);
   text.replace(QStringLiteral("<MYLOC>"), locator, Qt::CaseInsensitive);
+  text.replace(QStringLiteral("<MYGRID>"), locator, Qt::CaseInsensitive);
+  QStringList tags = userTags.keys();
+  std::sort(tags.begin(), tags.end(), [](const QString& a, const QString& b) { return a.size() > b.size(); });
+  for (const QString& tag : tags) {
+    if (!tag.startsWith(QLatin1Char('<')))
+      continue;
+    text.replace(tag, userTags.value(tag), Qt::CaseInsensitive);
+  }
   return text.trimmed();
+}
+
+QVector<MacroUserField> macroUserFields() {
+  // Fldigi operator and log fields that the tag list names, except the
+  // callsign and the locator. Those stay Options → User as they are.
+  static const struct {
+    const char* tag;
+    const char* key;
+    const char* objectName;
+    const char* label;
+    const char* note;
+  } kFields[] = {
+      {"<MYNAME>", "user/name", "userName", "Name", "Operator name"},
+      {"<MYQTH>", "user/qth", "userQth", "QTH", "Station city"},
+      {"<ANTENNA>", "user/antenna", "userAntenna", "Antenna", "Short antenna description"},
+      {"<TX_PWR>", "user/power", "userPower", "Power", "Transmit power"},
+      {"<MYRST>", "user/rst", "userRst", "RST", "My RST"},
+      {"<MYCLASS>", "user/fdClass", "userFdClass", "FD class", "Field Day class"},
+      {"<MYSECTION>", "user/fdSection", "userFdSection", "FD section", "Field Day section"},
+      {"<MYSTATE>", "user/state", "userState", "State", "State or province"},
+      {"<MYST>", "user/st", "userSt", "ST", "State abbreviation"},
+      {"<MYCOUNTY>", "user/county", "userCounty", "County", "County"},
+      {"<MYCNTY>", "user/cnty", "userCnty", "CNTY", "County abbreviation"},
+  };
+  QVector<MacroUserField> rows;
+  rows.reserve(int(sizeof kFields / sizeof kFields[0]));
+  for (const auto& field : kFields) {
+    rows.push_back(MacroUserField{QString::fromLatin1(field.tag), QString::fromLatin1(field.key),
+                                  QString::fromLatin1(field.objectName), QString::fromLatin1(field.label),
+                                  QString::fromLatin1(field.note)});
+  }
+  return rows;
 }
 
 QVector<MacroTagRow> macroTagList() {
@@ -127,6 +171,7 @@ QVector<MacroTagRow> macroTagList() {
       {"<MYCNTY>", "my CNTY"},
       {"<ANTENNA>", "my antenna"},
       {"<BAND>", "operating band"},
+      {"<TX_PWR>", "transmit power"},
       {"<VER>", "Fldigi version"},
       {"<DIGI>", "digital mode (adif)"},
       {"", ""},

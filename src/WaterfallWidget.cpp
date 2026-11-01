@@ -493,6 +493,15 @@ void WaterfallWidget::setChannelWidth(int rxHz, int txHz) {
   update();
 }
 
+void WaterfallWidget::setChannelCentered(bool on) {
+  if (channelCentered_ == on)
+    return;
+  channelCentered_ = on;
+  if (transmitting_)
+    refreshTxTone();
+  update();
+}
+
 void WaterfallWidget::setTransmitting(bool on) {
   transmitting_ = on;
   if (!transmitting_) {
@@ -705,8 +714,11 @@ void WaterfallWidget::stampTxTone(TraceRow* row) {
   auto hzOf = [&](int column) {
     return float(double(row->lo) + (double(column) + 0.5) * pixel);
   };
-  const float txLo = float(txHz_) - 80.0f;
-  const float txHi = float(txHz_ + txWidthHz_) + 80.0f;
+  float txEdgeLo = 0.0f;
+  float txEdgeHi = 0.0f;
+  channelBandHz(txHz_, txWidthHz_, channelCentered_, &txEdgeLo, &txEdgeHi);
+  const float txLo = txEdgeLo - 80.0f;
+  const float txHi = txEdgeHi + 80.0f;
   QVector<float> traces;
   for (int column = 1; column + 1 < row->level.size(); ++column) {
     const float hz = hzOf(column);
@@ -735,17 +747,16 @@ void WaterfallWidget::stampTxTone(TraceRow* row) {
     reference = traces.at(traces.size() / 2);
   }
   reference = std::clamp(reference, floor, ceiling);
-  // The red marker is the protocol channel: low edge at txHz_, high edge
-  // one width above it. The overlay fills that same channel. Its centre
-  // is the middle of the marker, not the low edge (that left the trace
-  // on the lower side of the red band). Same pixel map as xAtHz.
+  // The overlay fills the same channel as the red marker. FT8's low edge
+  // is txHz_. Hell's carrier is txHz_, and the channel is ± bandwidth/2.
+  // The trace sits on the middle of that channel. Same pixel map as xAtHz.
   const float spanHz = float(row->hi - row->lo);
   const float pixels = float(std::max(1, int(row->level.size()) - 1));
   auto xOf = [&](float hz) {
     return ((hz - float(row->lo)) / spanHz) * pixels;
   };
-  const float x0 = xOf(float(txHz_));
-  const float x1 = xOf(float(txHz_ + std::max(1, txWidthHz_)));
+  const float x0 = xOf(txEdgeLo);
+  const float x1 = xOf(txEdgeHi);
   const float left = std::min(x0, x1);
   const float right = std::max(x0, x1);
   const float mid = 0.5f * (left + right);
@@ -1098,9 +1109,10 @@ void WaterfallWidget::buildToneBar() {
   layout->addSpacing(12);
   auto range = addSlider(QStringLiteral("Range"), QStringLiteral("waterfallRange"), kRangeMinDb, kRangeMaxDb,
                          rangeDb_,
-                         QStringLiteral("Range: how many dB the palette spans above the floor. Smaller makes "
-                                        "weak signals stand out; larger keeps strong ones from going white. "
-                                        "Display only. Does not key."));
+                         QStringLiteral("Range: how many dB the palette spans above the floor. A louder "
+                                        "peak stretches that span, so the skirts of a strong trace stay "
+                                        "colored instead of the same yellow as the carrier. Smaller makes "
+                                        "weak signals stand out. Display only. Does not key."));
   connect(floor.first, &QSlider::valueChanged, this, [this, readout = floor.second](int next) {
     if (autoFloor_)
       return;
@@ -1488,8 +1500,16 @@ QImage WaterfallWidget::spectrumImage() const {
       continue;
     auto* dst = reinterpret_cast<QRgb*>(frame.scanLine(y));
     const int columns = std::min(int(row.level.size()), frame.width());
+    const float floor = floorRelative(row);
+    float peak = floor;
     for (int c = 0; c < columns; ++c)
-      dst[c] = traceColor(row.level[c], floorRelative(row), float(rangeDb_), palette_);
+      peak = std::max(peak, row.level[c]);
+    // Range is the minimum span. A transmission louder than that used to
+    // pin every skirt to the top Plasma color. Stretch to the peak so the
+    // carrier is the top color and the sidebands step down.
+    const float span = std::max(float(rangeDb_), peak - floor);
+    for (int c = 0; c < columns; ++c)
+      dst[c] = traceColor(row.level[c], floor, span, palette_);
   }
   return frame;
 }
@@ -1729,8 +1749,9 @@ void WaterfallWidget::paintMarkers(QPainter& painter) const {
   const int labelY = plot.top() + 26;
 
   auto draw = [&](int hz, int widthHz, const QColor& color, const QString& name, int y) {
-    const float lo = float(hz);
-    const float hi = float(hz + std::max(1, widthHz));
+    float lo = 0.0f;
+    float hi = 0.0f;
+    channelBandHz(hz, widthHz, channelCentered_, &lo, &hi);
     if (hi < viewLoHz_ || lo > viewHiHz_)
       return;
     const int x0 = xAtHz(std::max(lo, viewLoHz_));
@@ -1743,15 +1764,20 @@ void WaterfallWidget::paintMarkers(QPainter& painter) const {
     painter.setPen(QPen(color, 1));
     painter.drawLine(xAtHz(lo), plot.top(), xAtHz(lo), plot.bottom());
     painter.drawLine(xAtHz(hi), plot.top(), xAtHz(hi), plot.bottom());
+    const int markX = xAtHz(channelCentered_ ? float(hz) : lo);
+    if (channelCentered_) {
+      painter.setPen(QPen(color, 2));
+      painter.drawLine(markX, plot.top(), markX, plot.bottom());
+    }
     QFont mono("JetBrains Mono");
     mono.setStyleHint(QFont::Monospace);
     mono.setPixelSize(11);
     painter.setFont(mono);
     const QString label = QStringLiteral("%1 %2").arg(name).arg(hz);
     const int textWidth = painter.fontMetrics().horizontalAdvance(label) + 8;
-    int textLeft = left + 4;
+    int textLeft = markX + 4;
     if (textLeft + textWidth > plot.right())
-      textLeft = std::max(plot.left(), left - textWidth - 2);
+      textLeft = std::max(plot.left(), markX - textWidth - 2);
     painter.fillRect(QRect(textLeft, y, textWidth, 16), QColor(0, 2, 12, 210));
     painter.setPen(color);
     painter.drawText(textLeft + 4, y + 12, label);

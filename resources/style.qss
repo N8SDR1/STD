@@ -337,13 +337,18 @@ QScrollBar:vertical {
 }
 
 QScrollBar::handle:vertical {
-  background: #274150;
+  background: #3d5a6e;
   border-radius: 4px;
   min-height: 24px;
 }
 
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
   height: 0;
+  background: none;
+}
+
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+  background: none;
 }
 
 QScrollBar:horizontal {
@@ -353,13 +358,18 @@ QScrollBar:horizontal {
 }
 
 QScrollBar::handle:horizontal {
-  background: #274150;
+  background: #3d5a6e;
   border-radius: 4px;
   min-width: 24px;
 }
 
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
   width: 0;
+  background: none;
+}
+
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+  background: none;
 }
 
 QToolTip {
@@ -401,4 +411,92 @@ QRadioButton#txPick5::indicator:checked,
 QRadioButton#txPick6::indicator:checked,
 QRadioButton#txPick7::indicator:checked {
   image: url(:/std/biohazard-on.svg);
+}
+
+/* JS8 top bar: clock, offset, filter, picked station and the RX/TX lamps. */
+QLabel#js8Utc, QLabel#js8To {
+  color: #00e5ff;
+}
+
+QLabel#js8Date, QLabel#js8StripLabel, QCheckBox#js8Filter {
+  color: #9fb4c4;
+}
+
+QLabel#js8RxLamp, QLabel#js8TxLamp {
+  background: #101820;
+  color: #4d6272;
+  border: 1px solid #274150;
+  border-radius: 4px;
+}
+
+QLabel#js8RxLamp[lit="true"] {
+  background: #143024;
+  color: #b6f5c8;
+  border: 1px solid #3ddc84;
+}
+
+QLabel#js8TxLamp[lit="true"] {
+  background: #e08a3d;
+  color: #2a1404;
+  border: 1px solid #ffb36b;
+}
+
+QTreeWidget#js8BandActivity, QTreeWidget#js8CallActivity, QTextEdit#js8Conversation {
+  background: #080d13;
+  color: #d7e6f2;
+  border: 1px solid #1c3344;
+  border-radius: 6px;
+  selection-background-color: rgba(0, 229, 255, 60);
+  selection-color: #f2fbff;
+}
+
+QTreeWidget#js8BandActivity QHeaderView::section,
+QTreeWidget#js8CallActivity QHeaderView::section {
+  background: #0b1219;
+  color: #9fb4c4;
+  border: none;
+  border-right: 1px solid #1c3344;
+  border-bottom: 1px solid #1c3344;
+  padding: 3px 6px;
+}
+
+QToolButton#js8Directed {
+  background: #121a24;
+  color: #d7e6f2;
+  border: 1px solid #274150;
+  border-radius: 6px;
+  padding: 5px 18px 5px 12px;
+}
+
+QToolButton#js8Directed:hover {
+  border-color: #00e5ff;
+  color: #00e5ff;
+}
+
+QToolButton#js8Directed:disabled {
+  color: #5c7284;
+  border-color: #1c3344;
+}
+
+QCheckBox#js8Filter::indicator {
+  width: 14px;
+  height: 14px;
+  background: #080d13;
+  border: 1px solid #3d6a84;
+  border-radius: 3px;
+}
+
+QCheckBox#js8Filter::indicator:hover {
+  border-color: #00e5ff;
+}
+
+QCheckBox#js8Filter::indicator:checked {
+  background: #00e5ff;
+  border-color: #00e5ff;
+}
+
+/* WEFAX frequency outside its published hours: dimmed, still clickable. */
+QPushButton#wefaxFreq[offAir="true"] {
+  color: #5c7284;
+  border: 1px dashed #274150;
 }

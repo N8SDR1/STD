@@ -346,6 +346,8 @@ struct WefaxEngine::Private {
   bool aptHigh = false;
   int aptHist[4] = {};
   int aptN = 0;
+  bool autoSave = true;
+  int shift = 0;
 
   void resetApt() {
     aptCount = 0;
@@ -435,6 +437,51 @@ void WefaxEngine::clear() {
   emit imageChanged();
 }
 
+void WefaxEngine::startNow() {
+  d_->phase = Private::Phase::Image;
+  d_->origin = 0.0;
+  d_->resetApt();
+  d_->image = QImage();
+  d_->rows = 0;
+  emit imageChanged();
+}
+
+void WefaxEngine::setShift(int px) {
+  const int width = d_->image.isNull() ? wefaxPixelsPerLine(d_->spec.ioc) : d_->image.width();
+  d_->shift = width > 0 ? ((px % width) + width) % width : 0;
+  emit imageChanged();
+}
+
+int WefaxEngine::shift() const {
+  return d_->shift;
+}
+
+QImage WefaxEngine::picture() const {
+  if (d_->image.isNull() || d_->rows < 1)
+    return {};
+  const int width = d_->image.width();
+  const int rows = d_->rows;
+  const int s = d_->shift % width;
+  if (s == 0)
+    return d_->image.copy(0, 0, width, rows);
+  QImage out(width, rows, d_->image.format());
+  for (int y = 0; y < rows; ++y) {
+    const uchar* src = d_->image.constScanLine(y);
+    uchar* dst = out.scanLine(y);
+    std::copy(src + s, src + width, dst);
+    std::copy(src, src + s, dst + (width - s));
+  }
+  return out;
+}
+
+void WefaxEngine::setAutoSave(bool on) {
+  d_->autoSave = on;
+}
+
+bool WefaxEngine::receiving() const {
+  return d_->phase == Private::Phase::Image;
+}
+
 const QImage& WefaxEngine::image() const {
   return d_->image;
 }
@@ -450,7 +497,7 @@ QString WefaxEngine::saveNow() {
     emit imageSaved(QStringLiteral("selftest"));
     return QStringLiteral("selftest");
   }
-  const QImage frame = d_->image.copy(0, 0, d_->image.width(), d_->rows);
+  const QImage frame = picture();
   const QString dir = wefaxSaveDirectory();
   QString path = QDir(dir).filePath(
       QStringLiteral("wefax-%1.png").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"))));
@@ -482,7 +529,7 @@ void WefaxEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
   const int startHz = aptStartHz(d_->spec);
   if (d_->phase == Private::Phase::Image && d_->rows >= 4 &&
       (d_->twoNear(kAptStopHz) || d_->twoNear(startHz))) {
-    if (d_->rows >= 4)
+    if (d_->rows >= 4 && d_->autoSave)
       saveNow();
     d_->image = QImage();
     d_->rows = 0;
@@ -497,6 +544,7 @@ void WefaxEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
       const int sync = findSync(d_->lum, span, &score);
       if (score >= 0.45) {
         d_->origin = sync;
+        d_->shift = 0;  // phasing lines up the left edge itself
         d_->phase = Private::Phase::Image;
         d_->resetApt();
         d_->image = QImage();

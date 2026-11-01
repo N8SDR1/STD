@@ -183,9 +183,10 @@ void fitSpin(QSpinBox* spin) {
   option.buttonSymbols = spin->buttonSymbols();
   const int button =
       spin->style()->subControlRect(QStyle::CC_SpinBox, &option, QStyle::SC_SpinBoxUp, spin).width();
-  // Padding and the 1px frame live in the stylesheet. Anything past the
-  // shown string is the empty field the band row cannot use.
-  const int width = text + std::max(button, 1) + 2;
+  // The stylesheet adds 2px padding each side and a 1px frame, and the
+  // line edit inside keeps its own 2px margins. Without room for those the
+  // last character was cut off ("Speed 9" showed as "Speed (").
+  const int width = text + std::max(button, 1) + 16;
   spin->setFixedWidth(width);
 }
 
@@ -364,7 +365,12 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   row->addWidget(txFirst);
   row->addWidget(txSecond);
   row->addWidget(filters);
+  auto* extraLabel = new QLabel(QStringLiteral("Extra"), bar_);
+  extraLabel->setObjectName(QStringLiteral("profileExtraLabel"));
+  extraLabel->setFont(barFont());
+  extraLabel->setToolTip(extra_->toolTip());
   row->addWidget(region_);
+  row->addWidget(extraLabel);
   row->addWidget(extra_);
 
   auto* bands = new QButtonGroup(bar_);
@@ -496,6 +502,8 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     next = mode;
   else if (wsprMode(mode))
     next = QStringLiteral("WSPR");
+  else if (wefaxMode(mode))
+    next = mode;
   const bool same = next == mode_;
   mode_ = next;
   if (same)
@@ -514,12 +522,19 @@ void ModeProfile::setDigitalMode(const QString& mode) {
                     dominoBandwidthHz(mode_) > 0 || thorBandwidthHz(mode_) > 0 || js8;
   if (auto* label = qobject_cast<QLabel*>(keyboard_)) {
     const QString js8Hint = QStringLiteral(
-        "JS8 uses the transmit box and the receive echo. Band buttons move the radio to the "
-        "JS8Call-improved calling dial. CLR RX and CLR TX clear those. TX waits for the next "
+        "JS8: band activity, conversation and call activity above, the message buttons and the "
+        "transmit box below. Click a call to pick it, double-click to move your offset to it. "
+        "Band buttons move the radio to the JS8Call-improved calling dial. CLR RX and CLR TX clear "
+        "those. TX waits for the next "
         "15 second UTC period and sends one frame, starting half a second in. A longer message "
         "continues on the following periods. Changing mode clears both panes. "
         "START is never sent.");
-    label->setText(!keyboard || hell ? QStringLiteral(
+    label->setText(wefaxMode(mode_) ? QStringLiteral(
+                                          "WEFAX-576 receives weather charts. Pick a region and a station "
+                                          "below: the dial goes 1.9 kHz under the carrier and the marker to "
+                                          "1900 Hz. A chart starts on its start tone; Start begins one now if "
+                                          "you tuned in mid-chart. Receive only. START is never sent.")
+                    : !keyboard || hell ? QStringLiteral(
                                            "Keyboard modes keep their own controls. None are loaded yet.")
                     : js8       ? js8Hint
                     : rtty      ? QStringLiteral(

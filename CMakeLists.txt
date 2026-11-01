@@ -7,7 +7,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(STD
-  VERSION 0.1.1
+  VERSION 0.1.2
   DESCRIPTION "STD — Shift, Tone, Decode"
   LANGUAGES CXX)
 
@@ -68,6 +68,8 @@ qt_add_executable(std
   WIN32
   src/main.cpp
   src/MainWindow.cpp
+  src/MainWindowJs8.cpp
+  src/MainWindowWefax.cpp
   src/MaEngine.cpp
   src/MaEngine.h
   src/MainWindow.h

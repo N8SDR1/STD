@@ -19,7 +19,9 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QFile>
+#include <QHash>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QThreadPool>
 
 namespace {
@@ -350,6 +352,122 @@ QString unpackGrid(int value) {
   return QString::fromLatin1(grid);
 }
 
+// ---- Packing: the inverses of the unpack functions above. Each result is
+// checked by unpacking it again, so a call or grid that does not survive
+// the round trip is refused instead of going out wrong.
+
+int alphaIndex(QChar ch) {
+  const char c = ch.toLatin1();
+  if (!c)
+    return -1;
+  const char* at = std::strchr(kAlphaNumeric, c);
+  return at ? int(at - kAlphaNumeric) : -1;
+}
+
+// 28-bit standard call or @group. Returns false when it does not fit.
+bool packCallsign28(const QString& input, uint32_t* out, bool* portable) {
+  QString call = input.trimmed().toUpper();
+  *portable = false;
+  if (call.startsWith(QLatin1Char('@'))) {
+    for (std::size_t n = 1; n < sizeof(kGroups) / sizeof(kGroups[0]); ++n) {
+      if (call == QLatin1String(kGroups[n])) {
+        *out = kBaseCall + 1 + uint32_t(n);
+        return true;
+      }
+    }
+    return false;
+  }
+  if (call.endsWith(QLatin1String("/P"))) {
+    *portable = true;
+    call.chop(2);
+  }
+  const QString original = call;
+  if (call.startsWith(QLatin1String("3DA0")))
+    call = QLatin1String("3D0") + call.mid(4);
+  else if (call.startsWith(QLatin1String("3X")) && call.size() > 2 && call.at(2).isLetter())
+    call = QLatin1Char('Q') + call.mid(2);
+  if (call.size() >= 3 && call.at(2).isDigit()) {
+  } else if (call.size() >= 2 && call.at(1).isDigit()) {
+    call.prepend(QLatin1Char(' '));
+  } else {
+    return false;
+  }
+  if (call.size() > 6)
+    return false;
+  while (call.size() < 6)
+    call.append(QLatin1Char(' '));
+  const int a = alphaIndex(call.at(0));
+  const int b = alphaIndex(call.at(1));
+  if (a < 0 || a > 36 || b < 0 || b > 35 || !call.at(2).isDigit())
+    return false;
+  uint32_t value = uint32_t(a);
+  value = value * 36 + uint32_t(b);
+  value = value * 10 + uint32_t(call.at(2).digitValue());
+  for (int i = 3; i < 6; ++i) {
+    const int c = alphaIndex(call.at(i));
+    if (c < 10 || c > 36)
+      return false;
+    value = value * 27 + uint32_t(c - 10);
+  }
+  if (unpackCallsign(value, false) != original)
+    return false;
+  *out = value;
+  return true;
+}
+
+// Varicode::packAlphaNumeric50: [39][38][38][2][38][38][38][2][38][38][38].
+bool packAlphaNumeric50(const QString& input, uint64_t* out) {
+  QString word = input.trimmed().toUpper();
+  if (word.isEmpty() || word.size() > 11)
+    return false;
+  if (word.size() > 3 && word.at(3) != QLatin1Char('/'))
+    word.insert(3, QLatin1Char(' '));
+  if (word.size() > 7 && word.at(7) != QLatin1Char('/'))
+    word.insert(7, QLatin1Char(' '));
+  if (word.size() > 11)
+    return false;
+  while (word.size() < 11)
+    word.append(QLatin1Char(' '));
+  uint64_t value = 0;
+  for (int i = 0; i < 11; ++i) {
+    const QChar ch = word.at(i);
+    if (i == 3 || i == 7) {
+      if (ch != QLatin1Char(' ') && ch != QLatin1Char('/'))
+        return false;
+      value = value * 2 + (ch == QLatin1Char('/') ? 1u : 0u);
+      continue;
+    }
+    const int index = alphaIndex(ch);
+    const int radix = i == 0 ? 39 : 38;
+    if (index < 0 || index >= radix)
+      return false;
+    value = value * uint64_t(radix) + uint64_t(index);
+  }
+  if (unpackAlphaNumeric50(value) != input.trimmed().toUpper())
+    return false;
+  *out = value;
+  return true;
+}
+
+// Four-character grid to its JS8 number, found through unpackGrid itself.
+int packGrid(const QString& input) {
+  static const QHash<QString, int> table = [] {
+    QHash<QString, int> map;
+    for (int v = 0; v <= kBaseGrid; ++v) {
+      const QString grid = unpackGrid(v);
+      if (!grid.isEmpty() && !map.contains(grid))
+        map.insert(grid, v);
+    }
+    return map;
+  }();
+  return table.value(input.trimmed().toUpper().left(4), -1);
+}
+
+void appendBits(std::string* bits, uint64_t value, int count) {
+  for (int i = count - 1; i >= 0; --i)
+    bits->push_back((value >> i) & 1u ? '1' : '0');
+}
+
 QString formatSnr(int snr) {
   if (snr < -60 || snr > 60)
     return {};
@@ -666,6 +784,11 @@ const LdpcGraph& ldpcGraph() {
   return graph;
 }
 
+// The 3 transmission bits of the frame textFromBits last accepted on this
+// thread (1 first, 2 last, 4 data). Decodes run on pool threads, so each
+// keeps its own. collectFrame reads it right after a frame prints.
+thread_local int tlFrameFlags = 0;
+
 QString textFromBits(const int* bits) {
   if (!bits)
     return {};
@@ -686,7 +809,10 @@ QString textFromBits(const int* bits) {
   if (got != crc12(bytes.data(), int(bytes.size())))
     return {};
   const int flags = (bits[72] ? 4 : 0) | (bits[73] ? 2 : 0) | (bits[74] ? 1 : 0);
-  return unpackFrame(textBits.substr(0, 72), flags);
+  const QString text = unpackFrame(textBits.substr(0, 72), flags);
+  if (!text.isEmpty())
+    tlFrameFlags = flags;
+  return text;
 }
 
 bool ldpcBelief(const double* channel, int* bits) {
@@ -838,6 +964,7 @@ struct Js8Hit {
   QString text;
   int snr = 0;
   int time = 0;
+  int flags = 0;
 };
 
 // Cursor search: the frame at the cursor gets the wide dt and df search.
@@ -1033,18 +1160,20 @@ void collectFrame(const float* samples, int count, int toneHz, int prefer, int* 
     }
     return false;
   };
+  const int cursorFlags = tlFrameFlags;
   if (!cursorText.isEmpty())
-    hits->push_back(Js8Hit{toneHz, cursorText, cursorSnr, cursorTime});
+    hits->push_back(Js8Hit{toneHz, cursorText, cursorSnr, cursorTime, cursorFlags});
   for (const ScanCandidate& cand : scanPassband(samples, count, prefer)) {
     if (taken(cand.hz))
       continue;
     double hz = cand.hz;
     int time = cand.time;
     const QString text = decodeCandidate(samples, count, cand, &hz, &time);
+    const int flags = tlFrameFlags;
     if (text.isEmpty() || taken(hz))
       continue;
     const int found = int(std::lround(hz));
-    hits->push_back(Js8Hit{found, text, frameSnrDb(samples, count, time, found), time});
+    hits->push_back(Js8Hit{found, text, frameSnrDb(samples, count, time, found), time, flags});
   }
   if (timeUsed) {
     // js8Decode steps to the next frame from here: the cursor frame when
@@ -1118,7 +1247,133 @@ QString js8SuggestedPlace(int bandIndex) {
   return QString::fromLatin1(kSuggested[bandIndex].place);
 }
 
-Js8Plan planJs8(const QString& text, int toneHz, int maxFrames, int* consumed, bool messageStart) {
+namespace {
+
+// The 72 bits of a heartbeat or CQ frame (000): [3 type][50 call][16 num][3 bits3].
+std::string compoundFrame(uint64_t call50, int num, int bits3) {
+  std::string bits;
+  appendBits(&bits, 0, 3);
+  appendBits(&bits, call50, 50);
+  appendBits(&bits, uint64_t(num) >> 5, 11);
+  appendBits(&bits, uint64_t(num) & 31u, 5);
+  appendBits(&bits, uint64_t(bits3), 3);
+  return bits;
+}
+
+int gridNumber(const QString& grid) {
+  static const QRegularExpression shape(QStringLiteral("^[A-R]{2}[0-9]{2}$"));
+  const QString g = grid.trimmed().toUpper().left(4);
+  if (!shape.match(g).hasMatch())
+    return kMaxGrid;
+  const int n = packGrid(g);
+  return n < 0 ? kMaxGrid : n;
+}
+
+}  // namespace
+
+Js8Header js8Header(const QString& text, const QString& myCall, const QString& myGrid) {
+  Js8Header head;
+  const QString upper = text.toUpper();
+  const QString me = myCall.trimmed().toUpper();
+  if (me.isEmpty())
+    return head;
+  // Leading spaces belong to the header so the character count stays right.
+  int lead = 0;
+  while (lead < upper.size() && upper.at(lead) == QLatin1Char(' '))
+    ++lead;
+  const QString body = upper.mid(lead);
+  const QString trimmed = body.trimmed();
+  const QString myGrid4 = myGrid.trimmed().toUpper().left(4);
+
+  // Heartbeat and CQ go out as one frame carrying the call and grid.
+  static const QRegularExpression hb(
+      QStringLiteral("^(?:@HB\\s+)?(?:HB|HEARTBEAT)(?:\\s+([A-R]{2}[0-9]{2}))?$"));
+  static const QRegularExpression cq(
+      QStringLiteral("^(?:@ALLCALL\\s+)?(CQ CQ CQ|CQ DX|CQ QRP|CQ CONTEST|CQ FIELD|CQ FD|CQ CQ|CQ)"
+                     "(?:\\s+([A-R]{2}[0-9]{2}))?$"));
+  uint64_t call50 = 0;
+  if (packAlphaNumeric50(me, &call50)) {
+    if (const auto m = hb.match(trimmed); m.hasMatch()) {
+      const QString grid = m.captured(1).isEmpty() ? myGrid4 : m.captured(1);
+      head.bits = compoundFrame(call50, gridNumber(grid), 0);
+      head.consumed = text.size();
+      head.display = (me + QLatin1String(": @HB HEARTBEAT ") + grid).trimmed();
+      return head;
+    }
+    if (const auto m = cq.match(trimmed); m.hasMatch()) {
+      int which = 7;
+      for (int i = 0; i < 8; ++i) {
+        if (m.captured(1) == QLatin1String(kCqs[i])) {
+          which = i;
+          break;
+        }
+      }
+      const QString grid = m.captured(2).isEmpty() ? myGrid4 : m.captured(2);
+      head.bits = compoundFrame(call50, gridNumber(grid) | (1 << 15), which);
+      head.consumed = text.size();
+      head.display = (me + QLatin1String(": @ALLCALL ") + m.captured(1) + QLatin1Char(' ') + grid).trimmed();
+      return head;
+    }
+  }
+
+  // Directed: TO, then a JS8Call command, then any free text. A first word
+  // that is not a call or @group leaves the message as plain text.
+  uint32_t from = 0;
+  bool fromP = false;
+  if (!packCallsign28(me, &from, &fromP))
+    return head;
+  const int space = body.indexOf(QLatin1Char(' '));
+  const QString to = space < 0 ? body : body.left(space);
+  uint32_t toValue = 0;
+  bool toP = false;
+  if (to.isEmpty() || !packCallsign28(to, &toValue, &toP))
+    return head;
+  const QString after = space < 0 ? QString() : body.mid(space);  // starts with ' '
+  int cmd = 31;
+  int cmdLength = 0;
+  for (int i = 0; i < 31; ++i) {
+    if (i == 5)
+      continue;  // ">" relay is not built here
+    const QString name = QString::fromLatin1(kCommands[i]);
+    if (name.size() <= cmdLength || !after.startsWith(name))
+      continue;
+    if (name.size() < after.size() && after.at(name.size()) != QLatin1Char(' '))
+      continue;
+    cmd = i;
+    cmdLength = int(name.size());
+  }
+  int num = 0;
+  int taken = cmdLength;
+  if (cmd != 31 && snrCommand(cmd)) {
+    static const QRegularExpression snr(QStringLiteral("^ ([+-]?\\d{1,2})(?= |$)"));
+    const auto m = snr.match(after.mid(cmdLength));
+    if (!m.hasMatch())
+      return head;
+    num = std::clamp(m.captured(1).toInt(), -30, 32) + 31;
+    taken += int(m.capturedLength(0));
+  }
+  if (cmd == 31) {
+    taken = after.isEmpty() ? 0 : 1;  // the space after TO
+  } else if (taken < after.size() && after.at(taken) == QLatin1Char(' ')) {
+    ++taken;  // one space after the command rides with it
+  }
+  std::string bits;
+  appendBits(&bits, 3, 3);
+  appendBits(&bits, from, 28);
+  appendBits(&bits, toValue, 28);
+  appendBits(&bits, uint64_t(cmd), 5);
+  appendBits(&bits, fromP ? 1 : 0, 1);
+  appendBits(&bits, toP ? 1 : 0, 1);
+  appendBits(&bits, uint64_t(num), 6);
+  head.bits = bits;
+  head.consumed = lead + int(to.size()) + taken;
+  head.display = me + QLatin1String(": ") + trimmed;
+  head.toCall = to;
+  return head;
+}
+
+Js8Plan planJs8(const QString& text, int toneHz, int maxFrames, int* consumed, bool messageStart,
+                const QString& myCall, const QString& myGrid) {
   Js8Plan plan;
   const int tone = std::clamp(toneHz, 200, 3000);
   QString left = text.toUpper();
@@ -1126,12 +1381,23 @@ Js8Plan planJs8(const QString& text, int toneHz, int maxFrames, int* consumed, b
   bool first = messageStart;
   int frames = 0;
   int total = 0;
+  Js8Header head;
+  if (messageStart && !myCall.trimmed().isEmpty())
+    head = js8Header(text, myCall, myGrid);
   while (!left.isEmpty()) {
     if (maxFrames > 0 && frames >= maxFrames)
       break;
     int used = 0;
-    const std::string bits = pack72(left, &used);
-    if (used < 1 || bits.size() != 72)
+    std::string bits;
+    if (frames == 0 && !head.bits.empty()) {
+      bits = head.bits;
+      used = std::min<int>(head.consumed, int(left.size()));
+    } else {
+      bits = pack72(left, &used);
+      if (used < 1)
+        break;
+    }
+    if (bits.size() != 72)
       break;
     const QString symbols = symbols12(bits);
     const bool last = used >= left.size();
@@ -1214,7 +1480,7 @@ std::vector<Js8Heard> js8DecodePeriod(const float* samples, int count, int sampl
   const int prefer = int(qint64(leadMs) * kRx / 1000) + kRxDelay;
   collectFrame(rx.data(), int(rx.size()), std::clamp(toneHz, 200, 3000), prefer, &time, &hits, &snr);
   for (const Js8Hit& hit : hits)
-    heard.push_back(Js8Heard{hit.freq, hit.text, hit.snr});
+    heard.push_back(Js8Heard{hit.freq, hit.text, hit.snr, (hit.flags & 2) != 0});
   return heard;
 }
 
@@ -1306,5 +1572,6 @@ void Js8Engine::publish(qint64 periodStart, int generation, const std::vector<Js
     while (heard_.size() > 32)
       heard_.removeFirst();
     emit textReady(hit.text, hit.snrDb, hit.freqHz);
+    emit frameHeard(hit.text, hit.snrDb, hit.freqHz, hit.last);
   }
 }

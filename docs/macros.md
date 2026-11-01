@@ -6,7 +6,23 @@ Supports importing Fldigi custom macros.
 
 ## What is filled in
 
-`<MYCALL>` becomes the call saved under Options → User. `<MYLOC>` becomes that locator.
+`<MYCALL>` becomes the call saved under Options → User. `<MYLOC>` and `<MYGRID>` become that locator. Those two rows are the only ones for the callsign and the locator.
+
+Name, QTH, Antenna, and Power sit on that same dialog at full height. QTH is the station city. The contest tags stay in the scroller under them. An empty box erases the tag.
+
+| Tag | Options → User |
+| --- | --- |
+| `<MYNAME>` | Name |
+| `<MYQTH>` | QTH, the station city |
+| `<ANTENNA>` | Antenna |
+| `<TX_PWR>` | Power |
+| `<MYRST>` | RST |
+| `<MYCLASS>` | FD class |
+| `<MYSECTION>` | FD section |
+| `<MYSTATE>` | State |
+| `<MYST>` | ST |
+| `<MYCOUNTY>` | County |
+| `<MYCNTY>` | CNTY |
 
 ## What is removed
 
@@ -18,7 +34,7 @@ These tags are deleted, both as `<TAG>` and as `<TAG:...>`:
 
 ## What stays literal
 
-`<RST>` and `<MYRST>` are shown in the macro tag list and are not expanded. They remain in the box. If the operator then presses TX, those characters can be keyed as text.
+`<RST>` stays in the box as written. `<MYRST>` is filled from RST under Options → User. If the operator then presses TX, a leftover `<RST>` can be keyed as text.
 
 `<CALL>` is also left as written. The RST/LOG button in a typical Fldigi file looks like:
 

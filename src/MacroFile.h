@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <QHash>
 #include <QString>
 #include <QVector>
 
@@ -33,9 +34,25 @@ bool loadMacroDefinition(const QString& body, QVector<MacroSlot>* rows, QString*
 
 QString saveMacroDefinition(const QVector<MacroSlot>& rows);
 
+// One station tag that is not the callsign or the locator.
+// Callsign stays dx/reportCall. Locator stays dx/reportGrid.
+struct MacroUserField {
+  QString tag;
+  QString key;
+  QString objectName;
+  QString label;
+  QString note;
+};
+
 // Copies a macro into a transmit box. <TX> and <RX> are removed.
-// <MYCALL> and <MYLOC> expand from the station. The stored text is unchanged.
-QString macroInsertText(const QString& body, const QString& call, const QString& locator);
+// <MYCALL> reads the callsign. <MYLOC> and <MYGRID> read the locator.
+// userTags supplies the other station tags, keyed by the tag text.
+// The stored macro is unchanged.
+QString macroInsertText(const QString& body, const QString& call, const QString& locator,
+                        const QHash<QString, QString>& userTags = {});
+
+// Station tags that need a field. Callsign and locator are not in this list.
+QVector<MacroUserField> macroUserFields();
 
 // Fldigi 4.2 macro editor tag list (<FREQ>, <MYCALL>, and the rest).
 QVector<MacroTagRow> macroTagList();

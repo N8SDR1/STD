@@ -7,6 +7,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <string>
 #include <vector>
 
 // JS8Call-improved Normal. Same 15 s / 50 Hz family as FT8, with the
@@ -37,8 +38,23 @@ int js8FrameSamples();
 // 15 s part. consumed, when set, receives how many characters of text
 // went into the plan. messageStart is false for a later part of the
 // same message so the frame type stays a continuation.
+// myCall (Options → User) turns on JS8Call message structure for the first
+// frame: "HB" / "@HB HEARTBEAT", "CQ ..." and "W4KUS SNR?" style directed
+// messages go out as their own frame types. Without it every frame is text.
 Js8Plan planJs8(const QString& text, int toneHz, int maxFrames = 0, int* consumed = nullptr,
-                bool messageStart = true);
+                bool messageStart = true, const QString& myCall = QString(),
+                const QString& myGrid = QString());
+
+// The first frame of a message, when the text has JS8Call structure.
+// bits is empty for plain text. consumed is how many characters of text the
+// frame carries; display is how JS8Call prints it ("N8SDR: W4KUS SNR?").
+struct Js8Header {
+  std::string bits;
+  int consumed = 0;
+  QString display;
+  QString toCall;
+};
+Js8Header js8Header(const QString& text, const QString& myCall, const QString& myGrid);
 // snrDb, when set, receives the frame SNR in a 2500 Hz bandwidth, the
 // same reference WSJT-X and JS8Call print. A clean local frame is positive.
 QString js8Decode(const float* samples, int count, int sampleRateHz, int toneHz, int* snrDb = nullptr);
@@ -52,6 +68,7 @@ struct Js8Heard {
   int freqHz = 0;
   QString text;
   int snrDb = 0;
+  bool last = false;  // the frame ends its message
 };
 // One receive period, the way Js8Engine decodes it. samples are 48 kHz and
 // start leadMs before the 15 s UTC boundary. The cursor frame is tried
@@ -73,6 +90,8 @@ public:
 signals:
   // freqHz is that station's audio frequency, not the cursor.
   void textReady(const QString& text, int snrDb, int freqHz);
+  // The same frame with its end-of-message flag, for the JS8 activity lists.
+  void frameHeard(const QString& text, int snrDb, int freqHz, bool last);
 
 private:
   void publish(qint64 periodStart, int generation, const std::vector<Js8Heard>& hits);

@@ -4,6 +4,7 @@
 #include "MainWindow.h"
 
 #include "DigitalMode.h"
+#include "EchoLog.h"
 #include "Ft8Decode.h"
 #include "MacroFile.h"
 #include "hell/HellEngine.h"
@@ -52,6 +53,8 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
+#include <QHash>
 #include <QIcon>
 #include <QImage>
 #include <QDockWidget>
@@ -83,6 +86,7 @@
 #include <QTime>
 #include <QTimeZone>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
 #include <QSettings>
@@ -668,6 +672,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     appendRxEcho(text);
     noteDecodeSpot(QStringLiteral("JS8"), text, snrDb, freqHz);
   });
+  wireJs8();
   wspr_ = new WsprEngine(this);
   connect(wspr_, &WsprEngine::spotDecoded, this, [this](const WsprSpot& spot, qint64 periodStartMs) {
     // Time, dB, DT, Frequency, Drift, Call, Locator, Report (the dBm).
@@ -683,7 +688,26 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       const QString body = withoutWsprTitleLine(echo->toPlainText());
       if (body != echo->toPlainText())
         echo->setPlainText(body);
-      echo->append(wsprActivityLine(utc, spot.snrDb, spot.dtSec, freq.trimmed(), spot.drift, spot.message));
+      // Written with the receive colour every time. append() kept whatever
+      // colour came last, so a red TX echo turned the decodes red.
+      const bool follow = echoViewAtBottom(echo);
+      QTextCursor cursor(echo->document());
+      cursor.movePosition(QTextCursor::End);
+      const bool empty = echo->document()->isEmpty();
+      if (!empty)
+        cursor.insertBlock();
+      if (!empty && !wsprLastUtc_.isEmpty() && wsprLastUtc_ != utc) {
+        QTextCharFormat rule;
+        rule.setForeground(QColor(0x3d, 0x6a, 0x84));
+        cursor.insertText(QString(std::max<int>(40, int(wsprActivityHeader().size())), QChar(0x2500)), rule);
+        cursor.insertBlock();
+      }
+      QTextCharFormat row;
+      row.setForeground(rxEchoColor());
+      cursor.insertText(wsprActivityLine(utc, spot.snrDb, spot.dtSec, freq.trimmed(), spot.drift, spot.message),
+                        row);
+      followEcho(echo, cursor, follow);
+      wsprLastUtc_ = utc;
       alignWsprHeader();
     }
     noteDecodeSpot(QStringLiteral("WSPR"), spot.message, spot.snrDb, int(std::lround(spot.audioHz)),
@@ -718,10 +742,26 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       view->clear();
       return;
     }
-    const QImage frame = wefax_->image().copy(0, 0, wefax_->image().width(), wefax_->rowCount());
-    view->setPixmap(QPixmap::fromImage(frame.scaledToWidth(720, Qt::SmoothTransformation)));
+    const QImage frame = wefax_->picture();
+    // Fit the pane width and follow the newest lines while you are at the bottom.
+    auto* scroll = findChild<QScrollArea*>(QStringLiteral("wefaxScroll"));
+    const int width = scroll ? std::max(320, scroll->viewport()->width() - 4) : 720;
+    QScrollBar* bar = scroll ? scroll->verticalScrollBar() : nullptr;
+    const bool follow = !bar || bar->value() >= bar->maximum() - 4;
+    const auto* fit = findChild<QCheckBox*>(QStringLiteral("wefaxFit"));
+    const bool fitWidth = !fit || fit->isChecked();
+    const QPixmap picture = QPixmap::fromImage(fitWidth ? frame.scaledToWidth(width, Qt::SmoothTransformation)
+                                                        : frame);
+    view->setPixmap(picture);
+    view->resize(picture.size());
+    if (bar && follow)
+      bar->setValue(bar->maximum());
+    showWefaxState();
   });
+  wefax_->setAutoSave(QSettings().value(QStringLiteral("wefax/autoSave"), true).toBool());
   connect(wefax_, &WefaxEngine::imageSaved, this, [this](const QString& path) {
+    wefaxLastSaved_ = path;
+    showWefaxState();
     setTxStatus(QStringLiteral("WEFAX saved %1. Nothing was keyed. START was not sent.").arg(path));
   });
   if (waterfall_) {
@@ -755,6 +795,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         mt63_->setCenterHz(rxHz);
       if (wefax_)
         wefax_->setCenterHz(rxHz);
+      if (hell_ && profile_ && hellFamily(profile_->digitalMode()))
+        hell_->setToneHz(rxHz);
     });
   }
   ft8_ = new Ft8Decode(this);
@@ -873,7 +915,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   spots_ = new PskUploader(this);
   connect(spots_, &PskUploader::status, this, [this](const QString& text) { setTxStatus(text); });
   wsprnet_ = new WsprNetUploader(this);
-  connect(wsprnet_, &WsprNetUploader::status, this, [this](const QString& text) { setTxStatus(text); });
+  connect(wsprnet_, &WsprNetUploader::status, this, [this](const QString& text) {
+    // Uploads finish after a mode change; only WSPR shows them.
+    if (profile_ && wsprMode(profile_->digitalMode()))
+      setTxStatus(text);
+  });
   updates_ = new UpdateChecker(this);
   connect(updates_, &UpdateChecker::updateAvailable, this, [this](const QString& tag, const QString& url,
                                                                   const QString& body) {
@@ -933,6 +979,7 @@ void MainWindow::buildBrandBar() {
 
   layout->addWidget(mark);
   layout->addWidget(words);
+  layout->addWidget(makeJs8Strip(host));
   layout->addStretch(1);
 
   brandBar_->addWidget(host);
@@ -1207,6 +1254,8 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     js8BandRow->addStretch(1);
     js8Bands->hide();
     layout->addWidget(js8Bands);
+    layout->addWidget(makeJs8Actions(panel));
+    layout->addWidget(makeWefaxStations(panel));
 
     auto* rttyRow = new QWidget(panel);
     rttyRow->setObjectName(QStringLiteral("rttyOptions"));
@@ -1349,6 +1398,31 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     });
     toneRow->hide();
     layout->addWidget(toneRow);
+
+    auto* hellRow = new QWidget(panel);
+    hellRow->setObjectName(QStringLiteral("hellOptions"));
+    auto* hellLayout = new QHBoxLayout(hellRow);
+    hellLayout->setContentsMargins(0, 0, 0, 0);
+    hellLayout->setSpacing(8);
+    auto* hellReverse = new QCheckBox(QStringLiteral("Reverse video"), hellRow);
+    hellReverse->setObjectName(QStringLiteral("hellReverseVideo"));
+    hellReverse->setFont(interfaceFont(12));
+    hellReverse->setStyleSheet(rttyText);
+    hellReverse->setFocusPolicy(Qt::NoFocus);
+    hellReverse->setToolTip(QStringLiteral(
+        "Fldigi Reverse video. Off prints the tape black on white. On prints white on black "
+        "so an inverted image reads. The carrier does not move. This does not key. "
+        "START is never sent."));
+    hellReverse->setChecked(QSettings().value(QStringLiteral("hell/reverseVideo"), false).toBool());
+    hellLayout->addWidget(hellReverse);
+    hellLayout->addStretch(1);
+    connect(hellReverse, &QCheckBox::toggled, this, [this](bool on) {
+      QSettings().setValue(QStringLiteral("hell/reverseVideo"), on);
+      if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
+        tape->setVideoReverse(on);
+    });
+    hellRow->hide();
+    layout->addWidget(hellRow);
 
     auto* hellText = new QPlainTextEdit(panel);
     hellText->setObjectName(QStringLiteral("txHell"));
@@ -2222,10 +2296,72 @@ QWidget* MainWindow::makeReceivePanel() {
   tools->addWidget(filter, 1);
   tools->addWidget(clear);
   tools->addWidget(clrRx);
-  tools->addWidget(faxFolder);
+  auto* faxStart = new QPushButton(QStringLiteral("Start"), panel);
+  faxStart->setObjectName(QStringLiteral("wefaxStart"));
+  faxStart->setFont(interfaceFont(11));
+  faxStart->setFocusPolicy(Qt::NoFocus);
+  faxStart->setToolTip(QStringLiteral(
+      "Start a picture now instead of waiting for the next chart's start tone. Use it when you tune "
+      "in mid-chart. This does not key and does not send START."));
+  faxStart->hide();
+  auto* faxOpen = new QPushButton(QStringLiteral("Open"), panel);
+  faxOpen->setObjectName(QStringLiteral("wefaxOpen"));
+  faxOpen->setFont(interfaceFont(11));
+  faxOpen->setFocusPolicy(Qt::NoFocus);
+  faxOpen->setToolTip(QStringLiteral("Open the folder the WEFAX pictures are saved in. This does not key."));
+  faxOpen->hide();
+  auto* faxAuto = new QCheckBox(QStringLiteral("Auto save"), panel);
+  faxAuto->setObjectName(QStringLiteral("wefaxAutoSave"));
+  faxAuto->setFont(interfaceFont(12));
+  faxAuto->setChecked(QSettings().value(QStringLiteral("wefax/autoSave"), true).toBool());
+  faxAuto->setToolTip(QStringLiteral(
+      "Save each chart as a PNG when its stop tone ends it, and save the picture so far before "
+      "Start or CLR RX throws it away. Save still works by hand. This does not key."));
+  faxAuto->hide();
+  auto* faxFit = new QCheckBox(QStringLiteral("Fit"), panel);
+  faxFit->setObjectName(QStringLiteral("wefaxFit"));
+  faxFit->setFont(interfaceFont(12));
+  faxFit->setChecked(QSettings().value(QStringLiteral("wefax/fit"), true).toBool());
+  faxFit->setToolTip(QStringLiteral(
+      "Fit the chart to the pane width. Off shows it full size (1809 pixels wide) with scroll bars "
+      "to pan left and right. This does not key."));
+  faxFit->hide();
+  auto* faxState = new QLabel(panel);
+  faxState->setObjectName(QStringLiteral("wefaxState"));
+  faxState->setFont(interfaceFont(12));
+  faxState->hide();
+  for (QWidget* w : std::initializer_list<QWidget*>{faxFolder, faxSave, faxStart, faxSlantLabel, faxSlant,
+                                                    faxOpen, faxAuto, faxFit})
+    w->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+  faxState->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  tools->addWidget(faxStart);
   tools->addWidget(faxSave);
+  tools->addWidget(faxAuto);
+  tools->addWidget(faxFolder);
+  tools->addWidget(faxOpen);
+  tools->addWidget(faxFit);
   tools->addWidget(faxSlantLabel);
   tools->addWidget(faxSlant);
+  tools->addWidget(faxState);
+  connect(faxOpen, &QPushButton::clicked, this, [] {
+    QDesktopServices::openUrl(QUrl::fromLocalFile(wefaxSaveDirectory()));
+  });
+  connect(faxAuto, &QCheckBox::toggled, this, [this](bool on) {
+    QSettings().setValue(QStringLiteral("wefax/autoSave"), on);
+    if (wefax_)
+      wefax_->setAutoSave(on);
+  });
+  connect(faxFit, &QCheckBox::toggled, this, [this](bool on) {
+    QSettings().setValue(QStringLiteral("wefax/fit"), on);
+    if (wefax_)
+      emit wefax_->imageChanged();
+  });
+  connect(faxStart, &QPushButton::clicked, this, [this] {
+    wefaxAutoSaveNow();
+    if (wefax_)
+      wefax_->startNow();
+    showWefaxState();
+  });
   layout->addLayout(tools);
   connect(faxFolder, &QPushButton::clicked, this, [this] {
     const QString picked = QFileDialog::getExistingDirectory(
@@ -2250,6 +2386,7 @@ QWidget* MainWindow::makeReceivePanel() {
   connect(clrRx, &QPushButton::clicked, this, [this] {
     if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
       echo->clear();
+    clearJs8Activity();
     if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
       tape->clear();
     if (rtty_)
@@ -2270,6 +2407,7 @@ QWidget* MainWindow::makeReceivePanel() {
       wspr_->clear();
     if (mt63_)
       mt63_->clear();
+    wefaxAutoSaveNow();
     if (wefax_)
       wefax_->clear();
     if (auto* view = findChild<QLabel*>(QStringLiteral("wefaxView")))
@@ -2300,12 +2438,17 @@ QWidget* MainWindow::makeReceivePanel() {
   echo->setTabChangesFocus(true);
   echo->setMinimumHeight(72);
   echo->setPlaceholderText(QStringLiteral(
-      "Sent text prints here in red as it goes out."));
+      "Received text stays here. Sent text prints in red as it goes out."));
   echo->setToolTip(QStringLiteral(
-      "Fldigi transmit echo. Characters print in red as the audio goes out. "
-      "Hell keeps the tape. RTTY, BPSK, QPSK, Olivia, Contestia, MFSK, DominoEX, and Thor print received text here too. "
+      "Receive log. Received text and the red transmit echo both stay. "
+      "A new transmission appends. It does not replace earlier copy. "
+      "The list follows the bottom only while you are already there. "
+      "A finished transmission ends on its own line. "
+      "Hell keeps the tape above this log. "
       "This does not key and does not send START."));
   echo->setLineWrapMode(QTextEdit::WidgetWidth);
+  echo->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  echo->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   echo->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   echo->document()->setDocumentMargin(4);
   echo->hide();
@@ -2323,10 +2466,17 @@ QWidget* MainWindow::makeReceivePanel() {
       "Report is the dBm in the message. This does not key and does not send START."));
   wsprHeadHost->hide();
   layout->addWidget(wsprHeadHost);
+  layout->addWidget(makeJs8Receive(panel), 1);
   layout->addWidget(echo, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
-  auto* faxView = new QLabel(panel);
+  auto* faxScroll = new QScrollArea(panel);
+  faxScroll->setObjectName(QStringLiteral("wefaxScroll"));
+  faxScroll->setWidgetResizable(false);
+  faxScroll->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+  faxScroll->setFrameShape(QFrame::NoFrame);
+  faxScroll->hide();
+  auto* faxView = new QLabel(faxScroll);
   faxView->setObjectName(QStringLiteral("wefaxView"));
   faxView->setAlignment(Qt::AlignLeft | Qt::AlignTop);
   faxView->setMinimumHeight(72);
@@ -2334,9 +2484,12 @@ QWidget* MainWindow::makeReceivePanel() {
   faxView->setToolTip(QStringLiteral(
       "WEFAX-576 picture. IOC 576, 120 lines per minute. Black is 400 Hz below the cursor and white "
       "is 400 Hz above it. A 300 Hz start tone opens the picture and a 450 Hz stop tone saves it. "
-      "Slant corrects the clock. Pictures save to the folder. This does not key and does not send START."));
-  faxView->hide();
-  layout->addWidget(faxView, 1);
+      "Slant corrects the clock. Pictures save to the folder. "
+      "If the chart is split, with its left edge part way across, click where the left edge should be. "
+      "Right-click puts it back. This does not key and does not send START."));
+  installWefaxClick(faxView);
+  faxScroll->setWidget(faxView);
+  layout->addWidget(faxScroll, 1);
 
   auto* edit = new QPlainTextEdit(panel);
   edit->setObjectName("receiveText");
@@ -2674,7 +2827,8 @@ void MainWindow::buildMenus() {
   auto* userSettings = optionsMenu->addAction(QStringLiteral("User"));
   userSettings->setObjectName(QStringLiteral("userSettings"));
   userSettings->setToolTip(QStringLiteral(
-      "Callsign and locator. TX and Tune stay locked until a callsign is saved. Does not key."));
+      "Callsign, locator, and the station macro tags (name, QTH, antenna, power, and the rest). "
+      "TX and Tune stay locked until a callsign is saved. Does not key. START is never sent."));
   connect(userSettings, &QAction::triggered, this, [this] { openUserDialog(); });
 
   auto* networkConfig = optionsMenu->addAction(QStringLiteral("Network Configuration"));
@@ -2972,7 +3126,7 @@ void MainWindow::buildMenus() {
     action->setToolTip(QStringLiteral(
         "Fldigi Hell screen: receive tape, transmit text, receive echo, and macros. "
         "Sent characters print in the receive pane as they go out. "
-        "Feld Hell is 17.5 columns/s, 14 pixels, a 2 ms raised cosine. "
+        "Feld Hell is 17.5 columns/s, 14 pixels, shaped into the 245 Hz channel. "
         "Slow, X5, X9, FSK, and Hell 80 each use their own rate. "
         "This does not key and does not send START."));
     modes->addAction(action);
@@ -3267,9 +3421,16 @@ void eachModeAction(QMenu* menu, const std::function<void(QAction*)>& visit) {
 
 }  // namespace
 
-void MainWindow::clearModePanes() {
-  if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
-    echo->clear();
+void MainWindow::clearModePanes(const QString& previous, const QString& next) {
+  // Hell variants share this log. Switching Feld Hell to Slow Hell keeps
+  // the copy. Leaving the family still clears it. TX start and TX end
+  // never call this.
+  const bool keepHellLog = hellFamily(previous) && hellFamily(next);
+  clearJs8Activity();
+  if (!keepHellLog) {
+    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
+      echo->clear();
+  }
   if (auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell")))
     box->clear();
   if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
@@ -3294,6 +3455,7 @@ void MainWindow::clearModePanes() {
     wspr_->clear();
   if (mt63_)
     mt63_->clear();
+  wefaxAutoSaveNow();
   if (wefax_)
     wefax_->clear();
   if (ft8_)
@@ -3319,7 +3481,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool sequenced = sequencedFamily(modeName);
   const bool family = sequenced || hell;
   if (profile_) {
-    if (sequenced || text || wsprMode(modeName))
+    if (sequenced || text || wsprMode(modeName) || wefaxMode(modeName))
       profile_->setDigitalMode(modeName);
     profile_->setMshvFamily(family);
   }
@@ -3360,6 +3522,8 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   if (hell_) {
     hell_->setColumnRate(hellColumnRate(modeName));
     hell_->setFskShiftHz(hellFskShiftHz(modeName));
+    if (hell && waterfall_)
+      hell_->setToneHz(waterfall_->rxHz());
     hell_->setArmed(autoMonitor_ && hell);
   }
   if (rtty_) {
@@ -3420,7 +3584,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   syncWfHellControls();
   applyAfc();
   if (changed)
-    clearModePanes();
+    clearModePanes(previous, modeName);
   if (family)
     tuneActiveBand();
   if (wspr)
@@ -3446,10 +3610,12 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
     raster->setVisible(hell);
   }
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
-    echo->setVisible(text || wspr);
+    // JS8 shows its activity lists and conversation instead.
+    echo->setVisible((text || wspr) && !js8Mode(mode));
     const QString body = withoutWsprTitleLine(echo->toPlainText());
     if (body != echo->toPlainText())
       echo->setPlainText(body);
+    echo->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     if (wspr) {
       echo->setLineWrapMode(QTextEdit::NoWrap);
       echo->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -3462,18 +3628,25 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
           "This does not key and does not send START."));
     } else {
       echo->setLineWrapMode(QTextEdit::WidgetWidth);
+      echo->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
       echo->setPlaceholderText(QStringLiteral(
-          "Sent text prints here in red as it goes out."));
+          "Received text stays here. Sent text prints in red as it goes out."));
       echo->setToolTip(QStringLiteral(
-          "Fldigi transmit echo. Characters print in red as the audio goes out. "
-          "Hell keeps the tape. RTTY, BPSK, QPSK, Olivia, Contestia, MFSK, DominoEX, and Thor print received text here too. "
+          "Receive log. Received text and the red transmit echo both stay. "
+          "A new transmission appends. It does not replace earlier copy. "
+          "The list follows the bottom only while you are already there. "
+          "A finished transmission ends on its own line. "
+          "Hell keeps the tape above this log. "
           "This does not key and does not send START."));
     }
   }
   if (auto* wsprHead = findChild<QWidget*>(QStringLiteral("wsprRxHeaderHost"))) {
     wsprHead->setVisible(wspr);
-    if (wspr)
+    if (wspr) {
       alignWsprHeader();
+      // Again once the dock has its size.
+      QTimer::singleShot(0, this, [this] { alignWsprHeader(); });
+    }
   }
   if (auto* clrRx = findChild<QPushButton*>(QStringLiteral("clrRx")))
     clrRx->setVisible(text || fax || wspr);
@@ -3485,8 +3658,14 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
     filter->setVisible(!text && !fax && !wspr);
   if (auto* clear = findChild<QPushButton*>(QStringLiteral("decodeClear")))
     clear->setVisible(!text && !fax && !wspr);
-  if (auto* view = findChild<QLabel*>(QStringLiteral("wefaxView")))
-    view->setVisible(fax);
+  if (auto* scroll = findChild<QWidget*>(QStringLiteral("wefaxScroll")))
+    scroll->setVisible(fax);
+  for (const char* name : {"wefaxStart", "wefaxState", "wefaxOpen", "wefaxAutoSave", "wefaxFit"}) {
+    if (auto* w = findChild<QWidget*>(QLatin1String(name)))
+      w->setVisible(fax);
+  }
+  if (fax)
+    showWefaxState();
   if (auto* folder = findChild<QPushButton*>(QStringLiteral("wefaxFolder")))
     folder->setVisible(fax);
   if (auto* save = findChild<QPushButton*>(QStringLiteral("wefaxSave")))
@@ -3595,8 +3774,17 @@ void MainWindow::showGuide() {
        "is the Feld Hell Club signal minus 1500 Hz, so 20 m is 14.0615 MHz. A macro copies into the "
        "transmit box. TX macro, off unless you turn it on, also presses TX. AFC on the waterfall "
        "stays off. SQL is the Fldigi squelch. "
+       "Reverse video, on the Hell row, is off until you turn it on. Off prints the tape black "
+       "on white. On prints white on black so an inverted image reads. The carrier does not move. "
+       "The red marker is centered on the carrier. Feld Hell's marker is the 245 Hz channel. "
+       "Received text stays in the log under the tape, in the receive colour. Sent text prints in "
+       "red as it goes out. A new transmission appends, and a finished one ends on its own line. "
+       "The list follows the bottom only while you are already there. Switching from one Hell "
+       "variant to another keeps that log. Leaving Hell clears it. "
        "Feld Hell and Slow Hell key one tone: ink is the carrier, paper is silence, 14 pixels "
-       "per column, bottom pixel first, with a 2 ms raised cosine. Feld Hell is 17.5 columns/s "
+       "per column, bottom pixel first, with a raised-cosine edge. Feld Hell is then limited "
+       "to the 245 Hz channel, so a CQ occupies about 258 Hz at -26 dB and the peak stays 0.6. "
+       "Feld Hell is 17.5 columns/s "
        "(245 pixels/s). Slow Hell is 2.1875. Feld Hell X5 is 87.5 and Feld Hell X9 is 157.5, "
        "both hard keyed. FSK Hell, FSK Hell-105, and Hell 80 keep the tone up and shift it. "
        "Reverse is off, so ink is the lower tone. The shifts are 122.5 Hz, 55 Hz, and 300 Hz. "
@@ -3638,10 +3826,22 @@ void MainWindow::showGuide() {
        "MT63-1000L, MT63-2000S, and MT63-2000L. Sixty-four carriers, a Walsh code, and the fldigi "
        "short or long interleaver, centered on the cursor. TX sends those. Mode → QPSK is QPSK31, QPSK63, QPSK125, QPSK250, and QPSK500. "
        "Each varicode bit is a K=5 dibit. 8PSK is a different constellation and is not on this menu. "
+       "Received text on these modes prints in the receive colour. Sent text prints in red. "
+       "A new transmission appends. It does not replace earlier copy. The list follows the bottom "
+       "only while you are already there. Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, "
+       "Thor, MT63, WSPR, and WEFAX center the marker on the carrier. FT8, FT4, FT2, JT65, Q65, and "
+       "JS8 start at the cursor and run upward. "
        "Changing the mode clears the receive pane, the Hell tape, the WEFAX picture, and the "
-       "transmit box. Text from the previous mode does not stay. Clicking the mode that is already "
+       "transmit box. Text from the previous mode does not stay. Switching from one Hell variant "
+       "to another keeps the receive log. Clicking the mode that is already "
        "on, which cycles an FT8 dial, does not clear. "
        "Mode → JS8 is JS8Call-improved Normal, a 15 second 50 Hz frame on the cursor. "
+       "The JS8 screen is the UTC clock, the offset, the filter, the picked station, band activity, "
+       "the conversation, and call activity. HB sends a heartbeat with the locator from Options → User. "
+       "CQ sends CQ to everyone. Reply puts the picked call in the box and does not key. "
+       "SNR?, INFO?, STATUS?, and GRID? ask the picked station. Directed holds the rest of the "
+       "JS8Call commands, and a directed line can be followed by your own text. Deselect clears "
+       "the picked station and does not key. Yours print in red in the conversation. "
        "Band buttons QSY to the JS8Call-improved suggested dials, 160 m through 6 m. "
        "2 m is in that guide and is not on the row. TX waits for the next 15 second UTC period. "
        "The frame starts half a second into that period. One frame goes out per period. A message "
@@ -3653,23 +3853,35 @@ void MainWindow::showGuide() {
        "Band buttons QSY to the WSPR dials. There is no macro bar. Tx power, Tx Pct, "
        "and Band Hopping. The locator is the one in Options → User. TX sends that message. "
        "Receive titles Time, dB, DT, Frequency, Drift, Call, Locator, and Report stay on screen "
-       "while the rows scroll. DT is the time offset. Report is the dBm the other station sent. "
+       "while the rows scroll. A rule separates the periods. DT is the time offset. Report is the "
+       "dBm the other station sent. Decodes stay in the receive colour after a red TX echo. "
        "Options → Network can post those heard stations to WSPRnet. That post stays off until "
-       "WSPRnet is set to On. There is no password. The callsign and locator stay in Options → User. "
+       "WSPRnet is set to On, and those messages show only while WSPR is the mode. There is no "
+       "password. The callsign and locator stay in Options → User. "
+       "Speed, Start, and BW on the mode bar keep their last character. The Extra caption is the "
+       "word Extra beside the extra dial. "
        "A macro copies into the transmit box on the keyboard modes. WSPR has no macro bar. "
        "TX macro also presses TX when it is on. Hell, RTTY, BPSK, QPSK, "
        "Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
        "CW stays in Lyra. START is never sent."},
       {"WEFAX",
-       "Mode → WEFAX-576 receives only. It does not key and it does not send START. IOC is 576 and "
+       "Mode → WEFAX-576 receives only. Switching to it hides the Hell box, the TX buttons, and the "
+       "macros. It does not key and it does not send START. IOC is 576 and "
        "the rate is 120 lines per minute, the Fldigi WEFAX-576 numbers. Black is 400 Hz below the "
        "receive cursor and white is 400 Hz above it. The cursor starts at 1900 Hz, so black is 1500 Hz "
-       "and white is 2300 Hz until you move it. Reception mixes to the cursor, filters, then reads the FM. "
+       "and white is 2300 Hz until you move it. A 2.4 kHz USB filter passes that. Reception mixes to the cursor, filters, then reads the FM. "
+       "The stations pane lists assigned frequencies by ITU region. Auto uses the region of the locator "
+       "in Options → User. Region 1, 2, or 3 overrides that. NOAA hours are marked on the frequencies "
+       "that have them, and a dimmed button is outside those hours. A click sets the dial 1.9 kHz under "
+       "the assigned frequency, USB, and puts the marker at 1900 Hz. That click does not key. "
        "A 300 Hz start tone opens a picture and a 450 Hz stop tone saves it and clears the screen for the next one. "
+       "Start opens a chart that is already running. A click on the picture sets the left edge. A right-click puts that edge back. "
        "Slant, next to Save, corrects a sound-card clock error in parts per million, 10 ppm a step. Zero is 120 lines per minute. "
-       "Folder picks the directory. Until you pick one, pictures "
+       "Fit, on by default, fits the chart to the pane. Off shows it full size with scroll bars. "
+       "Auto save keeps a picture that Start or CLR RX would otherwise throw away, once it has enough lines. "
+       "Open folder opens the picture directory. Folder picks that directory. Until you pick one, pictures "
        "save under Documents\\STD\\wefax. Save writes the picture received so far as a PNG. A stop tone "
-       "also writes that file. CLR RX clears the picture and does not unkey. TX and Tune do not key "
+       "also writes that file. The status line names the line count and the last file. CLR RX clears the picture and does not unkey. TX and Tune do not key "
        "in this mode. Olivia, Contestia, MFSK, DominoEX, Thor, QPSK, MT63, and JS8 are on the mode menu and they do key. "
        "8PSK is not on this menu. CW stays in Lyra."},
       {"Macros",
@@ -3679,6 +3891,11 @@ void MainWindow::showGuide() {
        "the text stay editable. A filled button copies its text into the transmit box. TX macro, "
        "off unless you turn it on, also presses TX. Hell, RTTY, the BPSK speeds, Olivia, Contestia, "
        "MFSK, DominoEX, Thor, QPSK, MT63, and JS8 can key. WSPR has no macro bar. "
+       "MYCALL and MYLOC use the callsign and the locator already stored under Options → User. "
+       "Name, QTH, Antenna, Power, RST, the Field Day class and section, State, ST, County, and CNTY "
+       "on that same dialog fill MYNAME, MYQTH, ANTENNA, TX_PWR, MYRST, MYCLASS, MYSECTION, MYSTATE, "
+       "MYST, MYCOUNTY, and MYCNTY. QTH is the station city. An empty box erases that tag. RST and CALL "
+       "stay in the box as written. "
        "Opening or saving a .mdf does not key and does not send START."},
       {"Contest tags",
        "The list above Tx1 is Standard or a contest, the same set MSHV uses. Choosing one writes "
@@ -3704,8 +3921,11 @@ void MainWindow::showGuide() {
        "Halt ends the transmission immediately, even in the middle of a slot, turns TRX off, and stops "
        "the sequence. If nothing is transmitting, Halt does not key. It leaves Tx1 through Tx6 as they "
        "are."},
-      {"User callsign",
-       "Options → User stores the callsign and the locator. DIST is the distance from that locator to "
+      {"User",
+       "Options → User stores the callsign and the locator. Those two rows are the only ones. "
+       "Name, QTH, Antenna, and Power sit on that same dialog at full height. QTH is the station city "
+       "and fills MYQTH. The contest tags stay in the scroller under them. An empty box erases that tag. "
+       "DIST is the distance from that locator to "
        "the grid in a message. Tx1 through Tx5 and the CQ on Tx6 use that locator. TX and Tune stay "
        "locked until a callsign is saved. Opening User does not key and does not send START."},
       {"Log",
@@ -3758,7 +3978,8 @@ void MainWindow::showGuide() {
        "Floor is the level, in dB, drawn as the bottom of the palette; anything under it is the "
        "background colour. Range is how many dB the palette spans above the floor. A lower floor shows "
        "more of the noise as dim grain and lets weak signals rise out of it; a smaller range makes weak "
-       "signals stand out, a larger one keeps strong signals from going white. Auto sets the floor a "
+       "signals stand out, a larger one keeps strong signals from going white. A louder peak stretches "
+       "that span, so the skirts of a strong trace stay colored instead of the same yellow as the carrier. Auto sets the floor a "
        "few dB under the measured noise and keeps it there as band noise or RX gain changes; the Floor "
        "slider then shows that level and is greyed. Turning Auto off leaves the floor where Auto had it. "
        "Flatten removes the receiver passband slope line by line, so the band edges read like the "
@@ -3871,7 +4092,7 @@ void MainWindow::applyMacroBar() {
   const bool hell = hellFamily(mode);
   const bool mshv = profile_ && profile_->mshvFamily() && !hell;
   const bool wspr = wsprMode(mode);
-  macroDock_->setVisible(!mshv && !wspr);
+  macroDock_->setVisible(!mshv && !wspr && !wefaxMode(mode));
 }
 
 void MainWindow::syncWfHellControls() {
@@ -4470,6 +4691,22 @@ void MainWindow::applyMonitorLabel() {
   statusStrip_->setRadio(true, line);
 }
 
+void MainWindow::applyHellReverse() {
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  const bool hell = hellFamily(mode);
+  if (auto* row = findChild<QWidget*>(QStringLiteral("hellOptions")))
+    row->setVisible(hell);
+  const bool on = hell && QSettings().value(QStringLiteral("hell/reverseVideo"), false).toBool();
+  if (auto* box = findChild<QCheckBox*>(QStringLiteral("hellReverseVideo"))) {
+    const QSignalBlocker block(box);
+    box->setChecked(QSettings().value(QStringLiteral("hell/reverseVideo"), false).toBool());
+  }
+  if (!hell)
+    return;
+  if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
+    tape->setVideoReverse(on);
+}
+
 void MainWindow::applyHellSquelch() {
   bool on = false;
   int level = 10;
@@ -4511,7 +4748,7 @@ void MainWindow::applyChannelWidth() {
   else if (q65Mode(mode))
     width = q65ChannelHz(mode);
   else if (hellFamily(mode))
-    width = 245;
+    width = hellBandwidthHz(mode);
   else if (rttyMode(mode)) {
     double shift = 170.0;
     if (const auto* box = findChild<QComboBox*>(QStringLiteral("rttyShift"))) {
@@ -4546,6 +4783,10 @@ void MainWindow::applyChannelWidth() {
   if (profile_->superFox())
     tx = 1488;
   waterfall_->setChannelWidth(rx, tx);
+  // FT8-family and JS8 start at the cursor. Hell, RTTY, PSK, Olivia,
+  // Contestia, MFSK, DominoEX, Thor, MT63, WSPR, and WEFAX sit on the
+  // carrier, so the band is center ± width/2.
+  waterfall_->setChannelCentered(carrierCenteredMode(mode));
 }
 
 QString MainWindow::distanceText(const QString& message) const {
@@ -4614,7 +4855,7 @@ void MainWindow::alignWsprHeader() {
   header->setFixedHeight(line);
   const int wide = std::max(header->sizeHint().width(), metrics.horizontalAdvance(header->text()) + 4);
   header->resize(wide, line);
-  const QPoint origin = echo->viewport()->mapTo(host, QPoint(0, 0));
+  const QPoint origin = host->mapFromGlobal(echo->viewport()->mapToGlobal(QPoint(0, 0)));
   const int margin = int(std::lround(echo->document()->documentMargin()));
   const int x = origin.x() + margin - echo->horizontalScrollBar()->value();
   header->move(x, 0);
@@ -5621,7 +5862,7 @@ bool MainWindow::rebuildTxWave() {
     if (left.isEmpty())
       return false;
     int used = 0;
-    const Js8Plan plan = planJs8(left, tone, 1, &used, txJs8Next_ == 0);
+    const Js8Plan plan = planJs8(left, tone, 1, &used, txJs8Next_ == 0, stationCall(), stationGrid());
     if (plan.samples.empty() || used < 1)
       return false;
     txJs8Pending_ = used;
@@ -5648,6 +5889,7 @@ void MainWindow::refreshTxChrome() {
   const bool hell = hellFamily(mode);
   if (auto* rttyRow = findChild<QWidget*>(QStringLiteral("rttyOptions")))
     rttyRow->setVisible(rttyMode(mode));
+  applyHellReverse();
   if (auto* toneRow = findChild<QWidget*>(QStringLiteral("startToneOptions"))) {
     const bool olivia = oliviaBandwidthHz(mode) > 0;
     const bool mt63 = mt63BandwidthHz(mode) > 0;
@@ -5679,11 +5921,27 @@ void MainWindow::refreshTxChrome() {
     wsprPanel->setVisible(wspr);
   if (auto* js8Bands = findChild<QWidget*>(QStringLiteral("js8Bands")))
     js8Bands->setVisible(js8Mode(mode));
+  showJs8Layout(js8Mode(mode));
+  const bool fax = wefaxMode(mode);
+  if (auto* stations = findChild<QWidget*>(QStringLiteral("wefaxStations"))) {
+    stations->setVisible(fax);
+    if (fax)
+      paintWefaxStations();
+  }
+  for (const char* name : {"txTune", "txSend", "txHalt"}) {
+    if (auto* w = findChild<QWidget*>(QLatin1String(name)))
+      w->setVisible(!fax);
+  }
+  if (transmitDock_) {
+    if (auto* title = transmitDock_->titleBarWidget() ? transmitDock_->titleBarWidget()->findChild<QLabel*>()
+                                                      : nullptr)
+      title->setText(fax ? QStringLiteral("Stations") : QStringLiteral("Transmit"));
+  }
   const char* sequenceNames[] = {"txStandard", "txActivity", "txPick1", "tx1", "txPick2", "tx2",
                                  "txPick3",    "tx3",        "txPick4", "tx4", "txPick5", "tx5",
                                  "txPick6",    "tx6",        "txPick7", "txExtra", "txQso",
                                  "txClrQueue", "txClrNow"};
-  if (textMode || wspr) {
+  if (textMode || wspr || fax) {
     for (const char* name : sequenceNames) {
       if (auto* widget = findChild<QWidget*>(QLatin1String(name)))
         widget->setVisible(false);
@@ -6322,6 +6580,8 @@ void MainWindow::setUserTx(bool on) {
                     .arg(mode));
     return;
   }
+  if (js8Mode(mode))
+    js8NoteSent(text);
   txCursor_ = 0;
   txHold_ = 0;
   txKeySent_ = false;
@@ -6395,36 +6655,28 @@ void MainWindow::revealSentEcho() {
   }
   if (shown <= txEchoCount_)
     return;
+  if (txEchoCount_ == 0)
+    breakHellEchoLine(false);
   appendTxEcho(txSentText_.mid(txEchoCount_, shown - txEchoCount_));
   txEchoCount_ = shown;
 }
 
-void MainWindow::appendRxEcho(const QString& text) {
-  auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"));
-  if (!echo || text.isEmpty())
+void MainWindow::breakHellEchoLine(bool onlyIfSent) {
+  // Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor,
+  // MT63, and JS8 share this log. A transmission ends on its own line.
+  if (!profile_ || !keyboardTextMode(profile_->digitalMode()))
     return;
-  QTextCursor cursor(echo->document());
-  cursor.movePosition(QTextCursor::End);
-  QTextCharFormat format;
-  format.setForeground(QColor(QStringLiteral("#d5deea")));
-  cursor.setCharFormat(format);
-  cursor.insertText(text);
-  echo->setTextCursor(cursor);
-  echo->ensureCursorVisible();
+  if (onlyIfSent && txEchoCount_ <= 0)
+    return;
+  breakEchoLine(findChild<QTextEdit*>(QStringLiteral("rxEcho")));
+}
+
+void MainWindow::appendRxEcho(const QString& text) {
+  appendKeyedEcho(findChild<QTextEdit*>(QStringLiteral("rxEcho")), text, rxEchoColor());
 }
 
 void MainWindow::appendTxEcho(const QString& text) {
-  auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"));
-  if (!echo || text.isEmpty())
-    return;
-  QTextCursor cursor(echo->document());
-  cursor.movePosition(QTextCursor::End);
-  QTextCharFormat format;
-  format.setForeground(QColor(QStringLiteral("#ff5c5c")));
-  cursor.setCharFormat(format);
-  cursor.insertText(text);
-  echo->setTextCursor(cursor);
-  echo->ensureCursorVisible();
+  appendKeyedEcho(findChild<QTextEdit*>(QStringLiteral("rxEcho")), text, txEchoColor());
 }
 
 void MainWindow::fillWave(float* dst, int frames, int step) {
@@ -7005,6 +7257,7 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
 void MainWindow::stopUserTx(bool uncheck) {
   if (txTune_)
     return;
+  breakHellEchoLine(true);
   if (txTimer_)
     txTimer_->stop();
   if (txKeySent_ && tci_)
@@ -7492,7 +7745,11 @@ void MainWindow::cycleMacroBank(int step) {
 void MainWindow::insertMacro(int index) {
   if (index < 0 || index >= macros_.size())
     return;
-  const QString text = macroInsertText(macros_.at(index).text, stationCall(), stationGrid());
+  QHash<QString, QString> userTags;
+  QSettings userStore;
+  for (const MacroUserField& field : macroUserFields())
+    userTags.insert(field.tag, userStore.value(field.key).toString());
+  const QString text = macroInsertText(macros_.at(index).text, stationCall(), stationGrid(), userTags);
   if (text.isEmpty())
     return;
   if (profile_ && keyboardTextMode(profile_->digitalMode())) {
@@ -7765,8 +8022,13 @@ void MainWindow::openMacrosDialog(int index) {
   tags->setHeaderHidden(true);
   tags->setRootIsDecorated(false);
   tags->setColumnWidth(0, 220);
+  tags->setHeaderHidden(false);
+  tags->setHeaderLabels({QStringLiteral("Tag"), QStringLiteral("Description")});
   tags->setToolTip(QStringLiteral(
-      "Fldigi tags. The arrow inserts the selected tag into Macro Text. "
+      "Fldigi tags. The Description column is one line for each tag. "
+      "Callsign fills <MYCALL>. Locator fills <MYLOC> and <MYGRID>. "
+      "Name, QTH, antenna, power, and the other station tags are Options → User. "
+      "The arrow inserts the selected tag into Macro Text. "
       "Does not key and does not send START."));
   for (const MacroTagRow& row : macroTagList()) {
     auto* item = new QTreeWidgetItem(tags);
@@ -7776,6 +8038,9 @@ void MainWindow::openMacrosDialog(int index) {
     } else {
       item->setText(0, row.tag);
       item->setText(1, row.note);
+      const QString tip = row.note.isEmpty() ? row.tag : row.tag + QStringLiteral(" — ") + row.note;
+      item->setToolTip(0, tip);
+      item->setToolTip(1, tip);
     }
   }
   auto insertTag = [&] {
@@ -8465,7 +8730,7 @@ void MainWindow::openUserDialog() {
   QSettings settings;
   QDialog dialog(this);
   dialog.setWindowTitle(QStringLiteral("User"));
-  dialog.setMinimumWidth(360);
+  dialog.setMinimumWidth(420);
   auto* call = new QLineEdit(settings.value(QStringLiteral("dx/reportCall")).toString(), &dialog);
   call->setObjectName(QStringLiteral("userCall"));
   call->setPlaceholderText(QStringLiteral("N8SDR"));
@@ -8484,6 +8749,49 @@ void MainWindow::openUserDialog() {
   auto* form = new QFormLayout;
   form->addRow(QStringLiteral("Callsign"), call);
   form->addRow(QStringLiteral("Locator"), grid);
+  const QVector<MacroUserField> fields = macroUserFields();
+  QVector<QLineEdit*> edits;
+  edits.reserve(fields.size());
+  auto* extraHost = new QWidget(&dialog);
+  auto* extraForm = new QFormLayout(extraHost);
+  extraForm->setContentsMargins(0, 0, 0, 0);
+  for (const MacroUserField& field : fields) {
+    const bool primary = field.objectName == QLatin1String("userName") ||
+                         field.objectName == QLatin1String("userQth") ||
+                         field.objectName == QLatin1String("userAntenna") ||
+                         field.objectName == QLatin1String("userPower");
+    QWidget* parent = primary ? static_cast<QWidget*>(&dialog) : extraHost;
+    auto* edit = new QLineEdit(settings.value(field.key).toString(), parent);
+    edit->setObjectName(field.objectName);
+    edit->setClearButtonEnabled(true);
+    if (primary)
+      edit->setMinimumHeight(28);
+    edit->setToolTip(QStringLiteral("%1. Fills %2. This does not key. START is never sent.")
+                         .arg(field.note, field.tag));
+    (primary ? form : extraForm)->addRow(field.label, edit);
+    edits.push_back(edit);
+  }
+  auto* scroll = new QScrollArea(&dialog);
+  scroll->setObjectName(QStringLiteral("userTagFields"));
+  scroll->setWidget(extraHost);
+  scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+  scroll->setMinimumHeight(148);
+  scroll->setMaximumHeight(220);
+  scroll->setToolTip(QStringLiteral(
+      "Station values for the macro tags. Callsign and locator stay above. "
+      "This does not key. START is never sent."));
+  QStringList legendLines;
+  legendLines << QStringLiteral("Callsign fills <MYCALL>. Locator fills <MYLOC> and <MYGRID>.");
+  for (const MacroUserField& field : fields)
+    legendLines << QStringLiteral("%1 — %2").arg(field.tag, field.note);
+  legendLines << QStringLiteral("Options → Macros lists every tag with its description.");
+  auto* legend = new QLabel(legendLines.join(QLatin1Char('\n')), &dialog);
+  legend->setObjectName(QStringLiteral("userTagLegend"));
+  legend->setWordWrap(true);
+  legend->setToolTip(QStringLiteral(
+      "Which field fills which tag. This does not key. START is never sent."));
   auto* note = new QLabel(
       QStringLiteral("Saved with the station. DIST uses the locator. A decode click builds the reply "
                      "from the callsign and locator. TX and Tune stay locked until a callsign is saved. "
@@ -8498,6 +8806,8 @@ void MainWindow::openUserDialog() {
   buttons->addWidget(cancel);
   auto* layout = new QVBoxLayout(&dialog);
   layout->addLayout(form);
+  layout->addWidget(scroll);
+  layout->addWidget(legend);
   layout->addWidget(note);
   layout->addLayout(buttons);
   connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
@@ -8507,6 +8817,8 @@ void MainWindow::openUserDialog() {
   QSettings store;
   store.setValue(QStringLiteral("dx/reportCall"), call->text().trimmed().toUpper());
   store.setValue(QStringLiteral("dx/reportGrid"), grid->text().trimmed().toUpper());
+  for (int i = 0; i < fields.size() && i < edits.size(); ++i)
+    store.setValue(fields.at(i).key, edits.at(i)->text().trimmed());
   if (profile_)
     profile_->refreshStation();
   refreshDecodes();

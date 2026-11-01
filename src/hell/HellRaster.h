@@ -28,11 +28,19 @@ public:
   explicit HellRaster(QWidget* parent = nullptr);
   void addColumn(const QByteArray& column);
   void clear();
+  // Fldigi Configure → Modems → Feld Hell → Reverse video
+  // (progdefaults.HellBlackboard). Off is black on white. On is white
+  // on black, so an inverted image reads. It does not move the carrier.
+  void setVideoReverse(bool on);
+  bool videoReverse() const { return reverse_; }
 
 protected:
   void paintEvent(QPaintEvent* event) override;
 
 private:
+  void invertTape();
+
   QImage tape_;
   bool heard_ = false;
+  bool reverse_ = false;
 };

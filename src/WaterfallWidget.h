@@ -39,6 +39,24 @@ class QWindow;
 // WSJT-X's Flatten remove this so the band edges read like the middle.
 QVector<float> waterfallBaseline(const QVector<float>& db);
 
+// FT8, FT4, FT2, JT65, Q65, and JS8 start at the cursor and run up by
+// widthHz. A carrier-centered mode (Hell, RTTY, PSK, MFSK, and the
+// other keyboard tones) puts the cursor on the carrier and the band at
+// center ± width/2.
+inline void channelBandHz(int hz, int widthHz, bool centered, float* low, float* high) {
+  const float width = float(widthHz < 1 ? 1 : widthHz);
+  const float center = float(hz);
+  if (!low || !high)
+    return;
+  if (!centered) {
+    *low = center;
+    *high = center + width;
+    return;
+  }
+  *low = center - width / 2.0f;
+  *high = center + width / 2.0f;
+}
+
 class WaterfallWidget : public QWidget {
   Q_OBJECT
 public:
@@ -71,7 +89,10 @@ public:
   void setTraceSpeed(int speed);
   // Width of the green RX band and the red TX band, in Hz.
   // FT8 is 50. The band starts at the marker and runs upward.
+  // Centered modes draw that width around the marker instead.
   void setChannelWidth(int rxHz, int txHz);
+  void setChannelCentered(bool on);
+  bool channelCentered() const { return channelCentered_; }
   // Radio PTT is not this. Pass true only when STD is transmitting.
   // This build never does. Receive levels are ignored.
   void setTransmitting(bool on);
@@ -233,6 +254,7 @@ private:
   int txHz_ = 1500;
   int rxWidthHz_ = 50;
   int txWidthHz_ = 50;
+  bool channelCentered_ = false;
   bool locked_ = false;
   bool rxFollowsTx_ = true;
   bool rxTxClickPending_ = false;

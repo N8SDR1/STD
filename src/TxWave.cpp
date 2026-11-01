@@ -196,6 +196,61 @@ double hellEdge(int sample, bool rising) {
   return src < 16.0 ? on(src) : 1.0;
 }
 
+// One Butterworth lowpass section. Q is a pole pair of a 4th-order filter.
+struct EnvelopeBiquad {
+  double b0 = 1.0;
+  double b1 = 0.0;
+  double b2 = 0.0;
+  double a1 = 0.0;
+  double a2 = 0.0;
+  double x1 = 0.0;
+  double x2 = 0.0;
+  double y1 = 0.0;
+  double y2 = 0.0;
+
+  double process(double x) {
+    const double y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1;
+    x1 = x;
+    y2 = y1;
+    y1 = y;
+    return y;
+  }
+};
+
+EnvelopeBiquad envelopeLowpass(double cutoffHz, double q) {
+  const double w0 = 2.0 * 3.141592653589793 * cutoffHz / double(kRate);
+  const double cosine = std::cos(w0);
+  const double alpha = std::sin(w0) / (2.0 * q);
+  const double a0 = 1.0 + alpha;
+  EnvelopeBiquad section;
+  section.b0 = ((1.0 - cosine) * 0.5) / a0;
+  section.b1 = (1.0 - cosine) / a0;
+  section.b2 = section.b0;
+  section.a1 = (-2.0 * cosine) / a0;
+  section.a2 = (1.0 - alpha) / a0;
+  return section;
+}
+
+// Feld Hell's 2 ms edge is what fldigi keys, and it leaves sidebands that a
+// 20 dB waterfall paints as a solid bar hundreds of hertz wide. A 4th-order
+// lowpass on the envelope, run forward and back, holds the ink near the
+// 245 Hz channel without sliding the glyphs off the samples that carry them.
+void limitFeldEnvelope(std::vector<double>* envelope) {
+  const double gentle = 1.0 / (2.0 * std::sin(3.141592653589793 / 8.0));
+  const double steep = 1.0 / (2.0 * std::sin(3.0 * 3.141592653589793 / 8.0));
+  auto pass = [&](std::vector<double>* samples) {
+    EnvelopeBiquad first = envelopeLowpass(140.0, gentle);
+    EnvelopeBiquad second = envelopeLowpass(140.0, steep);
+    for (double& sample : *samples)
+      sample = second.process(first.process(sample));
+  };
+  pass(envelope);
+  std::reverse(envelope->begin(), envelope->end());
+  pass(envelope);
+  std::reverse(envelope->begin(), envelope->end());
+}
+
 bool buildHell(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
                std::vector<int>* echoAt) {
   // fldigi feld.cxx send_symbol / tx_char (Dave Freese, W1HKJ, GPL-3).
@@ -219,6 +274,10 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
   // rest blank. Pixels longer than the shape put the 2 ms fall at the end
   // of the pixel instead. Feld Hell keeps the Fldigi shape sample for sample.
   const bool longPixel = 8000.0 / (timing.columnsPerSec * double(kHellFontRows)) > 40.0;
+  // Feld Hell only. Slow Hell's pixels are already long, and the hard-keyed
+  // and FSK modes are a different signal.
+  const bool limitEnvelope = timing.shaped && !timing.fsk && !longPixel;
+  std::vector<double> envelope;
   auto sendPixel = [&](int current, int next) {
     int n = 0;
     const int length = std::max(1, int(std::ceil((1.0 - counter) / step - 1e-9)));
@@ -229,21 +288,20 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
         freq += (current ? -1.0 : 1.0) * timing.shiftHz / 2.0;
       } else if (!timing.shaped) {
         amp = current ? 1.0 : 0.0;
-      } else if (longPixel && current == 1) {
-        // Rise over the first 2 ms after a gap, fall over the last 2 ms
-        // before one. A lone pixel gets both.
-        amp = 1.0;
-        if (previous == 0)
-          amp = std::min(amp, hellEdge(n, true));
-        if (next == 0)
-          amp = std::min(amp, hellEdge(length - 1 - n, true));
-      } else if (previous == 0 && current == 1) {
-        amp = hellEdge(n, true);
-      } else if (current == 1 && next == 0) {
-        amp = hellEdge(n, false);
       } else {
+        // Rise over the first 2 ms after paper, fall over the last 2 ms
+        // before paper. A lone pixel gets both, so it does not step from
+        // full scale to silence. Feld Hell's fall is Fldigi's OffShape,
+        // indexed from the start of the pixel. A longer pixel puts that
+        // 2 ms fall at the end.
         amp = current ? 1.0 : 0.0;
+        if (current && previous == 0)
+          amp = std::min(amp, hellEdge(n, true));
+        if (current && next == 0)
+          amp = std::min(amp, longPixel ? hellEdge(length - 1 - n, true) : hellEdge(n, false));
       }
+      if (limitEnvelope)
+        envelope.push_back(amp);
       out->push_back(float(0.6 * amp * std::sin(phase)));
       phase += 2.0 * 3.141592653589793 * freq / double(kRate);
       if (phase > 6.283185307179586)
@@ -257,49 +315,73 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
     }
     previous = current;
   };
-  auto sendColumn = [&](int bits) {
+  // Pixels in time order, bottom of a column first. The bit after the
+  // top of a column is the bottom of the next column, not paper. A hard
+  // gap there is a click at the column rate.
+  std::vector<int> pixels;
+  std::vector<int> echoPixel;
+  auto addColumn = [&](int bits) {
     for (int row = 0; row < kHellFontRows; ++row) {
-      const int current = bits & 1;
+      pixels.push_back(bits & 1);
       bits >>= 1;
-      const int next = bits & 1;
-      sendPixel(current, next);
     }
   };
-  auto sendChar = [&](unsigned char c) {
-    sendColumn(0);
+  auto addChar = [&](unsigned char c) {
+    addColumn(0);
     if (c == ' ') {
-      sendColumn(0);
-      sendColumn(0);
-      sendColumn(0);
+      addColumn(0);
+      addColumn(0);
+      addColumn(0);
     } else {
       for (int column = 0;; ++column) {
         const int bits = hellColumnBits(c, column);
         if (bits < 0)
           break;
-        sendColumn(bits);
+        addColumn(bits);
       }
     }
-    sendColumn(0);
+    addColumn(0);
   };
   for (int i = 0; i < 3; ++i)
-    sendChar('.');
+    addChar('.');
   for (const QChar ch : message) {
     if (echoAt)
-      echoAt->push_back(int(out->size()));
+      echoPixel.push_back(int(pixels.size()));
     // feld::tx_process maps CR and LF to a space. Any other character
     // outside the font sends only the two blank columns of tx_char.
     if (ch == QLatin1Char('\r') || ch == QLatin1Char('\n')) {
-      sendChar(' ');
+      addChar(' ');
     } else if (ch.unicode() >= ' ' && ch.unicode() <= '~') {
-      sendChar(static_cast<unsigned char>(ch.unicode()));
+      addChar(static_cast<unsigned char>(ch.unicode()));
     } else {
-      sendColumn(0);
-      sendColumn(0);
+      addColumn(0);
+      addColumn(0);
     }
   }
   for (int i = 0; i < 3; ++i)
-    sendChar('.');
-  sendChar(' ');
+    addChar('.');
+  addChar(' ');
+  int echoCursor = 0;
+  for (int i = 0; i < int(pixels.size()); ++i) {
+    if (echoAt && echoCursor < int(echoPixel.size()) && echoPixel[static_cast<size_t>(echoCursor)] == i) {
+      echoAt->push_back(int(out->size()));
+      ++echoCursor;
+    }
+    const int next = i + 1 < int(pixels.size()) ? pixels[static_cast<size_t>(i + 1)] : 0;
+    sendPixel(pixels[static_cast<size_t>(i)], next);
+  }
+  if (limitEnvelope && envelope.size() == out->size()) {
+    limitFeldEnvelope(&envelope);
+    double synth = 0.0;
+    const double dphi = 2.0 * 3.141592653589793 * double(tone) / double(kRate);
+    for (size_t i = 0; i < envelope.size(); ++i) {
+      const double amp = std::clamp(envelope[i], 0.0, 1.0);
+      (*out)[i] = float(0.6 * amp * std::sin(synth));
+      synth += dphi;
+      if (synth > 6.283185307179586)
+        synth -= 6.283185307179586;
+    }
+  }
   return !out->empty();
 }
 
