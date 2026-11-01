@@ -169,6 +169,7 @@ private:
   void qsoMacroActions(const QString& body);
   void paintJs8Activity();
   void revealSentEcho();
+  void consumeSentKeyboardText();
   void breakHellEchoLine(bool onlyIfSent);
   void appendTxEcho(const QString& text);
   void appendRxEcho(const QString& text);
@@ -414,6 +415,7 @@ private:
   int txJs8Next_ = 0;
   int txJs8Pending_ = 0;
   int txEchoCount_ = 0;
+  bool txTextFinished_ = false;  // the whole keyboard text went out
   int txEchoSamples_ = 0;
   std::vector<int> txEchoAt_;
   RttyEngine* rtty_ = nullptr;
@@ -445,5 +447,8 @@ private:
 };
 
 // QSO bar helpers (MainWindowQso.cpp).
+// The TX box after the sent text is taken off the front. Unchanged when the
+// box no longer starts with what was sent.
+QString textAfterSent(const QString& have, const QString& sent, bool finished);
 bool looksLikeCallsign(const QString& word);
 QString rstFromDbm(double dbm, bool threeDigits);

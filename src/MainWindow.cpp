@@ -6740,6 +6740,46 @@ void MainWindow::revealSentEcho() {
   txEchoCount_ = shown;
 }
 
+// Keyboard modes take what went out off the front of the TX box, as Fldigi
+// does, so the next TX sends only new text. A finished pass takes it all;
+// a stopped one takes the characters that went on the air. Text the
+// operator changed in the meantime is left alone. JS8 keeps its own queue.
+void MainWindow::consumeSentKeyboardText() {
+  const bool finished = txTextFinished_;
+  txTextFinished_ = false;
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  if (!keyboardTextMode(mode) || js8Mode(mode) || txSentText_.isEmpty())
+    return;
+  const int chars = finished ? int(txSentText_.size()) : std::min(txEchoCount_, int(txSentText_.size()));
+  if (chars <= 0)
+    return;
+  auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+  if (!box)
+    return;
+  const QString have = box->toPlainText();
+  const QString left = textAfterSent(have, txSentText_.left(chars), finished);
+  if (left == have)
+    return;
+  box->setPlainText(left);
+  QTextCursor cursor = box->textCursor();
+  cursor.movePosition(QTextCursor::End);
+  box->setTextCursor(cursor);
+}
+
+QString textAfterSent(const QString& have, const QString& sent, bool finished) {
+  int lead = 0;
+  while (lead < have.size() && have.at(lead).isSpace())
+    ++lead;
+  if (sent.isEmpty() || !have.mid(lead).startsWith(sent))
+    return have;
+  int cut = lead + int(sent.size());
+  if (finished) {
+    while (cut < have.size() && have.at(cut).isSpace())
+      ++cut;
+  }
+  return have.mid(cut);
+}
+
 void MainWindow::breakHellEchoLine(bool onlyIfSent) {
   // Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor,
   // MT63, and JS8 share this log. A transmission ends on its own line.
@@ -6942,6 +6982,7 @@ void MainWindow::pumpUserTx() {
       txSentText_ = txEchoAt_.empty() ? transmitMessage() : transmitMessage().trimmed();
     }
     txEchoCount_ = 0;
+    txTextFinished_ = false;
     txEchoSamples_ = textModeSamplesPerChar(mode);
     if (const int period = periodLengthMs(mode)) {
       const int into = utcIntoPeriodMs(period);
@@ -6997,6 +7038,7 @@ void MainWindow::finishTxPass() {
   txRetargeted_ = false;
   const QString sent = txSentText_;
   const bool keyed = txKeySent_;
+  txTextFinished_ = keyed && !retargeted;
   if (keyed && tci_)
     tci_->setTransmit(false);
   txKeySent_ = false;
@@ -7337,6 +7379,7 @@ void MainWindow::stopUserTx(bool uncheck) {
   if (txTune_)
     return;
   breakHellEchoLine(true);
+  consumeSentKeyboardText();
   if (txTimer_)
     txTimer_->stop();
   if (txKeySent_ && tci_)
