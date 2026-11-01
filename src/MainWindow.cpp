@@ -109,6 +109,13 @@
 
 namespace {
 
+QString hellSaveDirectory() {
+  const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  const QString dir = QDir(documents).filePath(QStringLiteral("STD/hell"));
+  QDir().mkpath(dir);
+  return dir;
+}
+
 QFont interfaceFont(int pixelSize, QFont::Weight weight = QFont::Normal) {
   QFont font("Inter");
   font.setPixelSize(pixelSize);
@@ -493,13 +500,21 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   });
   connect(tci_, &TciClient::sessionUp, this, [this](const QString& host, quint16 port) {
     showRadioUp(host, port);
+    // Auto RST in needs the S-meter; asked for only when that is on.
+    if (const auto* autoRst = findChild<QCheckBox*>(QStringLiteral("qsoBarAutoRst")); autoRst && autoRst->isChecked())
+      tci_->enableRxSensors();
+    showQsoRstTag();
   });
+  connect(tci_, &TciClient::rxSmeterDbm, this, [this](double dbm) { qsoSmeter(dbm); });
+  connect(tci_, &TciClient::rxSnrDb, this,
+          [this](double snr) { qsoRstMeter_.addSnr(QDateTime::currentMSecsSinceEpoch(), snr); });
   connect(tci_, &TciClient::sessionDown, this, [this](const QString& error) {
     if (txTune_)
       stopTune(true);
     else
       stopUserTx(true);
     showRadioDown(error);
+    showQsoRstTag();
   });
   connect(tci_, &TciClient::dialChanged, this, [this](qint64 hz) { showDial(hz); });
   connect(tci_, &TciClient::modeChanged, this, [this](const QString& mode) {
@@ -2334,6 +2349,44 @@ QWidget* MainWindow::makeReceivePanel() {
                                                     faxOpen, faxAuto, faxFit})
     w->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
   faxState->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  // Feld Hell: save the whole tape, history and live strip, as a PNG in
+  // Documents\STD\hell (WEFAX keeps its own folder).
+  auto* hellSave = new QPushButton(QStringLiteral("Save tape"), panel);
+  hellSave->setObjectName(QStringLiteral("hellSave"));
+  hellSave->setFont(interfaceFont(11));
+  hellSave->setFocusPolicy(Qt::NoFocus);
+  hellSave->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+  hellSave->setToolTip(QStringLiteral(
+      "Save the Feld Hell tape, the history and the live strip, as a PNG in Documents\\STD\\hell. "
+      "This does not key and does not send START."));
+  hellSave->hide();
+  auto* hellOpen = new QPushButton(QStringLiteral("Open"), panel);
+  hellOpen->setObjectName(QStringLiteral("hellOpen"));
+  hellOpen->setFont(interfaceFont(11));
+  hellOpen->setFocusPolicy(Qt::NoFocus);
+  hellOpen->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+  hellOpen->setToolTip(QStringLiteral("Open the folder the Hell tapes are saved in. This does not key."));
+  hellOpen->hide();
+  tools->addWidget(hellSave);
+  tools->addWidget(hellOpen);
+  connect(hellOpen, &QPushButton::clicked, this, [] {
+    QDesktopServices::openUrl(QUrl::fromLocalFile(hellSaveDirectory()));
+  });
+  connect(hellSave, &QPushButton::clicked, this, [this] {
+    auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive"));
+    if (!tape)
+      return;
+    const QImage picture = tape->tapeImage();
+    const QString path = QDir(hellSaveDirectory())
+                             .filePath(QStringLiteral("hell-%1.png")
+                                           .arg(QDateTime::currentDateTime().toString(
+                                               QStringLiteral("yyyyMMdd-HHmmss"))));
+    if (qEnvironmentVariableIsSet("STD_SELFTEST") || (!picture.isNull() && picture.save(path, "PNG")))
+      setTxStatus(QStringLiteral("Hell tape saved %1. Nothing was keyed. START was not sent.").arg(path));
+    else
+      setTxStatus(QStringLiteral("The Hell tape did not save to %1. Nothing was keyed. START was not sent.")
+                      .arg(path));
+  });
   tools->addWidget(faxStart);
   tools->addWidget(faxSave);
   tools->addWidget(faxAuto);
@@ -2425,6 +2478,7 @@ QWidget* MainWindow::makeReceivePanel() {
   header->setFont(monoFont(13));
   header->setTextInteractionFlags(Qt::NoTextInteraction);
   layout->addWidget(header);
+  layout->addWidget(makeQsoBar(panel));
 
   auto* raster = new HellRaster(panel);
   raster->hide();
@@ -2452,6 +2506,7 @@ QWidget* MainWindow::makeReceivePanel() {
   echo->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   echo->document()->setDocumentMargin(4);
   echo->hide();
+  installQsoRxPicker(echo);
 
   auto* wsprHeadHost = new QWidget(panel);
   wsprHeadHost->setObjectName(QStringLiteral("wsprRxHeaderHost"));
@@ -3640,6 +3695,10 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
           "This does not key and does not send START."));
     }
   }
+  if (auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"))) {
+    bar->setVisible(text && !js8Mode(mode));
+    showQsoRstTag();
+  }
   if (auto* wsprHead = findChild<QWidget*>(QStringLiteral("wsprRxHeaderHost"))) {
     wsprHead->setVisible(wspr);
     if (wspr) {
@@ -3660,6 +3719,10 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
     clear->setVisible(!text && !fax && !wspr);
   if (auto* scroll = findChild<QWidget*>(QStringLiteral("wefaxScroll")))
     scroll->setVisible(fax);
+  for (const char* name : {"hellSave", "hellOpen"}) {
+    if (auto* w = findChild<QWidget*>(QLatin1String(name)))
+      w->setVisible(hell);
+  }
   for (const char* name : {"wefaxStart", "wefaxState", "wefaxOpen", "wefaxAutoSave", "wefaxFit"}) {
     if (auto* w = findChild<QWidget*>(QLatin1String(name)))
       w->setVisible(fax);
@@ -7749,7 +7812,16 @@ void MainWindow::insertMacro(int index) {
   QSettings userStore;
   for (const MacroUserField& field : macroUserFields())
     userTags.insert(field.tag, userStore.value(field.key).toString());
+  const bool keyboard = profile_ && keyboardTextMode(profile_->digitalMode()) && !js8Mode(profile_->digitalMode());
+  if (keyboard) {
+    // The worked station's fields from the QSO bar: <CALL>, <NAME>, <RST> ...
+    const QHash<QString, QString> qso = qsoBarTags();
+    for (auto it = qso.cbegin(); it != qso.cend(); ++it)
+      userTags.insert(it.key(), it.value());
+  }
   const QString text = macroInsertText(macros_.at(index).text, stationCall(), stationGrid(), userTags);
+  if (keyboard)
+    qsoMacroActions(macros_.at(index).text);
   if (text.isEmpty())
     return;
   if (profile_ && keyboardTextMode(profile_->digitalMode())) {

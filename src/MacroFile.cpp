@@ -98,7 +98,8 @@ QString macroInsertText(const QString& body, const QString& call, const QString&
                         const QHash<QString, QString>& userTags) {
   QString text = body;
   const QStringList drop = {QStringLiteral("TX"), QStringLiteral("RX"), QStringLiteral("CLRTX"),
-                            QStringLiteral("CLRRX"), QStringLiteral("LOG")};
+                            QStringLiteral("CLRRX"), QStringLiteral("LOG"),   QStringLiteral("LNW"),
+                            QStringLiteral("CLRQSO"), QStringLiteral("CLRLOG")};
   for (const QString& tag : drop) {
     text.replace(QStringLiteral("<%1>").arg(tag), QString(), Qt::CaseInsensitive);
     text.replace(QRegularExpression(QStringLiteral("<@?%1:[^>]*>").arg(tag),

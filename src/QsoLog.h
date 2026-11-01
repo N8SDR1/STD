@@ -31,6 +31,10 @@ public:
     QString srxString;
     QString fdClass;
     QString arrlSection;
+    QString name;
+    QString qth;
+    QString state;
+    QString veProv;
     qint64 freqHz = 0;
     QDateTime timeOn;
     QDateTime timeOff;
@@ -48,6 +52,8 @@ public:
   explicit QsoLog(QObject* parent = nullptr);
 
   static QString defaultAdifPath();
+  // The ADIF line store() writes for this record, ending in <EOR>.
+  static QString adifRecord(const Record& qso);
   static QByteArray heartbeatDatagram(const QString& version);
 
   // WSJT-X UDP type 2 (Decode) and type 10 (WSPRDecode), schema 3.

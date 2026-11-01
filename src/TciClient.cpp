@@ -225,6 +225,12 @@ void TciClient::sendCommand(const QString& command) {
   socket_->sendTextMessage(command.endsWith(';') ? command : command + QLatin1Char(';'));
 }
 
+void TciClient::enableRxSensors() {
+  if (!open_)
+    return;
+  sendCommand(QStringLiteral("rx_sensors_enable:true,200"));
+}
+
 void TciClient::beginSession() {
   // Receiver 0, real RX audio, this socket only. Lyra stores that
   // flag per client and does not treat it as startRequested, so a
@@ -288,6 +294,25 @@ void TciClient::handleCommand(const QString& raw) {
     const int high = args.at(2).toInt(&okHi);
     if (okLo && okHi)
       emit receiveBandChanged(low, high);
+    return;
+  }
+  if ((name == QLatin1String("rx_sensors") && args.size() >= 2) ||
+      (name == QLatin1String("rx_channel_sensors") && args.size() >= 3) ||
+      (name == QLatin1String("rx_channel_sensors_ex") && args.size() >= 3)) {
+    const bool channel = name != QLatin1String("rx_sensors");
+    if (args.at(0) != QLatin1String("0") || (channel && args.at(1) != QLatin1String("0")))
+      return;
+    bool ok = false;
+    const double dbm = args.at(channel ? 2 : 1).toDouble(&ok);
+    if (ok)
+      emit rxSmeterDbm(dbm);
+    return;
+  }
+  if (name == QLatin1String("lyra_snr") && !args.isEmpty()) {
+    bool ok = false;
+    const double snr = args.at(0).toDouble(&ok);
+    if (ok)
+      emit rxSnrDb(snr);
     return;
   }
   if (name == QLatin1String("modulation") && args.size() >= 2) {

@@ -78,6 +78,10 @@ QString recordText(const QsoLog::Record& qso) {
   fields << adif(QStringLiteral("SRX_STRING"), qso.srxString);
   fields << adif(QStringLiteral("CLASS"), qso.fdClass);
   fields << adif(QStringLiteral("ARRL_SECT"), qso.arrlSection);
+  fields << adif(QStringLiteral("NAME"), qso.name);
+  fields << adif(QStringLiteral("QTH"), qso.qth);
+  fields << adif(QStringLiteral("STATE"), qso.state);
+  fields << adif(QStringLiteral("VE_PROV"), qso.veProv);
   fields << adif(QStringLiteral("COMMENT"), qso.comment);
   fields.removeAll(QString());
   return fields.join(QString()) + QStringLiteral("<EOR>");
@@ -97,7 +101,8 @@ QByteArray wsjt(quint32 type, const QString& version, const QsoLog::Record* qso,
     const quint64 hz = qso->freqHz > 0 ? quint64(qso->freqHz) : 0;
     const QByteArray blank = QString().toUtf8();
     out << off << qso->call.toUtf8() << qso->grid.toUtf8() << hz << qso->mode.toUtf8()
-        << qso->rstSent.toUtf8() << qso->rstRcvd.toUtf8() << blank << qso->comment.toUtf8() << blank
+        << qso->rstSent.toUtf8() << qso->rstRcvd.toUtf8() << blank << qso->comment.toUtf8()
+        << qso->name.toUtf8()
         << on << blank << qso->myCall.toUtf8() << qso->myGrid.toUtf8() << blank << blank << blank
         << blank << blank << blank;
   } else if (type == kLoggedAdif) {
@@ -250,6 +255,10 @@ void QsoLog::sendHeartbeat() {
   if (qEnvironmentVariableIsSet("STD_SELFTEST") || (!udpQso_ && !udpAdif_))
     return;
   sendUdp(heartbeatDatagram(QStringLiteral(STD_VERSION)));
+}
+
+QString QsoLog::adifRecord(const Record& qso) {
+  return recordText(qso);
 }
 
 QsoLog::Result QsoLog::store(const Record& qso) {

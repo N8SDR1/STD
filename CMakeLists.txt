@@ -70,6 +70,7 @@ qt_add_executable(std
   src/MainWindow.cpp
   src/MainWindowJs8.cpp
   src/MainWindowWefax.cpp
+    src/MainWindowQso.cpp
   src/MaEngine.cpp
   src/MaEngine.h
   src/MainWindow.h

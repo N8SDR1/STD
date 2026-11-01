@@ -49,6 +49,11 @@ public:
   // DIGU or DIGL on receiver 0. Any other token is ignored.
   void setSideband(const QString& sideband);
 
+  // Asks for S-meter readings (rx_sensors_enable:true). Sent only when
+  // Auto RST is on. Never sends false: other programs on the same radio
+  // may be using the readings. Does not key and does not send START.
+  void enableRxSensors();
+
 signals:
   void sessionUp(const QString& host, quint16 port);
   void sessionDown(const QString& error);
@@ -57,6 +62,10 @@ signals:
   void pttChanged(bool on);
   // Receiver 0 passband, as reported. low and high keep the radio's sign.
   void receiveBandChanged(int lowHz, int highHz);
+  // Receiver 0 S-meter in dBm (rx_sensors or rx_channel_sensors).
+  void rxSmeterDbm(double dbm);
+  // Lyra's receive SNR in dB (lyra_snr), when it sends it.
+  void rxSnrDb(double snrDb);
   // Mono float32, one real channel taken from a type-1 RX frame.
   void rxAudio(int sampleRateHz, const QByteArray& mono);
   // Loopback of a type-2 TX frame after TX gain, one channel.

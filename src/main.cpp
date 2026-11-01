@@ -11,6 +11,7 @@
 #include "StatusStrip.h"
 
 #include "QsoLog.h"
+#include "RstMeter.h"
 #include "StationFiles.h"
 #include "TxWave.h"
 #include "hell/HellEngine.h"
@@ -973,6 +974,16 @@ int shellReady(MainWindow& window) {
       qCritical("hell reverse ink %d -> %d paper %d -> %d", inkLuma, flipped, paperLuma, paperFlip);
       return fail("Hell reverse video did not invert the tape");
     }
+    // A long transmission moves up into the history instead of falling off.
+    raster.setVideoReverse(false);
+    raster.clear();
+    for (int i = 0; i < 1000; ++i)
+      raster.addColumn(QByteArray(40, char(i % 7 == 0 ? 0 : 255)));
+    if (raster.historyRows() < 2 || raster.tapeImage().height() <= 3 * 120)
+      return fail("Hell tape lost a long transmission instead of keeping it");
+    raster.clear();
+    if (raster.historyRows() != 0)
+      return fail("CLR RX left the Hell tape history");
   }
   const auto* mode = window.findChild<QLabel*>("modeValue");
   const auto* afc = window.findChild<QPushButton*>("afcToggle");
@@ -2176,6 +2187,79 @@ int shellReady(MainWindow& window) {
       if (raw.isNull() || moved.size() != raw.size() || moved.pixel(0, 2) != raw.pixel(100, 2) ||
           moved.pixel(raw.width() - 100, 2) != raw.pixel(0, 2))
         return fail("WEFAX left-edge shift does not turn the lines");
+    }
+    for (const char* name : {"hellSave", "hellOpen"}) {
+      const auto* w = window.findChild<QWidget*>(QLatin1String(name));
+      if (!w || w->isVisibleTo(&window))
+        return fail("Hell tape Save shows outside Hell");
+    }
+    {
+      // QSO bar: keyboard modes only, never WEFAX (or WSPR, JS8, FT8).
+      auto* qsoBar = window.findChild<QWidget*>(QStringLiteral("qsoBar"));
+      if (!qsoBar || qsoBar->isVisibleTo(&window))
+        return fail("the QSO bar shows in WEFAX");
+      if (hellAction) {
+        hellAction->trigger();
+        auto* call = window.findChild<QLineEdit*>(QStringLiteral("qsoBarCall"));
+        auto* out = window.findChild<QLineEdit*>(QStringLiteral("qsoBarRstOut"));
+        auto* on = window.findChild<QLabel*>(QStringLiteral("qsoBarOn"));
+        auto* clearQso = window.findChild<QPushButton*>(QStringLiteral("qsoBarClear"));
+        if (!qsoBar->isVisibleTo(&window) || !call || !out || !on || !clearQso)
+          return fail("the QSO bar is missing in Hell");
+        call->setText(QStringLiteral("W1AW"));
+        if (on->text().isEmpty())
+          return fail("the QSO bar did not set the time on");
+        out->setText(QStringLiteral("579"));
+        clearQso->click();
+        if (!call->text().isEmpty() || out->text() != QLatin1String("599") || !on->text().isEmpty())
+          return fail("QSO bar Clear did not reset the fields");
+        faxAction->trigger();
+      }
+      if (!looksLikeCallsign(QStringLiteral("w1aw")) || !looksLikeCallsign(QStringLiteral("VE3/N8SDR/P")) ||
+          looksLikeCallsign(QStringLiteral("HELLO")) || looksLikeCallsign(QStringLiteral("599")))
+        return fail("QSO callsign check is wrong");
+      if (rstFromDbm(-73.0, true) != QLatin1String("599") || rstFromDbm(-97.0, true) != QLatin1String("559") ||
+          rstFromDbm(-140.0, true) != QLatin1String("519") || rstFromDbm(-40.0, false) != QLatin1String("59"))
+        return fail("RST from the S-meter is wrong");
+      {
+        // Auto RST: a lone spike does not count, a steady signal over the
+        // floor does, and a level under the floor does not.
+        RstMeter meter;
+        qint64 ms = 0;
+        for (int i = 0; i < 40; ++i, ms += 250)
+          meter.add(ms, -100.0);
+        if (meter.level(ms))
+          return fail("Auto RST counted the noise floor");
+        meter.add(ms += 250, -60.0);
+        if (meter.level(ms) && *meter.level(ms) > -73.0)
+          return fail("Auto RST let one spike reach S9");
+        for (int i = 0; i < 6; ++i)
+          meter.add(ms += 250, -85.0);
+        const auto steady = meter.level(ms);
+        if (!steady || rstFromDbm(*steady, true) != QLatin1String("579"))
+          return fail("Auto RST missed a steady signal");
+        meter.addSnr(ms, 1.0);
+        if (meter.level(ms))
+          return fail("Auto RST ignored the radio's SNR");
+      }
+      QsoLog::Record qr;
+      qr.call = QStringLiteral("w1aw");
+      qr.name = QStringLiteral("Hiram");
+      qr.qth = QStringLiteral("Newington");
+      qr.state = QStringLiteral("CT");
+      qr.rstRcvd = QStringLiteral("579");
+      const QString line = QsoLog::adifRecord(qr);
+      if (!line.contains(QLatin1String("<NAME:5>Hiram")) || !line.contains(QLatin1String("<QTH:9>Newington")) ||
+          !line.contains(QLatin1String("<STATE:2>CT")) || !line.contains(QLatin1String("<RST_RCVD:3>579")))
+        return fail("the QSO bar fields are not in the ADIF record");
+      QHash<QString, QString> qsoTags;
+      qsoTags.insert(QStringLiteral("<CALL>"), QStringLiteral("W1AW"));
+      qsoTags.insert(QStringLiteral("<RST>"), QStringLiteral("579"));
+      qsoTags.insert(QStringLiteral("<NAME>"), QStringLiteral("Hiram"));
+      const QString sent = macroInsertText(QStringLiteral("<CALL> de <MYCALL> ur <RST> <NAME> <LOG><CLRQSO>"),
+                                           QStringLiteral("N8SDR"), QStringLiteral("EM79"), qsoTags);
+      if (sent != QLatin1String("W1AW de N8SDR ur 579 Hiram"))
+        return fail("QSO bar tags did not fill the macro");
     }
     for (const char* name : {"wefaxAutoSave", "wefaxFit", "wefaxOpen", "wefaxStart", "wefaxSave"}) {
       const auto* w = window.findChild<QWidget*>(QLatin1String(name));
