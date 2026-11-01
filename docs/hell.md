@@ -12,8 +12,8 @@ Each column is 14 pixels. Pixels per second are 14 times the column rate.
 
 | Mode | Columns/s | Pixels/s | Keying |
 | --- | --- | --- | --- |
-| Feld Hell | 17.5 | 245 | Carrier on for ink, silence for paper. 2 ms raised cosine on each edge. |
-| Slow Hell | 2.1875 | 30.625 | Same cosine as Feld Hell. |
+| Feld Hell | 17.5 | 245 | Carrier on for ink, silence for paper. 2 ms raised-cosine edge, then the envelope is limited to the 245 Hz channel. A CQ measures about 258 Hz at −26 dB. Peak stays 0.6. The marker is that 245 Hz channel, centered on the carrier. |
+| Slow Hell | 2.1875 | 30.625 | Same raised-cosine edge. The envelope limit is Feld Hell only. |
 | Feld Hell X5 | 87.5 | 1225 | Hard keyed. |
 | Feld Hell X9 | 157.5 | 2205 | Hard keyed. |
 | FSK Hell | 17.5 | 245 | Two tones, 122.5 Hz shift. A tone stays up. |
@@ -28,8 +28,10 @@ The font is Fldigi's `feldhell_12` (12-pixel variable width, sent as 14-row colu
 
 ## Receive tape
 
-The amplitude-Hell tape uses that mode's column rate, with 20-pixel receive columns. FSK Hell, FSK Hell-105, and Hell 80 are still drawn with the amplitude detector, so the tape does not read an FSK signal.
+The amplitude-Hell tape uses that mode's column rate, with 20-pixel receive columns. FSK Hell, FSK Hell-105, and Hell 80 read the shift, so a steady tone still draws. Reverse video is on the Hell row. Off prints the tape black on white. On prints white on black. The carrier does not move, and the switch does not key.
+
+The log under the tape keeps received text in the receive colour and prints sent text in red. A new transmission appends, and a finished one ends on its own line. The list follows the bottom only while you are already there. Switching from one Hell variant to another keeps that log. Leaving Hell clears it.
 
 ## What TX does
 
-Pressing TX builds the Hell audio and sends `trx` for that transmission. The receive pane prints each character as it goes out. CLR TX does not key.
+Pressing TX builds the Hell audio and sends `trx` for that transmission. CLR TX does not key. The red marker for every Hell variant is centered on the carrier.

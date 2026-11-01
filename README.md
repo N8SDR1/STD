@@ -1,6 +1,6 @@
 # STD
 
-**Shift, Tone, Decode.** Software in testing. Version 0.1.1. Around the shack it also answers to **Sending Transmittal Disease**.
+**Shift, Tone, Decode.** Software in testing. Version 0.1.2. Around the shack it also answers to **Sending Transmittal Disease**.
 
 The real expansion is Shift, Tone, Decode. The other one is the joke. STD is a 64-bit Windows application, a Qt 6.11.1 MSVC digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air. [Lyra](https://n8sdr1.github.io/Lyra-SDR-cpp/) is the transceiver. [SDRLogger+](https://n8sdr1.github.io/SDRLoggerPlus/) is the logbook. CW stays in Lyra.
 
@@ -35,7 +35,7 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | FT2 | 3.75 s. DIGU. |
 | JT65A, JT65B, JT65C | 60 s. DIGU. Tone 0 stays near 1270 Hz. |
 | Q65A, Q65B, Q65C, Q65D | 30 s. DIGU. The tone follows the cursor. |
-| Feld Hell | 17.5 columns/s, 14 pixels per column, 2 ms raised cosine. Ink is the carrier. |
+| Feld Hell | 17.5 columns/s, 14 pixels per column. A 2 ms raised-cosine edge, then the envelope is limited to the 245 Hz channel. The marker is centered on the carrier. Reverse video flips the tape. |
 | Slow Hell | 2.1875 columns/s, same cosine. |
 | Feld Hell X5 | 87.5 columns/s, hard keyed. |
 | Feld Hell X9 | 157.5 columns/s, hard keyed. |
@@ -51,12 +51,12 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | DominoEX | Micro, 4, 5, 8, 11, 16, 22. 18-tone incremental keying. FEC is off. Micro is 2 baud. |
 | Thor | 4, 5, 8, 11, 16, 22 are NASA K=7. 25x4, 50x1, 50x2, and 100 are IEEE K=15. Thor Micro stays off the menu. |
 | MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L. 64 carriers, Walsh code, short or long interleave. |
-| JS8 | JS8Call-improved Normal. 15 s, 50 Hz. TX waits for the next 15 s UTC period and sends one frame, starting half a second in. A longer message continues on the following periods. |
-| WSPR | WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Tx power, Tx Pct, and band hopping. The locator is Options → User. Heard stations post to WSPRnet only when WSPRnet is On. |
+| JS8 | JS8Call-improved Normal. 15 s, 50 Hz. Band activity, conversation, and call activity, with HB, CQ, Reply, SNR?, INFO?, STATUS?, GRID?, Directed, and Deselect. TX waits for the next 15 s UTC period and sends one frame, starting half a second in. A longer message continues on the following periods. |
+| WSPR | WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Tx power, Tx Pct, and band hopping. The locator is Options → User. Rows stay in the receive colour, under titles, with a rule between periods. Heard stations post to WSPRnet only when WSPRnet is On, and only while WSPR is the mode. |
 
 ## Receive only
 
-**WEFAX-576** receives. IOC 576, 120 lines per minute. Black is 400 Hz below the cursor and white is 400 Hz above it. A 300 Hz start tone opens a picture, a 450 Hz stop tone saves it, and Slant is parts per million. It does not key, and it does not send START.
+**WEFAX-576** receives. IOC 576, 120 lines per minute. Stations are listed by ITU region, with NOAA hours on the frequencies that have them. A click sets the dial 1.9 kHz under the assigned frequency, USB, marker 1900 Hz. Start, a left-edge click, Auto save, Open folder, and Fit are on that screen. It does not key, and it does not send START.
 
 ## Still in progress
 
@@ -72,7 +72,7 @@ CW stays in Lyra. STD does not send CW.
 
 The RST/LOG macro does not log. Fldigi's `<LOG>` tag is not implemented. Pressing that button inserts text, and nothing is stored. Adding Fldigi-style `<LOG>` is a later change.
 
-`<MYCALL>` and `<MYLOC>` are filled in. `<LOG>` is deleted from the text. `<RST>` and `<MYRST>` stay in the box as written, so a later TX can send the characters `<RST>`. `<CALL>` is left as written too.
+`<MYCALL>` and `<MYLOC>` are filled from Options → User. Name, QTH (the station city, `<MYQTH>`), Antenna, Power, and RST on that same dialog fill `<MYNAME>`, `<MYQTH>`, `<ANTENNA>`, `<TX_PWR>`, and `<MYRST>`. An empty box erases the tag. `<LOG>` is deleted from the text. `<RST>` stays in the box as written, so a later TX can send the characters `<RST>`. `<CALL>` is left as written too.
 
 A separate path, not the macro tag, stores a QSO when the sent line ends in `73` or `RR73`, that line contains the other station's call, and a log option is on (automatic, prompt, WSJT-X UDP, or DXKeeper TCP). That path writes ADIF.
 
@@ -97,13 +97,13 @@ STD is a 64-bit Windows application. The kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\
 
 ## Run
 
-The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.1.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
+The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.2.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
 
 A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_QPA_PLATFORM=offscreen`, then run `build\std.exe`. Exit status 0 prints `STD self-test ok`.
 
 ## More
 
 - Web version of this page: <https://n8sdr1.github.io/STD/>
-- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.1 pre-release, testing phase · highly transmissible)
+- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.2 pre-release, testing phase · highly transmissible)
 - Wiki: <https://github.com/N8SDR1/STD/wiki>
 - Longer notes: [modes](docs/modes.md), [Hell](docs/hell.md), [macros](docs/macros.md), [connect](docs/connect.md)
