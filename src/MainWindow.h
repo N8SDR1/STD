@@ -5,8 +5,10 @@
 
 #include "MaEngine.h"
 #include "MacroFile.h"
+#include "RstMeter.h"
 
 #include <QByteArray>
+#include <QHash>
 #include <QIcon>
 #include <QMainWindow>
 #include <QSet>
@@ -154,6 +156,17 @@ private:
   void js8Compose(const QString& text, bool send);
   void js8Select(const QString& call);
   void clearJs8Activity();
+  // QSO bar for the keyboard modes (MainWindowQso.cpp).
+  QWidget* makeQsoBar(QWidget* parent);
+  void clearQsoBar();
+  QString logQsoBar();
+  QHash<QString, QString> qsoBarTags() const;
+  void qsoBarPut(const QString& field, const QString& word);
+  void qsoCallChanged(const QString& text);
+  void showQsoRstTag();
+  void qsoSmeter(double dbm);
+  void installQsoRxPicker(class QTextEdit* echo);
+  void qsoMacroActions(const QString& body);
   void paintJs8Activity();
   void revealSentEcho();
   void breakHellEchoLine(bool onlyIfSent);
@@ -355,6 +368,14 @@ private:
   QString qsoGrid_;
   QString qsoRstRcvd_;
   qint64 qsoStartedMs_ = 0;
+  qint64 qsoBarOnMs_ = 0;
+  QString qsoBarLastCall_;
+  QString qsoBarLastRecord_;
+  double qsoPeakDbm_ = -1.0e9;
+  bool qsoRstAuto_ = true;
+  qint64 qsoMeterMs_ = 0;
+  double qsoMeterDbm_ = 0.0;
+  RstMeter qsoRstMeter_;
   bool qsoLogged_ = false;
   QString txHisCall_;
   QString txReport_;
@@ -422,3 +443,7 @@ private:
   bool updateCheckManual_ = false;
   QVector<DecodeRow> shownDecodes_;
 };
+
+// QSO bar helpers (MainWindowQso.cpp).
+bool looksLikeCallsign(const QString& word);
+QString rstFromDbm(double dbm, bool threeDigits);

@@ -24,35 +24,52 @@ Name, QTH, Antenna, and Power sit on that same dialog at full height. QTH is the
 | `<MYCOUNTY>` | County |
 | `<MYCNTY>` | CNTY |
 
-## What is removed
+## The station you are working
 
-These tags are deleted, both as `<TAG>` and as `<TAG:...>`:
+On Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 the QSO bar holds the other station. Right-click a received word to put it in a field. Double-click a callsign to fill Call. Those fields are not saved as settings. JS8, WSPR, WEFAX, and the FT8 family do not show the bar.
 
-`TX`, `RX`, `CLRTX`, `CLRRX`, `LOG`.
+| Tag | QSO bar |
+| --- | --- |
+| `<CALL>` | Call |
+| `<NAME>` | Name |
+| `<QTH>` | Their town |
+| `<ST>` | St |
+| `<PR>` | Pr |
+| `<LOC>` | Loc |
+| `<RST>` | Out, the report you send |
+| `<QSOTIME>` | Time on, UTC, HHMM |
 
-`<LOG>` and `<LOG:msg>` do not write the ADIF file. They disappear from the text.
+Auto RST, off until you turn it on, fills Out from the TCI S-meter. S9 is −73 dBm and each S-unit is 6 dB. It peak-holds a 1.25 second median that must stand 3 dB over a 30 second noise floor, or over Lyra's SNR when Lyra sends it. Turning it on asks the radio for S-meter readings and never turns them off. Typing in Out stops the fill until the next call. It does not key.
+
+## What is removed from the text
+
+These tags are deleted from the transmitted text, both as `<TAG>` and as `<TAG:...>`:
+
+`TX`, `RX`, `CLRTX`, `CLRRX`, `LOG`, `LNW`, `CLRQSO`, `CLRLOG`.
+
+On a keyboard mode, `<LOG>` and `<LNW>` also write the QSO bar to the ADIF file (NAME, QTH, STATE, VE_PROV, and the name over WSJT-X UDP when that logger is on). `<CLRQSO>` and `<CLRLOG>` clear the bar. An empty Call logs nothing. The Log button does the same write. None of this keys.
 
 ## What stays literal
 
-`<RST>` stays in the box as written. `<MYRST>` is filled from RST under Options → User. If the operator then presses TX, a leftover `<RST>` can be keyed as text.
-
-`<CALL>` is also left as written. The RST/LOG button in a typical Fldigi file looks like:
+`<MYRST>` is filled from RST under Options → User. That is your RST, not the Out field. The RST/LOG button in a typical Fldigi file looks like:
 
 ```text
 <CALL> de <MYCALL> <RST> TU <LOG> <CLRRX><CLRTX> <RX>
 ```
 
-With call N8SDR that becomes:
+With your call N8SDR, Call set to W1AW, and Out set to 599, that becomes:
 
 ```text
-<CALL> de N8SDR <RST> TU
+W1AW de N8SDR 599 TU
 ```
 
-Nothing is stored.
+On a keyboard mode that button also logs the QSO. An empty Call logs nothing.
 
 ## When a QSO is stored
 
-This path is not the RST/LOG button, and it is not Fldigi `<LOG>`. Logging runs after a transmission, and only when all of these are true:
+The QSO bar Log button, and `<LOG>` or `<LNW>` on a keyboard mode, write the bar immediately. They do not wait for 73.
+
+A second path, the FT8-family exchange, runs after a transmission, and only when all of these are true:
 
 - The sent line's last word is `73` or `RR73`.
 - The line contains the other station's call from the current QSO.

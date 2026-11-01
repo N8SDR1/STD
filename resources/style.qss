@@ -500,3 +500,12 @@ QPushButton#wefaxFreq[offAir="true"] {
   color: #5c7284;
   border: 1px dashed #274150;
 }
+
+/* Keyboard-mode QSO bar. */
+QLabel#qsoBarLabel { color: #8fa6b8; }
+QLabel#qsoBarOn { color: #8fa6b8; padding: 0 4px; }
+QLabel#qsoBarRstTag { font-size: 10px; text-transform: uppercase; padding: 0 2px; }
+QLabel#qsoBarRstTag[state="auto"] { color: #4ade80; }
+QLabel#qsoBarRstTag[state="manual"] { color: #8fa6b8; }
+QLabel#qsoBarRstTag[state="off"] { color: #c08040; }
+QPushButton#qsoBarLog { min-width: 52px; }
