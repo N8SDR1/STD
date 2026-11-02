@@ -2036,6 +2036,15 @@ int shellReady(MainWindow& window) {
     if (!cleared)
       return fail("mode change kept the previous text");
   }
+  // Keyboard modes take what went out off the TX box, as Fldigi does.
+  if (textAfterSent(QStringLiteral("CQ CQ de N8SDR") + QChar(u'\n') + QStringLiteral("W1AW de N8SDR"),QStringLiteral("CQ CQ de N8SDR"), true) !=
+          QLatin1String("W1AW de N8SDR") ||
+      textAfterSent(QStringLiteral("CQ CQ de N8SDR"), QStringLiteral("CQ CQ"), false) !=
+          QLatin1String(" de N8SDR") ||
+      textAfterSent(QStringLiteral("  CQ test"), QStringLiteral("CQ test"), true) != QString() ||
+      textAfterSent(QStringLiteral("edited text"), QStringLiteral("CQ test"), true) !=
+          QLatin1String("edited text"))
+    return fail("sent keyboard text is not taken off the TX box");
   const auto* js8 = window.findChild<QAction*>(QStringLiteral("modeJs8"));
   if (!js8 || !js8->toolTip().contains(QLatin1String("15")) ||
       !js8->toolTip().contains(QLatin1String("START")) ||

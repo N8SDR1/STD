@@ -133,6 +133,9 @@ signals:
 
 protected:
   void paintEvent(QPaintEvent* event) override;
+  // Repaint request. With the GPU path it hands one frame to the GPU and
+  // the overlay on the next event-loop turn, never from paintEvent.
+  void queueFrame();
   void resizeEvent(QResizeEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void mousePressEvent(QMouseEvent* event) override;
@@ -207,6 +210,7 @@ private:
   QWidget* surfaceContainer_ = nullptr;
   WaterfallGpu* gpu_ = nullptr;
   QWidget* chrome_ = nullptr;
+  bool frameQueued_ = false;
   QString graphicsChoice_ = QStringLiteral("vulkan");
   QString sessionMode_;
   bool steppedDown_ = false;

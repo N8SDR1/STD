@@ -3832,7 +3832,10 @@ void MainWindow::showGuide() {
        "receive pane as the audio goes out. The tape puts the first pixel of a column at the "
        "bottom, the same way Fldigi does, so the imprint is right-side up. A tone is ink and "
        "silence is paper. CLR RX clears the echo and the tape and does not unkey. "
-       "CLR TX clears the transmit box and does not key. The FT8 sequence, Tx1 through Tx6, and "
+       "CLR TX clears the transmit box and does not key. A finished pass takes the sent text off "
+       "the front of that box, as Fldigi does, so the next TX sends only new text. A stopped pass "
+       "takes the characters that already went out. Text you change during the pass is left alone. "
+       "The FT8 sequence, Tx1 through Tx6, and "
        "TX FIRST stay hidden. The tone starts at 1500 Hz. Click the waterfall to move it. The dial "
        "is the Feld Hell Club signal minus 1500 Hz, so 20 m is 14.0615 MHz. A macro copies into the "
        "transmit box. TX macro, off unless you turn it on, also presses TX. AFC on the waterfall "
@@ -3859,6 +3862,9 @@ void MainWindow::showGuide() {
        "START is never sent."},
       {"Keyboard text",
        "RTTY and the BPSK speeds use that same transmit box, receive echo, CLR RX, and CLR TX. "
+       "A finished pass takes the sent text off the front of that box, as Fldigi does, so the next "
+       "TX sends only new text. A stopped pass takes the characters that already went out. Text "
+       "you change during the pass is left alone. JS8 keeps its own queue. "
        "Hell keeps the pixel tape. RTTY and BPSK show the echo. Characters print as the audio goes "
        "out. RTTY follows Fldigi on DIGU. The row above the transmit box is Shift, Baud, Shape, "
        "Reverse, and ITA-2, the same controls Fldigi puts on its RTTY transmit and text pages. "
@@ -4062,7 +4068,8 @@ void MainWindow::showGuide() {
        "few dB under the measured noise and keeps it there as band noise or RX gain changes; the Floor "
        "slider then shows that level and is greyed. Turning Auto off leaves the floor where Auto had it. "
        "Flatten removes the receiver passband slope line by line, so the band edges read like the "
-       "middle; it redraws what is still in memory. View → Save layout stores Floor, Range, and Auto "
+       "middle; it redraws what is still in memory. The picture updates once per turn, so a quiet "
+       "band does not keep the CPU and the GPU busy. View → Save layout stores Floor, Range, and Auto "
        "with that mode's docks. None of this changes the frequency span, and none of it keys."},
       {"Palettes",
        "Palette on that same bar lists Classic, Inferno, Viridis, Plasma, Rainbow, Ocean, Night, "
@@ -6740,6 +6747,46 @@ void MainWindow::revealSentEcho() {
   txEchoCount_ = shown;
 }
 
+// Keyboard modes take what went out off the front of the TX box, as Fldigi
+// does, so the next TX sends only new text. A finished pass takes it all;
+// a stopped one takes the characters that went on the air. Text the
+// operator changed in the meantime is left alone. JS8 keeps its own queue.
+void MainWindow::consumeSentKeyboardText() {
+  const bool finished = txTextFinished_;
+  txTextFinished_ = false;
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  if (!keyboardTextMode(mode) || js8Mode(mode) || txSentText_.isEmpty())
+    return;
+  const int chars = finished ? int(txSentText_.size()) : std::min(txEchoCount_, int(txSentText_.size()));
+  if (chars <= 0)
+    return;
+  auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+  if (!box)
+    return;
+  const QString have = box->toPlainText();
+  const QString left = textAfterSent(have, txSentText_.left(chars), finished);
+  if (left == have)
+    return;
+  box->setPlainText(left);
+  QTextCursor cursor = box->textCursor();
+  cursor.movePosition(QTextCursor::End);
+  box->setTextCursor(cursor);
+}
+
+QString textAfterSent(const QString& have, const QString& sent, bool finished) {
+  int lead = 0;
+  while (lead < have.size() && have.at(lead).isSpace())
+    ++lead;
+  if (sent.isEmpty() || !have.mid(lead).startsWith(sent))
+    return have;
+  int cut = lead + int(sent.size());
+  if (finished) {
+    while (cut < have.size() && have.at(cut).isSpace())
+      ++cut;
+  }
+  return have.mid(cut);
+}
+
 void MainWindow::breakHellEchoLine(bool onlyIfSent) {
   // Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor,
   // MT63, and JS8 share this log. A transmission ends on its own line.
@@ -6942,6 +6989,7 @@ void MainWindow::pumpUserTx() {
       txSentText_ = txEchoAt_.empty() ? transmitMessage() : transmitMessage().trimmed();
     }
     txEchoCount_ = 0;
+    txTextFinished_ = false;
     txEchoSamples_ = textModeSamplesPerChar(mode);
     if (const int period = periodLengthMs(mode)) {
       const int into = utcIntoPeriodMs(period);
@@ -6997,6 +7045,7 @@ void MainWindow::finishTxPass() {
   txRetargeted_ = false;
   const QString sent = txSentText_;
   const bool keyed = txKeySent_;
+  txTextFinished_ = keyed && !retargeted;
   if (keyed && tci_)
     tci_->setTransmit(false);
   txKeySent_ = false;
@@ -7337,6 +7386,7 @@ void MainWindow::stopUserTx(bool uncheck) {
   if (txTune_)
     return;
   breakHellEchoLine(true);
+  consumeSentKeyboardText();
   if (txTimer_)
     txTimer_->stop();
   if (txKeySent_ && tci_)

@@ -36,4 +36,4 @@ A full tape width moves up into a scrollable history, up to 500 rows. The wheel 
 
 ## What TX does
 
-Pressing TX builds the Hell audio and sends `trx` for that transmission. CLR TX does not key. The red marker for every Hell variant is centered on the carrier.
+Pressing TX builds the Hell audio and sends `trx` for that transmission. A finished pass takes the sent text off the front of the transmit box, as Fldigi does, so the next TX sends only new text. A stopped pass takes the characters that already went out. Text changed during the pass is left alone. CLR TX does not key. The red marker for every Hell variant is centered on the carrier.
