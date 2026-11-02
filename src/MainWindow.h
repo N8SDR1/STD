@@ -25,6 +25,7 @@ class QEvent;
 
 class Ft8Decode;
 class HellEngine;
+class SpeechReader;
 class DominoEngine;
 class ThorEngine;
 class MfskEngine;
@@ -261,6 +262,10 @@ private:
   QString contestSetupProblem() const;
   void advanceLoggedSerial();
   void openContestTags();
+  // Options -> Speech: read received text aloud on a chosen sound device.
+  void openSpeechDialog();
+  void applySpeechSettings();
+  bool speechWanted() const;
   QString composedCq(const QString& kind) const;
   QString transmitMessage() const;
   QString wsprOutbound() const;
@@ -306,6 +311,7 @@ private:
   TciClient* tci_ = nullptr;
   Ft8Decode* ft8_ = nullptr;
   HellEngine* hell_ = nullptr;
+  SpeechReader* speech_ = nullptr;
   QVector<MacroSlot> macros_;
   int macroBank_ = 0;
   QString macroFile_;

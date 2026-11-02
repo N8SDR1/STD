@@ -19,6 +19,7 @@
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
+#include "speech/SpeechReader.h"
 #include "spot/PskReporter.h"
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
@@ -603,6 +604,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   });
 
   hell_ = new HellEngine(this);
+  speech_ = new SpeechReader(this);
   if (statusStrip_) {
     if (auto* sql = statusStrip_->findChild<QPushButton*>(QStringLiteral("squelchToggle"))) {
       connect(sql, &QPushButton::toggled, this, [this](bool on) {
@@ -2355,6 +2357,51 @@ QWidget* MainWindow::makeReceivePanel() {
   tools->addWidget(filter, 1);
   tools->addWidget(clear);
   tools->addWidget(clrRx);
+  // Speech read-back: click mutes and unmutes, the number is the volume.
+  // Shown only when Options -> Speech has read-back on, in a text mode.
+  // One compact group, held to the left: [Speech] Vol [80%].
+  auto* speechBox = new QWidget(panel);
+  speechBox->setObjectName(QStringLiteral("speechBox"));
+  auto* speechRow = new QHBoxLayout(speechBox);
+  speechRow->setContentsMargins(0, 0, 0, 0);
+  speechRow->setSpacing(6);
+  auto* speechChip = new QPushButton(QStringLiteral("Speech"), speechBox);
+  speechChip->setObjectName(QStringLiteral("speechChip"));
+  speechChip->setCheckable(true);
+  speechChip->setFont(interfaceFont(11));
+  speechChip->setFocusPolicy(Qt::NoFocus);
+  speechChip->setToolTip(QStringLiteral(
+      "Received text read aloud. Click to mute or unmute. Options -> Speech sets the voice and the "
+      "sound device. This does not key."));
+  speechChip->setFixedWidth(70);
+  auto* speechVolLabel = new QLabel(QStringLiteral("Vol"), speechBox);
+  speechVolLabel->setObjectName(QStringLiteral("speechVolumeLabel"));
+  speechVolLabel->setFont(interfaceFont(11));
+  auto* speechVolume = new QSpinBox(speechBox);
+  speechVolume->setObjectName(QStringLiteral("speechVolume"));
+  speechVolume->setRange(0, 100);
+  speechVolume->setSuffix(QStringLiteral("%"));
+  speechVolume->setFont(interfaceFont(11));
+  speechVolume->setFocusPolicy(Qt::ClickFocus);
+  speechVolume->setToolTip(QStringLiteral("Speech volume. The mouse wheel works over it. This does not key."));
+  speechVolume->setFixedWidth(64);
+  speechVolLabel->setToolTip(speechVolume->toolTip());
+  speechRow->addWidget(speechChip);
+  speechRow->addWidget(speechVolLabel);
+  speechRow->addWidget(speechVolume);
+  speechRow->addStretch(1);
+  speechBox->hide();
+  tools->addWidget(speechBox, 1);
+  connect(speechChip, &QPushButton::toggled, this, [this](bool on) {
+    QSettings().setValue(QStringLiteral("speech/muted"), !on);
+    applySpeechSettings();
+  });
+  connect(speechVolume, &QSpinBox::valueChanged, this, [this](int value) {
+    QSettings().setValue(QStringLiteral("speech/volume"), value);
+    if (speech_)
+      speech_->setVolume(value);
+  });
+  applySpeechSettings();
   auto* faxStart = new QPushButton(QStringLiteral("Start"), panel);
   faxStart->setObjectName(QStringLiteral("wefaxStart"));
   faxStart->setFont(interfaceFont(11));
@@ -3113,6 +3160,12 @@ void MainWindow::buildMenus() {
       "Field Day, roundup, and serial tags for every contest on the TX list. "
       "Choosing a contest writes those tags into Tx1 through Tx6. This does not key."));
   connect(contestTags, &QAction::triggered, this, [this] { openContestTags(); });
+
+  auto* speech = optionsMenu->addAction(QStringLiteral("Speech…"));
+  speech->setObjectName(QStringLiteral("speechSettings"));
+  speech->setToolTip(QStringLiteral(
+      "Read received text aloud with a Windows voice on a sound device you pick. This does not key."));
+  connect(speech, &QAction::triggered, this, [this] { openSpeechDialog(); });
   addCheck(listMenu, "listShowFreq", QStringLiteral("Show Frequency Column"), "dx/showFreq", true,
            QStringLiteral("Show or hide the Freq column."));
   addCheck(listMenu, "listClearPeriod", QStringLiteral("New period clears the message list"),
@@ -3753,6 +3806,7 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* clrRx = findChild<QPushButton*>(QStringLiteral("clrRx")))
     clrRx->setVisible(text || fax || wspr);
+  applySpeechSettings();
   if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
     edit->setVisible(!text && !fax && !wspr);
   if (auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader")))
@@ -6977,6 +7031,8 @@ void MainWindow::breakHellEchoLine(bool onlyIfSent) {
 
 void MainWindow::appendRxEcho(const QString& text) {
   appendKeyedEcho(findChild<QTextEdit*>(QStringLiteral("rxEcho")), text, rxEchoColor());
+  if (speechWanted())
+    speech_->addText(text);
 }
 
 void MainWindow::appendTxEcho(const QString& text) {
@@ -7161,6 +7217,9 @@ void MainWindow::pumpUserTx() {
     }
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     txKeySent_ = true;
+    // Speech read-back must not talk over the transmission.
+    if (speech_)
+      speech_->stop();
     if (selectedTxSlot() < 5)
       txWorkStarted_ = true;
     markWaterfallTx();

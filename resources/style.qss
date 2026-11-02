@@ -478,6 +478,35 @@ QToolButton#js8Directed:disabled {
   border-color: #1c3344;
 }
 
+/* Every tick box: a cyan outline that fills cyan with a dark check when on,
+   so a setting reads at a glance on the dark theme. */
+QCheckBox::indicator {
+  width: 15px;
+  height: 15px;
+  background: #080d13;
+  border: 2px solid #00b8cc;
+  border-radius: 3px;
+}
+
+QCheckBox::indicator:hover {
+  border-color: #00e5ff;
+}
+
+QCheckBox::indicator:checked {
+  background: #00e5ff;
+  border-color: #00e5ff;
+  image: url(:/std/check-on.svg);
+}
+
+QCheckBox::indicator:disabled {
+  border-color: #2b4656;
+}
+
+QCheckBox::indicator:checked:disabled {
+  background: #2b6f7c;
+  border-color: #2b6f7c;
+}
+
 QCheckBox#js8Filter::indicator {
   width: 14px;
   height: 14px;

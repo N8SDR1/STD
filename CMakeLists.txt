@@ -71,6 +71,7 @@ qt_add_executable(std
   src/MainWindowJs8.cpp
   src/MainWindowWefax.cpp
     src/MainWindowQso.cpp
+  src/MainWindowSpeech.cpp
   src/MaEngine.cpp
   src/MaEngine.h
   src/MainWindow.h
@@ -89,6 +90,8 @@ qt_add_executable(std
   src/TxWave.cpp
   src/TxWave.h
   src/LiveTx.h
+  src/speech/SpeechReader.cpp
+  src/speech/SpeechReader.h
   src/QsoLog.cpp
   src/QsoLog.h
   src/StationFiles.cpp
@@ -146,6 +149,10 @@ target_include_directories(std PRIVATE
   "${CMAKE_SOURCE_DIR}/src/mt63/fldigi")
 
 target_link_libraries(std PRIVATE Qt6::Widgets Qt6::GuiPrivate Qt6::Network Qt6::WebSockets)
+if(WIN32)
+  # Windows voices for the receive read-back.
+  target_link_libraries(std PRIVATE sapi ole32)
+endif()
 
 if(WIN32)
   set(FT8_DLL "${CMAKE_BINARY_DIR}/ft8dec.dll")

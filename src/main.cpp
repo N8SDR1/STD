@@ -19,6 +19,7 @@
 #include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
 #include "LiveTx.h"
+#include "speech/SpeechReader.h"
 #include "mt63/Mt63Modem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
@@ -1647,6 +1648,34 @@ int shellReady(MainWindow& window) {
       qCritical("QPSK decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
       return fail("QPSK did not decode");
     }
+  }
+  // Speech read-back: phrase pacing, spelling, and the controls.
+  {
+    QString buffer = QStringLiteral("CQ CQ DE N8");
+    if (!speechTakeReady(&buffer, false).isEmpty())
+      return fail("Speech spoke a half-finished line");
+    buffer += QStringLiteral("SDR K\nUR");
+    const QString line = speechTakeReady(&buffer, false);
+    if (line != QStringLiteral("CQ CQ DE N8SDR K\n") || buffer != QStringLiteral("UR"))
+      return fail("Speech did not take the finished line");
+    if (speechTakeReady(&buffer, true) != QStringLiteral("UR") || !buffer.isEmpty())
+      return fail("Speech did not read the rest after the pause");
+    buffer = QStringLiteral("ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NIN");
+    if (speechTakeReady(&buffer, false) != QStringLiteral("ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT ") ||
+        buffer != QStringLiteral("NIN"))
+      return fail("Speech did not read a long line by finished words");
+    if (speechClean(QStringLiteral("CQ DE N8SDR UR 599 #$%& ~~ K"), true) !=
+        QStringLiteral("CQ DE N 8 S D R UR 5 9 9 K"))
+      return fail("Speech did not spell the call and report or drop the noise");
+    if (!speechClean(QStringLiteral("#$%&"), false).contains(QLatin1Char('#')))
+      return fail("Speech dropped symbols with Skip garbled off");
+    (void)SpeechReader::voices();
+    if (SpeechReader::outputs().isEmpty())
+      return fail("Speech has no Windows default device entry");
+    if (!window.findChild<QAction*>(QStringLiteral("speechSettings")) ||
+        !window.findChild<QPushButton*>(QStringLiteral("speechChip")) ||
+        !window.findChild<QSpinBox*>(QStringLiteral("speechVolume")))
+      return fail("Speech controls are missing");
   }
   // Live idle safety toggle. The self-test shares the operator's settings,
   // so only the range is checked here, not the saved on/off and seconds.
