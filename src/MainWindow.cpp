@@ -1414,6 +1414,50 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     toneRow->hide();
     layout->addWidget(toneRow);
 
+    // Live keyboard TX safety: return to RX when nothing new was typed for
+    // this long. On, 25 s by default.
+    auto* liveRow = new QWidget(panel);
+    liveRow->setObjectName(QStringLiteral("liveTxOptions"));
+    auto* liveLayout = new QHBoxLayout(liveRow);
+    liveLayout->setContentsMargins(0, 0, 0, 0);
+    liveLayout->setSpacing(6);
+    auto* idleStop = new QCheckBox(QStringLiteral("Back to RX after"), liveRow);
+    idleStop->setObjectName(QStringLiteral("liveIdleStop"));
+    idleStop->setFont(interfaceFont(12));
+    idleStop->setStyleSheet(rttyText);
+    idleStop->setFocusPolicy(Qt::NoFocus);
+    auto* idleSeconds = new QComboBox(liveRow);
+    idleSeconds->setObjectName(QStringLiteral("liveIdleSeconds"));
+    idleSeconds->setFont(interfaceFont(12));
+    for (const int choice : kLiveIdleChoices)
+      idleSeconds->addItem(QStringLiteral("%1 s idle").arg(choice), choice);
+    idleSeconds->setFocusPolicy(Qt::NoFocus);
+    const QString idleTip = QStringLiteral(
+        "RTTY, PSK, and QPSK stay keyed and send idle while the transmit box is empty. With this on, "
+        "a transmission ends by itself when nothing new was typed for this many seconds: the tail goes "
+        "out, then TRX drops. This does not key. START is never sent.");
+    idleStop->setToolTip(idleTip);
+    idleSeconds->setToolTip(idleTip);
+    {
+      QSettings store;
+      idleStop->setChecked(store.value(QStringLiteral("tx/liveIdleStop"), true).toBool());
+      const int saved = liveIdleChoice(store.value(QStringLiteral("tx/liveIdleSeconds"), 25).toInt());
+      idleSeconds->setCurrentIndex(std::max(0, idleSeconds->findData(saved)));
+    }
+    idleSeconds->setEnabled(idleStop->isChecked());
+    liveLayout->addWidget(idleStop);
+    liveLayout->addWidget(idleSeconds);
+    liveLayout->addStretch(1);
+    connect(idleStop, &QCheckBox::toggled, this, [idleSeconds](bool on) {
+      QSettings().setValue(QStringLiteral("tx/liveIdleStop"), on);
+      idleSeconds->setEnabled(on);
+    });
+    connect(idleSeconds, &QComboBox::currentIndexChanged, this, [idleSeconds](int) {
+      QSettings().setValue(QStringLiteral("tx/liveIdleSeconds"), idleSeconds->currentData().toInt());
+    });
+    liveRow->hide();
+    layout->addWidget(liveRow);
+
     auto* hellRow = new QWidget(panel);
     hellRow->setObjectName(QStringLiteral("hellOptions"));
     auto* hellLayout = new QHBoxLayout(hellRow);
@@ -5930,7 +5974,9 @@ bool MainWindow::rebuildTxWave() {
     return false;
   const QString mode = profile_->digitalMode();
   const QString text = transmitMessage();
-  if (text.isEmpty() && txJs8Text_.isEmpty())
+  // Live modes can key with an empty box, as Fldigi does: they send idle
+  // until something is typed.
+  if (text.isEmpty() && txJs8Text_.isEmpty() && !liveTextMode(mode))
     return false;
   const int tone = waterfall_ ? waterfall_->txHz() : 1500;
   txCursor_ = 0;
@@ -5958,6 +6004,24 @@ bool MainWindow::rebuildTxWave() {
     txSymbolSamples_ = tonalSamples(txSamples_);
     return true;
   }
+  if (liveTextMode(mode)) {
+    // Only the lead-in is built here. topUpLiveTx adds the typed text,
+    // idle, and the tail as the radio pulls audio.
+    const RttyOptions live = rttyOptionsOf(this);
+    // txLiveEnding_ is left alone: a macro that keys sets it before the
+    // keydown rebuild. stopUserTx clears it.
+    txLive_ = makeLiveTextTx(mode, tone, &live);
+    txLiveClosed_ = false;
+    txLiveLogged_ = false;
+    txSampleBase_ = 0;
+    txSamples_.clear();
+    txEchoAt_.clear();
+    txSymbolSamples_ = 0;
+    if (!txLive_)
+      return false;
+    txLive_->begin(&txSamples_);
+    return !txSamples_.empty();
+  }
   if (text.isEmpty())
     return false;
   const RttyOptions rtty = rttyOptionsOf(this);
@@ -5975,6 +6039,8 @@ void MainWindow::refreshTxChrome() {
   const bool hell = hellFamily(mode);
   if (auto* rttyRow = findChild<QWidget*>(QStringLiteral("rttyOptions")))
     rttyRow->setVisible(rttyMode(mode));
+  if (auto* liveRow = findChild<QWidget*>(QStringLiteral("liveTxOptions")))
+    liveRow->setVisible(liveTextMode(mode));
   applyHellReverse();
   if (auto* toneRow = findChild<QWidget*>(QStringLiteral("startToneOptions"))) {
     const bool olivia = oliviaBandwidthHz(mode) > 0;
@@ -6596,11 +6662,25 @@ void MainWindow::stopTune(bool uncheck) {
 }
 
 void MainWindow::setUserTx(bool on) {
+  auto* button = findChild<QPushButton*>(QStringLiteral("txSend"));
   if (!on) {
+    // Live keyboard TX: the first press ends after the box is sent, as
+    // Fldigi's TX/RX does. A second press stops at once.
+    if (txLive_ && txKeySent_ && !txLiveEnding_) {
+      txLiveEnding_ = true;
+      if (button) {
+        const QSignalBlocker block(button);
+        button->setChecked(true);
+        button->setText(QStringLiteral("ENDING"));
+      }
+      setTxStatus(QStringLiteral(
+          "Ending. The rest of the transmit box goes out, then TRX drops. Press TX again to stop now. "
+          "START was not sent."));
+      return;
+    }
     stopUserTx(false);
     return;
   }
-  auto* button = findChild<QPushButton*>(QStringLiteral("txSend"));
   auto release = [button] {
     if (!button)
       return;
@@ -6636,7 +6716,7 @@ void MainWindow::setUserTx(bool on) {
   txJs8Part_.clear();
   txJs8Next_ = 0;
   txJs8Pending_ = 0;
-  if (text.isEmpty()) {
+  if (text.isEmpty() && !liveTextMode(mode)) {
     release();
     setTxStatus(wsprMode(mode)
                     ? QStringLiteral(
@@ -6653,7 +6733,7 @@ void MainWindow::setUserTx(bool on) {
   const RttyOptions rtty = rttyOptionsOf(this);
   if (js8Mode(mode))
     txJs8Text_ = text;
-  const bool waveOk = js8Mode(mode)
+  const bool waveOk = (js8Mode(mode) || liveTextMode(mode))
                           ? rebuildTxWave()
                           : buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_,
                                         rttyMode(mode) ? &rtty : nullptr, startTonesOf(this, mode)) &&
@@ -6694,6 +6774,10 @@ void MainWindow::setUserTx(bool on) {
     setTxStatus(QStringLiteral(
         "Armed for the next 15 second UTC period. The frame starts half a second in. "
         "A longer message continues on the following periods, one frame each. START was not sent."));
+  else if (liveTextMode(mode))
+    setTxStatus(QStringLiteral(
+        "Sending live. Keep typing and it goes out. Press TX to end after the box is sent. "
+        "START was not sent."));
   else if (keyboardTextMode(mode))
     setTxStatus(QStringLiteral(
         "Sending. Sent characters print in the receive pane as they go out. START was not sent."));
@@ -6754,6 +6838,18 @@ void MainWindow::revealSentEcho() {
 void MainWindow::consumeSentKeyboardText() {
   const bool finished = txTextFinished_;
   txTextFinished_ = false;
+  if (txLive_) {
+    // Live TX already took each character off the box when it was encoded.
+    // Characters encoded but not yet on the air go back on the front.
+    const QString unsent = txSentText_.mid(std::min(txEchoCount_, int(txSentText_.size())));
+    auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+    if (!unsent.isEmpty() && box) {
+      QTextCursor front(box->document());
+      front.movePosition(QTextCursor::Start);
+      front.insertText(unsent);
+    }
+    return;
+  }
   const QString mode = profile_ ? profile_->digitalMode() : QString();
   if (!keyboardTextMode(mode) || js8Mode(mode) || txSentText_.isEmpty())
     return;
@@ -6771,6 +6867,88 @@ void MainWindow::consumeSentKeyboardText() {
   QTextCursor cursor = box->textCursor();
   cursor.movePosition(QTextCursor::End);
   box->setTextCursor(cursor);
+}
+
+void MainWindow::topUpLiveTx(int ahead) {
+  if (!txLive_)
+    return;
+  auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+  // The idle safety is read once per call, only if the box runs empty.
+  int idleOn = -1;
+  int seconds = 25;
+  // Each pass adds at least one symbol, so this cap is never reached on air.
+  for (int guard = 0; guard < 100000 && !txLiveClosed_; ++guard) {
+    if (txSampleBase_ + int(txSamples_.size()) - txCursor_ >= ahead)
+      break;
+    QChar next;
+    bool have = false;
+    if (box) {
+      const QString text = box->toPlainText();
+      int lead = 0;
+      // Blank lines and spaces before the first character are not sent.
+      if (txSentText_.isEmpty()) {
+        while (lead < text.size() && text.at(lead).isSpace())
+          ++lead;
+      }
+      if (lead < text.size()) {
+        next = text.at(lead);
+        have = true;
+        // Remove through that character. Qt keeps the operator's cursor
+        // where it was relative to the text after it.
+        QTextCursor front(box->document());
+        front.setPosition(0);
+        front.setPosition(lead + 1, QTextCursor::KeepAnchor);
+        front.removeSelectedText();
+      }
+    }
+    if (have) {
+      const int at = txSampleBase_ + int(txSamples_.size());
+      txEchoAt_.push_back(txLive_->put(next, &txSamples_) ? at : -1);
+      txSentText_.append(next);
+      txLiveTextMs_ = QDateTime::currentMSecsSinceEpoch();
+      continue;
+    }
+    if (!txLiveEnding_) {
+      if (idleOn < 0) {
+        const QSettings store;
+        idleOn = store.value(QStringLiteral("tx/liveIdleStop"), true).toBool() ? 1 : 0;
+        seconds = liveIdleChoice(store.value(QStringLiteral("tx/liveIdleSeconds"), 25).toInt());
+      }
+      if (liveIdleExpired(txLiveTextMs_, QDateTime::currentMSecsSinceEpoch(), idleOn == 1, seconds)) {
+        txLiveEnding_ = true;
+        if (auto* button = findChild<QPushButton*>(QStringLiteral("txSend")))
+          button->setText(QStringLiteral("ENDING"));
+        setTxStatus(QStringLiteral("Nothing new typed for %1 s. Ending: the tail goes out, then TRX drops. "
+                                   "START was not sent.")
+                        .arg(seconds));
+      }
+    }
+    if (txLiveEnding_) {
+      txLive_->end(&txSamples_);
+      txLiveClosed_ = true;
+    } else {
+      txLive_->idle(&txSamples_);
+    }
+  }
+  // Drop what already went out so a long QSO does not grow without limit.
+  const int consumed = txCursor_ - txSampleBase_;
+  if (consumed > 48000 * 20 && consumed <= int(txSamples_.size())) {
+    txSamples_.erase(txSamples_.begin(), txSamples_.begin() + consumed);
+    txSampleBase_ += consumed;
+  }
+}
+
+// The QSO log line for a live transmission: what actually went out.
+void MainWindow::logLiveTx() {
+  if (!txLive_ || txLiveLogged_ || !txKeySent_)
+    return;
+  txLiveLogged_ = true;
+  revealSentEcho();
+  const QString aired = txSentText_.left(std::min(txEchoCount_, int(txSentText_.size()))).trimmed();
+  if (aired.isEmpty())
+    return;
+  appendQso(QStringLiteral("TX"), aired);
+  promoteNow();
 }
 
 QString textAfterSent(const QString& have, const QString& sent, bool finished) {
@@ -6808,10 +6986,15 @@ void MainWindow::appendTxEcho(const QString& text) {
 void MainWindow::fillWave(float* dst, int frames, int step) {
   if (step < 1)
     step = 1;
+  // About 200 ms queued past this block: short enough that typing is
+  // close to live, long enough that a late pull never starves the radio.
+  if (txLive_)
+    topUpLiveTx(frames * step + 48000 / 5);
   for (int i = 0; i < frames; ++i) {
     float sample = 0.0f;
-    if (txCursor_ >= 0 && txCursor_ < int(txSamples_.size()))
-      sample = txSamples_[static_cast<size_t>(txCursor_)];
+    const int at = txCursor_ - txSampleBase_;
+    if (at >= 0 && at < int(txSamples_.size()))
+      sample = txSamples_[static_cast<size_t>(at)];
     dst[i] = sample;
     txCursor_ += step;
   }
@@ -6877,6 +7060,13 @@ bool MainWindow::slotShouldEnd(const QString& mode) const {
     return txCursor_ >= int(txSamples_.size()) && now - txPlayOriginMs_ >= needMs;
   }
   const int period = periodLengthMs(mode);
+  if (txLive_) {
+    // Live text ends only after TX was pressed to end and the tail went out.
+    if (!txLiveClosed_ || txPlayOriginMs_ <= 0)
+      return false;
+    const int total = txSampleBase_ + int(txSamples_.size());
+    return txCursor_ >= total && now - txPlayOriginMs_ >= qint64(total) * 1000 / 48000;
+  }
   if (period <= 0) {
     if (txSamples_.empty() || txPlayOriginMs_ <= 0)
       return true;
@@ -6941,7 +7131,7 @@ void MainWindow::pumpUserTx() {
     pushRealtimeTx();
     return;
   }
-  if (!tci_ || !profile_ || txSamples_.empty()) {
+  if (!tci_ || !profile_ || (txSamples_.empty() && !txLive_)) {
     // Say why: a silent stop here hid the multi-answer bug for days.
     setTxStatus(!tci_ ? QStringLiteral("Radio is not connected. TX stopped. START was not sent.")
                       : QStringLiteral("Nothing was ready to send. TX stopped. TRX is off. START was not sent."));
@@ -6985,6 +7175,10 @@ void MainWindow::pumpUserTx() {
       txJs8Next_ += txJs8Pending_;
       txJs8Pending_ = 0;
       txSentText_ = txJs8Part_;
+    } else if (txLive_) {
+      // Filled character by character as the box is encoded.
+      txSentText_.clear();
+      txLiveTextMs_ = now;
     } else {
       txSentText_ = txEchoAt_.empty() ? transmitMessage() : transmitMessage().trimmed();
     }
@@ -7001,7 +7195,8 @@ void MainWindow::pumpUserTx() {
       txGuardDeadlineMs_ = 0;
       txPeriodEndMs_ = 0;
     }
-    if (!txLoggedThisPass_) {
+    // A live transmission is logged when it ends; nothing has gone out yet.
+    if (!txLoggedThisPass_ && !txLive_) {
       appendQso(QStringLiteral("TX"), txSentText_);
       promoteNow();
       txLoggedThisPass_ = true;
@@ -7020,6 +7215,10 @@ void MainWindow::pumpUserTx() {
                             "15 second period. START was not sent.")
                       : QStringLiteral(
                             "On the air. This JS8 frame is the whole message. START was not sent."));
+    else if (txLive_)
+      setTxStatus(QStringLiteral(
+          "On the air, live. Type and it goes out; an empty box sends idle. Press TX to end after "
+          "the box is sent, twice to stop now. START was not sent."));
     else if (keyboardTextMode(mode))
       setTxStatus(QStringLiteral(
           "On the air. Sent characters print in the receive pane as they go out. START was not sent."));
@@ -7041,6 +7240,7 @@ void MainWindow::pumpUserTx() {
 }
 
 void MainWindow::finishTxPass() {
+  logLiveTx();
   const bool retargeted = txRetargeted_;
   txRetargeted_ = false;
   const QString sent = txSentText_;
@@ -7055,6 +7255,7 @@ void MainWindow::finishTxPass() {
   txLoggedThisPass_ = false;
   txSamples_.clear();
   txCursor_ = 0;
+  txSampleBase_ = 0;
   txPeriodMark_ = -1;
   txJoinOpen_ = false;
   txPlayOriginMs_ = 0;
@@ -7385,8 +7586,15 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
 void MainWindow::stopUserTx(bool uncheck) {
   if (txTune_)
     return;
+  logLiveTx();
   breakHellEchoLine(true);
   consumeSentKeyboardText();
+  txLive_.reset();
+  txLiveEnding_ = false;
+  txLiveClosed_ = false;
+  txLiveLogged_ = false;
+  txLiveTextMs_ = 0;
+  txSampleBase_ = 0;
   if (txTimer_)
     txTimer_->stop();
   if (txKeySent_ && tci_)
@@ -7891,14 +8099,29 @@ void MainWindow::insertMacro(int index) {
   if (text.isEmpty())
     return;
   if (profile_ && keyboardTextMode(profile_->digitalMode())) {
-    if (auto* hellText = findChild<QPlainTextEdit*>(QStringLiteral("txHell")))
+    auto* hellText = findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+    if (txLive_ && txKeySent_) {
+      // Live and on the air: the macro joins the queue, as in Fldigi.
+      if (hellText) {
+        QTextCursor tail(hellText->document());
+        tail.movePosition(QTextCursor::End);
+        tail.insertText(text);
+      }
+      setTxStatus(QStringLiteral(
+          "Macro added to the transmit box. It goes out after what is already there. START was not sent."));
+      return;
+    }
+    if (hellText)
       hellText->setPlainText(text);
     const auto* chip = findChild<QPushButton*>(QStringLiteral("macroTx"));
     auto* tx = findChild<QPushButton*>(QStringLiteral("txSend"));
     if (chip && chip->isChecked() && tx) {
-      if (!tx->isChecked())
+      if (!tx->isChecked()) {
         tx->setChecked(true);
-      else
+        // A macro that keys sends its text and returns to RX, as before.
+        if (txLive_)
+          txLiveEnding_ = true;
+      } else
         setTxStatus(QStringLiteral(
             "Macro copied. TX is already on. Nothing extra was keyed. START was not sent."));
     } else

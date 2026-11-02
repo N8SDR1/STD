@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "DigitalMode.h"
+#include "LiveTx.h"
 #include "TxWave.h"
 #include "ft8/ft8_api.h"
 #include "hell/HellFont.h"
@@ -21,6 +22,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -386,6 +388,18 @@ bool buildHell(const QString& mode, const QString& message, int toneHz, std::vec
 }
 
 }  // namespace
+
+bool liveTextMode(const QString& mode) {
+  return keyedPsk(mode) || rttyMode(mode);
+}
+
+std::unique_ptr<LiveTextTx> makeLiveTextTx(const QString& mode, int centerHz, const RttyOptions* rtty) {
+  if (keyedPsk(mode))
+    return makeLivePsk(mode, centerHz);
+  if (rttyMode(mode))
+    return makeLiveRtty(centerHz, rtty ? *rtty : RttyOptions{});
+  return nullptr;
+}
 
 bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::vector<float>* out,
                  std::vector<int>* echoAt, const RttyOptions* rtty, bool startTones) {

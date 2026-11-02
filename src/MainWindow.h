@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "LiveTx.h"
 #include "MaEngine.h"
 #include "MacroFile.h"
 #include "RstMeter.h"
@@ -16,6 +17,7 @@
 #include <QVector>
 
 #include <initializer_list>
+#include <memory>
 #include <vector>
 
 class QCloseEvent;
@@ -170,6 +172,11 @@ private:
   void paintJs8Activity();
   void revealSentEcho();
   void consumeSentKeyboardText();
+  // Live keyboard TX (PSK, QPSK, RTTY): keep at least ahead samples queued,
+  // taking characters off the front of the TX box as they are encoded.
+  void topUpLiveTx(int ahead);
+  bool liveTxActive() const { return txLive_ != nullptr; }
+  void logLiveTx();
   void breakHellEchoLine(bool onlyIfSent);
   void appendTxEcho(const QString& text);
   void appendRxEcho(const QString& text);
@@ -416,6 +423,12 @@ private:
   int txJs8Pending_ = 0;
   int txEchoCount_ = 0;
   bool txTextFinished_ = false;  // the whole keyboard text went out
+  std::unique_ptr<LiveTextTx> txLive_;
+  bool txLiveEnding_ = false;  // TX pressed again: send the box, then the tail
+  bool txLiveClosed_ = false;  // the tail is queued; nothing more is added
+  bool txLiveLogged_ = false;
+  qint64 txLiveTextMs_ = 0;  // last character taken from the box, or keydown
+  int txSampleBase_ = 0;  // txCursor_ of txSamples_[0] once the front is trimmed
   int txEchoSamples_ = 0;
   std::vector<int> txEchoAt_;
   RttyEngine* rtty_ = nullptr;

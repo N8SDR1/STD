@@ -18,6 +18,7 @@
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
+#include "LiveTx.h"
 #include "mt63/Mt63Modem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
@@ -1429,6 +1430,16 @@ int shellReady(MainWindow& window) {
       }
     }
   }
+  {
+    // MFSK64L: no lead-in, so the pass is the 2500-bit flush (1250
+    // symbols) plus the text framing. The lead-in would add 416 symbols.
+    const MfskPlan longPlan = planMfsk(QStringLiteral("MFSK64L"), QStringLiteral("E"), 1500);
+    const int symbols = int(longPlan.samples.size()) / 768;
+    if (symbols < 1250 || symbols > 1350) {
+      qCritical("MFSK64L symbols %d", symbols);
+      return fail("MFSK64L sends the lead-in Fldigi leaves out");
+    }
+  }
   for (const char* name : {"MFSK16", "MFSK31"}) {
     std::vector<float> wave;
     if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
@@ -1635,6 +1646,56 @@ int shellReady(MainWindow& window) {
     if (!back.contains(QLatin1String("CQ CQ DE N8SDR N8SDR PSE K"))) {
       qCritical("QPSK decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
       return fail("QPSK did not decode");
+    }
+  }
+  // Live idle safety toggle. The self-test shares the operator's settings,
+  // so only the range is checked here, not the saved on/off and seconds.
+  {
+    const auto* idleStop = window.findChild<QCheckBox*>(QStringLiteral("liveIdleStop"));
+    const auto* idleSeconds = window.findChild<QComboBox*>(QStringLiteral("liveIdleSeconds"));
+    if (!idleStop || !idleSeconds || idleSeconds->count() != 4 || idleSeconds->itemData(0).toInt() != 5 ||
+        idleSeconds->itemData(3).toInt() != 25)
+      return fail("Live TX idle safety choices are not 5, 10, 15, and 25 s");
+    if (liveIdleChoice(120) != 25 || liveIdleChoice(12) != 10 || liveIdleChoice(4) != 5 ||
+        liveIdleChoice(20) != 15)
+      return fail("Live TX idle setting does not snap to a choice");
+    if (liveIdleExpired(1000, 1000 + 24999, true, 25) || !liveIdleExpired(1000, 1000 + 25000, true, 25) ||
+        liveIdleExpired(1000, 1000 + 999999, false, 25) || liveIdleExpired(0, 999999, true, 25))
+      return fail("Live TX idle safety timing is wrong");
+  }
+  // Live typing: text, a pause of idle, more text, then the tail. The
+  // receiver must print both pieces, and idle must not print anything.
+  for (const char* name : {"PSK31", "PSK125", "QPSK31", "QPSK250", "RTTY"}) {
+    const QString mode = QString::fromLatin1(name);
+    auto live = makeLiveTextTx(mode, 1500, nullptr);
+    if (!liveTextMode(mode) || !live)
+      return fail("Live keyboard TX is missing");
+    std::vector<float> wave;
+    live->begin(&wave);
+    for (const QChar ch : QStringLiteral("CQ CQ"))
+      live->put(ch, &wave);
+    const size_t before = wave.size();
+    for (int i = 0; i < 30; ++i)
+      live->idle(&wave);
+    if (wave.size() <= before)
+      return fail("Live keyboard TX idle added nothing");
+    for (const QChar ch : QStringLiteral(" DE N8SDR K"))
+      live->put(ch, &wave);
+    live->end(&wave);
+    const QString back = rttyMode(mode) ? rttyDecode(wave.data(), int(wave.size()), 48000, 1500)
+                                        : pskDecode(mode, wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1String("CQ CQ")) || !back.contains(QLatin1String("DE N8SDR K"))) {
+      qCritical("Live %s [%s]", name, qPrintable(back));
+      return fail("Live keyboard TX did not decode across idle");
+    }
+    QString letters;
+    for (const QChar ch : back) {
+      if (!ch.isSpace())
+        letters.append(ch);
+    }
+    if (letters != QLatin1String("CQCQDEN8SDRK")) {
+      qCritical("Live %s idle printed [%s]", name, qPrintable(back));
+      return fail("Live keyboard TX idle printed characters");
     }
   }
   const auto* qpsk31 = window.findChild<QAction*>(QStringLiteral("modeQpsk31"));

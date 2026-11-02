@@ -559,8 +559,13 @@ MfskPlan planMfsk(const QString& mode, const QString& text, int centerHz) {
   const int separ = std::max(8, int(std::lround(48000.0 / spec->baud)));
   ToneTx tx(*spec);
   tx.clearBits();
-  for (int i = 0; i < spec->preamble / 3; ++i)
-    tx.sendBit(0);
+  // Fldigi sends this lead-in on every speed except MFSK64L and MFSK128L.
+  // Their long interleaver is already primed by clearBits().
+  const bool longInterleave = mode.endsWith(QLatin1Char('L'), Qt::CaseInsensitive);
+  if (!longInterleave) {
+    for (int i = 0; i < spec->preamble / 3; ++i)
+      tx.sendBit(0);
+  }
   tx.sendChar('\r');
   tx.sendChar(2);
   tx.sendChar('\r');

@@ -88,6 +88,7 @@ qt_add_executable(std
   src/TciClient.h
   src/TxWave.cpp
   src/TxWave.h
+  src/LiveTx.h
   src/QsoLog.cpp
   src/QsoLog.h
   src/StationFiles.cpp
