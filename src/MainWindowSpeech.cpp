@@ -94,6 +94,9 @@ void MainWindow::applySpeechSettings() {
     talk->setVisible(talkOn);
   if (!talkOn && talkActive_)
     endTalk();
+  // RADE uses the Speech devices itself. Stop a phrase that was already queued.
+  if (radeMode(mode) && speech_)
+    speech_->stop();
 }
 
 void MainWindow::openSpeechDialog() {

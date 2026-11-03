@@ -135,6 +135,7 @@ private:
   void placeDockTitle(QDockWidget* dock, const QString& title, std::initializer_list<const char*> buttons);
   void applyMacroBar();
   void showKeyboardReceive(const QString& mode);
+  void applyRadeDigu();
 
   // JS8 operating screen (MainWindowJs8.cpp). Shown only in JS8 mode.
   struct Js8BandRow {

@@ -1009,8 +1009,76 @@ int shellReady(MainWindow& window) {
       keyboardTextMode(QStringLiteral("FT8")) ||
       keyboardTextMode(QStringLiteral("FT4")) || keyboardTextMode(QStringLiteral("FT2")) ||
       keyboardTextMode(QStringLiteral("JT65A")) || keyboardTextMode(QStringLiteral("Q65A")) ||
-      keyboardTextMode(QStringLiteral("CW")))
+      keyboardTextMode(QStringLiteral("CW")) ||
+      keyboardTextMode(QStringLiteral("RADE V1")) ||
+      keyboardTextMode(QStringLiteral("RADE V2 (experimental)")))
     return fail("keyboard text mode list is wrong");
+  if (!radeMode(QStringLiteral("RADE V1")) || !radeV2(QStringLiteral("RADE V2 (experimental)")) ||
+      radeV2(QStringLiteral("RADE V1")) || radeMode(QStringLiteral("FT8")) ||
+      sequencedFamily(QStringLiteral("RADE V1")) || hellFamily(QStringLiteral("RADE V1")))
+    return fail("RADE mode list is wrong");
+  {
+    auto* v1 = window.findChild<QAction*>(QStringLiteral("modeRadeV1"));
+    auto* v2 = window.findChild<QAction*>(QStringLiteral("modeRadeV2"));
+    auto* ft8Back = window.findChild<QAction*>(QStringLiteral("modeFt8"));
+    auto* screen = window.findChild<QWidget*>(QStringLiteral("radeScreen"));
+    auto* radeProfile = window.findChild<ModeProfile*>();
+    if (!v1 || !v2 || !ft8Back || !screen || !radeProfile ||
+        !v1->toolTip().contains(QLatin1String("START")) ||
+        !v2->toolTip().contains(QLatin1String("experimental")) ||
+        !screen->findChildren<QLineEdit*>().isEmpty())
+      return fail("RADE screen is missing");
+    QSettings radeKeep;
+    const bool hadBpfV1 = radeKeep.contains(QStringLiteral("rade/bpfV1"));
+    const bool hadBpfV2 = radeKeep.contains(QStringLiteral("rade/bpfV2"));
+    const QVariant bpfV1 = radeKeep.value(QStringLiteral("rade/bpfV1"));
+    const QVariant bpfV2 = radeKeep.value(QStringLiteral("rade/bpfV2"));
+    struct BpfRestore {
+      bool had1 = false;
+      bool had2 = false;
+      QVariant v1;
+      QVariant v2;
+      ~BpfRestore() {
+        QSettings store;
+        if (had1)
+          store.setValue(QStringLiteral("rade/bpfV1"), v1);
+        if (had2)
+          store.setValue(QStringLiteral("rade/bpfV2"), v2);
+      }
+    } bpfRestore{hadBpfV1, hadBpfV2, bpfV1, bpfV2};
+    radeKeep.remove(QStringLiteral("rade/bpfV1"));
+    radeKeep.remove(QStringLiteral("rade/bpfV2"));
+    v1->trigger();
+    auto* variant = window.findChild<QComboBox*>(QStringLiteral("radeVariant"));
+    auto* analog = window.findChild<QCheckBox*>(QStringLiteral("radeAnalog"));
+    auto* bpf = window.findChild<QCheckBox*>(QStringLiteral("radeBpf"));
+    auto* drive = window.findChild<QSlider*>(QStringLiteral("radeDrive"));
+    auto* digu = window.findChild<QPushButton*>(QStringLiteral("radeDigu"));
+    auto* sync = window.findChild<QLabel*>(QStringLiteral("radeSync"));
+    auto* snr = window.findChild<QLabel*>(QStringLiteral("radeSnr"));
+    auto* mic = window.findChild<QLabel*>(QStringLiteral("radeMic"));
+    auto* speaker = window.findChild<QLabel*>(QStringLiteral("radeSpeaker"));
+    auto* rx = window.findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
+    auto* radeHellBox = window.findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+    auto* tx1 = window.findChild<QWidget*>(QStringLiteral("tx1"));
+    if (!variant || !analog || !bpf || !drive || !digu || !sync || !snr || !mic || !speaker || !rx ||
+        !radeHellBox || !tx1 || !screen->isVisible() || variant->currentText() != QLatin1String("RADE V1") ||
+        bpf->isChecked() || !rx->isHidden() || !radeHellBox->isHidden() || !tx1->isHidden() ||
+        !digu->toolTip().contains(QLatin1String("does not key")) ||
+        !digu->toolTip().contains(QLatin1String("START")) ||
+        !mic->text().startsWith(QLatin1String("Mic")) ||
+        !speaker->text().startsWith(QLatin1String("Speaker")) ||
+        radeProfile->digitalMode() != QLatin1String("RADE V1"))
+      return fail("RADE V1 screen is wrong");
+    v2->trigger();
+    if (!screen->isVisible() || variant->currentText() != QLatin1String("RADE V2 (experimental)") ||
+        !bpf->isChecked() || radeProfile->digitalMode() != QLatin1String("RADE V2 (experimental)"))
+      return fail("RADE V2 screen is wrong");
+    ft8Back->trigger();
+    if (radeProfile->digitalMode() != QLatin1String("FT8") || screen->isVisible() || rx->isHidden() ||
+        tx1->isHidden())
+      return fail("leaving RADE did not restore FT8");
+  }
   if (textModeSamplesPerChar(QStringLiteral("Feld Hell")) != 0 ||
       textModeSamplesPerChar(QStringLiteral("Hell 80")) != 0 ||
       textModeSamplesPerChar(QStringLiteral("PSK31")) != 0 ||

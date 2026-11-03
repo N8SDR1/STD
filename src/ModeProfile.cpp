@@ -504,6 +504,8 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     next = QStringLiteral("WSPR");
   else if (wefaxMode(mode))
     next = mode;
+  else if (radeMode(mode))
+    next = radeV2(mode) ? radeV2Name() : radeV1Name();
   const bool same = next == mode_;
   mode_ = next;
   if (same)
@@ -529,7 +531,12 @@ void ModeProfile::setDigitalMode(const QString& mode) {
         "15 second UTC period and sends one frame, starting half a second in. A longer message "
         "continues on the following periods. Changing mode clears both panes. "
         "START is never sent.");
-    label->setText(wefaxMode(mode_) ? QStringLiteral(
+    label->setText(radeMode(mode_) ? QStringLiteral(
+                                         "RADE uses its own screen. V1 is the on-air waveform. "
+                                         "V2 is experimental and does not talk to V1. "
+                                         "Mic and speaker are the Speech devices. "
+                                         "This does not key. START is never sent.")
+                    : wefaxMode(mode_) ? QStringLiteral(
                                           "WEFAX-576 receives weather charts. Pick a region and a station "
                                           "below: the dial goes 1.9 kHz under the carrier and the marker to "
                                           "1900 Hz. A chart starts on its start tone; Start begins one now if "
@@ -549,12 +556,13 @@ void ModeProfile::setDigitalMode(const QString& mode) {
                                                  "START is never sent.")
                                       .arg(mode_));
   }
+  const bool rade = radeMode(mode_);
   if (start_)
-    start_->setVisible(!keyboard);
+    start_->setVisible(!keyboard && !rade);
   if (bandwidth_)
-    bandwidth_->setVisible(!keyboard);
+    bandwidth_->setVisible(!keyboard && !rade);
   if (auto* box = findChild<QCheckBox*>(QStringLiteral("profileAutoDec")))
-    box->setVisible(!keyboard);
+    box->setVisible(!keyboard && !rade);
   const bool ft8 = mode_ == QLatin1String("FT8");
   const bool sequenced = sequencedFamily(mode_);
   if (auto* hound = findChild<QCheckBox*>(QStringLiteral("profileSuperHound")))

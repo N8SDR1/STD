@@ -19,6 +19,7 @@
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
+#include "rade/RadeScreen.h"
 #include "speech/SpeechReader.h"
 #include "speech/SpeechInput.h"
 #include "speech/SpeechModel.h"
@@ -1684,6 +1685,16 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     wsprLayout->addWidget(wsprFormHost);
     wspr->hide();
     layout->addWidget(wspr);
+
+    auto* radeNote = new QLabel(QStringLiteral(
+        "RADE controls are on the RADE screen. TX is not armed until librade is linked. "
+        "This does not key. START is never sent."),
+        panel);
+    radeNote->setObjectName(QStringLiteral("radeTxNote"));
+    radeNote->setFont(interfaceFont(12));
+    radeNote->setWordWrap(true);
+    radeNote->hide();
+    layout->addWidget(radeNote);
     connect(power, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, power](int) {
       QSettings().setValue(QStringLiteral("wspr/power"), power->currentData().toInt());
       refreshTxFields();
@@ -2678,6 +2689,11 @@ QWidget* MainWindow::makeReceivePanel() {
   wsprHeadHost->hide();
   layout->addWidget(wsprHeadHost);
   layout->addWidget(makeJs8Receive(panel), 1);
+  auto* rade = new RadeScreen(panel);
+  rade->hide();
+  layout->addWidget(rade, 1);
+  connect(rade, &RadeScreen::variantChosen, this, [this](const QString& mode) { activateDigitalMode(mode); });
+  connect(rade, &RadeScreen::diguHelper, this, [this] { applyRadeDigu(); });
   layout->addWidget(echo, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
@@ -3385,6 +3401,28 @@ void MainWindow::buildMenus() {
       "The locator is Options → User. TX sends it. START is never sent."));
   modes->addAction(wsprAction);
   connect(wsprAction, &QAction::triggered, this, [this] { activateDigitalMode(QStringLiteral("WSPR")); });
+  const struct {
+    const char* label;
+    const char* objectName;
+    const char* tip;
+  } radeRows[] = {
+      {"RADE V1", "modeRadeV1",
+       "RADE V1 digital voice on DIGU. About 1500 Hz. Mic and speaker are the Speech devices. "
+       "The RADE screen is not the Hell tape and not the FT8 sequence. "
+       "This does not key and does not send START."},
+      {"RADE V2 (experimental)", "modeRadeV2",
+       "RADE V2 is experimental. It does not talk to V1 and may change. About 860 Hz. "
+       "The RADE screen is not the Hell tape and not the FT8 sequence. "
+       "This does not key and does not send START."}};
+  for (const auto& row : radeRows) {
+    auto* action = modeMenu->addAction(QString::fromLatin1(row.label));
+    action->setCheckable(true);
+    action->setObjectName(QString::fromLatin1(row.objectName));
+    action->setToolTip(QString::fromLatin1(row.tip));
+    modes->addAction(action);
+    const QString modeName = QString::fromLatin1(row.label);
+    connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
+  }
   auto* hellMenu = modeMenu->addMenu(QStringLiteral("Hell"));
   hellMenu->setObjectName(QStringLiteral("modeHellMenu"));
   hellMenu->setToolTip(QStringLiteral(
@@ -3757,13 +3795,14 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool hell = hellFamily(modeName);
   const bool text = keyboardTextMode(modeName);
   const bool sequenced = sequencedFamily(modeName);
+  const bool rade = radeMode(modeName);
   const bool family = sequenced || hell;
   if (profile_) {
-    if (sequenced || text || wsprMode(modeName) || wefaxMode(modeName))
+    if (sequenced || text || wsprMode(modeName) || wefaxMode(modeName) || rade)
       profile_->setDigitalMode(modeName);
     profile_->setMshvFamily(family);
   }
-  const QString layoutKey = hell ? QStringLiteral("Hell") : modeName;
+  const QString layoutKey = hell ? QStringLiteral("Hell") : (rade ? QStringLiteral("RADE") : modeName);
   if (layoutKey != layoutMode_) {
     offerLayoutSave();
     layoutMode_ = layoutKey;
@@ -3789,6 +3828,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool js8 = js8Mode(modeName);
   const bool wspr = wsprMode(modeName);
   const bool fax = wefaxMode(modeName);
+  const bool radeHere = radeMode(modeName);
   if ((hell || rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr) && waterfall_)
     waterfall_->setRxHz(1500);
   if (jt65Mode(modeName) && waterfall_) {
@@ -3853,7 +3893,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
       wefax_->clear();
     wefax_->setArmed(autoMonitor_ && fax);
   }
-  if ((rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax) && tci_ &&
+  if ((rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax || radeHere) && tci_ &&
       tci_->isOpen())
     tci_->setSideband(QStringLiteral("DIGU"));
   applyChannelWidth();
@@ -3875,6 +3915,29 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
         "JS8. Band buttons move the radio to the JS8Call-improved calling dial. "
         "TX waits for the next 15 second UTC period and sends one frame, starting half a second in. "
         "A longer message continues on the following periods. This does not key. START was not sent."));
+  else if (radeHere)
+    setTxStatus(radeV2(modeName)
+                    ? QStringLiteral(
+                          "RADE V2 experimental. It does not talk to V1. DIGU when the radio is connected. "
+                          "Mic and speaker stay the Speech devices. This does not key. START was not sent.")
+                    : QStringLiteral(
+                          "RADE V1. DIGU when the radio is connected. A common calling frequency is 14.236 USB. "
+                          "Mic and speaker stay the Speech devices. This does not key. START was not sent."));
+}
+
+void MainWindow::applyRadeDigu() {
+  const bool open = tci_ && tci_->isOpen();
+  if (open)
+    tci_->setSideband(QStringLiteral("DIGU"));
+  if (waterfall_)
+    waterfall_->setRxHz(1500);
+  setTxStatus(open ? QStringLiteral(
+                         "RADE helper sent DIGU. A useful passband is about 750 to 2250 Hz. "
+                         "Leave NR and compression off. The VFO was not moved. "
+                         "This does not key. START was not sent.")
+                   : QStringLiteral(
+                         "RADE helper: the radio is not connected, so DIGU was not sent. "
+                         "This does not key. START was not sent."));
 }
 
 void MainWindow::showKeyboardReceive(const QString& mode) {
@@ -3882,6 +3945,7 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   const bool hell = hellFamily(mode);
   const bool fax = wefaxMode(mode);
   const bool wspr = wsprMode(mode);
+  const bool rade = radeMode(mode);
   if (auto* raster = findChild<HellRaster*>(QStringLiteral("hellReceive"))) {
     if (hell)
       raster->clear();
@@ -3889,7 +3953,7 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
     // JS8 shows its activity lists and conversation instead.
-    echo->setVisible((text || wspr) && !js8Mode(mode));
+    echo->setVisible((text || wspr) && !js8Mode(mode) && !rade);
     const QString body = withoutWsprTitleLine(echo->toPlainText());
     if (body != echo->toPlainText())
       echo->setPlainText(body);
@@ -3918,8 +3982,13 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
           "This does not key and does not send START."));
     }
   }
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"))) {
+    screen->setVisible(rade);
+    if (rade)
+      screen->showMode(mode);
+  }
   if (auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"))) {
-    bar->setVisible(text && !js8Mode(mode));
+    bar->setVisible(text && !js8Mode(mode) && !rade);
     applyContestRow();
     showQsoRstTag();
   }
@@ -3935,13 +4004,13 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
     clrRx->setVisible(text || fax || wspr);
   applySpeechSettings();
   if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
-    edit->setVisible(!text && !fax && !wspr);
+    edit->setVisible(!text && !fax && !wspr && !rade);
   if (auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader")))
-    header->setVisible(!text && !fax && !wspr);
+    header->setVisible(!text && !fax && !wspr && !rade);
   if (auto* filter = findChild<QLineEdit*>(QStringLiteral("decodeFilter")))
-    filter->setVisible(!text && !fax && !wspr);
+    filter->setVisible(!text && !fax && !wspr && !rade);
   if (auto* clear = findChild<QPushButton*>(QStringLiteral("decodeClear")))
-    clear->setVisible(!text && !fax && !wspr);
+    clear->setVisible(!text && !fax && !wspr && !rade);
   if (auto* scroll = findChild<QWidget*>(QStringLiteral("wefaxScroll")))
     scroll->setVisible(fax);
   for (const char* name : {"hellSave", "hellOpen"}) {
@@ -4008,6 +4077,15 @@ void MainWindow::showGuide() {
        "Auto-connect opens the last host and port when STD starts. Auto monitor stays on receive and "
        "decode. A band button may later send vfo:0,0,<Hz> and modulation:0,digu. TRX goes out only "
        "after Tune or TX is pressed. Connect does not send START, and it does not key."},
+      {"RADE",
+       "Mode, RADE V1 is HF digital voice on DIGU. RADE V2 is experimental and does not talk to V1. "
+       "The RADE screen replaces the FT8 sequence and the Hell tape. It has Analog, TX band-pass, "
+       "drive, a DIGU helper, the V1 or V2 selector, and sync and SNR. Sync opens the audio. SNR is "
+       "only a reading. Mic and speaker are the devices in Options, Speech. Identity stays in "
+       "Options, User. librade and FARGAN are not linked in this build, so the screen does not decode "
+       "and does not key. Connect still sends AUDIO_START for receiver 0. A later transmission uses "
+       "trx with tci. A common V1 calling frequency is 14.236 USB, with a passband about 750 to 2250 Hz "
+       "and radio NR off. START is never sent."},
       {"FT8, FT4, and FT2",
        "Mode → FT8, FT4, or FT2. All three are DIGU on every band. The band buttons use the WSJT-X "
        "dials, and FT2 uses the MSHV dials. Choosing a mode or a band sends vfo:0,0,<Hz> and "
@@ -4459,7 +4537,7 @@ void MainWindow::applyMacroBar() {
   const bool hell = hellFamily(mode);
   const bool mshv = profile_ && profile_->mshvFamily() && !hell;
   const bool wspr = wsprMode(mode);
-  macroDock_->setVisible(!mshv && !wspr && !wefaxMode(mode));
+  macroDock_->setVisible(!mshv && !wspr && !wefaxMode(mode) && !radeMode(mode));
 }
 
 void MainWindow::syncWfHellControls() {
@@ -4476,11 +4554,15 @@ void MainWindow::syncWfHellControls() {
     const auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"));
     return afc && afc->isChecked();
   }();
+  const bool rade = radeMode(mode);
   if (auto* afc = findChild<QPushButton*>(QStringLiteral("wfAfc"))) {
     const QSignalBlocker block(afc);
     afc->setEnabled(follow);
     afc->setChecked(follow && afcOn);
-    afc->setToolTip(hell ? QStringLiteral(
+    afc->setToolTip(rade ? QStringLiteral(
+                               "RADE has no AFC switch. Sync is on the RADE screen. "
+                               "This does not key and does not send START.")
+                    : hell ? QStringLiteral(
                                "Feld Hell has no AFC switch. Fldigi leaves AFC off. "
                                "This does not key and does not send START.")
                     : track ? QStringLiteral(
@@ -4497,7 +4579,10 @@ void MainWindow::syncWfHellControls() {
     const QSignalBlocker block(sql);
     sql->setEnabled(hell || follow);
     sql->setChecked((hell || follow) && sqlOn);
-    sql->setToolTip(hell ? QStringLiteral(
+    sql->setToolTip(rade ? QStringLiteral(
+                               "RADE opens audio from frame sync. The SNR figure is not a squelch. "
+                               "This does not key and does not send START.")
+                    : hell ? QStringLiteral(
                                "Fldigi squelch. On drops a Hell column at or below the level. "
                                "Off prints the tape. This does not key and does not send START.")
                     : track ? QStringLiteral(
@@ -6308,6 +6393,7 @@ void MainWindow::refreshTxChrome() {
   const bool textMode = keyboardTextMode(mode);
   const bool wspr = wsprMode(mode);
   const bool hell = hellFamily(mode);
+  const bool rade = radeMode(mode);
   if (auto* rttyRow = findChild<QWidget*>(QStringLiteral("rttyOptions")))
     rttyRow->setVisible(rttyMode(mode));
   if (auto* liveRow = findChild<QWidget*>(QStringLiteral("liveTxOptions")))
@@ -6342,6 +6428,8 @@ void MainWindow::refreshTxChrome() {
     clrTx->setVisible(textMode);
   if (auto* wsprPanel = findChild<QWidget*>(QStringLiteral("wsprPanel")))
     wsprPanel->setVisible(wspr);
+  if (auto* radeNote = findChild<QLabel*>(QStringLiteral("radeTxNote")))
+    radeNote->setVisible(rade);
   if (auto* js8Bands = findChild<QWidget*>(QStringLiteral("js8Bands")))
     js8Bands->setVisible(js8Mode(mode));
   showJs8Layout(js8Mode(mode));
@@ -6353,18 +6441,20 @@ void MainWindow::refreshTxChrome() {
   }
   for (const char* name : {"txTune", "txSend", "txHalt"}) {
     if (auto* w = findChild<QWidget*>(QLatin1String(name)))
-      w->setVisible(!fax);
+      w->setVisible(!fax && !rade);
   }
   if (transmitDock_) {
     if (auto* title = transmitDock_->titleBarWidget() ? transmitDock_->titleBarWidget()->findChild<QLabel*>()
                                                       : nullptr)
-      title->setText(fax ? QStringLiteral("Stations") : QStringLiteral("Transmit"));
+      title->setText(fax ? QStringLiteral("Stations")
+                         : rade ? QStringLiteral("RADE")
+                                : QStringLiteral("Transmit"));
   }
   const char* sequenceNames[] = {"txStandard", "txActivity", "txPick1", "tx1", "txPick2", "tx2",
                                  "txPick3",    "tx3",        "txPick4", "tx4", "txPick5", "tx5",
                                  "txPick6",    "tx6",        "txPick7", "txExtra", "txQso",
                                  "txClrQueue", "txClrNow"};
-  if (textMode || wspr || fax) {
+  if (textMode || wspr || fax || rade) {
     for (const char* name : sequenceNames) {
       if (auto* widget = findChild<QWidget*>(QLatin1String(name)))
         widget->setVisible(false);

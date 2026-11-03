@@ -138,6 +138,8 @@ qt_add_executable(std
   src/js8/Js8Modem.h
   src/wspr/WsprModem.cpp
   src/wspr/WsprModem.h
+  src/rade/RadeScreen.cpp
+  src/rade/RadeScreen.h
   src/spot/PskReporter.cpp
   src/spot/PskReporter.h
   src/spot/WsprNet.cpp
