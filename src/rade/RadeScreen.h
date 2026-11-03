@@ -8,6 +8,7 @@
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QPushButton;
 class QSlider;
 
 // RADE operating screen. It is not the Hell tape and not the FT8 sequence.
@@ -21,13 +22,14 @@ public:
 
   // Match the Mode menu. Does not emit variantChosen.
   void showMode(const QString& modeName);
-  void refreshDevices();
   void setLinkReady(bool ready);
   void setSync(bool on, float snrDb);
+  // Does not emit diguHelper.
+  void setDiguOn(bool on);
 
 signals:
   void variantChosen(const QString& modeName);
-  void diguHelper();
+  void diguHelper(bool on);
   void optionsChanged();
 
 private:
@@ -39,10 +41,9 @@ private:
   QCheckBox* bpf_ = nullptr;
   QSlider* drive_ = nullptr;
   QLabel* driveValue_ = nullptr;
+  QPushButton* digu_ = nullptr;
   QLabel* sync_ = nullptr;
   QLabel* snr_ = nullptr;
-  QLabel* mic_ = nullptr;
-  QLabel* speaker_ = nullptr;
   QLabel* link_ = nullptr;
   bool showingV2_ = false;
 };

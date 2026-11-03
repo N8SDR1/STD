@@ -1059,20 +1059,32 @@ int shellReady(MainWindow& window) {
     auto* digu = window.findChild<QPushButton*>(QStringLiteral("radeDigu"));
     auto* sync = window.findChild<QLabel*>(QStringLiteral("radeSync"));
     auto* snr = window.findChild<QLabel*>(QStringLiteral("radeSnr"));
-    auto* mic = window.findChild<QLabel*>(QStringLiteral("radeMic"));
-    auto* speaker = window.findChild<QLabel*>(QStringLiteral("radeSpeaker"));
+    auto* micBox = window.findChild<QComboBox*>(QStringLiteral("radeMicDevice"));
+    auto* spkBox = window.findChild<QComboBox*>(QStringLiteral("radeSpeakerDevice"));
+    auto* radeVol = window.findChild<QSlider*>(QStringLiteral("radeVolume"));
+    auto* audio = window.findChild<QWidget*>(QStringLiteral("radeAudioBar"));
     auto* rx = window.findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
     auto* radeHellBox = window.findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
     auto* tx1 = window.findChild<QWidget*>(QStringLiteral("tx1"));
-    if (!variant || !analog || !bpf || !drive || !digu || !sync || !snr || !mic || !speaker || !rx ||
-        !radeHellBox || !tx1 || !screen->isVisible() || variant->currentText() != QLatin1String("RADE V1") ||
-        bpf->isChecked() || !rx->isHidden() || !radeHellBox->isHidden() || !tx1->isHidden() ||
+    if (!variant || !analog || !bpf || !drive || !digu || !sync || !snr || !micBox || !spkBox ||
+        !radeVol || !audio || !rx || !radeHellBox || !tx1 || !screen->isVisible() || audio->isHidden() ||
+        variant->currentText() != QLatin1String("RADE V1") || bpf->isChecked() || !rx->isHidden() ||
+        !radeHellBox->isHidden() || !tx1->isHidden() ||
         !digu->toolTip().contains(QLatin1String("does not key")) ||
         !digu->toolTip().contains(QLatin1String("START")) ||
-        !mic->text().startsWith(QLatin1String("Mic")) ||
-        !speaker->text().startsWith(QLatin1String("Speaker")) ||
+        !analog->toolTip().contains(QLatin1String("silent")) ||
+        variant->maximumWidth() > 280 || digu->maximumWidth() > 90 ||
+        !digu->isCheckable() || digu->isChecked() || digu->text() != QLatin1String("Off") ||
+        micBox->count() < 1 || spkBox->count() < 1 || radeVol->maximum() != 100 ||
+        !spkBox->toolTip().contains(QLatin1String("Play on")) ||
         radeProfile->digitalMode() != QLatin1String("RADE V1"))
       return fail("RADE V1 screen is wrong");
+    digu->click();
+    if (!digu->isChecked() || digu->text() != QLatin1String("On"))
+      return fail("RADE helper did not latch");
+    digu->click();
+    if (digu->isChecked() || digu->text() != QLatin1String("Off"))
+      return fail("RADE helper did not release");
     auto* radeBar = window.findChild<QWidget*>(QStringLiteral("mshvProfile"));
     if (!radeBar || radeBar->isHidden())
       return fail("RADE band bar is hidden");
@@ -1127,6 +1139,8 @@ int shellReady(MainWindow& window) {
     if (!band14->toolTip().contains(QLatin1String("14236000")) ||
         !band14->toolTip().contains(QLatin1String("14240000")) ||
         !band14->toolTip().contains(QLatin1String("DIGU")) ||
+        !band14->toolTip().contains(QLatin1String("14.230")) ||
+        !band14->toolTip().contains(QLatin1String("SSTV")) ||
         band14->toolTip().contains(QLatin1String("DIGL")) ||
         !band7->toolTip().contains(QLatin1String("7177000")) ||
         !band7->toolTip().contains(QLatin1String("7045000")) ||
@@ -1176,7 +1190,7 @@ int shellReady(MainWindow& window) {
       return fail("RADE V2 screen is wrong");
     ft8Back->trigger();
     if (radeProfile->digitalMode() != QLatin1String("FT8") || screen->isVisible() || rx->isHidden() ||
-        tx1->isHidden())
+        tx1->isHidden() || audio->isVisible())
       return fail("leaving RADE did not restore FT8");
   }
   if (textModeSamplesPerChar(QStringLiteral("Feld Hell")) != 0 ||

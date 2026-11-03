@@ -24,6 +24,7 @@ public:
   void clear();
   bool running() const { return running_.load(); }
   QString deviceId() const { return deviceId_; }
+  void setVolume(int percent);
   void write(const float* samples, int count);
   QString error() const;
 
@@ -35,6 +36,7 @@ private:
   std::atomic<bool> stopFlag_{false};
   std::mutex mutex_;
   std::vector<float> queue_;
+  std::atomic<float> gain_{0.8f};
   QString deviceId_;
   QString error_;
 };

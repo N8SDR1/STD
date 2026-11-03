@@ -3,6 +3,8 @@
 
 #include "DigitalMode.h"
 #include "ModeProfile.h"
+#include "speech/SpeechInput.h"
+#include "speech/SpeechReader.h"
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
@@ -27,6 +29,7 @@
 #include <QTimer>
 #include <QSignalBlocker>
 #include <QSizePolicy>
+#include <QSlider>
 #include <QSpinBox>
 #include <QStyle>
 #include <QStyleOptionSpinBox>
@@ -76,10 +79,12 @@ constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
 constexpr int kDefaultBand = 4;  // 14 MHz
 
 // FreeDV Reporter calling dials (qso.freedv.org) and the regional nets
-// named on freedv.org. 14.236 is the usual 20 m dial. 160, 80, and 40 are
-// the reporter's LSB dials, so the radio uses DIGL there. Every other band
-// is DIGU. 30 m and 6 m are not on that list. Hz, first entry is the one
-// a band click lands on.
+// named on freedv.org. 20 m stays 14.236 then 14.240, both USB. Those are
+// the reporter's digital-voice dials. SSTV calling is 14.230 and digital
+// SSTV is 14.233 (ARRL band plan and the considerate-operator guide).
+// 160, 80, and 40 are the reporter's LSB dials, so the radio uses DIGL
+// there. Every other band is DIGU. 30 m and 6 m are not on that list.
+// Hz, first entry is the one a band click lands on.
 void radePublished(int index, const qint64*& rows, int& count) {
   static constexpr qint64 k160[] = {1870000};
   static constexpr qint64 k80[] = {3643000, 3625000, 3693000, 3697000, 3803000, 3640000};
@@ -427,6 +432,54 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   }
   row->addStretch(1);
 
+  radeAudio_ = new QWidget(this);
+  radeAudio_->setObjectName(QStringLiteral("radeAudioBar"));
+  auto* audio = new QHBoxLayout(radeAudio_);
+  audio->setContentsMargins(8, 0, 8, 6);
+  audio->setSpacing(8);
+  auto* micLabel = new QLabel(QStringLiteral("Mic"), radeAudio_);
+  micLabel->setFont(barFont());
+  radeMicBox_ = new QComboBox(radeAudio_);
+  radeMicBox_->setObjectName(QStringLiteral("radeMicDevice"));
+  radeMicBox_->setFont(barFont());
+  radeMicBox_->setMinimumWidth(160);
+  radeMicBox_->setMaximumWidth(280);
+  radeMicBox_->setToolTip(QStringLiteral(
+      "Speech microphone. Same list as Options, Speech. TX uses this device. "
+      "This does not key. START is never sent."));
+  auto* speakerLabel = new QLabel(QStringLiteral("Speaker"), radeAudio_);
+  speakerLabel->setFont(barFont());
+  radeSpeakerBox_ = new QComboBox(radeAudio_);
+  radeSpeakerBox_->setObjectName(QStringLiteral("radeSpeakerDevice"));
+  radeSpeakerBox_->setFont(barFont());
+  radeSpeakerBox_->setMinimumWidth(160);
+  radeSpeakerBox_->setMaximumWidth(280);
+  radeSpeakerBox_->setToolTip(QStringLiteral(
+      "Speech Play on device. Decoded speech and analog SSB play here, not on the radio. "
+      "This does not key. START is never sent."));
+  auto* volumeLabel = new QLabel(QStringLiteral("Volume"), radeAudio_);
+  volumeLabel->setFont(barFont());
+  radeVolume_ = new QSlider(Qt::Horizontal, radeAudio_);
+  radeVolume_->setObjectName(QStringLiteral("radeVolume"));
+  radeVolume_->setRange(0, 100);
+  radeVolume_->setFixedWidth(140);
+  radeVolume_->setToolTip(QStringLiteral(
+      "Playback level for decoded speech and analog SSB. This is the Speech volume. "
+      "0 is silent and 100 is full. This does not key. START is never sent."));
+  radeVolumeValue_ = new QLabel(radeAudio_);
+  radeVolumeValue_->setObjectName(QStringLiteral("radeVolumeValue"));
+  radeVolumeValue_->setFont(barFont());
+  radeVolumeValue_->setMinimumWidth(28);
+  audio->addWidget(micLabel);
+  audio->addWidget(radeMicBox_);
+  audio->addWidget(speakerLabel);
+  audio->addWidget(radeSpeakerBox_);
+  audio->addWidget(volumeLabel);
+  audio->addWidget(radeVolume_);
+  audio->addWidget(radeVolumeValue_);
+  audio->addStretch(1);
+  radeAudio_->hide();
+
   keyboard_ = new QLabel(
       QStringLiteral("Keyboard modes keep their own controls. None are loaded yet."), this);
   keyboard_->setObjectName(QStringLiteral("keyboardProfile"));
@@ -437,6 +490,7 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   stack->setContentsMargins(0, 0, 0, 0);
   stack->setSpacing(0);
   stack->addWidget(bar_);
+  stack->addWidget(radeAudio_);
   stack->addWidget(keyboard_);
 
   connect(speed_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int speed) {
@@ -503,6 +557,25 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
     emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
   });
   connect(extra_, &QSpinBox::editingFinished, this, [this] { insertExtra(extra_->value()); });
+  connect(radeMicBox_, &QComboBox::currentIndexChanged, this, [this](int) {
+    if (!radeMicBox_)
+      return;
+    QSettings().setValue(QStringLiteral("speech/mic"), radeMicBox_->currentData().toString());
+    emit radeCaptureChanged(radeMicBox_->currentData().toString());
+  });
+  connect(radeSpeakerBox_, &QComboBox::currentIndexChanged, this, [this](int) {
+    if (!radeSpeakerBox_)
+      return;
+    QSettings().setValue(QStringLiteral("speech/output"), radeSpeakerBox_->currentData().toString());
+    emit radeOutputChanged(radeSpeakerBox_->currentData().toString());
+  });
+  connect(radeVolume_, &QSlider::valueChanged, this, [this](int value) {
+    if (radeVolumeValue_)
+      radeVolumeValue_->setText(QString::number(value));
+    QSettings().setValue(QStringLiteral("speech/volume"), value);
+    emit radeVolumeChanged(value);
+  });
+  refreshRadeDevices();
   connect(extra_, &QWidget::customContextMenuRequested, this, [this] {
     extras_.clear();
     cycle_ = 0;
@@ -517,6 +590,47 @@ void ModeProfile::setMshvFamily(bool mshv) {
   family_ = mshv;
   bar_->setVisible(mshv);
   keyboard_->setVisible(!mshv && !wsprMode(mode_));
+  if (radeAudio_)
+    radeAudio_->setVisible(mshv && radeMode(mode_));
+}
+
+namespace {
+
+void fillDeviceBox(QComboBox* box, const QList<SpeechReader::Choice>& choices, const QString& current) {
+  if (!box)
+    return;
+  const QSignalBlocker block(box);
+  box->clear();
+  int pick = 0;
+  bool found = false;
+  for (int i = 0; i < choices.size(); ++i) {
+    box->addItem(choices.at(i).name, choices.at(i).id);
+    if (choices.at(i).id == current) {
+      pick = i;
+      found = true;
+    }
+  }
+  if (!found && !current.isEmpty()) {
+    box->addItem(current, current);
+    pick = box->count() - 1;
+  }
+  if (box->count() > 0)
+    box->setCurrentIndex(pick);
+}
+
+}  // namespace
+
+void ModeProfile::refreshRadeDevices() {
+  QSettings store;
+  fillDeviceBox(radeMicBox_, SpeechInput::inputs(), store.value(QStringLiteral("speech/mic")).toString());
+  fillDeviceBox(radeSpeakerBox_, SpeechReader::outputs(), store.value(QStringLiteral("speech/output")).toString());
+  if (!radeVolume_)
+    return;
+  const QSignalBlocker block(radeVolume_);
+  const int volume = std::clamp(store.value(QStringLiteral("speech/volume"), 80).toInt(), 0, 100);
+  radeVolume_->setValue(volume);
+  if (radeVolumeValue_)
+    radeVolumeValue_->setText(QString::number(volume));
 }
 
 void ModeProfile::setDigitalMode(const QString& mode) {
@@ -586,6 +700,13 @@ void ModeProfile::setDigitalMode(const QString& mode) {
                                       .arg(mode_));
   }
   const bool rade = radeMode(mode_);
+  if (radeAudio_) {
+    const bool show = rade && family_;
+    const bool was = radeAudio_->isVisible();
+    radeAudio_->setVisible(show);
+    if (show && !was)
+      refreshRadeDevices();
+  }
   if (start_)
     start_->setVisible(!keyboard && !rade);
   if (bandwidth_)
@@ -675,11 +796,16 @@ void ModeProfile::refreshBands() {
     }
     if (radeMode(mode_)) {
       const QString side = i <= 2 ? QStringLiteral("DIGL") : QStringLiteral("DIGU");
+      const QString sstv =
+          QLatin1String(kBands[i].label) == QLatin1String("14")
+              ? QStringLiteral(
+                    " 14.236 and 14.240 are FreeDV digital voice. SSTV calling is 14.230 and digital SSTV is 14.233.")
+              : QString();
       const QString body =
-          hz > 0 ? QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  %4%5. FreeDV Reporter. Click again to cycle. "
+          hz > 0 ? QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  %4%5. FreeDV Reporter.%6 Click again to cycle. "
                                   "Extra keeps another dial for this mode and band. Does not key. "
                                   "START is never sent.")
-                       .arg(QString::fromLatin1(kBands[i].label), mode_, QString::number(hz), side, cycleNote)
+                       .arg(QString::fromLatin1(kBands[i].label), mode_, QString::number(hz), side, cycleNote, sstv)
                  : QStringLiteral("%1 MHz  ·  %2 has no FreeDV Reporter dial. Does not key. START is never sent.")
                        .arg(QString::fromLatin1(kBands[i].label), mode_);
       buttons[i]->setToolTip(body);

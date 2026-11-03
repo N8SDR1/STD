@@ -40,6 +40,27 @@ bool radeAnalogOn(QWidget* window) {
 
 }  // namespace
 
+void MainWindow::applyRadePlaybackVolume(int percent) {
+  if (radeSpeaker_)
+    radeSpeaker_->setVolume(std::clamp(percent, 0, 100));
+}
+
+void MainWindow::applyRadeCapture(const QString& id) {
+  if (!txRade_ || !radeMic_)
+    return;
+  if (!radeMic_->start(id))
+    setTxStatus(QStringLiteral("%1 The radio stays as it is. START was not sent.").arg(radeMic_->error()));
+}
+
+void MainWindow::applyRadeOutput(const QString& id) {
+  if (!radeSpeaker_)
+    return;
+  if (radeSpeaker_->running() && radeSpeaker_->deviceId() == id)
+    return;
+  radeSpeakerId_ = id;
+  radeSpeakerFail_ = !radeSpeaker_->start(id);
+}
+
 void MainWindow::ensureRadeCodec() {
   auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"));
   const bool want = profile_ && radeMode(profile_->digitalMode());
@@ -325,5 +346,7 @@ void MainWindow::playRadePcm(const float* samples, int count) {
     }
     radeSpeakerFail_ = false;
   }
+  radeSpeaker_->setVolume(
+      std::clamp(QSettings().value(QStringLiteral("speech/volume"), 80).toInt(), 0, 100));
   radeSpeaker_->write(samples, count);
 }

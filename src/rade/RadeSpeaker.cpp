@@ -184,8 +184,9 @@ bool RadeSpeaker::start(const QString& sapiOutputId) {
         if (FAILED(render->GetBuffer(static_cast<UINT32>(block.size()), &data)) || !data)
           continue;
         auto* dst = reinterpret_cast<float*>(data);
+        const float gain = gain_.load(std::memory_order_relaxed);
         for (size_t i = 0; i < block.size(); ++i) {
-          float s = block[i];
+          float s = block[i] * gain;
           if (s > 1.0f)
             s = 1.0f;
           if (s < -1.0f)
@@ -227,6 +228,11 @@ void RadeSpeaker::stop() {
 void RadeSpeaker::clear() {
   const std::lock_guard<std::mutex> lock(mutex_);
   queue_.clear();
+}
+
+void RadeSpeaker::setVolume(int percent) {
+  const int clamped = std::clamp(percent, 0, 100);
+  gain_.store(float(clamped) / 100.0f, std::memory_order_relaxed);
 }
 
 void RadeSpeaker::write(const float* samples, int count) {

@@ -1053,6 +1053,17 @@ void MainWindow::buildBrandBar() {
 void MainWindow::buildDocks() {
   waterfall_ = new WaterfallWidget(this);
   profile_ = new ModeProfile(this);
+  connect(profile_, &ModeProfile::radeVolumeChanged, this, [this](int value) {
+    if (speech_)
+      speech_->setVolume(value);
+    if (auto* spin = findChild<QSpinBox*>(QStringLiteral("speechVolume"))) {
+      const QSignalBlocker block(spin);
+      spin->setValue(value);
+    }
+    applyRadePlaybackVolume(value);
+  });
+  connect(profile_, &ModeProfile::radeCaptureChanged, this, [this](const QString& id) { applyRadeCapture(id); });
+  connect(profile_, &ModeProfile::radeOutputChanged, this, [this](const QString& id) { applyRadeOutput(id); });
   auto* column = new QWidget(this);
   column->setObjectName("waterfallColumn");
   auto* columnLayout = new QVBoxLayout(column);
@@ -2180,6 +2191,7 @@ void MainWindow::qsyDial(qint64 hz) {
   tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
   tci_->setDialHz(hz);
   showDial(hz);
+  holdRadeDigu();
 }
 
 void MainWindow::maybeWsprHop() {
@@ -2479,6 +2491,9 @@ QWidget* MainWindow::makeReceivePanel() {
     QSettings().setValue(QStringLiteral("speech/volume"), value);
     if (speech_)
       speech_->setVolume(value);
+    applyRadePlaybackVolume(value);
+    if (profile_)
+      profile_->refreshRadeDevices();
   });
   applySpeechSettings();
   auto* faxStart = new QPushButton(QStringLiteral("Start"), panel);
@@ -2700,7 +2715,7 @@ QWidget* MainWindow::makeReceivePanel() {
     if (!txRade_)
       ensureRadeCodec();
   });
-  connect(rade, &RadeScreen::diguHelper, this, [this] { applyRadeDigu(); });
+  connect(rade, &RadeScreen::diguHelper, this, [this](bool on) { applyRadeDigu(on); });
   layout->addWidget(echo, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
@@ -3415,7 +3430,7 @@ void MainWindow::buildMenus() {
   } radeRows[] = {
       {"RADE V1", "modeRadeV1",
        "RADE V1 digital voice. Band buttons use the FreeDV Reporter dials. "
-       "20 m starts at 14.236, DIGU. 160, 80, and 40 use DIGL. "
+       "20 m starts at 14.236, DIGU, then 14.240. SSTV calling is 14.230. 160, 80, and 40 use DIGL. "
        "Click a band again to cycle its dials. Extra stores another dial for this mode and band. "
        "Mic and speaker are the Speech devices. "
        "The RADE screen is not the Hell tape and not the FT8 sequence. "
@@ -3909,8 +3924,11 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   applyChannelWidth();
   if (radeHere)
     ensureRadeCodec();
-  else
+  else {
     closeRadeCodec();
+    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+      screen->setDiguOn(false);
+  }
   refreshTxChrome();
   applyMacroBar();
   syncWfHellControls();
@@ -3936,24 +3954,46 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
                           "Mic and speaker stay the Speech devices. This does not key. START was not sent.")
                     : QStringLiteral(
                           "RADE V1. Band buttons use the FreeDV Reporter dials. "
-                          "20 m starts at 14.236, DIGU. 40 m starts at 7.177 and 80 m at 3.643, both DIGL. "
+                          "20 m starts at 14.236, DIGU, then 14.240. SSTV calling is 14.230. "
+                          "40 m starts at 7.177 and 80 m at 3.643, both DIGL. "
                           "15 m is 21.313, DIGU. Click the band again to cycle. Extra stores another dial. "
                           "Mic and speaker stay the Speech devices. This does not key. START was not sent."));
 }
 
-void MainWindow::applyRadeDigu() {
+void MainWindow::applyRadeDigu(bool on) {
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+    screen->setDiguOn(on);
   const bool open = tci_ && tci_->isOpen();
+  if (on) {
+    if (open)
+      tci_->setSideband(QStringLiteral("DIGU"));
+    if (waterfall_)
+      waterfall_->setRxHz(1500);
+    setTxStatus(open ? QStringLiteral(
+                           "RADE helper is on. DIGU was sent. The radio filter was not changed. "
+                           "A useful passband is about 750 to 2250 Hz. Leave NR and compression off. "
+                           "The VFO was not moved. This does not key. START was not sent.")
+                     : QStringLiteral(
+                           "RADE helper is on. The radio is not connected, so DIGU was not sent. "
+                           "This does not key. START was not sent."));
+    return;
+  }
   if (open)
-    tci_->setSideband(QStringLiteral("DIGU"));
-  if (waterfall_)
-    waterfall_->setRxHz(1500);
+    tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
   setTxStatus(open ? QStringLiteral(
-                         "RADE helper sent DIGU. A useful passband is about 750 to 2250 Hz. "
-                         "Leave NR and compression off. The VFO was not moved. "
+                         "RADE helper is off. The band sideband was sent. The VFO was not moved. "
                          "This does not key. START was not sent.")
                    : QStringLiteral(
-                         "RADE helper: the radio is not connected, so DIGU was not sent. "
+                         "RADE helper is off. The radio is not connected. "
                          "This does not key. START was not sent."));
+}
+
+void MainWindow::holdRadeDigu() {
+  auto* button = findChild<QPushButton*>(QStringLiteral("radeDigu"));
+  if (!button || !button->isChecked() || !profile_ || !radeMode(profile_->digitalMode()))
+    return;
+  if (tci_ && tci_->isOpen())
+    tci_->setSideband(QStringLiteral("DIGU"));
 }
 
 void MainWindow::showKeyboardReceive(const QString& mode) {
@@ -4075,6 +4115,7 @@ void MainWindow::tuneActiveBand() {
   // This is not START and it does not key.
   tci_->setSideband(profile_->sideband());
   tci_->setDialHz(hz);
+  holdRadeDigu();
 }
 
 void MainWindow::showGuide() {
@@ -4100,10 +4141,15 @@ void MainWindow::showGuide() {
       {"RADE",
        "Mode, RADE V1 is HF digital voice. RADE V2 is experimental and does not talk to V1. "
        "The RADE screen replaces the FT8 sequence and the Hell tape. It has Analog, TX band-pass, "
-       "drive, a DIGU helper, the V1 or V2 selector, and sync and SNR. Sync opens the audio. SNR is "
-       "only a reading. Mic and speaker are the devices in Options, Speech. Identity stays in "
+       "drive, a DIGU helper, the V1 or V2 selector, and sync and SNR. "
+       "Waveform and the DIGU helper sit side by side. The helper lights On while it holds DIGU, "
+       "and Off sends the band sideband. It does not set the radio filter. "
+       "Mic, speaker, and volume are the row under the band chips. They are the Speech devices. "
+       "Volume is the Speech playback level, from 0 to 100. "
+       "Analog off plays decoded speech only and stays silent until sync. Identity stays in "
        "Options, User. The band buttons use the FreeDV Reporter list. 20 m starts at 14.236 and also "
-       "has 14.240, both DIGU. 40 m starts at 7.177, DIGL, and also 7.197, 7.045, and 7.1815. "
+       "has 14.240, both DIGU. Those are digital voice. SSTV calling is 14.230 and digital SSTV is 14.233. "
+       "40 m starts at 7.177, DIGL, and also 7.197, 7.045, and 7.1815. "
        "80 m starts at 3.643, DIGL. 15 m is 21.313, DIGU. 17 m is 18.118. 12 m is 24.933. "
        "10 m starts at 28.330 and also 28.720. 160 m is 1.870, DIGL. 80 m also has 3.625, 3.693, "
        "3.697, 3.803, and the 3.640 net. Click the same band button to cycle those dials. "

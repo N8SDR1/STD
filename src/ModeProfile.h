@@ -8,6 +8,8 @@
 #include <QWidget>
 
 class QComboBox;
+class QLabel;
+class QSlider;
 class QSpinBox;
 
 // The controls an MSHV-family mode shows under the waterfall. Keyboard
@@ -50,6 +52,8 @@ public:
   // suffix such as N8SDR/VE uses that country. The call text is not rewritten.
   void setRegionOverride(const QString& choice);
   void refreshStation();
+  // Fills the Mic, speaker, and volume row from the Speech settings.
+  void refreshRadeDevices();
 
 signals:
   void tuneRequested(qint64 dialHz, const QString& sideband);
@@ -59,6 +63,9 @@ signals:
   void multiAnswerChanged(bool on);
   void filtersChanged(bool on);
   void filterEditRequested();
+  void radeVolumeChanged(int percent);
+  void radeCaptureChanged(const QString& micId);
+  void radeOutputChanged(const QString& speakerId);
 
 private:
   void applySpan();
@@ -75,7 +82,12 @@ private:
   qint64 tableHz(int index) const;
 
   QWidget* bar_ = nullptr;
+  QWidget* radeAudio_ = nullptr;
   QWidget* keyboard_ = nullptr;
+  QComboBox* radeMicBox_ = nullptr;
+  QComboBox* radeSpeakerBox_ = nullptr;
+  QSlider* radeVolume_ = nullptr;
+  QLabel* radeVolumeValue_ = nullptr;
   QSpinBox* speed_ = nullptr;
   QSpinBox* start_ = nullptr;
   QSpinBox* bandwidth_ = nullptr;

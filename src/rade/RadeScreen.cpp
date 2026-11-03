@@ -6,8 +6,6 @@
 #include "DigitalMode.h"
 
 #include <algorithm>
-#include "speech/SpeechInput.h"
-#include "speech/SpeechReader.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -18,6 +16,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSlider>
 #include <QVBoxLayout>
 
@@ -27,16 +26,6 @@ QFont uiFont() {
   QFont font(QStringLiteral("Segoe UI"));
   font.setPixelSize(13);
   return font;
-}
-
-QString deviceName(const QList<SpeechReader::Choice>& choices, const QString& id) {
-  for (const SpeechReader::Choice& choice : choices) {
-    if (choice.id == id)
-      return choice.name;
-  }
-  if (id.isEmpty())
-    return QStringLiteral("Windows default");
-  return id;
 }
 
 }  // namespace
@@ -61,8 +50,8 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
 
   auto* intro = new QLabel(QStringLiteral(
       "V1 is the default waveform, about 1500 Hz wide. V2 is experimental, "
-      "about 860 Hz, and will not decode V1. Mic and speaker are the Speech devices. "
-      "Identity stays in Options, User. Speech is 16 kHz. The modem is 8 kHz."),
+      "about 860 Hz, and will not decode V1. Mic, speaker, and volume are under the band chips. "
+      "They are the Speech devices. Identity stays in Options, User. Speech is 16 kHz. The modem is 8 kHz."),
       this);
   intro->setObjectName(QStringLiteral("radeIntro"));
   intro->setFont(uiFont());
@@ -83,7 +72,8 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   variant_->setToolTip(QStringLiteral(
       "V1 is the calling-frequency mode. V2 is experimental, will not talk to V1, "
       "and may change after a retrain. Switching does not key. START is never sent."));
-  form->addRow(QStringLiteral("Waveform"), variant_);
+  variant_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+  variant_->setFixedWidth(220);
 
   analog_ = new QCheckBox(QStringLiteral("Analog passthrough"), formHost);
   analog_->setObjectName(QStringLiteral("radeAnalog"));
@@ -91,8 +81,9 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   analog_->setFocusPolicy(Qt::NoFocus);
   analog_->setChecked(QSettings().value(QStringLiteral("rade/analog"), false).toBool());
   analog_->setToolTip(QStringLiteral(
-      "When digital sync is quiet, play the raw SSB audio on the Speech speaker. "
-      "Off stays silent. This does not key. START is never sent."));
+      "Off plays decoded speech only, and stays silent until sync. "
+      "On plays the radio SSB on the speaker while sync is idle, and decoded speech when sync is up. "
+      "This does not key. START is never sent."));
   form->addRow(QStringLiteral("Analog"), analog_);
 
   bpf_ = new QCheckBox(QStringLiteral("TX band-pass"), formHost);
@@ -100,8 +91,10 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   bpf_->setFont(uiFont());
   bpf_->setFocusPolicy(Qt::NoFocus);
   bpf_->setToolTip(QStringLiteral(
-      "TX band-pass. V1 energy is about 700 to 2300 Hz and starts off. "
-      "V2 is about 860 Hz and starts on. This does not key. START is never sent."));
+      "TX band-pass inside the modem. V1 has no band-pass switch in this build, "
+      "so the box is remembered and starts off. V2 is about 860 Hz and starts on. "
+      "Turning V2 off sends the modem without that band-pass. "
+      "This does not change the radio filter. This does not key. START is never sent."));
   form->addRow(QStringLiteral("BPF"), bpf_);
 
   auto* driveRow = new QWidget(formHost);
@@ -113,8 +106,9 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   drive_->setValue(std::clamp(QSettings().value(QStringLiteral("rade/drive"), 70).toInt(), 0, 100));
   drive_->setFocusPolicy(Qt::NoFocus);
   drive_->setToolTip(QStringLiteral(
-      "Modem level for a later transmission. 100 is full, and the modem keeps about 6 dB "
-      "of headroom. Changing it does not key. START is never sent."));
+      "Modem level sent to the radio. 0 is silent. 100 multiplies the modem by one half, "
+      "so a full reading stays about 6 dB under full scale. "
+      "Changing it does not key. START is never sent."));
   driveValue_ = new QLabel(driveRow);
   driveValue_->setObjectName(QStringLiteral("radeDriveValue"));
   driveValue_->setFont(uiFont());
@@ -123,17 +117,35 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   driveLayout->addWidget(drive_, 1);
   driveLayout->addWidget(driveValue_);
   form->addRow(QStringLiteral("Drive"), driveRow);
-
-  auto* digu = new QPushButton(QStringLiteral("DIGU helper"), formHost);
-  digu->setObjectName(QStringLiteral("radeDigu"));
-  digu->setFont(uiFont());
-  digu->setFocusPolicy(Qt::NoFocus);
-  digu->setToolTip(QStringLiteral(
-      "Sends modulation:0,digu when the radio is connected. A useful passband is about "
-      "750 to 2250 Hz. Leave radio NR and compression off. The VFO is not moved. "
-      "This does not key. START is never sent."));
-  form->addRow(QStringLiteral("Radio"), digu);
   layout->addWidget(formHost);
+
+  digu_ = new QPushButton(QStringLiteral("Off"), this);
+  digu_->setObjectName(QStringLiteral("radeDigu"));
+  digu_->setFont(uiFont());
+  digu_->setFocusPolicy(Qt::NoFocus);
+  digu_->setCheckable(true);
+  digu_->setChecked(false);
+  digu_->setFixedWidth(64);
+  digu_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+  digu_->setToolTip(QStringLiteral(
+      "DIGU helper. On sends modulation:0,digu and stays lit. Off sends the band sideband. "
+      "It does not set the radio filter and it does not move the VFO. "
+      "A useful passband is about 750 to 2250 Hz. Leave radio NR and compression off. "
+      "On also moves the waterfall cursor to 1500 Hz. This does not key. START is never sent."));
+  auto* waveLabel = new QLabel(QStringLiteral("Waveform"), this);
+  waveLabel->setFont(uiFont());
+  auto* radioLabel = new QLabel(QStringLiteral("Radio"), this);
+  radioLabel->setFont(uiFont());
+  auto* pair = new QHBoxLayout;
+  pair->setContentsMargins(0, 0, 0, 0);
+  pair->setSpacing(8);
+  pair->addWidget(waveLabel);
+  pair->addWidget(variant_);
+  pair->addSpacing(16);
+  pair->addWidget(radioLabel);
+  pair->addWidget(digu_);
+  pair->addStretch(1);
+  layout->insertLayout(2, pair);
 
   auto* meters = new QHBoxLayout();
   sync_ = new QLabel(QStringLiteral("Sync  idle"), this);
@@ -152,23 +164,6 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   meters->addWidget(snr_);
   meters->addStretch(1);
   layout->addLayout(meters);
-
-  mic_ = new QLabel(this);
-  mic_->setObjectName(QStringLiteral("radeMic"));
-  mic_->setFont(uiFont());
-  mic_->setWordWrap(true);
-  mic_->setToolTip(QStringLiteral(
-      "The Speech microphone. Change it in Options, Speech. This screen has no second picker. "
-      "This does not key. START is never sent."));
-  speaker_ = new QLabel(this);
-  speaker_->setObjectName(QStringLiteral("radeSpeaker"));
-  speaker_->setFont(uiFont());
-  speaker_->setWordWrap(true);
-  speaker_->setToolTip(QStringLiteral(
-      "The Speech speaker. Decoded speech will play here, not on the radio. "
-      "Change it in Options, Speech. This does not key. START is never sent."));
-  layout->addWidget(mic_);
-  layout->addWidget(speaker_);
 
   link_ = new QLabel(QStringLiteral(
       "librade is not loaded yet. Sync stays idle and SNR stays blank. "
@@ -199,10 +194,12 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
     driveValue_->setText(QString::number(value));
     QSettings().setValue(QStringLiteral("rade/drive"), value);
   });
-  connect(digu, &QPushButton::clicked, this, &RadeScreen::diguHelper);
+  connect(digu_, &QPushButton::toggled, this, [this](bool on) {
+    digu_->setText(on ? QStringLiteral("On") : QStringLiteral("Off"));
+    emit diguHelper(on);
+  });
 
   showMode(radeV1Name());
-  refreshDevices();
 }
 
 void RadeScreen::loadBpf(bool v2) {
@@ -237,6 +234,14 @@ void RadeScreen::setSync(bool on, float snrDb) {
     snr_->setText(QStringLiteral("SNR  —"));
 }
 
+void RadeScreen::setDiguOn(bool on) {
+  if (!digu_)
+    return;
+  const QSignalBlocker block(digu_);
+  digu_->setChecked(on);
+  digu_->setText(on ? QStringLiteral("On") : QStringLiteral("Off"));
+}
+
 void RadeScreen::showMode(const QString& modeName) {
   showingV2_ = radeV2(modeName);
   const QSignalBlocker block(variant_);
@@ -244,16 +249,4 @@ void RadeScreen::showMode(const QString& modeName) {
   if (index >= 0)
     variant_->setCurrentIndex(index);
   loadBpf(showingV2_);
-  refreshDevices();
-}
-
-void RadeScreen::refreshDevices() {
-  const QSettings store;
-  const QString mic = deviceName(SpeechInput::inputs(), store.value(QStringLiteral("speech/mic")).toString());
-  const QString speaker =
-      deviceName(SpeechReader::outputs(), store.value(QStringLiteral("speech/output")).toString());
-  if (mic_)
-    mic_->setText(QStringLiteral("Mic  %1").arg(mic));
-  if (speaker_)
-    speaker_->setText(QStringLiteral("Speaker  %1").arg(speaker));
 }

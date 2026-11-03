@@ -97,6 +97,9 @@ void MainWindow::applySpeechSettings() {
   // RADE uses the Speech devices itself. Stop a phrase that was already queued.
   if (radeMode(mode) && speech_)
     speech_->stop();
+  if (profile_)
+    profile_->refreshRadeDevices();
+  applyRadePlaybackVolume(volume);
 }
 
 void MainWindow::openSpeechDialog() {
