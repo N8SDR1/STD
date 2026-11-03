@@ -704,16 +704,18 @@ void MaEngine::decoded(const QString& message, int db, int freq, bool doubleClic
     r.id = id;
     r.db = db;
     r.tryUtc = utcNow();
+    // MSHV DetectTextInMsg, the f_cfm73 branches (2.48 / 2.66 / 2.70).
     if (txRx_ && slotCount() == 1 && (id == 4 || id == 3)) {
       r.genTx = QStringLiteral("0");
-      if (id == 4)
+      if (!cfm73_ && id == 4)
         txMsgEnd();
       else
         genMsg();
-    } else if ((prev == 2 || prev == 3) && id == 4) {
+    } else if (!cfm73_ && (prev == 2 || prev == 3) && id == 4) {
       r.genTx = QStringLiteral("0");
       txMsgEnd();
     } else {
+      // With confirmation on, their RR73 after our report is answered: HIS MY 73.
       genMsg();
     }
   } else if (where == 0) {

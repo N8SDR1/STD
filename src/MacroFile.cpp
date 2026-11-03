@@ -4,9 +4,12 @@
 #include "MacroFile.h"
 
 #include <algorithm>
+#include <optional>
 
 #include <QRegularExpression>
+#include <QSet>
 #include <QStringList>
+#include <QTimeZone>
 
 namespace {
 
@@ -18,7 +21,264 @@ QString unescapeLine(QString line) {
   return line;
 }
 
+// "<QSY:FFF.F[:NNNN]>" -> "QSY", "<@TXRSID:off>" -> "TXRSID".
+QString bareTagName(QString tag) {
+  if (tag.startsWith(QLatin1Char('<')))
+    tag.remove(0, 1);
+  if (tag.startsWith(QLatin1Char('@')))
+    tag.remove(0, 1);
+  int end = 0;
+  while (end < tag.size() && (tag.at(end).isLetterOrNumber() || tag.at(end) == QLatin1Char('_') ||
+                              tag.at(end) == QLatin1Char('/') || tag.at(end) == QLatin1Char('#') ||
+                              tag.at(end) == QLatin1Char('+')))
+    ++end;
+  return tag.left(end).toUpper();
+}
+
+const QSet<QString>& fldigiTagNames() {
+  static const QSet<QString> names = [] {
+    QSet<QString> out;
+    for (const MacroTagRow& row : macroTagList()) {
+      const QString name = bareTagName(row.tag);
+      if (!name.isEmpty())
+        out.insert(name);
+    }
+    out.insert(QStringLiteral("MODEM"));
+    out.insert(QStringLiteral("COMMENT"));
+    return out;
+  }();
+  return names;
+}
+
+// The other station's fields. An empty one is reported, not sent blank.
+const QHash<QString, QString>& otherStationLabels() {
+  static const QHash<QString, QString> labels = {
+      {QStringLiteral("CALL"), QStringLiteral("Call")}, {QStringLiteral("NAME"), QStringLiteral("Name")},
+      {QStringLiteral("QTH"), QStringLiteral("QTH")},   {QStringLiteral("ST"), QStringLiteral("St")},
+      {QStringLiteral("PR"), QStringLiteral("Pr")},     {QStringLiteral("LOC"), QStringLiteral("Loc")},
+      {QStringLiteral("RST"), QStringLiteral("RST out")}, {QStringLiteral("XIN"), QStringLiteral("Exch")},
+  };
+  return labels;
+}
+
+// Fldigi time formats are strftime. These are the codes people use.
+QString strftimeLike(const QString& format, const QDateTime& when) {
+  QString out;
+  for (int i = 0; i < format.size(); ++i) {
+    const QChar c = format.at(i);
+    if (c != QLatin1Char('%') || i + 1 >= format.size()) {
+      out += c;
+      continue;
+    }
+    const QChar code = format.at(++i);
+    switch (code.unicode()) {
+      case 'Y': out += when.toString(QStringLiteral("yyyy")); break;
+      case 'y': out += when.toString(QStringLiteral("yy")); break;
+      case 'm': out += when.toString(QStringLiteral("MM")); break;
+      case 'd': out += when.toString(QStringLiteral("dd")); break;
+      case 'H': out += when.toString(QStringLiteral("HH")); break;
+      case 'M': out += when.toString(QStringLiteral("mm")); break;
+      case 'S': out += when.toString(QStringLiteral("ss")); break;
+      case 'b': out += when.toString(QStringLiteral("MMM")); break;
+      case 'B': out += when.toString(QStringLiteral("MMMM")); break;
+      case 'a': out += when.toString(QStringLiteral("ddd")); break;
+      case 'A': out += when.toString(QStringLiteral("dddd")); break;
+      case 'x': out += when.toString(QStringLiteral("yyyy-MM-dd")); break;
+      case 'Z': out += when.timeSpec() == Qt::UTC ? QStringLiteral("UTC") : when.timeZoneAbbreviation(); break;
+      case 'z': out += when.toString(QStringLiteral("t")); break;
+      case '%': out += QLatin1Char('%'); break;
+      default: out += QLatin1Char('%') + code; break;
+    }
+  }
+  return out;
+}
+
+// The value of a fill-in tag, or nullopt when the name is not a fill-in.
+std::optional<QString> fillValue(const QString& name, const QString& arg, const MacroContext& c,
+                                 const QHash<QString, QString>& upperTags) {
+  const QDateTime utc = c.nowUtc.isValid() ? c.nowUtc.toUTC() : QDateTime::currentDateTimeUtc();
+  const QDateTime local = utc.toLocalTime();
+  auto timeTag = [&](const QDateTime& when, const QString& fallback) {
+    return strftimeLike(arg.isEmpty() ? fallback : arg, when);
+  };
+  if (name == QLatin1String("MYCALL"))
+    return c.myCall.toUpper();
+  if (name == QLatin1String("MYLOC") || name == QLatin1String("MYGRID"))
+    return c.myLoc;
+  if (upperTags.contains(name))
+    return upperTags.value(name);
+  if (otherStationLabels().contains(name))
+    return QString();
+  if (name == QLatin1String("MODE") || name == QLatin1String("DIGI"))
+    return c.mode;
+  if (name == QLatin1String("BAND"))
+    return c.band;
+  if (name == QLatin1String("FREQ"))
+    return c.freqKhz;
+  if (name == QLatin1String("VER"))
+    return c.version;
+  if (name == QLatin1String("CNTR") || name == QLatin1String("SERNO") || name == QLatin1String("#"))
+    return QStringLiteral("%1").arg(std::max(0, c.serial), 3, 10, QLatin1Char('0'));
+  if (name == QLatin1String("LASTNO"))
+    return QStringLiteral("%1").arg(std::max(0, c.serial - 1), 3, 10, QLatin1Char('0'));
+  if (name == QLatin1String("ZDT") || name == QLatin1String("IZDT"))
+    return timeTag(utc, QStringLiteral("%Y-%m-%d %H:%MZ"));
+  if (name == QLatin1String("LDT") || name == QLatin1String("ILDT"))
+    return timeTag(local, QStringLiteral("%Y-%m-%d %H:%M"));
+  if (name == QLatin1String("ZT"))
+    return timeTag(utc, QStringLiteral("%H%MZ"));
+  if (name == QLatin1String("LT"))
+    return timeTag(local, QStringLiteral("%H%M"));
+  if (name == QLatin1String("ZD"))
+    return timeTag(utc, QStringLiteral("%Y-%m-%d"));
+  if (name == QLatin1String("LD"))
+    return timeTag(local, QStringLiteral("%Y-%m-%d"));
+  if (name == QLatin1String("QSOTIME"))
+    return utc.toString(QStringLiteral("HHmm"));
+  return std::nullopt;
+}
+
+// {CALL} and {NAME|OM} become <CALL> and <NAME|OM>. {#} is the serial.
+// Braces around anything else stay as typed.
+QString bracesToTags(const QString& body, const MacroContext& context) {
+  static const QRegularExpression braces(QStringLiteral("\\{([A-Za-z_#][A-Za-z0-9_/]*)(\\|[^}]*)?\\}"));
+  static const QSet<QString> actions = {QStringLiteral("TX"),     QStringLiteral("RX"),     QStringLiteral("TX/RX"),
+                                        QStringLiteral("CLRTX"),  QStringLiteral("CLRRX"),  QStringLiteral("LOG"),
+                                        QStringLiteral("CLRQSO"), QStringLiteral("INCR"),   QStringLiteral("DECR")};
+  QHash<QString, QString> none;
+  QString out;
+  int last = 0;
+  auto it = braces.globalMatch(body);
+  while (it.hasNext()) {
+    const QRegularExpressionMatch m = it.next();
+    const QString name = m.captured(1).toUpper();
+    out += body.mid(last, m.capturedStart() - last);
+    QHash<QString, QString> upper;
+    for (auto t = context.tags.cbegin(); t != context.tags.cend(); ++t)
+      upper.insert(bareTagName(t.key()), t.value());
+    const bool known = actions.contains(name) || fillValue(name, QString(), context, upper).has_value() ||
+                       fldigiTagNames().contains(name);
+    out += known ? QStringLiteral("<%1%2>").arg(name, m.captured(2)) : m.captured(0);
+    last = m.capturedEnd();
+  }
+  out += body.mid(last);
+  return out;
+}
+
 }  // namespace
+
+MacroPlan planMacro(const QString& body, const MacroContext& context) {
+  MacroPlan plan;
+  QHash<QString, QString> upperTags;
+  for (auto it = context.tags.cbegin(); it != context.tags.cend(); ++it)
+    upperTags.insert(bareTagName(it.key()), it.value());
+
+  const QString source = bracesToTags(body, context);
+  static const QRegularExpression tag(
+      QStringLiteral("<(@?)([A-Za-z_#][A-Za-z0-9_/+]*)(?::([^>|]*))?(?:\\|([^>]*))?>"));
+  QString text;
+  int last = 0;
+  auto it = tag.globalMatch(source);
+  while (it.hasNext()) {
+    const QRegularExpressionMatch m = it.next();
+    text += source.mid(last, m.capturedStart() - last);
+    last = m.capturedEnd();
+    const QString name = m.captured(2).toUpper();
+    const QString arg = m.captured(3).trimmed();
+    const bool hasFallback = m.capturedStart(4) >= 0;
+    const QString fallback = m.captured(4);
+    if (name == QLatin1String("TX")) {
+      plan.keys = true;
+    } else if (name == QLatin1String("RX")) {
+      plan.backToRx = true;
+    } else if (name == QLatin1String("TX/RX")) {
+      plan.toggle = true;
+    } else if (name == QLatin1String("CLRTX")) {
+      plan.clearTx = true;
+    } else if (name == QLatin1String("CLRRX")) {
+      plan.clearRx = true;
+    } else if (name == QLatin1String("LOG") || name == QLatin1String("LNW")) {
+      plan.log = true;
+      if (!arg.isEmpty())
+        plan.logNote = arg;
+    } else if (name == QLatin1String("CLRQSO") || name == QLatin1String("CLRLOG")) {
+      plan.clearQso = true;
+    } else if (name == QLatin1String("INCR")) {
+      ++plan.serialStep;
+    } else if (name == QLatin1String("DECR")) {
+      --plan.serialStep;
+    } else if (name == QLatin1String("TIMER")) {
+      bool ok = false;
+      const int seconds = arg.toInt(&ok);
+      if (ok && seconds > 0)
+        plan.repeatSeconds = std::clamp(seconds, 5, 600);
+    } else if (name == QLatin1String("COMMENT") || (name.startsWith(QLatin1Char('#')) && name.size() > 1)) {
+      // A note for the reader, never sent.
+    } else if (const auto value = fillValue(name, arg, context, upperTags)) {
+      if (!value->isEmpty())
+        text += *value;
+      else if (hasFallback)
+        text += fallback;
+      else if (otherStationLabels().contains(name) && !plan.missing.contains(otherStationLabels().value(name)))
+        plan.missing << otherStationLabels().value(name);
+      else if (name.startsWith(QLatin1String("WX")) && !plan.missing.contains(QStringLiteral("Weather")))
+        plan.missing << QStringLiteral("Weather");
+    } else if (fldigiTagNames().contains(name)) {
+      // A Fldigi tag STD does not run: drop it so it never goes out as text.
+      if (!plan.skipped.contains(m.captured(0)))
+        plan.skipped << m.captured(0);
+    } else {
+      text += m.captured(0);  // not a tag, e.g. "<< N8SDR >>" stays
+    }
+  }
+  text += source.mid(last);
+
+  // Spaces left where tags were come off the line ends. A leading or
+  // trailing line break stays so a macro can start or end a new line.
+  QStringList lines = text.split(QLatin1Char('\n'));
+  for (QString& line : lines) {
+    while (line.endsWith(QLatin1Char(' ')) || line.endsWith(QLatin1Char('\t')))
+      line.chop(1);
+  }
+  text = lines.join(QLatin1Char('\n'));
+  const bool leadBreak = [&] {
+    for (const QChar c : text) {
+      if (c == QLatin1Char('\n'))
+        return true;
+      if (!c.isSpace())
+        return false;
+    }
+    return false;
+  }();
+  const bool tailBreak = text.trimmed().size() > 0 && text.endsWith(QLatin1Char('\n'));
+  text = text.trimmed();
+  text.replace(QRegularExpression(QStringLiteral("[ \\t]{2,}")), QStringLiteral(" "));
+  if (!text.isEmpty()) {
+    if (leadBreak)
+      text.prepend(QLatin1Char('\n'));
+    if (tailBreak)
+      text.append(QLatin1Char('\n'));
+  }
+  plan.text = text;
+  return plan;
+}
+
+QString macroButtonLabel(const QString& name, const MacroContext& context, bool keys) {
+  QString label = name;
+  // Fldigi draws @>| @|| @>> @> as arrow icons. STD marks a keying macro with ▶.
+  label.remove(QRegularExpression(QStringLiteral("@[<>|]+")));
+  if (label.contains(QLatin1Char('<')) || label.contains(QLatin1Char('{'))) {
+    MacroContext shown = context;
+    const MacroPlan plan = planMacro(label, shown);
+    label = plan.text;
+    if (!plan.missing.isEmpty())
+      label += QStringLiteral(" ?");
+  }
+  label = label.simplified();
+  if (label.isEmpty())
+    label = name.simplified();
+  return keys ? QStringLiteral("▶ ") + label : label;
+}
 
 QVector<MacroSlot> blankMacroSet() {
   QVector<MacroSlot> rows(kMacroCount);
@@ -208,6 +468,8 @@ QVector<MacroTagRow> macroTagList() {
       {"<EQSL:[msg]>", "log eQSL optional msg"},
       {"", ""},
       {"<QSOTIME>", "QSO time (HHMM)"},
+      {"<WELCOME>", "nice to work you again, when in your log"},
+      {"<LASTQSO>", "date of your last QSO with them"},
       {"<ILDT[:fmt]>", "LDT default '%Y-%m-%d %H:%M%z'"},
       {"<LDT[[fmt]>", "Local datetime, default '%x %H:%M %Z'"},
       {"<IZDT[:fmt]>", "ZDT default '%Y-%m-%d %H:%MZ'"},
@@ -216,8 +478,12 @@ QVector<MacroTagRow> macroTagList() {
       {"<ZT[:fmt]>", "zulu time default %H%MZ"},
       {"<LD[:fmt]>", "local date, default '%Y-%M-%D'"},
       {"<ZD[:fmt]>", "zulu date, default '%Y-%M-%D Z'"},
-      {"<WX>", "get weather data"},
+      {"<WX>", "local weather, Options → Weather"},
       {"<WX:xxxx>", "get weather data for station"},
+      {"<WX_TEMP>", "temperature, Options → Weather"},
+      {"<WX_COND>", "sky, such as partly cloudy"},
+      {"<WX_WIND>", "wind, such as SW 8 mph"},
+      {"<WX_HUM>", "humidity, such as 72%"},
       {"", ""},
       {"<CNTR>", "contest counter"},
       {"<DECR>", "decrement counter"},

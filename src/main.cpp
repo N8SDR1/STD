@@ -4,6 +4,7 @@
 #include "DigitalMode.h"
 #include "EchoLog.h"
 #include "hell/HellRaster.h"
+#include "ContestMode.h"
 #include "MacroFile.h"
 #include "MaEngine.h"
 #include "MainWindow.h"
@@ -18,6 +19,11 @@
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
 #include "mfsk/MfskModem.h"
+#include "LiveTx.h"
+#include "speech/SpeechReader.h"
+#include "speech/SpeechInput.h"
+#include "speech/SpeechModel.h"
+#include "speech/SpeechRecognizer.h"
 #include "mt63/Mt63Modem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
@@ -29,8 +35,21 @@
 #include "spot/PskReporter.h"
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
+#include "WxFeed.h"
+#include "QsoCapture.h"
+#include "Callbook.h"
 #include "WaterfallGpu.h"
 #include "WaterfallWidget.h"
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dbghelp.h>
+#include <cstdio>
+#include <cstring>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -41,6 +60,9 @@
 #include <QByteArray>
 #include <QAction>
 #include <QApplication>
+#include <QtEndian>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -64,6 +86,7 @@
 #include <QHash>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDataStream>
 #include <QDate>
 #include <QDateTime>
 #include <QDialog>
@@ -476,10 +499,14 @@ int shellReady(MainWindow& window) {
   const auto* active = window.findChild<QLabel*>(QStringLiteral("macroActive"));
   const auto* macroOpen = window.findChild<QAction*>(QStringLiteral("macroOpen"));
   const auto* macroSave = window.findChild<QAction*>(QStringLiteral("macroSave"));
-  if (!bank || bank->text() != QLatin1String("1") ||
+  // The bank in use is a saved setting, so any of 1 to 4, with or without a name.
+  if (!bank || !QRegularExpression(QStringLiteral("^[1-4]( .+)?$")).match(bank->text()).hasMatch() ||
       !bank->toolTip().contains(QLatin1String("does not key"), Qt::CaseInsensitive) ||
-      !bank->toolTip().contains(QLatin1String("START")))
+      !bank->toolTip().contains(QLatin1String("START"))) {
+    if (bank)
+      qCritical("macro bank [%s] [%s]", qPrintable(bank->text()), qPrintable(bank->toolTip()));
     return fail("macro bank is missing");
+  }
   if (!active || !macroOpen || !macroSave ||
       !macroOpen->toolTip().contains(QLatin1String("START")) ||
       !macroSave->toolTip().contains(QLatin1String("does not key"), Qt::CaseInsensitive))
@@ -534,6 +561,218 @@ int shellReady(MainWindow& window) {
   if (macroInsertText(QStringLiteral("de <MYNAME>."), QStringLiteral("N8SDR"), QStringLiteral("EM79"),
                       emptyName) != QLatin1String("de ."))
     return fail("an empty station tag stayed in the text");
+  {
+    // The macro engine: Fldigi tags decide what a press does.
+    MacroContext mc;
+    mc.myCall = QStringLiteral("n8sdr");
+    mc.myLoc = QStringLiteral("EM79");
+    mc.tags.insert(QStringLiteral("<CALL>"), QStringLiteral("W1AW"));
+    mc.tags.insert(QStringLiteral("<RST>"), QStringLiteral("599"));
+    mc.tags.insert(QStringLiteral("<NAME>"), QString());
+    mc.tags.insert(QStringLiteral("<MYNAME>"), QStringLiteral("Rick"));
+    mc.serial = 7;
+    mc.nowUtc = QDateTime(QDate(2026, 11, 3), QTime(14, 5), QTimeZone::utc());
+    const MacroPlan reply =
+        planMacro(QStringLiteral("<TX>\n<CALL> de <MYCALL> <RST> TU <LOG> <CLRRX><CLRTX> <RX>"), mc);
+    if (!reply.keys || !reply.backToRx || !reply.log || !reply.clearRx || !reply.clearTx ||
+        reply.text.trimmed() != QLatin1String("W1AW de N8SDR 599 TU") || !reply.missing.isEmpty()) {
+      qCritical("macro plan [%s]", qPrintable(reply.text));
+      return fail("a keyed Fldigi macro did not plan right");
+    }
+    const MacroPlan addOnly = planMacro(QStringLiteral("my name ... <MYNAME>"), mc);
+    if (addOnly.keys || addOnly.text != QLatin1String("my name ... Rick"))
+      return fail("a macro without <TX> was not add-only");
+    mc.tags.insert(QStringLiteral("<CALL>"), QString());
+    const MacroPlan noCall = planMacro(QStringLiteral("<TX><CALL> de <MYCALL><RX>"), mc);
+    if (noCall.missing != QStringList{QStringLiteral("Call")})
+      return fail("an empty Call was not reported");
+    mc.tags.insert(QStringLiteral("<CALL>"), QStringLiteral("W1AW"));
+    if (planMacro(QStringLiteral("tnx <NAME|OM> 73"), mc).text != QLatin1String("tnx OM 73") ||
+        !planMacro(QStringLiteral("tnx <NAME|OM>"), mc).missing.isEmpty())
+      return fail("a tag fallback did not fill in");
+    if (planMacro(QStringLiteral("{CALL} de {MYCALL} {#} {nothing}"), mc).text !=
+        QLatin1String("W1AW de N8SDR 007 {nothing}"))
+      return fail("brace tags did not fill in");
+    const MacroPlan cq = planMacro(QStringLiteral("<TX>CQ <IDLE:5> de <MYCALL> <TIMER:15><RX>"), mc);
+    if (cq.text != QLatin1String("CQ de N8SDR") || cq.repeatSeconds != 15 ||
+        cq.skipped != QStringList{QStringLiteral("<IDLE:5>")})
+      return fail("a Fldigi tag STD does not run was not left out");
+    if (planMacro(QStringLiteral("<< <MYCALL>, <MYNAME> >>"), mc).text != QLatin1String("<< N8SDR, Rick >>"))
+      return fail("brag text with << >> was changed");
+    const QString timed = planMacro(QStringLiteral("<ZDT> <ZT> <COMMENT:note>x"), mc).text;
+    if (timed != QLatin1String("2026-11-03 14:05Z 1405Z x")) {
+      qCritical("time tags [%s]", qPrintable(timed));
+      return fail("time tags did not fill in");
+    }
+    const MacroPlan counted = planMacro(QStringLiteral("<CNTR><INCR><INCR><DECR>"), mc);
+    if (counted.text != QLatin1String("007") || counted.serialStep != 1)
+      return fail("serial tags did not count");
+    // Weather: each source's reply, the line <WX> sends, and an empty <WX>.
+    {
+      QString err;
+      const WxReading om = WxFeed::parseOpenMeteo(
+          R"({"current":{"temperature_2m":12.2,"relative_humidity_2m":72,"weather_code":2,)"
+          R"("wind_speed_10m":12.9,"wind_direction_10m":225}})",
+          &err);
+      if (!om.valid || WxFeed::describe(om, false) != QLatin1String("54F, partly cloudy, wind SW 8 mph, humidity 72%") ||
+          WxFeed::describe(om, true) != QLatin1String("12C, partly cloudy, wind SW 13 km/h, humidity 72%")) {
+        qCritical("wx [%s]", qPrintable(WxFeed::describe(om, false)));
+        return fail("Open-Meteo weather did not read");
+      }
+      const WxReading nws = WxFeed::parseNws(
+          R"({"properties":{"textDescription":"Light Rain","temperature":{"value":10},)"
+          R"("relativeHumidity":{"value":91.4},"windSpeed":{"value":0},"windDirection":{"value":null}}})",
+          &err);
+      if (WxFeed::describe(nws, false) != QLatin1String("50F, light rain, calm, humidity 91%"))
+        return fail("NWS weather did not read");
+      const WxReading amb = WxFeed::parseAmbient(
+          R"([{"lastData":{"tempf":68,"humidity":40,"windspeedmph":5,"winddir":0}}])", &err);
+      if (WxFeed::describe(amb, false) != QLatin1String("68F, wind N 5 mph, humidity 40%"))
+        return fail("Ambient weather did not read");
+      const WxReading eco = WxFeed::parseEcowitt(
+          R"({"code":0,"msg":"success","data":{"outdoor":{"temperature":{"value":"20"},"humidity":{"value":"55"}},)"
+          R"("wind":{"wind_speed":{"value":"16.1"},"wind_direction":{"value":"90"}}}})",
+          &err);
+      if (WxFeed::describe(eco, false) != QLatin1String("68F, wind E 10 mph, humidity 55%"))
+        return fail("Ecowitt weather did not read");
+      if (WxFeed::parseEcowitt(R"({"code":40010,"msg":"illegal api key"})", &err).valid ||
+          !err.contains(QLatin1String("illegal")))
+        return fail("an Ecowitt error was not reported");
+      double lat = 0.0;
+      double lon = 0.0;
+      if (!WxFeed::gridToLatLon(QStringLiteral("EM79tj"), &lat, &lon) || std::abs(lat - 39.40) > 0.05 ||
+          std::abs(lon + 84.38) > 0.05)
+        return fail("a locator did not convert to latitude and longitude");
+      MacroContext wxc = mc;
+      wxc.tags.insert(QStringLiteral("<WX>"), QString());
+      const MacroPlan noWx = planMacro(QStringLiteral("<TX>wx here <WX><RX>"), wxc);
+      if (noWx.missing != QStringList{QStringLiteral("Weather")} ||
+          planMacro(QStringLiteral("wx <WX|fine>"), wxc).text != QLatin1String("wx fine"))
+        return fail("an empty <WX> was not reported");
+    }
+    // Smart capture: what their text tells us, for the QSO bar.
+    {
+      const QsoHints h = scanQsoText(
+          QStringLiteral("N8SDR N8SDR DE K8AB K8AB GM Rick, tnx for the call. Ur RST 579 579. "
+                         "Name hr is BOB BOB. QTH is Dayton, OH. Loc EM79tq. HW? N8SDR de K8AB kn"),
+          QStringLiteral("N8SDR"));
+      if (h.call != QLatin1String("K8AB") || h.name != QLatin1String("Bob") || h.qth != QLatin1String("Dayton") ||
+          h.st != QLatin1String("OH") || h.rstIn != QLatin1String("579") || h.loc != QLatin1String("EM79tq")) {
+        qCritical("capture [%s|%s|%s|%s|%s|%s]", qPrintable(h.call), qPrintable(h.name), qPrintable(h.qth),
+                  qPrintable(h.st), qPrintable(h.rstIn), qPrintable(h.loc));
+        return fail("smart capture missed a field");
+      }
+      const QsoHints op = scanQsoText(QStringLiteral("op: joe qth nr springfield illinois rig ic7300"),
+                                      QStringLiteral("N8SDR"));
+      if (op.name != QLatin1String("Joe") || op.qth != QLatin1String("Springfield Illinois") || !op.st.isEmpty())
+        return fail("smart capture read OP or a long QTH wrong");
+      if (!scanQsoText(QStringLiteral("CQ CQ DE N8SDR N8SDR"), QStringLiteral("N8SDR")).call.isEmpty() ||
+          !scanQsoText(QStringLiteral("my name is is"), QStringLiteral("N8SDR")).name.isEmpty())
+        return fail("smart capture offered our own call or a filler word");
+      QsoMemory memory;
+      // Two logs; the 2026 QSO is in both and counts once.
+      memory.loadText({QByteArray("STD log<EOH>\n"
+                                  "<CALL:4>K8AB<NAME:3>Bob<QTH:6>Dayton<STATE:2>OH<QSO_DATE:8>20250412"
+                                  "<TIME_ON:6>140000<BAND:3>40M<MODE:4>RTTY<EOR>\n"
+                                  "<CALL:4>k8ab<GRIDSQUARE:6>EM79TQ<QSO_DATE:8>20260504<TIME_ON:6>020000"
+                                  "<BAND:3>20m<MODE:5>PSK31<EOR>\n"),
+                       QByteArray("<CALL:4>K8AB<QSO_DATE:8>20260504<TIME_ON:4>0200<BAND:3>20M"
+                                  "<MODE:5>PSK31<EOR>")});
+      const QsoHistory k8ab = memory.lookup(QStringLiteral("k8ab"));
+      if (k8ab.count != 2 || k8ab.name != QLatin1String("Bob") || k8ab.qth != QLatin1String("Dayton") ||
+          k8ab.grid != QLatin1String("EM79TQ") || k8ab.lastDate != QLatin1String("2026-05-04") ||
+          k8ab.lastBand != QLatin1String("20m") || k8ab.lastMode != QLatin1String("PSK31") ||
+          memory.lookup(QStringLiteral("W1AW")).count != 0)
+        return fail("log memory did not read the ADIF");
+      // Callbook answers, and portable calls.
+      QString key;
+      QString err;
+      const CallbookRecord qrz = Callbook::parseQrz(
+          "<?xml version=\"1.0\" ?><QRZDatabase version=\"1.34\"><Callsign><call>AA7BQ</call>"
+          "<fname>FRED L</fname><name>LLOYD</name><addr2>SCOTTSDALE</addr2><state>AZ</state>"
+          "<grid>DM32AF</grid></Callsign><Session><Key>abc123</Key><Count>1</Count></Session></QRZDatabase>",
+          &key, &err);
+      if (!qrz.found || qrz.name != QLatin1String("Fred") || qrz.qth != QLatin1String("Scottsdale") ||
+          qrz.state != QLatin1String("AZ") || qrz.grid != QLatin1String("DM32af") || key != QLatin1String("abc123"))
+        return fail("a QRZ answer did not read");
+      key.clear();
+      err.clear();
+      if (Callbook::parseQrz("<QRZDatabase><Session><Error>Session Timeout</Error></Session></QRZDatabase>", &key,
+                             &err).found ||
+          !key.isEmpty() || err != QLatin1String("Session Timeout"))
+        return fail("a QRZ session timeout was not seen");
+      err.clear();
+      const CallbookRecord hq = Callbook::parseHamqth(
+          R"({"callsign":"OK2CQR","nick":"Petr","qth":"Neratovice","location":{"grid":"jo70gg"},)"
+          R"("address":{"city":"Neratovice"},"region":{"usState":""}})",
+          &err);
+      if (!hq.found || hq.name != QLatin1String("Petr") || hq.qth != QLatin1String("Neratovice") ||
+          hq.grid != QLatin1String("JO70gg"))
+        return fail("a HamQTH answer did not read");
+      if (Callbook::parseHamqthToken(R"({"token":"t0k","expiresIn":3600})", &err) != QLatin1String("t0k") ||
+          !Callbook::parseHamqthToken(R"({"title":"Unauthorized","detail":"Wrong password"})", &err).isEmpty() ||
+          err != QLatin1String("Wrong password"))
+        return fail("a HamQTH login answer did not read");
+      if (!Callbook::portable(QStringLiteral("K8AB/P")) || Callbook::portable(QStringLiteral("K8AB")) ||
+          Callbook::homeCall(QStringLiteral("VE3/K8AB/P")) != QLatin1String("K8AB"))
+        return fail("a portable call was not recognized");
+    }
+    // The logger link: a Reply as SDRLogger+ writes it, and Status as it reads it.
+    {
+      QByteArray reply;
+      {
+        QDataStream out(&reply, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_5_4);
+        out.setByteOrder(QDataStream::BigEndian);
+        out << quint32(0xadbccbda) << quint32(3) << quint32(4) << QByteArray("STD") << quint32(52245000)
+            << qint32(-12) << double(0.2) << quint32(1523) << QByteArray("~") << QByteArray("CQ K8AB EN81")
+            << false << quint8(0);
+      }
+      QsoLog::UdpRequest req;
+      if (!QsoLog::parseRequest(reply, &req) || req.type != 4 || req.message != QLatin1String("CQ K8AB EN81") ||
+          req.deltaFrequency != 1523 || req.snr != -12 || req.timeMs != 52245000)
+        return fail("a logger Reply did not read");
+      QByteArray other;
+      {
+        QDataStream out(&other, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_5_4);
+        out.setByteOrder(QDataStream::BigEndian);
+        out << quint32(0xadbccbda) << quint32(3) << quint32(4) << QByteArray("JTDX") << quint32(0) << qint32(0)
+            << double(0.0) << quint32(1500) << QByteArray("~") << QByteArray("CQ K8AB EN81") << false;
+      }
+      QsoLog::UdpRequest notOurs;
+      if (QsoLog::parseRequest(other, &notOurs))
+        return fail("a Reply for another program was taken");
+      QByteArray halt;
+      {
+        QDataStream out(&halt, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_5_4);
+        out.setByteOrder(QDataStream::BigEndian);
+        out << quint32(0xadbccbda) << quint32(3) << quint32(8) << QByteArray("STD") << true;
+      }
+      QsoLog::UdpRequest h;
+      if (!QsoLog::parseRequest(halt, &h) || h.type != 8 || !h.autoTxOnly)
+        return fail("a logger Halt Tx did not read");
+      QsoLog::UdpStatus st;
+      st.dialHz = 14074000;
+      st.mode = QStringLiteral("FT8");
+      st.dxCall = QStringLiteral("k8ab");
+      st.deCall = QStringLiteral("N8SDR");
+      const QByteArray status = QsoLog::statusDatagram(st);
+      QDataStream in(status);
+      in.setVersion(QDataStream::Qt_5_4);
+      in.setByteOrder(QDataStream::BigEndian);
+      quint32 magic = 0, schema = 0, type = 0;
+      quint64 dial = 0;
+      QByteArray id, smode, dx;
+      in >> magic >> schema >> type >> id >> dial >> smode >> dx;
+      if (magic != 0xadbccbda || type != 1 || id != "STD" || dial != 14074000 || smode != "FT8" || dx != "K8AB")
+        return fail("Status for the logger is wrong");
+    }
+    if (macroButtonLabel(QStringLiteral("CQ  @>|"), mc, true) != QStringLiteral("▶ CQ") ||
+        macroButtonLabel(QStringLiteral("Reply <CALL>"), mc, false) != QLatin1String("Reply W1AW"))
+      return fail("macro button labels are wrong");
+  }
   const QVector<MacroSlot> blank = blankMacroSet();
   if (blank.size() != 48 || blank.at(0).name != QLatin1String("F-1") ||
       blank.at(47).name != QLatin1String("F-48") || !blank.at(0).text.isEmpty())
@@ -646,6 +885,20 @@ int shellReady(MainWindow& window) {
       return fail("logbook backup replaced itself");
     if (backupLogbookFile(dir.filePath(QStringLiteral("missing.adi")), backupPath, &fileError))
       return fail("logbook backup invented a file");
+    {
+      // Lookup's second ADIF: STD keeps a copy and reads it once the original is gone.
+      const QString name = QStringLiteral("std-selftest-memory-%1.adi").arg(QCoreApplication::applicationPid());
+      const QString memory = dir.filePath(name);
+      QFile::copy(logPath, memory);
+      const QString copy = QsoLog::adifCopyPath(memory);
+      if (QsoLog::keepAdifCopy(memory) != memory || QFile(copy).size() != logBody.size())
+        return fail("Lookup ADIF was not copied into the log folder");
+      QFile::remove(memory);
+      const bool usesCopy = QsoLog::keepAdifCopy(memory) == copy;
+      QFile::remove(copy);
+      if (!usesCopy)
+        return fail("Lookup ADIF copy was not used once the original was gone");
+    }
     const QString exportPath = dir.filePath(QStringLiteral("std-logbook-export.adi"));
     int records = -1;
     if (!exportAdifForLogger(logPath, exportPath, &records, &fileError) || records != 1)
@@ -1429,6 +1682,16 @@ int shellReady(MainWindow& window) {
       }
     }
   }
+  {
+    // MFSK64L: no lead-in, so the pass is the 2500-bit flush (1250
+    // symbols) plus the text framing. The lead-in would add 416 symbols.
+    const MfskPlan longPlan = planMfsk(QStringLiteral("MFSK64L"), QStringLiteral("E"), 1500);
+    const int symbols = int(longPlan.samples.size()) / 768;
+    if (symbols < 1250 || symbols > 1350) {
+      qCritical("MFSK64L symbols %d", symbols);
+      return fail("MFSK64L sends the lead-in Fldigi leaves out");
+    }
+  }
   for (const char* name : {"MFSK16", "MFSK31"}) {
     std::vector<float> wave;
     if (!buildTxWave(QString::fromLatin1(name), QStringLiteral("E"), 1500, &wave) || wave.size() < 1000)
@@ -1635,6 +1898,182 @@ int shellReady(MainWindow& window) {
     if (!back.contains(QLatin1String("CQ CQ DE N8SDR N8SDR PSE K"))) {
       qCritical("QPSK decode %s [%s] samples %d", name, qPrintable(back), int(wave.size()));
       return fail("QPSK did not decode");
+    }
+  }
+  // Speech read-back: phrase pacing, spelling, and the controls.
+  {
+    QString buffer = QStringLiteral("CQ CQ DE N8");
+    if (!speechTakeReady(&buffer, false).isEmpty())
+      return fail("Speech spoke a half-finished line");
+    buffer += QStringLiteral("SDR K\nUR");
+    const QString line = speechTakeReady(&buffer, false);
+    if (line != QStringLiteral("CQ CQ DE N8SDR K\n") || buffer != QStringLiteral("UR"))
+      return fail("Speech did not take the finished line");
+    if (speechTakeReady(&buffer, true) != QStringLiteral("UR") || !buffer.isEmpty())
+      return fail("Speech did not read the rest after the pause");
+    buffer = QStringLiteral("ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NIN");
+    if (speechTakeReady(&buffer, false) != QStringLiteral("ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT ") ||
+        buffer != QStringLiteral("NIN"))
+      return fail("Speech did not read a long line by finished words");
+    if (speechClean(QStringLiteral("CQ DE N8SDR UR 599 #$%& ~~ K"), true) !=
+        QStringLiteral("CQ DE N 8 S D R UR 5 9 9 K"))
+      return fail("Speech did not spell the call and report or drop the noise");
+    if (!speechClean(QStringLiteral("#$%&"), false).contains(QLatin1Char('#')))
+      return fail("Speech dropped symbols with Skip garbled off");
+    (void)SpeechReader::voices();
+    if (SpeechReader::outputs().isEmpty())
+      return fail("Speech has no Windows default device entry");
+    // Talk gate: 1 s quiet, 0.5 s of voice at about -23 dBFS, 1 s quiet.
+    // Kept: the voice, 100 ms before it, and 300 ms after.
+    std::vector<float> mic(size_t(SpeechInput::kRate) * 5 / 2, 0.0f);
+    for (int i = SpeechInput::kRate; i < SpeechInput::kRate * 3 / 2; ++i)
+      mic[size_t(i)] = float(0.1 * std::sin(2.0 * 3.14159265358979 * 300.0 * i / SpeechInput::kRate));
+    const std::vector<float> kept = gateSpeech(mic, -45.0);
+    if (kept.size() < size_t(SpeechInput::kRate) * 85 / 100 || kept.size() > size_t(SpeechInput::kRate) * 95 / 100) {
+      qCritical("Talk gate kept %d samples", int(kept.size()));
+      return fail("Talk gate did not keep the voice with its lead-in and hold");
+    }
+    if (!gateSpeech(std::vector<float>(size_t(SpeechInput::kRate), 0.001f), -45.0).empty())
+      return fail("Talk gate let quiet room noise through");
+    if (SpeechInput::inputs().isEmpty() || !window.findChild<QPushButton*>(QStringLiteral("txTalk")))
+      return fail("Talk is missing");
+    {
+      const QList<SpeechModelInfo> models = speechModels();
+      QStringList ids;
+      for (const SpeechModelInfo& m : models) {
+        if (m.sha256.size() != 64 || m.bytes < 10000000 || !m.url.startsWith(QStringLiteral("https://")) ||
+            !m.url.endsWith(m.file) || ids.contains(m.id))
+          return fail("Speech model list is malformed");
+        ids << m.id;
+      }
+      if (models.size() != 3 || !speechModel(QStringLiteral("base.en")).bytes ||
+          !speechModel(QStringLiteral("nope")).id.isEmpty() || speechModelInstalled(SpeechModelInfo{}) ||
+          speechModelSize(77704715) != QStringLiteral("77.7 MB"))
+        return fail("Speech model helpers are wrong");
+      SpeechModelDownload probe;
+      if (probe.start(SpeechModelInfo{}) || probe.busy())
+        return fail("Speech model download started with no model");
+    }
+    {
+      const QList<QPair<QString, QString>> cases = {
+          {QStringLiteral("CQ CQ de Kilo Eight Alpha Bravo, Kilo Eight Alpha Bravo."),
+           QStringLiteral("CQ CQ DE K8AB K8AB.")},
+          {QStringLiteral("Your report is five nine nine."), QStringLiteral("YOUR REPORT IS 599.")},
+          {QStringLiteral("I am in Ohio, seventy three."), QStringLiteral("I AM IN OHIO, 73.")},
+          {QStringLiteral("This is K-8-A-B slash portable."), QStringLiteral("THIS IS K8AB/P.")},
+          {QStringLiteral("um, name is Rick [BLANK_AUDIO]"), QStringLiteral("NAME IS RICK")},
+          {QStringLiteral("W 8 X Y Z here"), QStringLiteral("W8XYZ HERE")},
+          {QStringLiteral("de Kilo8 Alfa Bravo, Kilo8 Alfa Bravo."), QStringLiteral("DE K8AB K8AB.")},
+          {QStringLiteral("I have a rig"), QStringLiteral("I HAVE A RIG")},
+      };
+      for (const auto& c : cases) {
+        if (speechToTxText(c.first) != c.second) {
+          qCritical().noquote() << speechToTxText(c.first);
+          return fail("Speech clean-up gave the wrong text");
+        }
+      }
+      if (!speechHint(QStringLiteral("n8sdr"), QStringLiteral("W1AW")).contains(QStringLiteral("N8SDR")))
+        return fail("Speech hint is missing the call");
+      const QStringList fixes = {QStringLiteral("hex beam = hexbeam"), QStringLiteral("DAYTON OHIO = Dayton, OH"),
+                                 QStringLiteral("no equals here"), QStringLiteral(" = blank")};
+      if (speechApplyCorrections(QStringLiteral("MY HEX BEAM IS UP IN DAYTON OHIO 73"), fixes) !=
+              QLatin1String("MY HEXBEAM IS UP IN DAYTON, OH 73") ||
+          speechApplyCorrections(QStringLiteral("HEX BEAMS"), fixes) != QLatin1String("HEX BEAMS"))
+        return fail("Speech corrections replaced the wrong words");
+      if (speechMyWords({QStringLiteral("W8AJT, Kenwood"), QStringLiteral("kenwood"), QStringLiteral(" Hexbeam ")}) !=
+          QLatin1String("W8AJT, Kenwood, Hexbeam"))
+        return fail("Speech My words did not join");
+      SpeechRecognizer::cpuSupported();
+      // Optional end-to-end check with an installed model: STD_SPEECH_WAV
+      // names a 16 kHz mono 16-bit WAV of spoken text.
+      const QString wav = qEnvironmentVariable("STD_SPEECH_WAV");
+      SpeechModelInfo installed;
+      for (const SpeechModelInfo& m : speechModels()) {
+        if (speechModelInstalled(m))
+          installed = m;
+      }
+      if (!wav.isEmpty() && !installed.id.isEmpty()) {
+        QFile file(wav);
+        if (!file.open(QIODevice::ReadOnly))
+          return fail("Speech WAV would not open");
+        const QByteArray data = file.readAll().mid(44);
+        std::vector<float> pcm(size_t(data.size() / 2));
+        for (size_t k = 0; k < pcm.size(); ++k)
+          pcm[k] = float(qFromLittleEndian<qint16>(data.constData() + 2 * k)) / 32768.0f;
+        SpeechRecognizer recognizer;
+        QString heard;
+        QString error;
+        QEventLoop wait;
+        QObject::connect(&recognizer, &SpeechRecognizer::done, &wait, [&](const QString& t, const QString& e) {
+          heard = t;
+          error = e;
+          wait.quit();
+        });
+        QElapsedTimer took;
+        took.start();
+        if (!recognizer.start(speechModelPath(installed), gateSpeech(pcm, -45.0), speechHint(QString(), QString())))
+          return fail("Recognizer did not start");
+        QTimer::singleShot(120000, &wait, &QEventLoop::quit);
+        wait.exec();
+        qInfo().noquote() << "Speech" << installed.id << took.elapsed() << "ms raw:" << heard << "| tx:"
+                          << speechToTxText(heard) << error;
+        if (heard.isEmpty())
+          return fail("Recognizer heard nothing in the WAV");
+      }
+    }
+    if (!window.findChild<QAction*>(QStringLiteral("speechSettings")) ||
+        !window.findChild<QPushButton*>(QStringLiteral("speechChip")) ||
+        !window.findChild<QSpinBox*>(QStringLiteral("speechVolume")))
+      return fail("Speech controls are missing");
+  }
+  // Live idle safety toggle. The self-test shares the operator's settings,
+  // so only the range is checked here, not the saved on/off and seconds.
+  {
+    const auto* idleStop = window.findChild<QCheckBox*>(QStringLiteral("liveIdleStop"));
+    const auto* idleSeconds = window.findChild<QComboBox*>(QStringLiteral("liveIdleSeconds"));
+    if (!idleStop || !idleSeconds || idleSeconds->count() != 4 || idleSeconds->itemData(0).toInt() != 5 ||
+        idleSeconds->itemData(3).toInt() != 25)
+      return fail("Live TX idle safety choices are not 5, 10, 15, and 25 s");
+    if (liveIdleChoice(120) != 25 || liveIdleChoice(12) != 10 || liveIdleChoice(4) != 5 ||
+        liveIdleChoice(20) != 15)
+      return fail("Live TX idle setting does not snap to a choice");
+    if (liveIdleExpired(1000, 1000 + 24999, true, 25) || !liveIdleExpired(1000, 1000 + 25000, true, 25) ||
+        liveIdleExpired(1000, 1000 + 999999, false, 25) || liveIdleExpired(0, 999999, true, 25))
+      return fail("Live TX idle safety timing is wrong");
+  }
+  // Live typing: text, a pause of idle, more text, then the tail. The
+  // receiver must print both pieces, and idle must not print anything.
+  for (const char* name : {"PSK31", "PSK125", "QPSK31", "QPSK250", "RTTY"}) {
+    const QString mode = QString::fromLatin1(name);
+    auto live = makeLiveTextTx(mode, 1500, nullptr);
+    if (!liveTextMode(mode) || !live)
+      return fail("Live keyboard TX is missing");
+    std::vector<float> wave;
+    live->begin(&wave);
+    for (const QChar ch : QStringLiteral("CQ CQ"))
+      live->put(ch, &wave);
+    const size_t before = wave.size();
+    for (int i = 0; i < 30; ++i)
+      live->idle(&wave);
+    if (wave.size() <= before)
+      return fail("Live keyboard TX idle added nothing");
+    for (const QChar ch : QStringLiteral(" DE N8SDR K"))
+      live->put(ch, &wave);
+    live->end(&wave);
+    const QString back = rttyMode(mode) ? rttyDecode(wave.data(), int(wave.size()), 48000, 1500)
+                                        : pskDecode(mode, wave.data(), int(wave.size()), 48000, 1500);
+    if (!back.contains(QLatin1String("CQ CQ")) || !back.contains(QLatin1String("DE N8SDR K"))) {
+      qCritical("Live %s [%s]", name, qPrintable(back));
+      return fail("Live keyboard TX did not decode across idle");
+    }
+    QString letters;
+    for (const QChar ch : back) {
+      if (!ch.isSpace())
+        letters.append(ch);
+    }
+    if (letters != QLatin1String("CQCQDEN8SDRK")) {
+      qCritical("Live %s idle printed [%s]", name, qPrintable(back));
+      return fail("Live keyboard TX idle printed characters");
     }
   }
   const auto* qpsk31 = window.findChild<QAction*>(QStringLiteral("modeQpsk31"));
@@ -2422,6 +2861,99 @@ int shellReady(MainWindow& window) {
     stdMa.txEnded();
     if (!stdMa.takeStop())
       return fail("MA Std with CNS off did not stop when Now emptied");
+
+    // MSHV TX Confirmation If 73 Or RR73: on answers their RR73 with 73,
+    // off ends the QSO on it.
+    for (const bool cfm : {true, false}) {
+      MaEngine c;
+      c.setStation(QStringLiteral("N8SDR"), QStringLiteral("EM79"));
+      c.setMode(MaEngine::Mode::Standard);
+      c.setSlotCount(2);
+      c.setCfm73(cfm);
+      c.decoded(QStringLiteral("N8SDR K1ABC FN42"), -5, 1200, false);
+      c.decoded(QStringLiteral("N8SDR K1ABC R-10"), -5, 1200, false);
+      c.decoded(QStringLiteral("N8SDR K1ABC RR73"), -5, 1200, false);
+      const bool sends73 = c.message().contains(QLatin1String("K1ABC N8SDR 73"));
+      if (sends73 != cfm)
+        return fail(cfm ? "MA Std with TX Confirmation on did not answer RR73 with 73"
+                        : "MA Std with TX Confirmation off still sent 73 after RR73");
+    }
+
+    // Contest mode: exchanges, Enter Sends Message, dupes, and the log fields.
+    {
+      const ContestTemplate& ru = contestTemplate(QStringLiteral("rtty-ru"));
+      const ContestTemplate& fd = contestTemplate(QStringLiteral("field-day"));
+      const ContestTemplate& ser = contestTemplate(QStringLiteral("serial"));
+      const ContestTemplate& ww = contestTemplate(QStringLiteral("cqww-rtty"));
+      if (contestExchange(ru, QStringLiteral("oh"), 5) != QLatin1String("599 OH") ||
+          contestExchange(ser, QStringLiteral("#"), 7) != QLatin1String("599 007") ||
+          contestExchange(fd, QStringLiteral("2A OH"), 1) != QLatin1String("2A OH"))
+        return fail("contest exchange out is wrong");
+      if (contestExchangeHeard(ru, QStringLiteral("N8SDR DE W1AW W1AW 599 MA 599 MA K"), QStringLiteral("W1AW"),
+                               QStringLiteral("N8SDR")) != QLatin1String("MA") ||
+          contestExchangeHeard(fd, QStringLiteral("N8SDR W1AW 3A CT 3A CT"), QStringLiteral("W1AW"),
+                               QStringLiteral("N8SDR")) != QLatin1String("3A CT") ||
+          contestExchangeHeard(ser, QStringLiteral("TU 599 012 012"), QStringLiteral("K8AB"),
+                               QStringLiteral("N8SDR")) != QLatin1String("012") ||
+          contestExchangeHeard(ww, QStringLiteral("N8SDR 599 05 OH 599 05 OH"), QStringLiteral("K8AB"),
+                               QStringLiteral("N8SDR")) != QLatin1String("05 OH") ||
+          !contestExchangeHeard(ru, QStringLiteral("CQ RU W1AW W1AW"), QStringLiteral("W1AW"),
+                                QStringLiteral("N8SDR"))
+               .isEmpty())
+        return fail("contest exchange heard is wrong");
+      if (contestEnterMessage(true, true, true) != 0 || contestEnterMessage(true, false, true) != 1 ||
+          contestEnterMessage(true, false, false) != 2 || contestEnterMessage(false, true, true) != -1 ||
+          contestEnterMessage(false, false, true) != 3 || contestEnterMessage(false, false, false) != 1)
+        return fail("contest Enter sends the wrong message");
+      for (const ContestTemplate& t : contestTemplates()) {
+        if (t.run.size() != 8 || t.sp.size() != 8 || t.labels.size() != 8 || t.spLabels.size() != 8)
+          return fail("contest template does not have eight messages");
+        if (!t.run.at(2).contains(QLatin1String("<LOG>")) || !t.sp.at(1).contains(QLatin1String("<LOG>")))
+          return fail("contest TU message does not log");
+      }
+      MacroContext mc;
+      mc.myCall = QStringLiteral("N8SDR");
+      mc.tags.insert(QStringLiteral("<CALL>"), QStringLiteral("W1AW"));
+      mc.tags.insert(QStringLiteral("<XOUT>"), QStringLiteral("599 OH"));
+      mc.tags.insert(QStringLiteral("<XIN>"), QString());
+      const MacroPlan exchPlan = planMacro(ru.run.at(1), mc);
+      if (exchPlan.text != QLatin1String("W1AW 599 OH 599 OH") || !exchPlan.keys || !exchPlan.backToRx)
+        return fail("contest exchange message did not fill");
+      if (!planMacro(QStringLiteral("<TX>TU <XIN><RX>"), mc).missing.contains(QStringLiteral("Exch")))
+        return fail("an empty <XIN> was not reported");
+
+      QTemporaryDir cdir;
+      const QString adi = cdir.filePath(QStringLiteral("contest.adi"));
+      QFile cf(adi);
+      if (!cf.open(QIODevice::WriteOnly))
+        return fail("contest sample log did not write");
+      cf.write("<ADIF_VER:5>3.1.0<EOH>\n"
+               "<CALL:4>W1AW<BAND:3>40m<QSO_DATE:8>20260103<TIME_ON:6>180000<CONTEST_ID:9>ARRL-RTTY<EOR>\n"
+               "<CALL:4>K8AB<BAND:3>20m<QSO_DATE:8>20250104<TIME_ON:4>1200<CONTEST_ID:9>ARRL-RTTY<EOR>\n"
+               "<CALL:4>N0XX<BAND:3>40m<QSO_DATE:8>20260103<TIME_ON:6>181000<CONTEST_ID:6>ARRL-FD<EOR>\n");
+      cf.close();
+      const QDateTime since(QDate(2026, 1, 1), QTime(0, 0), QTimeZone::utc());
+      const QSet<QString> worked = contestWorked(adi, QStringLiteral("ARRL-RTTY"), since);
+      if (!worked.contains(contestDupeKey(QStringLiteral("w1aw"), QStringLiteral("40m"))) ||
+          worked.contains(contestDupeKey(QStringLiteral("W1AW"), QStringLiteral("20m"))) ||
+          worked.contains(contestDupeKey(QStringLiteral("K8AB"), QStringLiteral("20m"))) ||
+          worked.contains(contestDupeKey(QStringLiteral("N0XX"), QStringLiteral("40m"))))
+        return fail("contest dupes read the wrong QSOs");
+
+      QsoLog::Record cr;
+      cr.call = QStringLiteral("W1AW");
+      cr.contestId = QStringLiteral("ARRL-RTTY");
+      cr.stxString = QStringLiteral("599 007");
+      cr.srxString = QStringLiteral("012");
+      cr.stx = QStringLiteral("7");
+      cr.srx = QStringLiteral("12");
+      cr.timeOff = QDateTime::currentDateTimeUtc();
+      const QString crText = QsoLog::adifRecord(cr);
+      if (!crText.contains(QLatin1String("<CONTEST_ID:9>ARRL-RTTY")) ||
+          !crText.contains(QLatin1String("<STX_STRING:7>599 007")) || !crText.contains(QLatin1String("<SRX:2>12")) ||
+          !crText.contains(QLatin1String("<STX:1>7")))
+        return fail("contest QSO is missing its ADIF fields");
+    }
 
     MaEngine dx;
     dx.setStation(QStringLiteral("N8SDR"), QStringLiteral("EM79"));
@@ -3256,7 +3788,64 @@ int shellReady(MainWindow& window) {
 
 }  // namespace
 
+#if defined(_WIN32)
+// STD_CRASH_TRACE=1: on a crash, print the call stack to stderr. Function
+// names and lines need a build with debug info (std.pdb next to std.exe).
+static LONG WINAPI crashTrace(EXCEPTION_POINTERS* info) {
+  const DWORD code = info->ExceptionRecord->ExceptionCode;
+  if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION &&
+      code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_INT_DIVIDE_BY_ZERO &&
+      code != EXCEPTION_ARRAY_BOUNDS_EXCEEDED && code != STATUS_HEAP_CORRUPTION)
+    return EXCEPTION_CONTINUE_SEARCH;
+  static bool once = false;
+  if (once)
+    return EXCEPTION_CONTINUE_SEARCH;
+  once = true;
+  const HANDLE process = GetCurrentProcess();
+  SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+  SymInitialize(process, nullptr, TRUE);
+  fprintf(stderr, "\n=== STD crash 0x%08lx at %p, thread %lu ===\n", code,
+          info->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());
+  CONTEXT context = *info->ContextRecord;
+  STACKFRAME64 frame = {};
+  frame.AddrPC.Offset = context.Rip;
+  frame.AddrPC.Mode = AddrModeFlat;
+  frame.AddrFrame.Offset = context.Rbp;
+  frame.AddrFrame.Mode = AddrModeFlat;
+  frame.AddrStack.Offset = context.Rsp;
+  frame.AddrStack.Mode = AddrModeFlat;
+  alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 512] = {};
+  auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+  for (int depth = 0; depth < 48; ++depth) {
+    if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame, &context, nullptr,
+                     SymFunctionTableAccess64, SymGetModuleBase64, nullptr) ||
+        frame.AddrPC.Offset == 0)
+      break;
+    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+    symbol->MaxNameLen = 511;
+    DWORD64 offset = 0;
+    IMAGEHLP_LINE64 line = {};
+    line.SizeOfStruct = sizeof(line);
+    DWORD lineOffset = 0;
+    char module[MAX_PATH] = "?";
+    if (const DWORD64 base = SymGetModuleBase64(process, frame.AddrPC.Offset))
+      GetModuleFileNameA(reinterpret_cast<HMODULE>(base), module, MAX_PATH);
+    const char* name = SymFromAddr(process, frame.AddrPC.Offset, &offset, symbol) ? symbol->Name : "?";
+    if (SymGetLineFromAddr64(process, frame.AddrPC.Offset, &lineOffset, &line))
+      fprintf(stderr, "  #%02d %s  %s:%lu\n", depth, name, line.FileName, line.LineNumber);
+    else
+      fprintf(stderr, "  #%02d %s+0x%llx  [%s]\n", depth, name, offset, strrchr(module, '\\') ? strrchr(module, '\\') + 1 : module);
+  }
+  fflush(stderr);
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
 int main(int argc, char* argv[]) {
+#if defined(_WIN32)
+  if (qEnvironmentVariableIsSet("STD_CRASH_TRACE"))
+    AddVectoredExceptionHandler(1, crashTrace);
+#endif
   const bool selftest = qEnvironmentVariableIsSet("STD_SELFTEST");
   WaterfallGpu::prepareProcessBackend(!selftest);
 

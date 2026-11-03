@@ -1365,7 +1365,9 @@ void MT63rx::DataProcess(dspCmpx *EvenSlice, dspCmpx *OddSlice, double FreqOfs, 
 //  printf("Symbol vectors:\n");
 	incr = (TimeDist * DataCarrSepar) & WindowLenMask;	// correct FFT dspPhase shift
 	p = (TimeDist * DataScanFirst) & WindowLenMask;	// due to time shift by
-	for (c = DataScanFirst, i = 0; i < DataScanLen; ) {	// TimeDist
+	// STD: wrap the first bin too. At 1500 Hz in the 500 Hz modes it is past
+	// the end of the FFT window (608 of 512), so the first read was out of range.
+	for (c = DataScanFirst & WindowLenMask, i = 0; i < DataScanLen; ) {	// TimeDist
 // printf("%2d,%3d:",i,c);
 // printf("  [%6.3f,%6.3f]  [%6.3f,%6.3f]",
 //	 FFTbuff[c].re,FFTbuff[c].im,

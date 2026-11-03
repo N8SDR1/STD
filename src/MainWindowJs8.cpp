@@ -224,10 +224,11 @@ QWidget* MainWindow::makeJs8Receive(QWidget* parent) {
     connect(tree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item) {
       if (!item)
         return;
+      // Read both before js8Select: it repaints the lists, which deletes item.
       const QString call = item->data(0, Qt::UserRole + 1).toString();
+      const int hz = item->data(0, Qt::UserRole).toInt();
       if (!call.isEmpty())
         js8Select(call);
-      const int hz = item->data(0, Qt::UserRole).toInt();
       if (hz > 0) {
         if (auto* offset = findChild<QSpinBox*>(QStringLiteral("js8Offset")))
           offset->setValue(hz);

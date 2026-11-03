@@ -19,9 +19,15 @@
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
+#include "speech/SpeechReader.h"
+#include "speech/SpeechInput.h"
+#include "speech/SpeechModel.h"
+#include "speech/SpeechRecognizer.h"
 #include "spot/PskReporter.h"
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
+#include "WxFeed.h"
+#include "Callbook.h"
 #include "ModeProfile.h"
 #include "QsoLog.h"
 #include "StationFiles.h"
@@ -66,6 +72,7 @@
 #include <QLineEdit>
 #include <QLinearGradient>
 #include <QListWidget>
+#include <QInputDialog>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
@@ -473,6 +480,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildMenus();
   arrangeDefault();
   qsoLog_ = new QsoLog(this);
+  // The logger link: Status once a second when it changes, and the
+  // logger's Reply, Halt Tx, and Free Text.
+  connect(qsoLog_, &QsoLog::requestReceived, this, &MainWindow::loggerRequest);
+  auto* loggerTick = new QTimer(this);
+  loggerTick->setInterval(1000);
+  connect(loggerTick, &QTimer::timeout, this, [this] { sendLoggerStatus(); });
+  loggerTick->start();
 
   tci_ = new TciClient(this);
   if (profile_ && waterfall_) {
@@ -603,6 +617,28 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   });
 
   hell_ = new HellEngine(this);
+  speech_ = new SpeechReader(this);
+  talkIn_ = new SpeechInput(this);
+  modelDl_ = new SpeechModelDownload(this);
+  recognizer_ = new SpeechRecognizer(this);
+  wx_ = new WxFeed(this);
+  callbook_ = new Callbook(this);
+  connect(callbook_, &Callbook::answered, this, &MainWindow::callbookAnswered);
+  callbookWait_ = new QTimer(this);
+  callbookWait_->setSingleShot(true);
+  callbookWait_->setInterval(900);
+  connect(callbookWait_, &QTimer::timeout, this, [this] {
+    // Only the call still in the bar once typing has paused.
+    if (!callbookFor_.isEmpty() && callbookFor_ == qsoBarLastCall_.toUpper())
+      callbook_->lookup(Callbook::portable(callbookFor_) ? Callbook::homeCall(callbookFor_) : callbookFor_);
+  });
+  // New weather refreshes the macro labels and tooltips that show <WX>.
+  connect(wx_, &WxFeed::updated, this, [this] { showMacroSet(); });
+  QTimer::singleShot(3000, wx_, [this] { wx_->reload(); });
+  connect(recognizer_, &SpeechRecognizer::done, this, &MainWindow::insertHeardText);
+  // A download keeps going with the Speech window closed; say how it ended.
+  connect(modelDl_, &SpeechModelDownload::finished, this,
+          [this](const QString&, bool, const QString& message) { setTxStatus(message); });
   if (statusStrip_) {
     if (auto* sql = statusStrip_->findChild<QPushButton*>(QStringLiteral("squelchToggle"))) {
       connect(sql, &QPushButton::toggled, this, [this](bool on) {
@@ -1414,6 +1450,50 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     toneRow->hide();
     layout->addWidget(toneRow);
 
+    // Live keyboard TX safety: return to RX when nothing new was typed for
+    // this long. On, 25 s by default.
+    auto* liveRow = new QWidget(panel);
+    liveRow->setObjectName(QStringLiteral("liveTxOptions"));
+    auto* liveLayout = new QHBoxLayout(liveRow);
+    liveLayout->setContentsMargins(0, 0, 0, 0);
+    liveLayout->setSpacing(6);
+    auto* idleStop = new QCheckBox(QStringLiteral("Back to RX after"), liveRow);
+    idleStop->setObjectName(QStringLiteral("liveIdleStop"));
+    idleStop->setFont(interfaceFont(12));
+    idleStop->setStyleSheet(rttyText);
+    idleStop->setFocusPolicy(Qt::NoFocus);
+    auto* idleSeconds = new QComboBox(liveRow);
+    idleSeconds->setObjectName(QStringLiteral("liveIdleSeconds"));
+    idleSeconds->setFont(interfaceFont(12));
+    for (const int choice : kLiveIdleChoices)
+      idleSeconds->addItem(QStringLiteral("%1 s idle").arg(choice), choice);
+    idleSeconds->setFocusPolicy(Qt::NoFocus);
+    const QString idleTip = QStringLiteral(
+        "RTTY, PSK, and QPSK stay keyed and send idle while the transmit box is empty. With this on, "
+        "a transmission ends by itself when nothing new was typed for this many seconds: the tail goes "
+        "out, then TRX drops. This does not key. START is never sent.");
+    idleStop->setToolTip(idleTip);
+    idleSeconds->setToolTip(idleTip);
+    {
+      QSettings store;
+      idleStop->setChecked(store.value(QStringLiteral("tx/liveIdleStop"), true).toBool());
+      const int saved = liveIdleChoice(store.value(QStringLiteral("tx/liveIdleSeconds"), 25).toInt());
+      idleSeconds->setCurrentIndex(std::max(0, idleSeconds->findData(saved)));
+    }
+    idleSeconds->setEnabled(idleStop->isChecked());
+    liveLayout->addWidget(idleStop);
+    liveLayout->addWidget(idleSeconds);
+    liveLayout->addStretch(1);
+    connect(idleStop, &QCheckBox::toggled, this, [idleSeconds](bool on) {
+      QSettings().setValue(QStringLiteral("tx/liveIdleStop"), on);
+      idleSeconds->setEnabled(on);
+    });
+    connect(idleSeconds, &QComboBox::currentIndexChanged, this, [idleSeconds](int) {
+      QSettings().setValue(QStringLiteral("tx/liveIdleSeconds"), idleSeconds->currentData().toInt());
+    });
+    liveRow->hide();
+    layout->addWidget(liveRow);
+
     auto* hellRow = new QWidget(panel);
     hellRow->setObjectName(QStringLiteral("hellOptions"));
     auto* hellLayout = new QHBoxLayout(hellRow);
@@ -1441,6 +1521,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
 
     auto* hellText = new QPlainTextEdit(panel);
     hellText->setObjectName(QStringLiteral("txHell"));
+    installTalkMenu(hellText);
     hellText->setFont(monoFont(13));
     hellText->setPlaceholderText(QStringLiteral(
         "Transmit text. A macro copies into this box. TX sends Hell, RTTY, and PSK31."));
@@ -1450,6 +1531,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "START is never sent."));
     hellText->setMinimumHeight(88);
     hellText->setPlainText(QSettings().value(QStringLiteral("tx/hellText")).toString());
+    hellText->installEventFilter(this);  // typing stops a waiting macro repeat
     hellText->hide();
     layout->addWidget(hellText, 1);
     auto* clrTx = new QPushButton(QStringLiteral("CLR TX"), panel);
@@ -1964,9 +2046,38 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "Ends this transmission now, even mid-slot, and stops the sequence. "
         "Does not key."));
     connect(halt, &QPushButton::clicked, this, [this] { haltTx(); });
+    // Speech to text: hold Talk and speak (or click to start and stop,
+    // set in Options -> Speech). Shown only when that is turned on.
+    auto* talk = new QPushButton(QStringLiteral("Talk"), panel);
+    talk->setObjectName(QStringLiteral("txTalk"));
+    talk->setFont(interfaceFont(12));
+    talk->setFocusPolicy(Qt::NoFocus);
+    talk->setToolTip(QStringLiteral(
+        "Speech to text. Hold Talk and speak; let go and the words go into the transmit box. "
+        "Options -> Speech picks the microphone, the gate, and click-to-talk, and holds My words "
+        "(what to expect) and Corrections (heard = send). Select wrong text in the transmit box and "
+        "right-click to teach a fix. Talk does not key."));
+    talk->hide();
+    connect(talk, &QPushButton::pressed, this, [this] {
+      if (!QSettings().value(QStringLiteral("speech/talkToggle"), false).toBool())
+        startTalk();
+    });
+    connect(talk, &QPushButton::released, this, [this] {
+      if (!QSettings().value(QStringLiteral("speech/talkToggle"), false).toBool())
+        endTalk();
+    });
+    connect(talk, &QPushButton::clicked, this, [this] {
+      if (!QSettings().value(QStringLiteral("speech/talkToggle"), false).toBool())
+        return;
+      if (talkActive_)
+        endTalk();
+      else
+        startTalk();
+    });
     buttons->addWidget(tune);
     buttons->addWidget(tx);
     buttons->addWidget(halt);
+    buttons->addWidget(talk);
     buttons->addStretch(1);
     layout->addLayout(buttons);
     auto* qso = new QPlainTextEdit(panel);
@@ -2311,6 +2422,51 @@ QWidget* MainWindow::makeReceivePanel() {
   tools->addWidget(filter, 1);
   tools->addWidget(clear);
   tools->addWidget(clrRx);
+  // Speech read-back: click mutes and unmutes, the number is the volume.
+  // Shown only when Options -> Speech has read-back on, in a text mode.
+  // One compact group, held to the left: [Speech] Vol [80%].
+  auto* speechBox = new QWidget(panel);
+  speechBox->setObjectName(QStringLiteral("speechBox"));
+  auto* speechRow = new QHBoxLayout(speechBox);
+  speechRow->setContentsMargins(0, 0, 0, 0);
+  speechRow->setSpacing(6);
+  auto* speechChip = new QPushButton(QStringLiteral("Speech"), speechBox);
+  speechChip->setObjectName(QStringLiteral("speechChip"));
+  speechChip->setCheckable(true);
+  speechChip->setFont(interfaceFont(11));
+  speechChip->setFocusPolicy(Qt::NoFocus);
+  speechChip->setToolTip(QStringLiteral(
+      "Received text read aloud. Click to mute or unmute. Options -> Speech sets the voice and the "
+      "sound device. This does not key."));
+  speechChip->setFixedWidth(70);
+  auto* speechVolLabel = new QLabel(QStringLiteral("Vol"), speechBox);
+  speechVolLabel->setObjectName(QStringLiteral("speechVolumeLabel"));
+  speechVolLabel->setFont(interfaceFont(11));
+  auto* speechVolume = new QSpinBox(speechBox);
+  speechVolume->setObjectName(QStringLiteral("speechVolume"));
+  speechVolume->setRange(0, 100);
+  speechVolume->setSuffix(QStringLiteral("%"));
+  speechVolume->setFont(interfaceFont(11));
+  speechVolume->setFocusPolicy(Qt::ClickFocus);
+  speechVolume->setToolTip(QStringLiteral("Speech volume. The mouse wheel works over it. This does not key."));
+  speechVolume->setFixedWidth(64);
+  speechVolLabel->setToolTip(speechVolume->toolTip());
+  speechRow->addWidget(speechChip);
+  speechRow->addWidget(speechVolLabel);
+  speechRow->addWidget(speechVolume);
+  speechRow->addStretch(1);
+  speechBox->hide();
+  tools->addWidget(speechBox, 1);
+  connect(speechChip, &QPushButton::toggled, this, [this](bool on) {
+    QSettings().setValue(QStringLiteral("speech/muted"), !on);
+    applySpeechSettings();
+  });
+  connect(speechVolume, &QSpinBox::valueChanged, this, [this](int value) {
+    QSettings().setValue(QStringLiteral("speech/volume"), value);
+    if (speech_)
+      speech_->setVolume(value);
+  });
+  applySpeechSettings();
   auto* faxStart = new QPushButton(QStringLiteral("Start"), panel);
   faxStart->setObjectName(QStringLiteral("wefaxStart"));
   faxStart->setFont(interfaceFont(11));
@@ -2625,16 +2781,21 @@ QWidget* MainWindow::makeMacroRow() {
   auto* bank = new QPushButton(QStringLiteral("1"), row);
   bank->setObjectName(QStringLiteral("macroBank"));
   bank->setFont(monoFont(12));
-  bank->setFixedWidth(28);
+  bank->setMinimumWidth(28);
   bank->setToolTip(QStringLiteral(
-      "Fldigi bank. Click for the next 12 macros. Right-click for the previous bank. "
-      "The label is 1 through 4. This does not key and does not send START."));
+      "Bank of 12 macros, 1 through 4. Click for the next bank. Right-click to go back, or to name the "
+      "bank for what it holds, such as CQ, QSO, or Sign-off. This does not key and does not send START."));
   connect(bank, &QPushButton::clicked, this, [this] { cycleMacroBank(1); });
   bank->setContextMenuPolicy(Qt::CustomContextMenu);
-  connect(bank, &QPushButton::customContextMenuRequested, this, [this] { cycleMacroBank(-1); });
+  connect(bank, &QPushButton::customContextMenuRequested, this, [this, bank](const QPoint& pos) {
+    QMenu menu(this);
+    menu.addAction(QStringLiteral("Previous bank"), this, [this] { cycleMacroBank(-1); });
+    menu.addAction(QStringLiteral("Name this bank ..."), this, [this] { renameMacroBank(); });
+    menu.exec(bank->mapToGlobal(pos));
+  });
   layout->addWidget(bank);
 
-  auto* macroTx = new QPushButton(QStringLiteral("TX macro"), row);
+  auto* macroTx = new QPushButton(QStringLiteral("Macros key"), row);
   macroTx->setObjectName(QStringLiteral("macroTx"));
   macroTx->setCheckable(true);
   macroTx->setFont(interfaceFont(11));
@@ -2642,13 +2803,32 @@ QWidget* MainWindow::makeMacroRow() {
   macroTx->setChecked(!qEnvironmentVariableIsSet("STD_SELFTEST") &&
                       QSettings().value(QStringLiteral("dx/macroTx"), false).toBool());
   macroTx->setToolTip(QStringLiteral(
-      "Off copies a macro into the transmit box. That does not key. "
-      "On also presses TX. Hell, RTTY, BPSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. "
+      "On: a macro with <TX> in it presses TX and sends, as in Fldigi; the ▶ macros are those. "
+      "A macro without <TX> only adds its text to the transmit box. "
+      "Off: a macro does not key; the text waits in the transmit box for TX. "
+      "Hell, RTTY, BPSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. "
       "START is never sent."));
-  connect(macroTx, &QPushButton::toggled, this, [](bool on) {
+  // Says ON or OFF in words, red when macros can key, so it reads at a glance.
+  auto showKeyState = [macroTx](bool on) {
+    macroTx->setText(on ? QStringLiteral("▶ Macros key: ON") : QStringLiteral("Macros key: OFF"));
+    macroTx->setStyleSheet(on ? QStringLiteral("QPushButton#macroTx { background: #b42318; color: white; "
+                                               "border: 1px solid #f04438; font-weight: bold; padding: 2px 8px; }")
+                              : QStringLiteral("QPushButton#macroTx { padding: 2px 8px; }"));
+  };
+  showKeyState(macroTx->isChecked());
+  connect(macroTx, &QPushButton::toggled, this, [this, showKeyState](bool on) {
     QSettings().setValue(QStringLiteral("dx/macroTx"), on);
+    showKeyState(on);
+    showMacroSet();
   });
   layout->addWidget(macroTx);
+  // The labels follow the QSO bar: "Reply <CALL>" reads "Reply K8AB".
+  QTimer::singleShot(0, this, [this] {
+    if (const auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"))) {
+      for (auto* edit : bar->findChildren<QLineEdit*>())
+        connect(edit, &QLineEdit::textChanged, this, [this] { showMacroSet(); });
+    }
+  });
 
   auto* active = new QLabel(row);
   active->setObjectName(QStringLiteral("macroActive"));
@@ -2886,6 +3066,20 @@ void MainWindow::buildMenus() {
       "TX and Tune stay locked until a callsign is saved. Does not key. START is never sent."));
   connect(userSettings, &QAction::triggered, this, [this] { openUserDialog(); });
 
+  auto* weather = optionsMenu->addAction(QStringLiteral("Weather…"));
+  weather->setObjectName(QStringLiteral("weatherSettings"));
+  weather->setToolTip(QStringLiteral(
+      "Local weather for the <WX> macro tags: Open-Meteo from your locator, an NWS station, or your "
+      "Ambient Weather or Ecowitt station. Off until you pick a source. Does not key."));
+  connect(weather, &QAction::triggered, this, [this] { openWeatherDialog(); });
+
+  auto* lookup = optionsMenu->addAction(QStringLiteral("Lookup…"));
+  lookup->setObjectName(QStringLiteral("lookupSettings"));
+  lookup->setToolTip(QStringLiteral(
+      "Fill the QSO bar from your logs and from QRZ.com or HamQTH when a call is entered. "
+      "Off until you set it up. Does not key."));
+  connect(lookup, &QAction::triggered, this, [this] { openLookupDialog(); });
+
   auto* networkConfig = optionsMenu->addAction(QStringLiteral("Network Configuration"));
   networkConfig->setObjectName(QStringLiteral("networkConfig"));
   networkConfig->setToolTip(QStringLiteral(
@@ -3069,6 +3263,20 @@ void MainWindow::buildMenus() {
       "Field Day, roundup, and serial tags for every contest on the TX list. "
       "Choosing a contest writes those tags into Tx1 through Tx6. This does not key."));
   connect(contestTags, &QAction::triggered, this, [this] { openContestTags(); });
+
+  auto* contestMode = optionsMenu->addAction(QStringLiteral("Contest Mode (RTTY, PSK, Hell)…"));
+  contestMode->setObjectName(QStringLiteral("contestModeDialog"));
+  contestMode->setToolTip(QStringLiteral(
+      "Contest mode for the keyboard modes: pick the contest and your exchange, and the QSO bar gets "
+      "Run or S&P messages on F1 to F8, their exchange, your serial, and a dupe check. Off until you "
+      "turn it on. This does not key."));
+  connect(contestMode, &QAction::triggered, this, [this] { openContestDialog(); });
+
+  auto* speech = optionsMenu->addAction(QStringLiteral("Speech…"));
+  speech->setObjectName(QStringLiteral("speechSettings"));
+  speech->setToolTip(QStringLiteral(
+      "Read received text aloud with a Windows voice on a sound device you pick. This does not key."));
+  connect(speech, &QAction::triggered, this, [this] { openSpeechDialog(); });
   addCheck(listMenu, "listShowFreq", QStringLiteral("Show Frequency Column"), "dx/showFreq", true,
            QStringLiteral("Show or hide the Freq column."));
   addCheck(listMenu, "listClearPeriod", QStringLiteral("New period clears the message list"),
@@ -3089,17 +3297,32 @@ void MainWindow::buildMenus() {
   logFile->setObjectName(QStringLiteral("logFileDialog"));
   logFile->setToolTip(QStringLiteral(
       "Choose the ADIF file and the WSJT-X UDP or DXKeeper TCP logger. "
-      "When a UDP option is on, live decodes go to that address as GridTracker reads them. "
+      "When the logger link or a UDP option is on, live decodes and Status go to that address "
+      "as WSJT-X sends them, and the logger can ask STD to work a station. "
       "The path is saved. This does not key and does not send START."));
   connect(logFile, &QAction::triggered, this, [this] { openLogDialog(); });
+  auto* logFolder = logMenu->addAction(QStringLiteral("Open log folder"));
+  logFolder->setObjectName(QStringLiteral("logOpenFolder"));
+  logFolder->setToolTip(QStringLiteral(
+      "Opens STD's log folder in Explorer: std.adi, the default logbook, and imported, the copy of "
+      "the ADIF picked in Lookup. A logbook you chose elsewhere stays where you chose it. Does not key."));
+  connect(logFolder, &QAction::triggered, this, [] {
+    const QString dir = QsoLog::logFolder();
+    QDir().mkpath(dir);
+    QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+  });
 
   optionsMenu->addSeparator();
   const QString txTip =
       QStringLiteral("Saved. Transmit is off, so this does not reply and does not key.");
   addCheck(optionsMenu, "aseqMostDistant", QStringLiteral("ASeq: Reply to the Most Distant"), "dx/aseq", false,
            txTip);
-  addCheck(optionsMenu, "txConfirm73", QStringLiteral("TX Confirmation If 73 Or RR73"), "dx/txConfirm73", true,
-           txTip);
+  auto* cfm73 = addCheck(optionsMenu, "txConfirm73", QStringLiteral("TX Confirmation If 73 Or RR73"),
+                         "dx/txConfirm73", true,
+                         QStringLiteral("On, as MSHV ships: in MA Std and MA DX their RR73 or 73 is answered "
+                                        "with 73 before the QSO ends and is logged. Off: FT8, FT4, FT2, and Q65 "
+                                        "end on their RR73 without a 73. Other modes always send it. Does not key."));
+  connect(cfm73, &QAction::toggled, this, [this](bool) { syncMaEngine(); });
   addCheck(optionsMenu, "autoResetQso", QStringLiteral("Auto RESET QSO at end"), "dx/autoReset", true, txTip);
   addCheck(optionsMenu, "qsyOnDecode", QStringLiteral("QSY TX to the clicked decode"), "dx/qsyOnDecode",
            true,
@@ -3697,6 +3920,7 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"))) {
     bar->setVisible(text && !js8Mode(mode));
+    applyContestRow();
     showQsoRstTag();
   }
   if (auto* wsprHead = findChild<QWidget*>(QStringLiteral("wsprRxHeaderHost"))) {
@@ -3709,6 +3933,7 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* clrRx = findChild<QPushButton*>(QStringLiteral("clrRx")))
     clrRx->setVisible(text || fax || wspr);
+  applySpeechSettings();
   if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
     edit->setVisible(!text && !fax && !wspr);
   if (auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader")))
@@ -3804,6 +4029,9 @@ void MainWindow::showGuide() {
        "after each one. DIST follows Options → Decode List Options, miles or kilometers. "
        "Periods, or Max Time, is how long to keep calling that station before the next one in the "
        "queue. A reply from that station starts the count over. If the queue is empty, CNS calls CQ. "
+       "Menu options show a small circle that fills green when on. Options → TX Confirmation If 73 Or RR73 is on by default, as in MSHV: their RR73 or 73 "
+       "is answered with 73 before the QSO ends and is logged. Off, FT8, FT4, FT2, and Q65 end on their "
+       "RR73 without a 73; JT65 always sends it. "
        "CNS off stops. FT8, FT4, FT2, JT65, and Q65 wait for the slot, or join the one that is still open. "
        "FT8 transmits in a 15 second slot, FT4 in 7.5 seconds, FT2 in 3.75 seconds, "
        "JT65 in 60 seconds, and Q65 in 30 seconds. "
@@ -3837,8 +4065,8 @@ void MainWindow::showGuide() {
        "takes the characters that already went out. Text you change during the pass is left alone. "
        "The FT8 sequence, Tx1 through Tx6, and "
        "TX FIRST stay hidden. The tone starts at 1500 Hz. Click the waterfall to move it. The dial "
-       "is the Feld Hell Club signal minus 1500 Hz, so 20 m is 14.0615 MHz. A macro copies into the "
-       "transmit box. TX macro, off unless you turn it on, also presses TX. AFC on the waterfall "
+       "is the Feld Hell Club signal minus 1500 Hz, so 20 m is 14.0615 MHz. A macro adds its text to the "
+       "transmit box; a ▶ macro also presses TX when Macros key is on. AFC on the waterfall "
        "stays off. SQL is the Fldigi squelch. "
        "Reverse video, on the Hell row, is off until you turn it on. Off prints the tape black "
        "on white. On prints white on black so an inverted image reads. The carrier does not move. "
@@ -3865,6 +4093,10 @@ void MainWindow::showGuide() {
        "A finished pass takes the sent text off the front of that box, as Fldigi does, so the next "
        "TX sends only new text. A stopped pass takes the characters that already went out. Text "
        "you change during the pass is left alone. JS8 keeps its own queue. "
+       "RTTY, PSK, and QPSK send live, as Fldigi does. Text typed while on the air goes out as it "
+       "is typed, and an empty box sends idle. Press TX once to end after the box is sent, and "
+       "again to stop at once. Text not yet on the air goes back into the box. Back to RX after "
+       "is on, 25 seconds by default. MFSK64L and MFSK128L skip the zero lead-in. "
        "Hell keeps the pixel tape. RTTY and BPSK show the echo. Characters print as the audio goes "
        "out. RTTY follows Fldigi on DIGU. The row above the transmit box is Shift, Baud, Shape, "
        "Reverse, and ITA-2, the same controls Fldigi puts on its RTTY transmit and text pages. "
@@ -3903,10 +4135,34 @@ void MainWindow::showGuide() {
        "only while you are already there. Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, "
        "Thor, MT63, WSPR, and WEFAX center the marker on the carrier. FT8, FT4, FT2, JT65, Q65, and "
        "JS8 start at the cursor and run upward. "
+       "Options → Speech reads RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 "
+       "aloud with a Windows voice on a sound device you pick, not through the radio. It is off "
+       "until you turn it on. Talk, beside TX, does the reverse: a Whisper model on the CPU turns "
+       "your voice into transmit text. The model downloads from Options → Speech → Transmit only "
+       "when you choose one. My words there lists what to expect, Corrections fixes what it gets "
+       "wrong (heard = send), and a right-click on selected transmit text teaches a fix or a word. "
+       "Talk never keys. "
+       "Options → Contest Mode (RTTY, PSK, Hell) adds a contest row to the QSO bar: pick ARRL RTTY Roundup, "
+       "CQ WW RTTY, NA Sprint, Field Day, a Feld Hell sprint, a serial-number contest, or Custom, and your "
+       "exchange (# is the serial). F1 to F8, on screen or the keyboard, send the Run or S&P messages "
+       "(click Run to switch); Insert sends F2. Enter in Call or Exch sends the next one: Run CQ, then his "
+       "call and exchange, then TU and log; S&P your call, then TU, exchange, and log. Space in Call goes to "
+       "Exch. Their exchange is read from their text and offered in Exch. DUPE shows when the call is in "
+       "your log for this contest and band since the session began. A contest QSO logs CONTEST_ID, "
+       "STX_STRING, SRX_STRING, STX, and SRX, and the serial moves on. XOUT is your exchange and XIN "
+       "theirs in any macro. Messages key only with Macros key on. It stays off until you turn it on. "
        "Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 show a QSO bar for "
        "the station you are working: Call, Name, QTH, St, Pr, Loc, RST in, Out, and Notes, plus "
        "Clear and Log. Right-click a received word to put it in a field. Double-click a callsign "
-       "to fill Call. Those fields are the other station. They are not saved as settings. "
+       "to fill Call. Their name, QTH, the report they gave you, their locator, and DE their call "
+       "are read from their text and offered faintly in an empty field with a dashed outline; a "
+       "click or Tab takes it, and nothing is filled until you do. A call already in STD's log "
+       "fills the empty Name, QTH, St, and Loc from the last QSO in blue, and the bar shows how "
+       "many times and when; Options → Lookup can add a second ADIF log, and STD keeps a copy of it "
+       "in its log folder so moving or deleting the original does not lose those stations. HamQTH or QRZ.com, set "
+       "there too, fills what is still empty in green: name, QTH, state, and locator, or only the "
+       "name for a portable call with a slash. Type over any of them; what is in the box is "
+       "logged. Those fields are the other station. They are not saved as settings. "
        "JS8, WSPR, WEFAX, and the FT8 family do not show the bar. "
        "Auto RST, off until you turn it on, fills Out from the TCI S-meter. S9 is -73 dBm and each "
        "S-unit is 6 dB. It peak-holds a 1.25 second median that must stand 3 dB over a 30 second "
@@ -3942,8 +4198,8 @@ void MainWindow::showGuide() {
        "password. The callsign and locator stay in Options → User. "
        "Speed, Start, and BW on the mode bar keep their last character. The Extra caption is the "
        "word Extra beside the extra dial. "
-       "A macro copies into the transmit box on the keyboard modes. WSPR has no macro bar. "
-       "TX macro also presses TX when it is on. Hell, RTTY, BPSK, QPSK, "
+       "A macro adds its text to the transmit box on the keyboard modes. WSPR has no macro bar. "
+       "A ▶ macro also presses TX when Macros key is on. Hell, RTTY, BPSK, QPSK, "
        "Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
        "CW stays in Lyra. START is never sent."},
       {"WEFAX",
@@ -3969,18 +4225,32 @@ void MainWindow::showGuide() {
       {"Macros",
        "File → Macros → Open loads one Fldigi .mdf, and that file is the set in use. Save writes "
        "the names and the text back as a .mdf. Options → Macros can Open that file, start a New "
-       "set, and Save it. The bank button 1 through 4 shows which 12 are on the bar. The name and "
-       "the text stay editable. A filled button copies its text into the transmit box. TX macro, "
-       "off unless you turn it on, also presses TX. Hell, RTTY, the BPSK speeds, Olivia, Contestia, "
-       "MFSK, DominoEX, Thor, QPSK, MT63, and JS8 can key. WSPR has no macro bar. "
+       "set, and Save it. The bank button 1 through 4 shows which 12 are on the bar; right-click it "
+       "to go back or to name the bank. A macro's own Fldigi tags decide what a click does. TX "
+       "presses TX and sends, and the button shows a ▶. RX goes back to RX after the text. "
+       "CLRTX empties the transmit box first. A macro without TX adds its text to the end of "
+       "the box, so macros chain; pressed while on the air with RX, as Fldigi's KN and SK are, "
+       "it joins the box and TX ends after it. Macros key, beside the bank button, is the lock: "
+       "red ON lets ▶ macros key, OFF keys nothing and the text waits in the box. Hover a button "
+       "to see what it will send. Hell, RTTY, the BPSK speeds, Olivia, Contestia, MFSK, DominoEX, "
+       "Thor, QPSK, MT63, and JS8 can key. WSPR has no macro bar. "
        "MYCALL and MYLOC use the callsign and the locator already stored under Options → User. "
        "Name, QTH, Antenna, Power, RST, the Field Day class and section, State, ST, County, and CNTY "
        "on that same dialog fill MYNAME, MYQTH, ANTENNA, TX_PWR, MYRST, MYCLASS, MYSECTION, MYSTATE, "
        "MYST, MYCOUNTY, and MYCNTY. QTH is the station city. An empty box erases that tag. "
        "On a keyboard mode the QSO bar fills CALL, NAME, QTH, ST, PR, LOC, and RST for the station "
-       "you are working. QSOTIME is the UTC time on, HHMM. LOG and LNW write that QSO to the ADIF "
-       "file and then disappear from the text. CLRQSO and CLRLOG clear the bar and disappear. "
-       "An empty Call logs nothing. "
+       "you are working. QSOTIME is the UTC time on, HHMM. WELCOME sends nice to work you again "
+       "when they are in your log, and LASTQSO the date of the last QSO. A ▶ macro that "
+       "needs an empty field does not key; the field flashes red. NAME|OM sends OM when Name is "
+       "empty, and braces such as {CALL} work too. ZDT, ZT, LT, MODE, BAND, FREQ, VER, and CNTR "
+       "(the serial, 007) fill in. LOG and LNW write the QSO to the ADIF file, CLRQSO clears the "
+       "bar, CLRRX clears the receive text, and INCR and DECR change the serial, once a keyed "
+       "macro's text has gone out; Halt skips them. TIMER:15 listens 15 s and sends the macro "
+       "again until you type, press a macro, TX, or Halt, pick a call, or hear your call. An empty "
+       "Call logs nothing. WX sends the local weather from Options → Weather: Open-Meteo from your "
+       "locator, an NWS station, or an Ambient Weather or Ecowitt station; WX_TEMP, WX_COND, WX_WIND, "
+       "and WX_HUM send one part. Fldigi tags STD does not run, such as IDLE, ID, and MODEM, are left "
+       "out and named, never sent as text. "
        "Opening or saving a .mdf does not key and does not send START."},
       {"Contest tags",
        "The list above Tx1 is Standard or a contest, the same set MSHV uses. Choosing one writes "
@@ -4021,8 +4291,19 @@ void MainWindow::showGuide() {
        "STD AppData folder (N8SDR\\STD). The path is remembered. UDP sends the WSJT-X QSO Logged and "
        "Logged ADIF datagrams to the saved host and port. The first address is 127.0.0.1 port 2237. "
        "TCP sends a DXKeeper log command to 127.0.0.1 port 52001 until you change it. UDP and TCP stay "
-       "off until you enable them. A heartbeat goes to the UDP port only while one of those is on. "
-       "File → Backup logbook copies that ADIF file and leaves the original in place. "
+       "off until you enable them. Link to a logger over WSJT-X UDP, in the same dialog, sends decodes "
+       "and Status (dial, mode, offsets, transmitting, and the call being worked: the QSO bar's Call, "
+       "or the station in the FT8 message) the way WSJT-X does, so SDRLogger+, GridTracker, JTAlert, "
+       "and Log4OM see STD. With Accept requests from the logger on, a click on a decode in the logger "
+       "works that station in STD as a double-click would, and the logger can halt TX or set the free "
+       "text. For SDRLogger+: in SDRLogger+ turn on Settings → Decoder Link (UDP), Source 1, port "
+       "2237. In STD, Log file and logger: tick Link to a logger over WSJT-X UDP, leave Accept "
+       "requests from the logger ticked, tick WSJT-X UDP logged QSO and leave logged ADIF off "
+       "(SDRLogger+ logs only from the logged QSO datagram; with both it may get the QSO twice), port 2237. Then tick Log Automatically QSO, or "
+       "Prompt Me To Log QSO, under Log Options; with neither, nothing is logged. The link alone does not log. "
+       "A heartbeat goes to the UDP port only while one of those is on. "
+       "File → Backup logbook copies that ADIF file and leaves the original in place. Log Options → Open log "
+       "folder opens STD's log folder in Explorer: std.adi and imported, the copy of the Lookup ADIF. "
        "File → Export ADIF writes a copy another logger can import. File → Backup settings "
        "and Import settings save and restore layouts and the callsign and locator from "
        "Options → User. They do not copy the TCI host or port, and they do not add a field. "
@@ -4284,7 +4565,8 @@ void MainWindow::resizeToHero() {
 
 namespace {
 struct DockSignature {
-  QByteArray bytes;
+  QByteArray bytes;          // arrangement: which docks, where, tabbed, floating
+  QList<double> shares;      // each docked panel's share of its row or column
   bool parsed = false;
 };
 DockSignature dockSignature(const QByteArray& state);
@@ -4345,7 +4627,9 @@ constexpr uchar kToolBarStateMarker = 0xfe;
 constexpr uchar kToolBarStateMarkerEx = 0xfc;
 constexpr uchar kDockFloating = 0x02;
 
-bool writeDockInfo(QDataStream& in, QDataStream& out) {
+// Splits are kept as shares of their row or column, not pixels. Resizing
+// or maximizing the window moves every split by pixels but not by share.
+bool writeDockInfo(QDataStream& in, QDataStream& out, QList<double>& shares) {
   uchar marker = 0;
   in >> marker;
   if (in.status() != QDataStream::Ok)
@@ -4364,6 +4648,7 @@ bool writeDockInfo(QDataStream& in, QDataStream& out) {
   if (in.status() != QDataStream::Ok || count < 0 || count > 64)
     return false;
   out << orientation << count;
+  QList<qint32> sizes;
   for (qint32 i = 0; i < count; ++i) {
     uchar next = 0;
     in >> next;
@@ -4381,9 +4666,10 @@ bool writeDockInfo(QDataStream& in, QDataStream& out) {
       if (flags & kDockFloating) {
         out << a << b << c << d;
       } else {
-        // pos and size are the split. Minimum and maximum are live widget
-        // constraints and change when a mode panel lays out.
-        out << a << b << qint32(0) << qint32(0);
+        // pos and size are the split, compared as a share below. Minimum and
+        // maximum are live widget constraints that change as a panel lays out.
+        out << qint32(0) << qint32(0) << qint32(0) << qint32(0);
+        sizes << b;
       }
     } else if (next == kSequenceMarker) {
       qint32 pos = 0;
@@ -4391,8 +4677,9 @@ bool writeDockInfo(QDataStream& in, QDataStream& out) {
       qint32 minimum = 0;
       qint32 maximum = 0;
       in >> pos >> size >> minimum >> maximum;
-      out << pos << size << qint32(0) << qint32(0);
-      if (!writeDockInfo(in, out))
+      out << qint32(0) << qint32(0) << qint32(0) << qint32(0);
+      sizes << size;
+      if (!writeDockInfo(in, out, shares))
         return false;
     } else {
       return false;
@@ -4400,6 +4687,22 @@ bool writeDockInfo(QDataStream& in, QDataStream& out) {
     if (in.status() != QDataStream::Ok)
       return false;
   }
+  qint64 total = 0;
+  for (qint32 size : sizes)
+    total += std::max<qint32>(0, size);
+  for (qint32 size : sizes)
+    shares << (total > 0 ? double(std::max<qint32>(0, size)) / double(total) : 0.0);
+  return true;
+}
+
+// Two layouts match when the arrangement is the same and no split moved by
+// more than 2% of its row or column.
+bool sameLayout(const DockSignature& a, const DockSignature& b) {
+  if (!a.parsed || !b.parsed || a.bytes != b.bytes || a.shares.size() != b.shares.size())
+    return false;
+  for (qsizetype i = 0; i < a.shares.size(); ++i)
+    if (std::abs(a.shares.at(i) - b.shares.at(i)) > 0.02)
+      return false;
   return true;
 }
 
@@ -4473,7 +4776,7 @@ DockSignature dockSignature(const QByteArray& state) {
     QSize areaSize;
     in >> pos >> areaSize;
     out << pos << QSize(0, 0);
-    if (!writeDockInfo(in, out))
+    if (!writeDockInfo(in, out, signature.shares))
       return {};
   }
   QSize central;
@@ -4504,7 +4807,7 @@ DockSignature dockSignature(const QByteArray& state) {
     QRect geometry;
     in >> geometry;
     out << marker << geometry;
-    if (!writeDockInfo(in, out))
+    if (!writeDockInfo(in, out, signature.shares))
       return {};
   }
   return {};
@@ -4518,8 +4821,11 @@ void MainWindow::offerLayoutSave() {
       qEnvironmentVariableIsSet("STD_GRAPHICS_RESTART"))
     return;
   const DockSignature now = dockSignature(saveState(1));
-  const QByteArray current = now.parsed ? now.bytes : saveState(1);
-  if (current == layoutBaseline_)
+  DockSignature baseline;
+  baseline.bytes = layoutBaseline_;
+  baseline.shares = layoutBaselineShares_;
+  baseline.parsed = layoutBaselineParsed_;
+  if (now.parsed ? sameLayout(now, baseline) : saveState(1) == layoutBaseline_)
     return;
   const auto answer = QMessageBox::question(this, QStringLiteral("STD"),
                                             QStringLiteral("Save layout for this mode?"),
@@ -4538,6 +4844,8 @@ void MainWindow::captureLayoutBaseline() {
       return;
     const DockSignature saved = dockSignature(saveState(1));
     layoutBaseline_ = saved.parsed ? saved.bytes : saveState(1);
+    layoutBaselineShares_ = saved.shares;
+    layoutBaselineParsed_ = saved.parsed;
     layoutBaselinePending_ = false;
   });
 }
@@ -5586,6 +5894,13 @@ void MainWindow::syncMaEngine() {
       want = MaEngine::Mode::Dxpedition;
   }
   ma_.setDigitalMode(mode);
+  // MSHV RefreshCfm73: the option counts only for FT8, FT4, FT2, and Q65;
+  // every other mode always answers RR73 with 73.
+  {
+    const bool ftQ65 = mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
+                       mode == QLatin1String("FT2") || mode.startsWith(QLatin1String("Q65"));
+    ma_.setCfm73(!(ftQ65 && !QSettings().value(QStringLiteral("dx/txConfirm73"), true).toBool()));
+  }
   ma_.setRestricted(maRestrictedDial());
   ma_.setStation(stationCall(), stationGrid());
   const bool wasActive = ma_.active();
@@ -5930,7 +6245,9 @@ bool MainWindow::rebuildTxWave() {
     return false;
   const QString mode = profile_->digitalMode();
   const QString text = transmitMessage();
-  if (text.isEmpty() && txJs8Text_.isEmpty())
+  // Live modes can key with an empty box, as Fldigi does: they send idle
+  // until something is typed.
+  if (text.isEmpty() && txJs8Text_.isEmpty() && !liveTextMode(mode))
     return false;
   const int tone = waterfall_ ? waterfall_->txHz() : 1500;
   txCursor_ = 0;
@@ -5958,6 +6275,24 @@ bool MainWindow::rebuildTxWave() {
     txSymbolSamples_ = tonalSamples(txSamples_);
     return true;
   }
+  if (liveTextMode(mode)) {
+    // Only the lead-in is built here. topUpLiveTx adds the typed text,
+    // idle, and the tail as the radio pulls audio.
+    const RttyOptions live = rttyOptionsOf(this);
+    // txLiveEnding_ is left alone: a macro that keys sets it before the
+    // keydown rebuild. stopUserTx clears it.
+    txLive_ = makeLiveTextTx(mode, tone, &live);
+    txLiveClosed_ = false;
+    txLiveLogged_ = false;
+    txSampleBase_ = 0;
+    txSamples_.clear();
+    txEchoAt_.clear();
+    txSymbolSamples_ = 0;
+    if (!txLive_)
+      return false;
+    txLive_->begin(&txSamples_);
+    return !txSamples_.empty();
+  }
   if (text.isEmpty())
     return false;
   const RttyOptions rtty = rttyOptionsOf(this);
@@ -5975,6 +6310,8 @@ void MainWindow::refreshTxChrome() {
   const bool hell = hellFamily(mode);
   if (auto* rttyRow = findChild<QWidget*>(QStringLiteral("rttyOptions")))
     rttyRow->setVisible(rttyMode(mode));
+  if (auto* liveRow = findChild<QWidget*>(QStringLiteral("liveTxOptions")))
+    liveRow->setVisible(liveTextMode(mode));
   applyHellReverse();
   if (auto* toneRow = findChild<QWidget*>(QStringLiteral("startToneOptions"))) {
     const bool olivia = oliviaBandwidthHz(mode) > 0;
@@ -6322,6 +6659,20 @@ bool MainWindow::periodReady(const QString& mode) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+  // Contest mode: Enter sends the next message, Space in Call goes to Exch.
+  if (event->type() == QEvent::KeyPress && contestKey(watched, static_cast<QKeyEvent*>(event)))
+    return true;
+  // QSO bar: a click or Tab in an empty field takes what their text offered.
+  if (!qsoSuggest_.isEmpty() && qsoSuggest_.contains(watched->objectName())) {
+    if (event->type() == QEvent::MouseButtonPress)
+      acceptQsoSuggestion(watched);
+    if (event->type() == QEvent::KeyPress && static_cast<const QKeyEvent*>(event)->key() == Qt::Key_Tab &&
+        acceptQsoSuggestion(watched))
+      return true;
+  }
+  if (event->type() == QEvent::KeyPress && macroRepeatIndex_ >= 0 &&
+      watched->objectName() == QLatin1String("txHell"))
+    cancelMacroRepeat(QStringLiteral("You typed in the transmit box."));
   if (event->type() == QEvent::KeyPress &&
       (watched->objectName() == QLatin1String("txQueueList") ||
        watched->objectName() == QLatin1String("txNowList"))) {
@@ -6509,6 +6860,7 @@ void MainWindow::loadReplyFromLine(int line) {
 }
 
 void MainWindow::haltTx() {
+  cancelMacroRepeat(QString());
   const bool live = txTune_ || txKeySent_ || txSequence_;
   auto* tx = findChild<QPushButton*>(QStringLiteral("txSend"));
   const bool armed = tx && tx->isChecked();
@@ -6596,11 +6948,28 @@ void MainWindow::stopTune(bool uncheck) {
 }
 
 void MainWindow::setUserTx(bool on) {
+  // TX pressed by hand ends a macro waiting to repeat. A repeat that fires
+  // presses TX itself after this, so it is not cut short.
+  cancelMacroRepeat(QString());
+  auto* button = findChild<QPushButton*>(QStringLiteral("txSend"));
   if (!on) {
+    // Live keyboard TX: the first press ends after the box is sent, as
+    // Fldigi's TX/RX does. A second press stops at once.
+    if (txLive_ && txKeySent_ && !txLiveEnding_) {
+      txLiveEnding_ = true;
+      if (button) {
+        const QSignalBlocker block(button);
+        button->setChecked(true);
+        button->setText(QStringLiteral("ENDING"));
+      }
+      setTxStatus(QStringLiteral(
+          "Ending. The rest of the transmit box goes out, then TRX drops. Press TX again to stop now. "
+          "START was not sent."));
+      return;
+    }
     stopUserTx(false);
     return;
   }
-  auto* button = findChild<QPushButton*>(QStringLiteral("txSend"));
   auto release = [button] {
     if (!button)
       return;
@@ -6636,7 +7005,7 @@ void MainWindow::setUserTx(bool on) {
   txJs8Part_.clear();
   txJs8Next_ = 0;
   txJs8Pending_ = 0;
-  if (text.isEmpty()) {
+  if (text.isEmpty() && !liveTextMode(mode)) {
     release();
     setTxStatus(wsprMode(mode)
                     ? QStringLiteral(
@@ -6653,7 +7022,7 @@ void MainWindow::setUserTx(bool on) {
   const RttyOptions rtty = rttyOptionsOf(this);
   if (js8Mode(mode))
     txJs8Text_ = text;
-  const bool waveOk = js8Mode(mode)
+  const bool waveOk = (js8Mode(mode) || liveTextMode(mode))
                           ? rebuildTxWave()
                           : buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_,
                                         rttyMode(mode) ? &rtty : nullptr, startTonesOf(this, mode)) &&
@@ -6694,6 +7063,10 @@ void MainWindow::setUserTx(bool on) {
     setTxStatus(QStringLiteral(
         "Armed for the next 15 second UTC period. The frame starts half a second in. "
         "A longer message continues on the following periods, one frame each. START was not sent."));
+  else if (liveTextMode(mode))
+    setTxStatus(QStringLiteral(
+        "Sending live. Keep typing and it goes out. Press TX to end after the box is sent. "
+        "START was not sent."));
   else if (keyboardTextMode(mode))
     setTxStatus(QStringLiteral(
         "Sending. Sent characters print in the receive pane as they go out. START was not sent."));
@@ -6754,6 +7127,18 @@ void MainWindow::revealSentEcho() {
 void MainWindow::consumeSentKeyboardText() {
   const bool finished = txTextFinished_;
   txTextFinished_ = false;
+  if (txLive_) {
+    // Live TX already took each character off the box when it was encoded.
+    // Characters encoded but not yet on the air go back on the front.
+    const QString unsent = txSentText_.mid(std::min(txEchoCount_, int(txSentText_.size())));
+    auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+    if (!unsent.isEmpty() && box) {
+      QTextCursor front(box->document());
+      front.movePosition(QTextCursor::Start);
+      front.insertText(unsent);
+    }
+    return;
+  }
   const QString mode = profile_ ? profile_->digitalMode() : QString();
   if (!keyboardTextMode(mode) || js8Mode(mode) || txSentText_.isEmpty())
     return;
@@ -6771,6 +7156,88 @@ void MainWindow::consumeSentKeyboardText() {
   QTextCursor cursor = box->textCursor();
   cursor.movePosition(QTextCursor::End);
   box->setTextCursor(cursor);
+}
+
+void MainWindow::topUpLiveTx(int ahead) {
+  if (!txLive_)
+    return;
+  auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+  // The idle safety is read once per call, only if the box runs empty.
+  int idleOn = -1;
+  int seconds = 25;
+  // Each pass adds at least one symbol, so this cap is never reached on air.
+  for (int guard = 0; guard < 100000 && !txLiveClosed_; ++guard) {
+    if (txSampleBase_ + int(txSamples_.size()) - txCursor_ >= ahead)
+      break;
+    QChar next;
+    bool have = false;
+    if (box) {
+      const QString text = box->toPlainText();
+      int lead = 0;
+      // Blank lines and spaces before the first character are not sent.
+      if (txSentText_.isEmpty()) {
+        while (lead < text.size() && text.at(lead).isSpace())
+          ++lead;
+      }
+      if (lead < text.size()) {
+        next = text.at(lead);
+        have = true;
+        // Remove through that character. Qt keeps the operator's cursor
+        // where it was relative to the text after it.
+        QTextCursor front(box->document());
+        front.setPosition(0);
+        front.setPosition(lead + 1, QTextCursor::KeepAnchor);
+        front.removeSelectedText();
+      }
+    }
+    if (have) {
+      const int at = txSampleBase_ + int(txSamples_.size());
+      txEchoAt_.push_back(txLive_->put(next, &txSamples_) ? at : -1);
+      txSentText_.append(next);
+      txLiveTextMs_ = QDateTime::currentMSecsSinceEpoch();
+      continue;
+    }
+    if (!txLiveEnding_) {
+      if (idleOn < 0) {
+        const QSettings store;
+        idleOn = store.value(QStringLiteral("tx/liveIdleStop"), true).toBool() ? 1 : 0;
+        seconds = liveIdleChoice(store.value(QStringLiteral("tx/liveIdleSeconds"), 25).toInt());
+      }
+      if (liveIdleExpired(txLiveTextMs_, QDateTime::currentMSecsSinceEpoch(), idleOn == 1, seconds)) {
+        txLiveEnding_ = true;
+        if (auto* button = findChild<QPushButton*>(QStringLiteral("txSend")))
+          button->setText(QStringLiteral("ENDING"));
+        setTxStatus(QStringLiteral("Nothing new typed for %1 s. Ending: the tail goes out, then TRX drops. "
+                                   "START was not sent.")
+                        .arg(seconds));
+      }
+    }
+    if (txLiveEnding_) {
+      txLive_->end(&txSamples_);
+      txLiveClosed_ = true;
+    } else {
+      txLive_->idle(&txSamples_);
+    }
+  }
+  // Drop what already went out so a long QSO does not grow without limit.
+  const int consumed = txCursor_ - txSampleBase_;
+  if (consumed > 48000 * 20 && consumed <= int(txSamples_.size())) {
+    txSamples_.erase(txSamples_.begin(), txSamples_.begin() + consumed);
+    txSampleBase_ += consumed;
+  }
+}
+
+// The QSO log line for a live transmission: what actually went out.
+void MainWindow::logLiveTx() {
+  if (!txLive_ || txLiveLogged_ || !txKeySent_)
+    return;
+  txLiveLogged_ = true;
+  revealSentEcho();
+  const QString aired = txSentText_.left(std::min(txEchoCount_, int(txSentText_.size()))).trimmed();
+  if (aired.isEmpty())
+    return;
+  appendQso(QStringLiteral("TX"), aired);
+  promoteNow();
 }
 
 QString textAfterSent(const QString& have, const QString& sent, bool finished) {
@@ -6798,7 +7265,19 @@ void MainWindow::breakHellEchoLine(bool onlyIfSent) {
 }
 
 void MainWindow::appendRxEcho(const QString& text) {
-  appendKeyedEcho(findChild<QTextEdit*>(QStringLiteral("rxEcho")), text, rxEchoColor());
+  auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+  appendKeyedEcho(echo, text, rxEchoColor());
+  qsoScanRx(text);
+  // Someone answered the repeating CQ: stop calling. Only received text
+  // counts; the sent echo in the same pane has our call in every CQ.
+  if (macroRepeatIndex_ >= 0) {
+    macroHeardTail_ = (macroHeardTail_ + text).right(80);
+    const QString call = stationCall();
+    if (!call.isEmpty() && macroHeardTail_.contains(call, Qt::CaseInsensitive))
+      cancelMacroRepeat(QStringLiteral("%1 came back in the receive text.").arg(call.toUpper()));
+  }
+  if (speechWanted())
+    speech_->addText(text);
 }
 
 void MainWindow::appendTxEcho(const QString& text) {
@@ -6808,10 +7287,15 @@ void MainWindow::appendTxEcho(const QString& text) {
 void MainWindow::fillWave(float* dst, int frames, int step) {
   if (step < 1)
     step = 1;
+  // About 200 ms queued past this block: short enough that typing is
+  // close to live, long enough that a late pull never starves the radio.
+  if (txLive_)
+    topUpLiveTx(frames * step + 48000 / 5);
   for (int i = 0; i < frames; ++i) {
     float sample = 0.0f;
-    if (txCursor_ >= 0 && txCursor_ < int(txSamples_.size()))
-      sample = txSamples_[static_cast<size_t>(txCursor_)];
+    const int at = txCursor_ - txSampleBase_;
+    if (at >= 0 && at < int(txSamples_.size()))
+      sample = txSamples_[static_cast<size_t>(at)];
     dst[i] = sample;
     txCursor_ += step;
   }
@@ -6877,6 +7361,13 @@ bool MainWindow::slotShouldEnd(const QString& mode) const {
     return txCursor_ >= int(txSamples_.size()) && now - txPlayOriginMs_ >= needMs;
   }
   const int period = periodLengthMs(mode);
+  if (txLive_) {
+    // Live text ends only after TX was pressed to end and the tail went out.
+    if (!txLiveClosed_ || txPlayOriginMs_ <= 0)
+      return false;
+    const int total = txSampleBase_ + int(txSamples_.size());
+    return txCursor_ >= total && now - txPlayOriginMs_ >= qint64(total) * 1000 / 48000;
+  }
   if (period <= 0) {
     if (txSamples_.empty() || txPlayOriginMs_ <= 0)
       return true;
@@ -6941,7 +7432,7 @@ void MainWindow::pumpUserTx() {
     pushRealtimeTx();
     return;
   }
-  if (!tci_ || !profile_ || txSamples_.empty()) {
+  if (!tci_ || !profile_ || (txSamples_.empty() && !txLive_)) {
     // Say why: a silent stop here hid the multi-answer bug for days.
     setTxStatus(!tci_ ? QStringLiteral("Radio is not connected. TX stopped. START was not sent.")
                       : QStringLiteral("Nothing was ready to send. TX stopped. TRX is off. START was not sent."));
@@ -6971,6 +7462,9 @@ void MainWindow::pumpUserTx() {
     }
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     txKeySent_ = true;
+    // Speech read-back must not talk over the transmission.
+    if (speech_)
+      speech_->stop();
     if (selectedTxSlot() < 5)
       txWorkStarted_ = true;
     markWaterfallTx();
@@ -6985,6 +7479,10 @@ void MainWindow::pumpUserTx() {
       txJs8Next_ += txJs8Pending_;
       txJs8Pending_ = 0;
       txSentText_ = txJs8Part_;
+    } else if (txLive_) {
+      // Filled character by character as the box is encoded.
+      txSentText_.clear();
+      txLiveTextMs_ = now;
     } else {
       txSentText_ = txEchoAt_.empty() ? transmitMessage() : transmitMessage().trimmed();
     }
@@ -7001,7 +7499,8 @@ void MainWindow::pumpUserTx() {
       txGuardDeadlineMs_ = 0;
       txPeriodEndMs_ = 0;
     }
-    if (!txLoggedThisPass_) {
+    // A live transmission is logged when it ends; nothing has gone out yet.
+    if (!txLoggedThisPass_ && !txLive_) {
       appendQso(QStringLiteral("TX"), txSentText_);
       promoteNow();
       txLoggedThisPass_ = true;
@@ -7020,6 +7519,10 @@ void MainWindow::pumpUserTx() {
                             "15 second period. START was not sent.")
                       : QStringLiteral(
                             "On the air. This JS8 frame is the whole message. START was not sent."));
+    else if (txLive_)
+      setTxStatus(QStringLiteral(
+          "On the air, live. Type and it goes out; an empty box sends idle. Press TX to end after "
+          "the box is sent, twice to stop now. START was not sent."));
     else if (keyboardTextMode(mode))
       setTxStatus(QStringLiteral(
           "On the air. Sent characters print in the receive pane as they go out. START was not sent."));
@@ -7041,11 +7544,13 @@ void MainWindow::pumpUserTx() {
 }
 
 void MainWindow::finishTxPass() {
+  logLiveTx();
   const bool retargeted = txRetargeted_;
   txRetargeted_ = false;
   const QString sent = txSentText_;
   const bool keyed = txKeySent_;
   txTextFinished_ = keyed && !retargeted;
+  macroSendFinished(keyed && !retargeted);
   if (keyed && tci_)
     tci_->setTransmit(false);
   txKeySent_ = false;
@@ -7055,6 +7560,7 @@ void MainWindow::finishTxPass() {
   txLoggedThisPass_ = false;
   txSamples_.clear();
   txCursor_ = 0;
+  txSampleBase_ = 0;
   txPeriodMark_ = -1;
   txJoinOpen_ = false;
   txPlayOriginMs_ = 0;
@@ -7385,8 +7891,17 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
 void MainWindow::stopUserTx(bool uncheck) {
   if (txTune_)
     return;
+  // Stopped before the end: a keyed macro's <LOG> and the rest do not run.
+  macroSendFinished(false);
+  logLiveTx();
   breakHellEchoLine(true);
   consumeSentKeyboardText();
+  txLive_.reset();
+  txLiveEnding_ = false;
+  txLiveClosed_ = false;
+  txLiveLogged_ = false;
+  txLiveTextMs_ = 0;
+  txSampleBase_ = 0;
   if (txTimer_)
     txTimer_->stop();
   if (txKeySent_ && tci_)
@@ -7820,8 +8335,15 @@ void MainWindow::storeMacros() {
 }
 
 void MainWindow::showMacroSet() {
-  if (auto* bank = findChild<QPushButton*>(QStringLiteral("macroBank")))
-    bank->setText(QString::number(macroBank_ + 1));
+  if (auto* bank = findChild<QPushButton*>(QStringLiteral("macroBank"))) {
+    const QString title =
+        QSettings().value(QStringLiteral("dx/macroBankName/%1").arg(macroBank_)).toString().trimmed();
+    bank->setText(title.isEmpty() ? QString::number(macroBank_ + 1)
+                                  : QStringLiteral("%1 %2").arg(macroBank_ + 1).arg(title));
+  }
+  const auto* chip = findChild<QPushButton*>(QStringLiteral("macroTx"));
+  const bool mayKey = chip && chip->isChecked();
+  const MacroContext context = macroContext();
   const auto buttons = findChildren<QPushButton*>(QStringLiteral("macro"));
   for (QPushButton* button : buttons) {
     const int column = button->property("column").toInt();
@@ -7830,15 +8352,49 @@ void MainWindow::showMacroSet() {
       continue;
     const MacroSlot& slot = macros_.at(index);
     const bool filled = !slot.text.trimmed().isEmpty();
-    button->setText(slot.name.isEmpty() ? QStringLiteral("F-%1").arg(index + 1) : slot.name);
+    const MacroPlan plan = planMacro(slot.text, context);
+    const bool keys = plan.keys || plan.toggle;
+    const QString name = slot.name.isEmpty() ? QStringLiteral("F-%1").arg(index + 1) : slot.name;
+    button->setText(macroButtonLabel(name, context, keys));
     button->setEnabled(filled);
-    button->setToolTip(filled ? slot.text + QStringLiteral(
-                                    "\nLeft click copies this into the transmit box. Right click edits it. "
-                                    "TX macro, when on, also presses TX. Does not key when that chip is off. "
-                                    "Does not send START.")
-                              : QStringLiteral(
-                                    "Empty macro. Right click edits the name and text. "
-                                    "Does not key and does not send START."));
+    if (!filled) {
+      button->setToolTip(QStringLiteral(
+          "Empty macro. Right click edits the name and text. Does not key and does not send START."));
+      continue;
+    }
+    QString tip = plan.text.trimmed().isEmpty() ? QStringLiteral("(no text)") : plan.text.trimmed();
+    if (!plan.missing.isEmpty())
+      tip += QStringLiteral("\n\nEmpty now: %1.").arg(plan.missing.join(QStringLiteral(", ")));
+    QStringList steps;
+    if (plan.log)
+      steps << QStringLiteral("logs the QSO");
+    if (plan.clearQso)
+      steps << QStringLiteral("clears the QSO bar");
+    if (plan.clearRx)
+      steps << QStringLiteral("clears the receive text");
+    if (plan.serialStep > 0)
+      steps << QStringLiteral("adds 1 to the serial");
+    if (plan.serialStep < 0)
+      steps << QStringLiteral("takes 1 off the serial");
+    if (plan.repeatSeconds > 0)
+      steps << QStringLiteral("repeats after %1 s of listening").arg(plan.repeatSeconds);
+    QString how;
+    if (!keys)
+      how = QStringLiteral("Adds this to the transmit box. This does not key.");
+    else if (mayKey)
+      how = plan.backToRx ? QStringLiteral("Keys TX, sends this, then back to RX.")
+                          : QStringLiteral("Keys TX and sends this; TX stays on for typing.");
+    else
+      how = QStringLiteral("Keys TX when Macros key is on. It is off, so this does not key; "
+                           "the text waits in the transmit box.");
+    if (!steps.isEmpty())
+      how += QStringLiteral(" Then it %1%2.")
+                 .arg(steps.join(QStringLiteral(", ")),
+                      keys ? QStringLiteral(" once the text has gone out") : QString());
+    if (!plan.skipped.isEmpty())
+      how += QStringLiteral(" STD leaves out %1.").arg(plan.skipped.join(QLatin1Char(' ')));
+    button->setToolTip(tip + QStringLiteral("\n\n") + how +
+                       QStringLiteral(" Right click edits it. START is never sent."));
   }
   if (auto* active = findChild<QLabel*>(QStringLiteral("macroActive"))) {
     const QString shown = macroFile_.isEmpty() ? QStringLiteral("No macro file")
@@ -7853,11 +8409,27 @@ void MainWindow::showMacroSet() {
                                               "\nThis is the set in use. Options → Macros → Open changes it. "
                                               "Save writes this file. Does not key and does not send START."));
   }
+  applyContestRow();  // the contest F keys and serial follow the bar too
   if (macroDock_) {
     macroDock_->setWindowTitle(macroFile_.isEmpty()
                                    ? QStringLiteral("Macros")
                                    : QStringLiteral("Macros — %1").arg(QFileInfo(macroFile_).fileName()));
   }
+}
+
+void MainWindow::renameMacroBank() {
+  QSettings store;
+  const QString key = QStringLiteral("dx/macroBankName/%1").arg(macroBank_);
+  bool ok = false;
+  const QString name = QInputDialog::getText(
+      this, QStringLiteral("Name bank %1").arg(macroBank_ + 1),
+      QStringLiteral("A short name for what these 12 macros are for, such as CQ, QSO, Brag, or Sign-off. "
+                     "Leave it empty to show just the number."),
+      QLineEdit::Normal, store.value(key).toString(), &ok);
+  if (!ok)
+    return;
+  store.setValue(key, name.simplified().left(12));
+  showMacroSet();
 }
 
 void MainWindow::cycleMacroBank(int step) {
@@ -7874,42 +8446,154 @@ void MainWindow::cycleMacroBank(int step) {
 void MainWindow::insertMacro(int index) {
   if (index < 0 || index >= macros_.size())
     return;
-  QHash<QString, QString> userTags;
-  QSettings userStore;
-  for (const MacroUserField& field : macroUserFields())
-    userTags.insert(field.tag, userStore.value(field.key).toString());
-  const bool keyboard = profile_ && keyboardTextMode(profile_->digitalMode()) && !js8Mode(profile_->digitalMode());
-  if (keyboard) {
-    // The worked station's fields from the QSO bar: <CALL>, <NAME>, <RST> ...
-    const QHash<QString, QString> qso = qsoBarTags();
-    for (auto it = qso.cbegin(); it != qso.cend(); ++it)
-      userTags.insert(it.key(), it.value());
-  }
-  const QString text = macroInsertText(macros_.at(index).text, stationCall(), stationGrid(), userTags);
-  if (keyboard)
-    qsoMacroActions(macros_.at(index).text);
-  if (text.isEmpty())
+  sendMacroText(macros_.at(index).text, index);
+}
+
+// One macro press: a bank button (index into macros_) or a contest
+// F key (index -1, which never repeats).
+void MainWindow::sendMacroText(const QString& body, int index) {
+  // A press replaces a macro that was waiting to repeat.
+  cancelMacroRepeat(QString());
+  MacroPlan plan = planMacro(body, macroContext());
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  const QString skipped =
+      plan.skipped.isEmpty()
+          ? QString()
+          : QStringLiteral(" Left out (STD does not run them): %1.").arg(plan.skipped.join(QLatin1Char(' ')));
+
+  if (!profile_ || !keyboardTextMode(mode)) {
+    // FT8 and the other slot modes: the text goes in the selected message.
+    const QString text = plan.text.simplified();
+    if (text.isEmpty())
+      return;
+    const int slot = selectedTxSlot();
+    const QString name = slot == 6 ? QStringLiteral("txExtra") : QStringLiteral("tx%1").arg(slot + 1);
+    if (auto* field = findChild<QLineEdit*>(name))
+      field->setText(text);
     return;
-  if (profile_ && keyboardTextMode(profile_->digitalMode())) {
-    if (auto* hellText = findChild<QPlainTextEdit*>(QStringLiteral("txHell")))
-      hellText->setPlainText(text);
-    const auto* chip = findChild<QPushButton*>(QStringLiteral("macroTx"));
-    auto* tx = findChild<QPushButton*>(QStringLiteral("txSend"));
-    if (chip && chip->isChecked() && tx) {
-      if (!tx->isChecked())
-        tx->setChecked(true);
+  }
+
+  auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+  auto* tx = findChild<QPushButton*>(QStringLiteral("txSend"));
+  const auto* chip = findChild<QPushButton*>(QStringLiteral("macroTx"));
+  const bool txOn = tx && tx->isChecked();
+  const bool onAir = txLive_ && txKeySent_;
+  if (plan.toggle) {
+    // <TX/RX>: on the air it ends after the box; otherwise it keys.
+    if (txOn) {
+      if (tx)
+        tx->click();
+      return;
+    }
+    plan.keys = true;
+  }
+  const bool mayKey = chip && chip->isChecked();
+
+  // A keyed macro with an empty Call, Name ... does not go out half-filled.
+  if (plan.keys && mayKey && !plan.missing.isEmpty()) {
+    setTxStatus(QStringLiteral("Not sent: %1 is empty.%2 Fill it in, or write the tag as <NAME|OM> to "
+                               "send OM when it is empty. Nothing was keyed. START was not sent.")
+                    .arg(plan.missing.join(QStringLiteral(", ")),
+                         plan.missing.contains(QStringLiteral("Weather"))
+                             ? QStringLiteral(" Weather comes from Options → Weather.")
+                             : QString()));
+    flashQsoFields(plan.missing);
+    return;
+  }
+
+  if (box && plan.clearTx && !onAir && plan.text.trimmed().isEmpty())
+    box->clear();  // a Clear macro: <CLRTX> alone empties the box
+  if (box && !plan.text.isEmpty()) {
+    if (plan.clearTx && !onAir) {
+      box->setPlainText(plan.text.trimmed());
+    } else {
+      // Added at the end, so macros can be chained: his call, then a reply.
+      const QString have = box->toPlainText();
+      QString add = plan.text;
+      if (!have.isEmpty() && !have.back().isSpace() && !add.front().isSpace())
+        add.prepend(QLatin1Char(' '));
+      if (have.trimmed().isEmpty()) {
+        box->clear();
+        add = add.trimmed();
+      }
+      QTextCursor tail(box->document());
+      tail.movePosition(QTextCursor::End);
+      tail.insertText(add);
+    }
+    QTextCursor end = box->textCursor();
+    end.movePosition(QTextCursor::End);
+    box->setTextCursor(end);
+  }
+
+  // <LOG> and the rest of a sending macro wait until its text has gone out.
+  auto holdForEnd = [&] {
+    if (macroAfterPending_) {
+      macroAfter_.log = macroAfter_.log || plan.log;
+      macroAfter_.clearQso = macroAfter_.clearQso || plan.clearQso;
+      macroAfter_.clearRx = macroAfter_.clearRx || plan.clearRx;
+      macroAfter_.serialStep += plan.serialStep;
+      macroAfter_.repeatSeconds = plan.repeatSeconds;
+      if (!plan.logNote.isEmpty())
+        macroAfter_.logNote = plan.logNote;
+    } else {
+      macroAfter_ = plan;
+    }
+    macroAfterPending_ = true;
+    macroAfterIndex_ = index;
+  };
+  if (!plan.keys) {
+    // <RX> without <TX> while on the air, as Fldigi's KN and SK are used:
+    // the text joins the box, then TX ends once it has gone out.
+    if (plan.backToRx && txOn) {
+      if (onAir && txLive_) {
+        txLiveEnding_ = true;
+        holdForEnd();
+        setTxStatus(QStringLiteral("Added; TX ends once it has gone out.") + skipped +
+                    QStringLiteral(" START was not sent."));
+      } else if (tx) {
+        tx->click();
+      }
+      return;
+    }
+    // A macro that does not key runs its log and clear steps now.
+    runMacroActions(plan);
+    if (!plan.log && !plan.clearQso && plan.serialStep == 0 && !plan.clearRx) {
+      QString said;
+      if (plan.text.isEmpty())
+        said = QStringLiteral("This macro has nothing STD can send.");
+      else if (plan.missing.isEmpty())
+        said = QStringLiteral("Added to the transmit box.");
       else
-        setTxStatus(QStringLiteral(
-            "Macro copied. TX is already on. Nothing extra was keyed. START was not sent."));
-    } else
-      setTxStatus(QStringLiteral(
-          "Macro copied into the transmit box. Nothing was keyed. START was not sent."));
+        said = QStringLiteral("Added to the transmit box. Empty now: %1.")
+                   .arg(plan.missing.join(QStringLiteral(", ")));
+      setTxStatus(said + skipped + QStringLiteral(" Nothing was keyed. START was not sent."));
+    }
     return;
   }
-  const int slot = selectedTxSlot();
-  const QString name = slot == 6 ? QStringLiteral("txExtra") : QStringLiteral("tx%1").arg(slot + 1);
-  if (auto* field = findChild<QLineEdit*>(name))
-    field->setText(text);
+
+  if (onAir || txOn) {
+    holdForEnd();
+    if (plan.backToRx && txLive_)
+      txLiveEnding_ = true;
+    setTxStatus(QStringLiteral("Added; it goes out after what is already there.") + skipped +
+                QStringLiteral(" START was not sent."));
+    return;
+  }
+  if (!mayKey || !tx) {
+    holdForEnd();
+    setTxStatus(QStringLiteral("In the transmit box. Macros key is off, so TX was not pressed. "
+                               "Press TX to send it.") +
+                skipped + QStringLiteral(" Nothing was keyed. START was not sent."));
+    return;
+  }
+  tx->setChecked(true);
+  if (!tx->isChecked())
+    return;  // TX could not start; its own message says why
+  holdForEnd();
+  if (txLive_ && plan.backToRx)
+    txLiveEnding_ = true;  // <RX>: send the text, then back to receive
+  if (!skipped.isEmpty())
+    setTxStatus(QStringLiteral("On the air.") + skipped + QStringLiteral(" START was not sent."));
 }
 
 void MainWindow::openMacroFile(QWidget* parent) {
@@ -8095,14 +8779,19 @@ void MainWindow::openMacrosDialog(int index) {
     pick->setCurrentIndex(row < 0 ? 0 : row);
     pick->blockSignals(false);
   };
+  std::function<void()> refreshHow;  // set below, once the "A click" row exists
   auto showSlot = [&](int index) {
     if (index < 0 || index >= macros_.size())
       return;
     editing = index;
-    const QSignalBlocker blockName(name);
-    const QSignalBlocker blockBody(body);
-    name->setText(macros_.at(index).name);
-    body->setPlainText(macros_.at(index).text);
+    {
+      const QSignalBlocker blockName(name);
+      const QSignalBlocker blockBody(body);
+      name->setText(macros_.at(index).name);
+      body->setPlainText(macros_.at(index).text);
+    }
+    if (refreshHow)
+      refreshHow();
   };
   auto commitSlot = [&] {
     if (editing < 0 || editing >= macros_.size())
@@ -8196,9 +8885,10 @@ void MainWindow::openMacrosDialog(int index) {
   connect(insert, &QPushButton::clicked, &dialog, insertTag);
   connect(tags, &QTreeWidget::itemDoubleClicked, &dialog, [&](QTreeWidgetItem*, int) { insertTag(); });
   auto* note = new QLabel(
-      QStringLiteral("Apply stores this button. Save writes the .mdf. Open loads macrosN8SDR.mdf. "
-                     "A left click copies the text into the transmit box. "
-                     "Nothing is sent, and the radio is not keyed. START is never sent."),
+      QStringLiteral("Apply stores this button. Save writes the .mdf. Tags work as <CALL> or {CALL}; "
+                     "<NAME|OM> sends OM when Name is empty. A keyed macro logs and clears once its text "
+                     "has gone out. Put <CALL> in the label to show the call on the button. "
+                     "START is never sent."),
       &dialog);
   note->setWordWrap(true);
   auto* openFile = new QPushButton(QStringLiteral("Open ..."), &dialog);
@@ -8298,11 +8988,91 @@ void MainWindow::openMacrosDialog(int index) {
   files->addWidget(bank);
   files->addWidget(pick, 1);
   files->addWidget(which);
+  // How it sends. This writes the Fldigi tags into the text, so the .mdf
+  // still works in Fldigi: <TX> keys, <RX> returns, <CLRTX> replaces.
+  auto* sends = new QComboBox(&dialog);
+  sends->setObjectName(QStringLiteral("macroEditSends"));
+  sends->addItem(QStringLiteral("Add to the transmit box (does not key)"), 0);
+  sends->addItem(QStringLiteral("▶ Send, then back to RX  (<TX> ... <RX>)"), 1);
+  sends->addItem(QStringLiteral("▶ Send and stay on for typing  (<TX>)"), 2);
+  sends->setToolTip(QStringLiteral(
+      "What a click does. The ▶ choices press TX when Macros key is on. The choice is kept as Fldigi tags "
+      "in the text, so the file still works in Fldigi. Does not key and does not send START."));
+  auto* replace = new QCheckBox(QStringLiteral("Replace the box  (<CLRTX>)"), &dialog);
+  replace->setObjectName(QStringLiteral("macroEditReplace"));
+  replace->setToolTip(QStringLiteral(
+      "On: the transmit box is emptied first. Off: this joins the end of what is there, so macros "
+      "can be chained. Does not key and does not send START."));
+  auto* preview = new QLabel(&dialog);
+  preview->setObjectName(QStringLiteral("macroEditPreview"));
+  preview->setWordWrap(true);
+  preview->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  preview->setToolTip(QStringLiteral(
+      "What this sends right now, filled from the QSO bar and Options → User. Does not key."));
+  auto hasTag = [](const QString& text, const char* name) {
+    return text.contains(QRegularExpression(QStringLiteral("[<{]@?%1[>}]").arg(QLatin1String(name)),
+                                            QRegularExpression::CaseInsensitiveOption));
+  };
+  auto syncHow = [&] {
+    const QString text = body->toPlainText();
+    const QSignalBlocker blockSends(sends);
+    const QSignalBlocker blockReplace(replace);
+    const bool keys = hasTag(text, "TX") || hasTag(text, "TX/RX");
+    sends->setCurrentIndex(!keys ? 0 : hasTag(text, "RX") ? 1 : 2);
+    replace->setChecked(hasTag(text, "CLRTX"));
+  };
+  auto showPreview = [&] {
+    const MacroPlan plan = planMacro(body->toPlainText(), macroContext());
+    QString shown = plan.text.trimmed().toHtmlEscaped();
+    shown.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
+    QString html = QStringLiteral("<b>Sends now:</b> ") +
+                   (shown.isEmpty() ? QStringLiteral("<i>(nothing)</i>") : shown);
+    if (!plan.missing.isEmpty())
+      html += QStringLiteral("<br><span style='color:#e5484d'>Empty now: %1. A keyed macro will not "
+                             "send until it is filled, unless the tag has a fallback like &lt;NAME|OM&gt;.</span>")
+                  .arg(plan.missing.join(QStringLiteral(", ")).toHtmlEscaped());
+    if (!plan.skipped.isEmpty())
+      html += QStringLiteral("<br><span style='color:#d29922'>STD does not run %1; it is left out.</span>")
+                  .arg(plan.skipped.join(QLatin1Char(' ')).toHtmlEscaped());
+    preview->setText(html);
+  };
+  auto rewriteHow = [&] {
+    QString text = body->toPlainText();
+    text.remove(QRegularExpression(QStringLiteral("[<{]@?(TX|RX|TX/RX|CLRTX)[>}]"),
+                                   QRegularExpression::CaseInsensitiveOption));
+    text = text.trimmed();
+    const int how = sends->currentData().toInt();
+    if (how >= 1)
+      text.prepend(QStringLiteral("<TX>"));
+    if (replace->isChecked())
+      text.prepend(QStringLiteral("<CLRTX>"));
+    if (how == 1)
+      text.append(QStringLiteral("<RX>"));
+    body->setPlainText(text);
+  };
+  connect(sends, qOverload<int>(&QComboBox::currentIndexChanged), &dialog, [&](int) { rewriteHow(); });
+  connect(replace, &QCheckBox::toggled, &dialog, [&](bool) { rewriteHow(); });
+  connect(body, &QPlainTextEdit::textChanged, &dialog, [&] {
+    syncHow();
+    showPreview();
+  });
+  refreshHow = [&] {
+    syncHow();
+    showPreview();
+  };
+  refreshHow();
+
   auto* left = new QWidget(&dialog);
   auto* leftLay = new QVBoxLayout(left);
   leftLay->setContentsMargins(0, 0, 0, 0);
   leftLay->addWidget(new QLabel(QStringLiteral("Macro Text"), left));
   leftLay->addWidget(body, 1);
+  auto* howRow = new QHBoxLayout;
+  howRow->addWidget(new QLabel(QStringLiteral("A click"), left));
+  howRow->addWidget(sends, 1);
+  howRow->addWidget(replace);
+  leftLay->addLayout(howRow);
+  leftLay->addWidget(preview);
   auto* right = new QWidget(&dialog);
   auto* rightLay = new QVBoxLayout(right);
   rightLay->setContentsMargins(0, 0, 0, 0);
@@ -8795,6 +9565,19 @@ void MainWindow::openLogDialog() {
   udpAdif->setChecked(settings.value(QStringLiteral("log/udpAdif"), false).toBool());
   udpAdif->setToolTip(QStringLiteral(
       "Send a WSJT-X Logged ADIF datagram when a contact is logged. This does not key."));
+  auto* udpLink = new QCheckBox(QStringLiteral("Link to a logger over WSJT-X UDP"), &dialog);
+  udpLink->setObjectName(QStringLiteral("logUdpLink"));
+  udpLink->setChecked(settings.value(QStringLiteral("log/udpLink"), false).toBool());
+  udpLink->setToolTip(QStringLiteral(
+      "Send decodes and Status (dial, mode, the call you are working) as WSJT-X does, so SDRLogger+, "
+      "GridTracker, JTAlert, and Log4OM see STD. The call in STD fills the logger's log entry. This does not key."));
+  auto* udpAccept = new QCheckBox(QStringLiteral("Accept requests from the logger"), &dialog);
+  udpAccept->setObjectName(QStringLiteral("logUdpAccept"));
+  udpAccept->setChecked(settings.value(QStringLiteral("log/udpAccept"), true).toBool());
+  udpAccept->setToolTip(QStringLiteral(
+      "A click on a decode in the logger works that station in STD, the same as a double-click in STD: "
+      "the reply is set up and TX is armed. The logger can also halt TX or set the free text. Off: "
+      "STD ignores them. START is never sent."));
   auto* udpHost = new QLineEdit(
       settings.value(QStringLiteral("log/udpHost"), QStringLiteral("127.0.0.1")).toString(), &dialog);
   udpHost->setObjectName(QStringLiteral("logUdpHost"));
@@ -8818,6 +9601,8 @@ void MainWindow::openLogDialog() {
 
   auto* form = new QFormLayout;
   form->addRow(QStringLiteral("ADIF file"), pathRow);
+  form->addRow(udpLink);
+  form->addRow(udpAccept);
   form->addRow(udpQso);
   form->addRow(udpAdif);
   form->addRow(QStringLiteral("UDP server"), udpHost);
@@ -8828,7 +9613,10 @@ void MainWindow::openLogDialog() {
   auto* note = new QLabel(
       QStringLiteral("The QSO pane is not this file. A 73 or RR73 to another station is appended when "
                      "Log Automatically is on, when Prompt Me is answered yes, or when UDP or TCP is "
-                     "on. UDP is the WSJT-X logger datagram, port 2237. TCP is the DXKeeper command, "
+                     "on. UDP is the WSJT-X logger datagram, port 2237. The link sends decodes and Status "
+                     "and hears the logger's requests; it does not log by itself. For SDRLogger+ tick the link, "
+                     "Accept requests, and WSJT-X UDP logged QSO (not logged ADIF), port 2237, and turn on Log QSO "
+                     "Automatically. TCP is the DXKeeper command, "
                      "port 52001. Both stay off until enabled. The path and addresses are saved. "
                      "This does not send START and does not key."),
       &dialog);
@@ -8852,6 +9640,8 @@ void MainWindow::openLogDialog() {
     chosen = QsoLog::defaultAdifPath();
   QSettings store;
   store.setValue(QStringLiteral("log/adifPath"), chosen);
+  store.setValue(QStringLiteral("log/udpLink"), udpLink->isChecked());
+  store.setValue(QStringLiteral("log/udpAccept"), udpAccept->isChecked());
   store.setValue(QStringLiteral("log/udpQso"), udpQso->isChecked());
   store.setValue(QStringLiteral("log/udpAdif"), udpAdif->isChecked());
   store.setValue(QStringLiteral("log/udpHost"), udpHost->text().trimmed());
@@ -8862,6 +9652,122 @@ void MainWindow::openLogDialog() {
   if (qsoLog_)
     qsoLog_->applySettings();
   setTxStatus(QStringLiteral("Log file saved. Nothing was keyed. START was not sent."));
+}
+
+// WSJT-X UDP Status for the logger: dial, mode, the call being worked,
+// and whether STD is transmitting. Sent only when something changed.
+void MainWindow::sendLoggerStatus() {
+  if (!qsoLog_ || !qsoLog_->udpOn())
+    return;
+  QsoLog::UdpStatus s;
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  s.dialHz = profile_ ? quint64(std::max<qint64>(0, profile_->dialHz())) : 0;
+  s.mode = mode;
+  s.deCall = stationCall();
+  s.deGrid = stationGrid();
+  const auto* tx = findChild<QPushButton*>(QStringLiteral("txSend"));
+  s.txEnabled = tx && tx->isChecked();
+  s.transmitting = txKeySent_;
+  if (waterfall_) {
+    s.rxDf = quint32(std::max(0, waterfall_->rxHz()));
+    s.txDf = quint32(std::max(0, waterfall_->txHz()));
+  }
+  s.periodSeconds = quint32(std::max(0, periodLengthMs(mode) / 1000));
+  if (keyboardTextMode(mode)) {
+    // The keyboard modes: the QSO bar's station.
+    const QHash<QString, QString> bar = qsoBarTags();
+    s.dxCall = bar.value(QStringLiteral("<CALL>"));
+    s.dxGrid = bar.value(QStringLiteral("<LOC>"));
+    s.report = bar.value(QStringLiteral("<RST>"));
+  } else {
+    // The FT8 family: the station in the selected message, else Tx1.
+    const int slot = selectedTxSlot();
+    const QString name = slot == 6 ? QStringLiteral("txExtra") : QStringLiteral("tx%1").arg(slot + 1);
+    if (const auto* field = findChild<QLineEdit*>(name))
+      s.txMessage = field->text().trimmed();
+    const QString mine = stationCall().trimmed().toUpper();
+    for (const QString& source : {s.txMessage, [this] {
+                                    const auto* t1 = findChild<QLineEdit*>(QStringLiteral("tx1"));
+                                    return t1 ? t1->text() : QString();
+                                  }()}) {
+      for (const QString& word : source.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+        const QString w = word.toUpper();
+        if (w != QLatin1String("CQ") && w != mine && isCall(w)) {
+          s.dxCall = w;
+          break;
+        }
+      }
+      if (!s.dxCall.isEmpty())
+        break;
+    }
+  }
+  qsoLog_->sendStatus(s);
+}
+
+// A request from the logger, accepted in Options → Log. A Reply works the
+// station as a double-click on that decode would; it never does more.
+void MainWindow::loggerRequest(const QsoLog::UdpRequest& r) {
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  if (r.type == 8) {  // Halt Tx
+    if (r.autoTxOnly) {
+      if (auto* tx = findChild<QPushButton*>(QStringLiteral("txSend")); tx && tx->isChecked())
+        tx->click();
+      setTxStatus(QStringLiteral("The logger turned TX off after this transmission. START was not sent."));
+    } else {
+      haltTx();
+      setTxStatus(QStringLiteral("The logger halted TX. Nothing was keyed. START was not sent."));
+    }
+    return;
+  }
+  if (r.type == 9) {  // Free Text
+    if (keyboardTextMode(mode)) {
+      if (auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell"))) {
+        QTextCursor tail(box->document());
+        tail.movePosition(QTextCursor::End);
+        tail.insertText((box->toPlainText().isEmpty() ? QString() : QStringLiteral(" ")) + r.text);
+      }
+    } else if (auto* extra = findChild<QLineEdit*>(QStringLiteral("txExtra"))) {
+      extra->setText(r.text.left(13));
+      if (r.send) {
+        if (auto* pick = findChild<QRadioButton*>(QStringLiteral("txPick7")))
+          pick->setChecked(true);
+      }
+    }
+    setTxStatus(QStringLiteral("The logger set the free text: %1. Nothing was keyed. START was not sent.")
+                    .arg(r.text));
+    return;
+  }
+  // Reply: find that decode in STD's list and work it.
+  int best = -1;
+  for (int i = int(shownDecodes_.size()) - 1; i >= 0; --i) {
+    const DecodeRow& row = shownDecodes_.at(i);
+    if (row.message.trimmed().compare(r.message, Qt::CaseInsensitive) != 0)
+      continue;
+    if (best < 0 || std::abs(row.freqHz - int(r.deltaFrequency)) <
+                        std::abs(shownDecodes_.at(best).freqHz - int(r.deltaFrequency)))
+      best = i;
+  }
+  if (best >= 0) {
+    setTxStatus(QStringLiteral("The logger asked to work: %1").arg(r.message));
+    loadReplyFromLine(best);
+    return;
+  }
+  // The keyboard modes have no decode list: the call goes into the QSO bar.
+  const QString mine = stationCall().trimmed().toUpper();
+  for (const QString& word : r.message.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+    const QString w = word.toUpper();
+    if (w != QLatin1String("CQ") && w != QLatin1String("DE") && w != mine && isCall(w)) {
+      if (keyboardTextMode(mode)) {
+        qsoBarPut(QStringLiteral("qsoBarCall"), w);
+        setTxStatus(QStringLiteral("The logger picked %1. Nothing was keyed. START was not sent.").arg(w));
+      } else {
+        setTxStatus(QStringLiteral("The logger asked to work %1, but that decode is not in STD's list. "
+                                   "Nothing was keyed.")
+                        .arg(r.message));
+      }
+      return;
+    }
+  }
 }
 
 void MainWindow::openUserDialog() {
@@ -9054,6 +9960,7 @@ Licensed under the <b>GNU General Public License, version 3</b> or any later ver
 <li><b>Fldigi</b> (Dave Freese, W1HKJ, GPL-3) — Feld Hell tape, macro files (.mdf), RTTY mark/space (45.45 baud, 170 Hz, mark high on DIGU, shaped keying, Reverse, ITA-2, and the Fldigi baud and shift lists), BPSK varicode, Olivia and Contestia (Pawel Jalocha's block code), MFSK (NASA K=7, IZ8BLY varicode, diagonal interleaver), DominoEX (18-tone IFK+, FEC off), Thor (K=7, 18-tone IFK+), and WEFAX-576 receive.</li>
 <li><b>TCIdigi</b> — TCI audio for a Fldigi-style keyboard. STD does not include that tree.</li>
 <li><b>Lyra</b> (N8SDR, GPL-3) — the TCI client this socket follows. CW stays there.</li>
+<li><b>whisper.cpp</b> (Georgi Gerganov and the ggml authors, MIT) — speech to text for Talk, built into STD. Its notice is in licenses\whisper.cpp-LICENSE. The speech models are downloaded separately.</li>
 </ul>
 )HTML").arg(QLatin1String(STD_VERSION), stdVersionName());
   about.setText(html);

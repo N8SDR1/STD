@@ -19,6 +19,9 @@
 #include "QsoLog.h"
 #include "TciClient.h"
 #include "WaterfallWidget.h"
+#include "WxFeed.h"
+#include "Callbook.h"
+#include "ContestMode.h"
 
 #include <algorithm>
 #include <vector>
@@ -37,6 +40,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
@@ -224,6 +228,7 @@ QWidget* MainWindow::makeQsoBar(QWidget* parent) {
     label->setFont(qsoUi(12));
     auto* edit = new QLineEdit(bar);
     edit->setObjectName(QLatin1String(f.name));
+    edit->setProperty("qsoLabel", QString::fromLatin1(f.label));
     edit->setFont(qsoMono(13));
     edit->setClearButtonEnabled(false);
     edit->setToolTip(QString::fromLatin1(f.tip) +
@@ -265,6 +270,15 @@ QWidget* MainWindow::makeQsoBar(QWidget* parent) {
   on->setToolTip(QStringLiteral("Time on, UTC. Set when Call is first filled. <QSOTIME> in a macro."));
   bottom->addWidget(on);
 
+  auto* seen = new QLabel(bar);
+  seen->setObjectName(QStringLiteral("qsoBarHistory"));
+  seen->setFont(qsoUi(11));
+  seen->setToolTip(QStringLiteral(
+      "Your log for this call. Worked before fills empty Name, QTH, St, and Loc from the last QSO, in blue "
+      "until you change them. <WELCOME> sends nice to work you again, and <LASTQSO> the last date. "
+      "This does not key."));
+  bottom->addWidget(seen);
+
   auto* autoRst = new QCheckBox(QStringLiteral("Auto RST"), bar);
   autoRst->setObjectName(QStringLiteral("qsoBarAutoRst"));
   autoRst->setFont(qsoUi(12));
@@ -294,6 +308,7 @@ QWidget* MainWindow::makeQsoBar(QWidget* parent) {
       "This does not key and does not send START."));
   bottom->addWidget(log);
   grid->addLayout(bottom, 1, 0);
+  grid->addWidget(makeContestRow(bar), 2, 0);
 
   connect(clear, &QPushButton::clicked, this, [this] {
     clearQsoBar();
@@ -308,6 +323,16 @@ QWidget* MainWindow::makeQsoBar(QWidget* parent) {
   });
   if (auto* call = bar->findChild<QLineEdit*>(QStringLiteral("qsoBarCall")))
     connect(call, &QLineEdit::textChanged, this, [this](const QString& text) { qsoCallChanged(text); });
+  // Each field: a click or Tab takes an offered value; typing makes a
+  // log-filled value yours, so it loses the blue.
+  for (auto* edit : bar->findChildren<QLineEdit*>()) {
+    edit->installEventFilter(this);
+    connect(edit, &QLineEdit::textEdited, this, [this, edit](const QString&) {
+      if (qsoFromLog_.remove(edit->objectName()))
+        edit->setStyleSheet(QString());
+    });
+    connect(edit, &QLineEdit::textChanged, this, [this](const QString&) { showQsoSuggestions(); });
+  }
   if (auto* in = bar->findChild<QLineEdit*>(QStringLiteral("qsoBarRstOut")))
     connect(in, &QLineEdit::textEdited, this, [this](const QString&) {
       qsoRstAuto_ = false;
@@ -327,7 +352,16 @@ void MainWindow::qsoCallChanged(const QString& text) {
   const QString call = text.trimmed();
   if (call == qsoBarLastCall_)
     return;
+  // A different station after one was being worked: their words go too.
+  // From empty to a call keeps them, since the call usually came in the
+  // same over as their name and QTH.
+  const bool wasWorking = !qsoBarLastCall_.isEmpty() && qsoBarLastCall_ != QString(QChar(1));
+  if (wasWorking)
+    qsoRxTail_.clear();
   qsoBarLastCall_ = call;
+  qsoLookupCall(call);
+  if (!qsoRxTail_.isEmpty())
+    qsoScanRx(QString());
   // A new station: fresh time on, and RST out follows the meter again.
   qsoRstAuto_ = true;
   qsoPeakDbm_ = -1.0e9;
@@ -337,6 +371,7 @@ void MainWindow::qsoCallChanged(const QString& text) {
                                       QDateTime::fromMSecsSinceEpoch(qsoBarOnMs_, QTimeZone::utc())
                                           .toString(QStringLiteral("HHmm")))
                                 : QString());
+  updateContestDupe();
   showQsoRstTag();
 }
 
@@ -425,7 +460,13 @@ void MainWindow::clearQsoBar() {
   if (auto* out = findChild<QLineEdit*>(QStringLiteral("qsoBarRstOut")))
     out->setText(QStringLiteral("599"));
   qsoBarLastCall_ = QStringLiteral("\x01");
+  if (auto* exch = findChild<QLineEdit*>(QStringLiteral("qsoBarExch")))
+    exch->clear();
+  contestHeard_.clear();
+  qsoRxTail_.clear();
+  qsoHints_ = QsoHints{};
   qsoCallChanged(QString());
+  showQsoSuggestions();
 }
 
 QHash<QString, QString> MainWindow::qsoBarTags() const {
@@ -443,6 +484,14 @@ QHash<QString, QString> MainWindow::qsoBarTags() const {
   const QDateTime on = qsoBarOnMs_ > 0 ? QDateTime::fromMSecsSinceEpoch(qsoBarOnMs_, QTimeZone::utc())
                                        : QDateTime::currentDateTimeUtc();
   tags.insert(QStringLiteral("<QSOTIME>"), on.toString(QStringLiteral("HHmm")));
+  // Contest: <XIN> their exchange, <XOUT> (or <EXCH>) yours with the serial.
+  tags.insert(QStringLiteral("<XIN>"), value("qsoBarExch").toUpper());
+  const QSettings store;
+  const ContestTemplate& t = contestTemplate(store.value(QStringLiteral("contest/template")).toString());
+  const QString mine = contestExchange(t, store.value(QStringLiteral("contest/myExch")).toString(),
+                                       store.value(QStringLiteral("dx/macroSerial"), 1).toInt());
+  tags.insert(QStringLiteral("<XOUT>"), mine);
+  tags.insert(QStringLiteral("<EXCH>"), mine);
   return tags;
 }
 
@@ -471,13 +520,45 @@ QString MainWindow::logQsoBar() {
     record.freqHz += waterfall_->txHz();
   record.timeOff = QDateTime::currentDateTimeUtc();
   record.timeOn = qsoBarOnMs_ > 0 ? QDateTime::fromMSecsSinceEpoch(qsoBarOnMs_, QTimeZone::utc()) : record.timeOff;
+  if (contestActive()) {
+    // Contest: their exchange as SRX_STRING, yours as STX_STRING, the
+    // serials as SRX and STX, and the contest as CONTEST_ID.
+    const QSettings store;
+    const ContestTemplate& t = contestTemplate(store.value(QStringLiteral("contest/template")).toString());
+    const QString myExch = store.value(QStringLiteral("contest/myExch")).toString();
+    const int serial = std::max(1, store.value(QStringLiteral("dx/macroSerial"), 1).toInt());
+    record.contestId = t.adifId;
+    record.stxString = contestExchange(t, myExch, serial);
+    record.srxString = value("qsoBarExch").toUpper();
+    if (myExch.contains(QLatin1Char('#')))
+      record.stx = QString::number(serial);
+    static const QRegularExpression digits(QStringLiteral("^0*([0-9]{1,5})$"));
+    for (const QString& w : record.srxString.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+      const QRegularExpressionMatch m = digits.match(w);
+      if (m.hasMatch() && t.id != QLatin1String("cqww-rtty")) {
+        record.srx = m.captured(1);
+        break;
+      }
+    }
+    if (t.rst) {
+      if (record.rstSent.isEmpty())
+        record.rstSent = QStringLiteral("599");
+      if (record.rstRcvd.isEmpty())
+        record.rstRcvd = QStringLiteral("599");
+    }
+  }
   qsoBarLastRecord_ = QsoLog::adifRecord(record);
-  if (qEnvironmentVariableIsSet("STD_SELFTEST"))
+  if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    if (!record.contestId.isEmpty())
+      contestLogged(record.call, record.freqHz);
     return QStringLiteral("Logged %1. Nothing was keyed. START was not sent.").arg(record.call);
+  }
   const QsoLog::Result result = qsoLog_ ? qsoLog_->store(record) : QsoLog::Result{};
   if (!result.wrote)
     return QStringLiteral("%1 was not logged. %2 Nothing was keyed. START was not sent.")
         .arg(record.call, result.detail);
+  if (!record.contestId.isEmpty())
+    contestLogged(record.call, record.freqHz);
   return QStringLiteral("Logged %1 to %2. Nothing was keyed. START was not sent.").arg(record.call, result.path);
 }
 
@@ -485,6 +566,8 @@ void MainWindow::qsoBarPut(const QString& field, const QString& word) {
   auto* edit = findChild<QLineEdit*>(field);
   if (!edit || word.isEmpty())
     return;
+  if (field == QLatin1String("qsoBarCall"))
+    cancelMacroRepeat(QStringLiteral("You picked %1.").arg(word.toUpper()));
   if (field == QLatin1String("qsoBarNotes") && !edit->text().trimmed().isEmpty())
     edit->setText(edit->text().trimmed() + QLatin1Char(' ') + word);
   else if (field == QLatin1String("qsoBarName") || field == QLatin1String("qsoBarQth"))
@@ -510,9 +593,12 @@ void MainWindow::installQsoRxPicker(QTextEdit* echo) {
         const char* field;
       } picks[] = {{"Call", "qsoBarCall"},     {"Name", "qsoBarName"},     {"QTH", "qsoBarQth"},
                    {"St", "qsoBarSt"},         {"Pr", "qsoBarPr"},         {"Loc", "qsoBarLoc"},
-                   {"RST in", "qsoBarRstIn"},  {"RST out", "qsoBarRstOut"}, {"Notes", "qsoBarNotes"}};
+                   {"RST in", "qsoBarRstIn"},  {"RST out", "qsoBarRstOut"}, {"Notes", "qsoBarNotes"},
+                   {"Exch", "qsoBarExch"}};
       const QString shown = word.size() > 24 ? word.left(24) + QStringLiteral("…") : word;
       for (const auto& p : picks) {
+        if (QLatin1String(p.field) == QLatin1String("qsoBarExch") && !contestActive())
+          continue;
         auto* action = new QAction(QStringLiteral("%1: %2").arg(QLatin1String(p.label), shown), menu);
         const QString field = QLatin1String(p.field);
         connect(action, &QAction::triggered, this, [this, field, word] { qsoBarPut(field, word); });
@@ -533,18 +619,299 @@ void MainWindow::installQsoRxPicker(QTextEdit* echo) {
   }));
 }
 
-// Runs the <LOG>, <LNW>, <CLRQSO> and <CLRLOG> tags of a macro in a
-// keyboard mode. The macro is logged when it is pressed.
-void MainWindow::qsoMacroActions(const QString& body) {
+MacroContext MainWindow::macroContext() const {
+  MacroContext c;
+  c.myCall = stationCall();
+  c.myLoc = stationGrid();
+  const QSettings store;
+  for (const MacroUserField& field : macroUserFields())
+    c.tags.insert(field.tag, store.value(field.key).toString());
+  const QHash<QString, QString> qso = qsoBarTags();
+  for (auto it = qso.cbegin(); it != qso.cend(); ++it)
+    c.tags.insert(it.key(), it.value());
+  if (wx_) {
+    const QHash<QString, QString> weather = wx_->macroTags();
+    for (auto it = weather.cbegin(); it != weather.cend(); ++it)
+      c.tags.insert(it.key(), it.value());
+  }
+  // Log memory: blank on a first QSO, so a macro can always carry them.
+  c.tags.insert(QStringLiteral("<WELCOME>"),
+                qsoHistory_.count > 0 ? QStringLiteral("nice to work you again") : QString());
+  c.tags.insert(QStringLiteral("<LASTQSO>"), qsoHistory_.lastDate);
+  c.mode = profile_ ? profile_->digitalMode() : QString();
+  const qint64 dial = profile_ ? profile_->dialHz() : 0;
+  c.band = qsoBandForHz(dial);
+  c.freqKhz = dial > 0 ? QString::number(double(dial) / 1000.0, 'f', 3) : QString();
+  c.version = QStringLiteral("STD " STD_VERSION);
+  c.serial = std::max(1, store.value(QStringLiteral("dx/macroSerial"), 1).toInt());
+  return c;
+}
+
+// <LOG>, <CLRQSO>, <CLRRX>, <INCR> and <DECR>. A keyed macro runs these
+// when its text has gone out; any other macro runs them when pressed.
+void MainWindow::runMacroActions(const MacroPlan& plan) {
+  QStringList done;
+  if (plan.log) {
+    const auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"));
+    if (!bar || !bar->isVisible()) {
+      done << QStringLiteral("Not logged: the QSO bar is off for this mode.");
+    } else {
+      if (!plan.logNote.isEmpty())
+        qsoBarPut(QStringLiteral("qsoBarNotes"), plan.logNote);
+      done << logQsoBar();
+    }
+  }
+  if (plan.clearQso)
+    clearQsoBar();
+  if (plan.clearRx) {
+    if (auto* clr = findChild<QPushButton*>(QStringLiteral("clrRx")))
+      clr->click();
+  }
+  if (plan.serialStep != 0) {
+    QSettings store;
+    const int serial = std::max(1, store.value(QStringLiteral("dx/macroSerial"), 1).toInt() + plan.serialStep);
+    store.setValue(QStringLiteral("dx/macroSerial"), serial);
+    done << QStringLiteral("Serial is now %1.").arg(serial, 3, 10, QLatin1Char('0'));
+  }
+  if (!done.isEmpty())
+    setTxStatus(done.join(QLatin1Char(' ')));
+  showMacroSet();
+}
+
+void MainWindow::macroSendFinished(bool completed) {
+  if (!macroAfterPending_)
+    return;
+  const MacroPlan plan = macroAfter_;
+  const int index = macroAfterIndex_;
+  macroAfterPending_ = false;
+  macroAfterIndex_ = -1;
+  if (!completed) {
+    if (plan.log || plan.clearQso || plan.serialStep != 0)
+      setTxStatus(QStringLiteral(
+          "TX stopped before the macro was sent, so it was not logged and nothing was cleared. "
+          "START was not sent."));
+    return;
+  }
+  runMacroActions(plan);
+  if (plan.repeatSeconds > 0 && index >= 0) {
+    macroRepeatIndex_ = index;
+    macroHeardTail_.clear();
+    if (!macroRepeatTimer_) {
+      macroRepeatTimer_ = new QTimer(this);
+      macroRepeatTimer_->setSingleShot(true);
+      connect(macroRepeatTimer_, &QTimer::timeout, this, [this] {
+        const int again = macroRepeatIndex_;
+        macroRepeatIndex_ = -1;
+        if (again >= 0)
+          insertMacro(again);
+      });
+    }
+    macroRepeatTimer_->start(plan.repeatSeconds * 1000);
+    setTxStatus(QStringLiteral(
+                    "Listening. This macro goes again in %1 s. Typing, a macro, TX, Halt, picking a call, "
+                    "or your call in the receive text stops it. START was not sent.")
+                    .arg(plan.repeatSeconds));
+  }
+}
+
+// Smart capture: their received text, read for name, QTH, report, and
+// locator, offered in the empty QSO bar fields. Nothing is filled until
+// the operator takes it with a click or Tab.
+void MainWindow::qsoScanRx(const QString& text) {
   const auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"));
   if (!bar || !bar->isVisible())
     return;
-  const bool log = body.contains(QStringLiteral("<LOG>"), Qt::CaseInsensitive) ||
-                   body.contains(QStringLiteral("<LNW>"), Qt::CaseInsensitive);
-  const bool clear = body.contains(QStringLiteral("<CLRQSO>"), Qt::CaseInsensitive) ||
-                     body.contains(QStringLiteral("<CLRLOG>"), Qt::CaseInsensitive);
-  if (log)
-    setTxStatus(logQsoBar());
-  if (clear)
-    clearQsoBar();
+  qsoRxTail_ = (qsoRxTail_ + text).right(600);
+  qsoHints_ = scanQsoText(qsoRxTail_, stationCall());
+  contestHeard_.clear();
+  if (contestActive()) {
+    const QString call = findChild<QLineEdit*>(QStringLiteral("qsoBarCall"))
+                             ? findChild<QLineEdit*>(QStringLiteral("qsoBarCall"))->text().trimmed()
+                             : QString();
+    const ContestTemplate& t = contestTemplate(QSettings().value(QStringLiteral("contest/template")).toString());
+    if (!call.isEmpty())
+      contestHeard_ = contestExchangeHeard(t, qsoRxTail_, call, stationCall());
+  }
+  showQsoSuggestions();
+}
+
+void MainWindow::showQsoSuggestions() {
+  const auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"));
+  if (!bar)
+    return;
+  const QList<QPair<QString, QString>> offers = {
+      {QStringLiteral("qsoBarCall"), qsoHints_.call}, {QStringLiteral("qsoBarName"), qsoHints_.name},
+      {QStringLiteral("qsoBarQth"), qsoHints_.qth},   {QStringLiteral("qsoBarSt"), qsoHints_.st},
+      {QStringLiteral("qsoBarLoc"), qsoHints_.loc},   {QStringLiteral("qsoBarRstIn"), qsoHints_.rstIn},
+      {QStringLiteral("qsoBarExch"), contestHeard_},
+  };
+  for (const auto& offer : offers) {
+    const QString& field = offer.first;
+    const QString& value = offer.second;
+    auto* edit = bar->findChild<QLineEdit*>(field);
+    if (!edit)
+      continue;
+    if (!value.isEmpty() && edit->text().trimmed().isEmpty()) {
+      qsoSuggest_.insert(field, value);
+      edit->setPlaceholderText(value + QLatin1Char('?'));
+      if (!qsoFromLog_.contains(field))
+        edit->setStyleSheet(QStringLiteral("QLineEdit { border: 1px dashed #d29922; }"));
+    } else if (qsoSuggest_.remove(field)) {
+      edit->setPlaceholderText(QString());
+      if (!qsoFromLog_.contains(field))
+        edit->setStyleSheet(QString());
+    }
+  }
+}
+
+// A click or Tab in an empty field takes the offered value.
+bool MainWindow::acceptQsoSuggestion(QObject* field) {
+  auto* edit = qobject_cast<QLineEdit*>(field);
+  if (!edit || !edit->text().trimmed().isEmpty())
+    return false;
+  const QString value = qsoSuggest_.value(edit->objectName());
+  if (value.isEmpty())
+    return false;
+  qsoBarPut(edit->objectName(), value);
+  setTxStatus(QStringLiteral("Took %1 from their text. This does not key.").arg(value));
+  return true;
+}
+
+// Log memory: an earlier QSO with this call fills the empty fields.
+void MainWindow::qsoLookupCall(const QString& call) {
+  // Values an earlier lookup filled and nobody changed go when the call changes.
+  for (auto it = qsoFromLog_.cbegin(); it != qsoFromLog_.cend(); ++it) {
+    if (auto* edit = findChild<QLineEdit*>(it.key())) {
+      if (edit->text() == it.value())
+        edit->clear();
+      edit->setStyleSheet(QString());
+    }
+  }
+  qsoFromLog_.clear();
+  qsoHistory_ = QsoHistory{};
+  callbookFor_.clear();
+  auto* seen = findChild<QLabel*>(QStringLiteral("qsoBarHistory"));
+  if (seen)
+    seen->clear();
+  static const QRegularExpression full(QStringLiteral("^[A-Z0-9/]{3,}$"));
+  if (call.isEmpty() || !full.match(call.toUpper()).hasMatch())
+    return;
+  const QSettings store;
+  QString path = store.value(QStringLiteral("log/adifPath")).toString().trimmed();
+  if (path.isEmpty())
+    path = QsoLog::defaultAdifPath();
+  QStringList logs{path};
+  const QString extra = store.value(QStringLiteral("log/memoryAdif")).toString().trimmed();
+  if (!extra.isEmpty())
+    logs << QsoLog::keepAdifCopy(extra);
+  qsoMemory_.setPaths(logs);
+  qsoHistory_ = qsoMemory_.lookup(call);
+  // The callbook comes after the log, for what is still empty.
+  callbookFor_ = call.toUpper();
+  if (callbook_ && callbook_->enabled() && callbookWait_)
+    callbookWait_->start();
+  if (seen)
+    seen->setText(qsoHistory_.count == 0
+                      ? QStringLiteral("New station")
+                      : QStringLiteral("Worked %1x, last %2 %3 %4")
+                            .arg(qsoHistory_.count)
+                            .arg(qsoHistory_.lastDate, qsoHistory_.lastBand, qsoHistory_.lastMode)
+                            .simplified());
+  if (qsoHistory_.count == 0)
+    return;
+  const QList<QPair<QString, QString>> known = {
+      {QStringLiteral("qsoBarName"), qsoHistory_.name},
+      {QStringLiteral("qsoBarQth"), qsoHistory_.qth},
+      {QStringLiteral("qsoBarSt"), qsoHistory_.state.toUpper()},
+      {QStringLiteral("qsoBarLoc"), qsoHistory_.grid.left(4).toUpper() + qsoHistory_.grid.mid(4).toLower()},
+  };
+  for (const auto& entry : known) {
+    auto* edit = findChild<QLineEdit*>(entry.first);
+    if (!edit || entry.second.isEmpty() || !edit->text().trimmed().isEmpty())
+      continue;
+    edit->setText(entry.second);
+    edit->setStyleSheet(QStringLiteral("QLineEdit { color: #58a6ff; font-style: italic; }"));
+    qsoFromLog_.insert(entry.first, entry.second);
+  }
+}
+
+// QRZ or HamQTH answered. It fills only fields still empty after your
+// log, in green until you change them. A portable call (/P, /M, /4,
+// VE3/...) gets only the name: its home QTH and grid are not where the
+// station is now. What is in the box when you log is what is logged.
+void MainWindow::callbookAnswered(const QString& asked, const CallbookRecord& record, const QString& error) {
+  if (callbookFor_.isEmpty())
+    return;
+  const QString key = Callbook::portable(callbookFor_) ? Callbook::homeCall(callbookFor_) : callbookFor_;
+  if (asked != key)
+    return;  // an answer for a call no longer in the bar
+  auto* seen = findChild<QLabel*>(QStringLiteral("qsoBarHistory"));
+  const QString service = callbook_->serviceName();
+  if (!record.found) {
+    if (!error.isEmpty() && !error.startsWith(QLatin1String("Not found")))
+      setTxStatus(error + QStringLiteral(" Options → Lookup. This does not key."));
+    else if (seen)
+      seen->setText(seen->text() + QStringLiteral("  ·  not in %1").arg(service));
+    return;
+  }
+  const bool nameOnly = Callbook::portable(callbookFor_) &&
+                        QSettings().value(QStringLiteral("callbook/portableNameOnly"), true).toBool();
+  QList<QPair<QString, QString>> offer = {{QStringLiteral("qsoBarName"), record.name}};
+  if (!nameOnly)
+    offer += {{QStringLiteral("qsoBarQth"), record.qth},
+              {QStringLiteral("qsoBarSt"), record.state},
+              {QStringLiteral("qsoBarLoc"), record.grid}};
+  QStringList filled;
+  for (const auto& entry : offer) {
+    auto* edit = findChild<QLineEdit*>(entry.first);
+    if (!edit || entry.second.isEmpty() || !edit->text().trimmed().isEmpty())
+      continue;
+    edit->setText(entry.second);
+    edit->setStyleSheet(QStringLiteral("QLineEdit { color: #3fb950; font-style: italic; }"));
+    qsoFromLog_.insert(entry.first, entry.second);
+    filled << edit->property("qsoLabel").toString();
+  }
+  if (seen)
+    seen->setText(seen->text() + QStringLiteral("  ·  %1").arg(service));
+  if (!filled.isEmpty())
+    setTxStatus(QStringLiteral("%1 filled %2 for %3%4. Type over any of them; what is in the box is logged. "
+                               "This does not key.")
+                    .arg(service, filled.join(QStringLiteral(", ")), callbookFor_,
+                         nameOnly ? QStringLiteral(" (portable, so only the name)") : QString()));
+}
+
+// Outlines the empty QSO bar fields a macro needs, for a second and a half.
+void MainWindow::flashQsoFields(const QStringList& labels) {
+  static const QHash<QString, QString> fields = {
+      {QStringLiteral("Call"), QStringLiteral("qsoBarCall")}, {QStringLiteral("Name"), QStringLiteral("qsoBarName")},
+      {QStringLiteral("QTH"), QStringLiteral("qsoBarQth")},   {QStringLiteral("St"), QStringLiteral("qsoBarSt")},
+      {QStringLiteral("Pr"), QStringLiteral("qsoBarPr")},     {QStringLiteral("Loc"), QStringLiteral("qsoBarLoc")},
+      {QStringLiteral("RST out"), QStringLiteral("qsoBarRstOut")}, {QStringLiteral("Exch"), QStringLiteral("qsoBarExch")},
+  };
+  for (const QString& label : labels) {
+    auto* edit = findChild<QLineEdit*>(fields.value(label));
+    if (!edit)
+      continue;
+    const QString before = edit->styleSheet();
+    edit->setStyleSheet(QStringLiteral("QLineEdit { border: 2px solid #e5484d; }"));
+    QPointer<QLineEdit> guard(edit);
+    QTimer::singleShot(1500, this, [guard, before] {
+      if (guard)
+        guard->setStyleSheet(before);
+    });
+  }
+  if (!labels.isEmpty()) {
+    if (auto* first = findChild<QLineEdit*>(fields.value(labels.first())))
+      first->setFocus();
+  }
+}
+
+void MainWindow::cancelMacroRepeat(const QString& why) {
+  if (macroRepeatIndex_ < 0)
+    return;
+  macroRepeatIndex_ = -1;
+  if (macroRepeatTimer_)
+    macroRepeatTimer_->stop();
+  if (!why.isEmpty())
+    setTxStatus(why + QStringLiteral(" The repeating macro stopped. Nothing was keyed."));
 }

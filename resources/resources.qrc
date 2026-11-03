@@ -9,5 +9,6 @@
     <file>biohazard-on.svg</file>
     <file>biohazard-off.svg</file>
     <file>biohazard-hover.svg</file>
+    <file>check-on.svg</file>
   </qresource>
 </RCC>

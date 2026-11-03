@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <QDateTime>
 #include <QHash>
+#include <QStringList>
 #include <QString>
 #include <QVector>
 
@@ -56,3 +58,44 @@ QVector<MacroUserField> macroUserFields();
 
 // Fldigi 4.2 macro editor tag list (<FREQ>, <MYCALL>, and the rest).
 QVector<MacroTagRow> macroTagList();
+
+// What a macro fills in from. Tag keys are "<NAME>" style, upper case.
+struct MacroContext {
+  QString myCall;
+  QString myLoc;
+  QHash<QString, QString> tags;  // station fields and the QSO bar
+  QString mode;                  // "RTTY", "BPSK31", ...
+  QString band;                  // "40m"
+  QString freqKhz;               // dial, "7074.000"
+  QString version;               // "STD 0.1.4"
+  int serial = 1;                // <CNTR>
+  QDateTime nowUtc;              // invalid: the current time
+};
+
+// A macro worked out for one press. Fldigi tags decide what it does:
+// <TX> keys, <RX> returns to receive after the text, <CLRTX> replaces the
+// transmit box instead of adding to it. <LOG>, <CLRQSO>, <CLRRX>, <INCR>
+// and <DECR> run when a keyed macro finishes sending, or at once when the
+// macro does not key. <TIMER:NN> sends it again NN seconds after it ends.
+// {CALL} style tags work too. <NAME|OM> sends OM when Name is empty.
+struct MacroPlan {
+  QString text;             // what goes into the transmit box
+  bool keys = false;        // <TX>
+  bool toggle = false;      // <TX/RX>
+  bool backToRx = false;    // <RX>
+  bool clearTx = false;     // <CLRTX>
+  bool clearRx = false;     // <CLRRX>
+  bool log = false;         // <LOG> or <LNW>
+  QString logNote;          // <LOG:msg>
+  bool clearQso = false;    // <CLRQSO> or <CLRLOG>
+  int serialStep = 0;       // <INCR> +1, <DECR> -1
+  int repeatSeconds = 0;    // <TIMER:NN>
+  QStringList missing;      // other-station fields that were empty, e.g. "Call"
+  QStringList skipped;      // Fldigi tags STD does not run, removed from the text
+};
+
+MacroPlan planMacro(const QString& body, const MacroContext& context);
+
+// The button label: Fldigi's @>| style marks become ▶, and tags in the
+// name fill in ("Reply <CALL>" shows "Reply K8AB").
+QString macroButtonLabel(const QString& name, const MacroContext& context, bool keys);

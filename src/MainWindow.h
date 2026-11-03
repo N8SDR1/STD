@@ -3,8 +3,11 @@
 
 #pragma once
 
+#include "LiveTx.h"
 #include "MaEngine.h"
 #include "MacroFile.h"
+#include "QsoCapture.h"
+#include "QsoLog.h"
 #include "RstMeter.h"
 
 #include <QByteArray>
@@ -16,6 +19,7 @@
 #include <QVector>
 
 #include <initializer_list>
+#include <memory>
 #include <vector>
 
 class QCloseEvent;
@@ -23,6 +27,10 @@ class QEvent;
 
 class Ft8Decode;
 class HellEngine;
+class SpeechReader;
+class SpeechInput;
+class SpeechModelDownload;
+class SpeechRecognizer;
 class DominoEngine;
 class ThorEngine;
 class MfskEngine;
@@ -36,6 +44,9 @@ class WsprEngine;
 class PskUploader;
 class WsprNetUploader;
 class UpdateChecker;
+class WxFeed;
+class Callbook;
+struct CallbookRecord;
 class ModeProfile;
 class QAction;
 class QDockWidget;
@@ -98,6 +109,11 @@ private:
   void openMacrosDialog(int index = -1);
   void openNetworkDialog();
   void openUserDialog();
+  void openWeatherDialog();
+  void openLookupDialog();
+  void sendLoggerStatus();
+  void loggerRequest(const QsoLog::UdpRequest& request);
+  void callbookAnswered(const QString& asked, const CallbookRecord& record, const QString& error);
   void openLogDialog();
   void backupSettings();
   void importSettings();
@@ -158,18 +174,42 @@ private:
   void clearJs8Activity();
   // QSO bar for the keyboard modes (MainWindowQso.cpp).
   QWidget* makeQsoBar(QWidget* parent);
+  // Contest mode for the keyboard modes (MainWindowContest.cpp).
+  QWidget* makeContestRow(QWidget* parent);
+  bool contestActive() const;
+  void applyContestRow();
+  void openContestDialog();
+  void sendContestMessage(int index);
+  void updateContestDupe();
+  void contestLogged(const QString& call, qint64 dialHz);
+  bool contestKey(QObject* watched, class QKeyEvent* key);
+  void sendMacroText(const QString& body, int index);
   void clearQsoBar();
   QString logQsoBar();
   QHash<QString, QString> qsoBarTags() const;
   void qsoBarPut(const QString& field, const QString& word);
   void qsoCallChanged(const QString& text);
+  void qsoScanRx(const QString& text);
+  void showQsoSuggestions();
+  void qsoLookupCall(const QString& call);
+  bool acceptQsoSuggestion(QObject* field);
   void showQsoRstTag();
   void qsoSmeter(double dbm);
   void installQsoRxPicker(class QTextEdit* echo);
-  void qsoMacroActions(const QString& body);
+  MacroContext macroContext() const;
+  void runMacroActions(const MacroPlan& plan);
+  void macroSendFinished(bool completed);
+  void cancelMacroRepeat(const QString& why);
+  void renameMacroBank();
+  void flashQsoFields(const QStringList& labels);
   void paintJs8Activity();
   void revealSentEcho();
   void consumeSentKeyboardText();
+  // Live keyboard TX (PSK, QPSK, RTTY): keep at least ahead samples queued,
+  // taking characters off the front of the TX box as they are encoded.
+  void topUpLiveTx(int ahead);
+  bool liveTxActive() const { return txLive_ != nullptr; }
+  void logLiveTx();
   void breakHellEchoLine(bool onlyIfSent);
   void appendTxEcho(const QString& text);
   void appendRxEcho(const QString& text);
@@ -254,6 +294,13 @@ private:
   QString contestSetupProblem() const;
   void advanceLoggedSerial();
   void openContestTags();
+  // Options -> Speech: read received text aloud on a chosen sound device.
+  void openSpeechDialog();
+  void applySpeechSettings();
+  bool speechWanted() const;
+  // Talk chip: record the chosen mic while held (or between clicks).
+  void startTalk();
+  void endTalk();
   QString composedCq(const QString& kind) const;
   QString transmitMessage() const;
   QString wsprOutbound() const;
@@ -299,10 +346,25 @@ private:
   TciClient* tci_ = nullptr;
   Ft8Decode* ft8_ = nullptr;
   HellEngine* hell_ = nullptr;
+  SpeechReader* speech_ = nullptr;
+  SpeechInput* talkIn_ = nullptr;
+  SpeechModelDownload* modelDl_ = nullptr;
+  SpeechRecognizer* recognizer_ = nullptr;
+  void insertHeardText(const QString& heard, const QString& error);
+  void installTalkMenu(class QPlainTextEdit* box);
+  bool talkActive_ = false;
   QVector<MacroSlot> macros_;
   int macroBank_ = 0;
   QString macroFile_;
   bool macrosDirty_ = false;
+  // A keyed macro's <LOG>, <CLRQSO> and the rest, run when its text is sent.
+  bool macroAfterPending_ = false;
+  MacroPlan macroAfter_;
+  int macroAfterIndex_ = -1;
+  // <TIMER:NN>: the macro waits NN s after it ends, then goes again.
+  QTimer* macroRepeatTimer_ = nullptr;
+  int macroRepeatIndex_ = -1;
+  QString macroHeardTail_;  // received text since the repeat was armed
   QAction* autoConnectAction_ = nullptr;
   QAction* autoMonitorAction_ = nullptr;
   bool autoMonitor_ = true;
@@ -330,6 +392,8 @@ private:
   std::vector<float> rxScaled_;
   QString layoutMode_ = QStringLiteral("FT8");
   QByteArray layoutBaseline_;
+  QList<double> layoutBaselineShares_;
+  bool layoutBaselineParsed_ = false;
   int layoutEpoch_ = 0;
   bool layoutBaselinePending_ = false;
   bool layoutReady_ = false;
@@ -371,6 +435,14 @@ private:
   qint64 qsoStartedMs_ = 0;
   qint64 qsoBarOnMs_ = 0;
   QString qsoBarLastCall_;
+  // Smart capture: what their text said, offered in empty QSO bar fields.
+  QString qsoRxTail_;
+  QsoHints qsoHints_;
+  QHash<QString, QString> qsoSuggest_;  // field object name -> offered value
+  // Log memory: fields filled from earlier QSOs, until the operator edits them.
+  QsoMemory qsoMemory_;
+  QsoHistory qsoHistory_;
+  QHash<QString, QString> qsoFromLog_;
   QString qsoBarLastRecord_;
   double qsoPeakDbm_ = -1.0e9;
   bool qsoRstAuto_ = true;
@@ -378,6 +450,11 @@ private:
   double qsoMeterDbm_ = 0.0;
   RstMeter qsoRstMeter_;
   bool qsoLogged_ = false;
+  // Contest mode: their exchange read from received text, and the dupes.
+  QString contestHeard_;
+  QSet<QString> contestDupes_;
+  QString contestDupeSource_;  // log path, contest, and session it was read for
+  QDateTime contestDupeStamp_;
   QString txHisCall_;
   QString txReport_;
   QString txQrg_;
@@ -416,6 +493,12 @@ private:
   int txJs8Pending_ = 0;
   int txEchoCount_ = 0;
   bool txTextFinished_ = false;  // the whole keyboard text went out
+  std::unique_ptr<LiveTextTx> txLive_;
+  bool txLiveEnding_ = false;  // TX pressed again: send the box, then the tail
+  bool txLiveClosed_ = false;  // the tail is queued; nothing more is added
+  bool txLiveLogged_ = false;
+  qint64 txLiveTextMs_ = 0;  // last character taken from the box, or keydown
+  int txSampleBase_ = 0;  // txCursor_ of txSamples_[0] once the front is trimmed
   int txEchoSamples_ = 0;
   std::vector<int> txEchoAt_;
   RttyEngine* rtty_ = nullptr;
@@ -440,6 +523,10 @@ private:
   PskUploader* spots_ = nullptr;
   WsprNetUploader* wsprnet_ = nullptr;
   UpdateChecker* updates_ = nullptr;
+  WxFeed* wx_ = nullptr;  // <WX> macro weather
+  Callbook* callbook_ = nullptr;  // QRZ or HamQTH, Options -> Lookup
+  QTimer* callbookWait_ = nullptr;  // waits for the call to stop changing
+  QString callbookFor_;  // the QSO bar call being looked up
   QAction* updateAction_ = nullptr;
   QString pendingUpdateUrl_;
   bool updateCheckManual_ = false;

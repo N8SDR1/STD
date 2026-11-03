@@ -10,8 +10,11 @@
 
 #include "RttyModem.h"
 
+#include "LiveTx.h"
+
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <cstdlib>
 #include <map>
 #include <mutex>
@@ -802,48 +805,90 @@ struct Rx {
 
 }  // namespace
 
-RttyPlan planRtty(const QString& text, int centerHz, const RttyOptions& options) {
-  Tx tx;
-  tx.opt = options;
-  tx.center = std::clamp(centerHz, 200, 3000);
-  tx.prepare();
-  tx.echoAt.assign(static_cast<size_t>(text.size()), -1);
-  // Shaped keying rises over about three symbols. Hold mark long enough
-  // that the first start bit is a settled edge. Hard FSK keeps two bits,
-  // which is what the tone-power windows measure.
-  tx.tone(true, tx.bitCount() * (tx.opt.shaped ? 6 : 2));
-  tx.put(0x1F);
-  tx.put(0x1F);
-  for (int i = 0; i < text.size(); ++i) {
-    const QChar ch = text.at(i);
-    tx.echoAt[static_cast<size_t>(i)] = int(tx.samples.size());
-    if (ch == QLatin1Char('\r')) {
-      tx.put(0x08);
-      continue;
-    }
-    if (ch == QLatin1Char('\n')) {
-      tx.put(0x02);
-      continue;
-    }
-    int want = kLetters;
-    const int five = encodeChar(ch, &want, tx.figures);
-    if (five < 0)
-      continue;
-    if (ch == QLatin1Char(' ')) {
-      tx.put(0x1F);
-      tx.put(0x04);
-      continue;
-    }
-    if (want != tx.shift)
-      tx.put(want == kFigures ? 0x1B : 0x1F);
-    tx.put(five);
+namespace {
+
+// Fldigi rtty::tx_process, one character at a time. The lead-in is mark
+// and two LTRS (TTY_LTRS), idle is LTRS (send_idle), and the tail is CR LF
+// then flush_stream. A space sends LTRS first (unshift on space).
+class LiveRtty final : public LiveTextTx {
+public:
+  LiveRtty(int centerHz, const RttyOptions& options) {
+    tx_.opt = options;
+    tx_.center = std::clamp(centerHz, 200, 3000);
+    tx_.prepare();
   }
-  tx.put(0x08);
-  tx.put(0x02);
-  tx.flush();
+
+  void begin(std::vector<float>* out) override {
+    // Shaped keying rises over about three symbols. Hold mark long enough
+    // that the first start bit is a settled edge. Hard FSK keeps two bits,
+    // which is what the tone-power windows measure.
+    tx_.tone(true, tx_.bitCount() * (tx_.opt.shaped ? 6 : 2));
+    tx_.put(0x1F);
+    tx_.put(0x1F);
+    take(out);
+  }
+
+  bool put(QChar ch, std::vector<float>* out) override {
+    if (ch == QChar(u'\r')) {
+      tx_.put(0x08);
+    } else if (ch == QChar(u'\n')) {
+      tx_.put(0x02);
+    } else {
+      int want = kLetters;
+      const int five = encodeChar(ch, &want, tx_.figures);
+      if (five < 0)
+        return false;
+      if (ch == QLatin1Char(' ')) {
+        tx_.put(0x1F);
+        tx_.put(0x04);
+      } else {
+        if (want != tx_.shift)
+          tx_.put(want == kFigures ? 0x1B : 0x1F);
+        tx_.put(five);
+      }
+    }
+    take(out);
+    return true;
+  }
+
+  void idle(std::vector<float>* out) override {
+    tx_.put(0x1F);
+    take(out);
+  }
+
+  void end(std::vector<float>* out) override {
+    tx_.put(0x08);
+    tx_.put(0x02);
+    tx_.flush();
+    take(out);
+  }
+
+private:
+  void take(std::vector<float>* out) {
+    out->insert(out->end(), tx_.samples.begin(), tx_.samples.end());
+    tx_.samples.clear();
+  }
+
+  Tx tx_;
+};
+
+}  // namespace
+
+std::unique_ptr<LiveTextTx> makeLiveRtty(int centerHz, const RttyOptions& options) {
+  return std::make_unique<LiveRtty>(centerHz, options);
+}
+
+RttyPlan planRtty(const QString& text, int centerHz, const RttyOptions& options) {
   RttyPlan plan;
-  plan.samples.swap(tx.samples);
-  plan.echoAt.swap(tx.echoAt);
+  LiveRtty tx(centerHz, options);
+  tx.begin(&plan.samples);
+  plan.echoAt.assign(static_cast<size_t>(text.size()), -1);
+  for (int i = 0; i < text.size(); ++i) {
+    const int at = int(plan.samples.size());
+    if (tx.put(text.at(i), &plan.samples))
+      plan.echoAt[static_cast<size_t>(i)] = at;
+  }
+  tx.end(&plan.samples);
   return plan;
 }
 

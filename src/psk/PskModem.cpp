@@ -8,9 +8,11 @@
 #include "PskModem.h"
 
 #include "DigitalMode.h"
+#include "LiveTx.h"
 
 #include <algorithm>
 #include <climits>
+#include <memory>
 #include <cmath>
 #include <vector>
 
@@ -260,126 +262,126 @@ void rotateQpsk(int sym, double* ui, double* uq) {
   *uq = nextQ;
 }
 
-PskPlan planQpsk(const QString& mode, const QString& text, int centerHz) {
-  PskPlan plan;
-  const double baud = qpskBaud(mode);
-  if (baud <= 0.0 || text.isEmpty())
-    return plan;
-  const int rate = 48000;
-  const int symbol = std::max(8, int(std::lround(double(rate) / baud)));
-  const int center = std::clamp(centerHz, 200, 3000);
-  const int preamble = qpskPreamble(baud);
-  QpskEncoder enc;
-  std::vector<int> syms;
-  syms.reserve(static_cast<size_t>(preamble * 3 + text.size() * 16));
-  for (int i = 0; i < preamble; ++i)
-    syms.push_back(0);
-  plan.echoAt.assign(static_cast<size_t>(text.size()), -1);
-  for (int i = 0; i < text.size(); ++i) {
-    const ushort u = text.at(i).unicode();
-    if (u > 255)
-      continue;
-    plan.echoAt[static_cast<size_t>(i)] = int(syms.size()) * symbol;
-    const char* code = codeFor(static_cast<unsigned char>(u));
-    for (const char* p = code; *p; ++p)
-      syms.push_back(enc.encode(*p == '1' ? 1 : 0));
-    syms.push_back(enc.encode(0));
-    syms.push_back(enc.encode(0));
-  }
-  // K=5 traceback is 60 symbols. The fldigi postamble is the DCD window.
-  // Extra encoded zeros let a finite buffer release the last character.
-  const int flush = std::max(preamble, 76);
-  for (int i = 0; i < flush; ++i)
-    syms.push_back(enc.encode(0));
+// Fldigi tx_carriers, one carrier: each symbol moves from the previous
+// constellation point to the next with shapeA = 0.5*cos(pi*k/symbollen)+0.5.
+// BPSK symbol 0 reverses (180 degrees) and symbol 2 holds (0 degrees). The
+// last symbol falls to zero so the carrier does not stop abruptly.
+class LivePsk final : public LiveTextTx {
+public:
+  LivePsk(double baud, bool qpsk, int centerHz)
+      : qpsk_(qpsk),
+        symbol_(std::max(8, int(std::lround(48000.0 / baud)))),
+        dcd_(qpsk ? qpskPreamble(baud) : bpskDcdBits(baud)),
+        step_(2.0 * 3.141592653589793 * double(std::clamp(centerHz, 200, 3000)) / 48000.0) {}
 
-  const int count = int(syms.size()) * symbol;
-  plan.samples.resize(static_cast<size_t>(count));
-  double ui = 1.0;
-  double uq = 0.0;
-  double carrier = 0.0;
-  const double step = 2.0 * 3.141592653589793 * double(center) / double(rate);
-  int at = 0;
-  for (int sym : syms) {
-    const double fromI = ui;
-    const double fromQ = uq;
-    rotateQpsk(sym, &ui, &uq);
-    // fldigi tx_carriers: shapeA = 0.5*cos(i*pi/symbollen)+0.5 over the
-    // whole symbol, then I = shapeA*previous + (1-shapeA)*next.
-    for (int k = 0; k < symbol; ++k) {
-      const double shapeA =
-          0.5 * std::cos(3.141592653589793 * double(k) / double(symbol)) + 0.5;
+  void begin(std::vector<float>* out) override {
+    // Fldigi starts on the reference point at full level (prevsymbol = 1);
+    // a ramp up from zero here cost the QPSK receiver its first character.
+    // QPSK sends raw symbol 0 here, not through the encoder, as Fldigi does.
+    for (int i = 0; i < dcd_; ++i)
+      symbol(0, out);
+  }
+
+  bool put(QChar ch, std::vector<float>* out) override {
+    const ushort u = ch.unicode();
+    if (u > 255)
+      return false;
+    for (const char* p = codeFor(static_cast<unsigned char>(u)); *p; ++p)
+      bit(*p == '1' ? 1 : 0, out);
+    bit(0, out);
+    bit(0, out);
+    return true;
+  }
+
+  // Fldigi tx_process GET_TX_CHAR_NODATA: tx_bit(0).
+  void idle(std::vector<float>* out) override { bit(0, out); }
+
+  void end(std::vector<float>* out) override {
+    if (qpsk_) {
+      // K=5 traceback is 60 symbols. Extra encoded zeros let a finite
+      // buffer release the last character.
+      const int flush = std::max(dcd_, 76);
+      for (int i = 0; i < flush; ++i)
+        symbol(enc_.encode(0), out);
+    } else {
+      // Unmodulated carrier: the far end drops DCD on it.
+      for (int i = 0; i < dcd_; ++i)
+        symbol(2, out);
+    }
+    move(i_, q_, 0.0, 0.0, out);
+  }
+
+private:
+  void bit(int b, std::vector<float>* out) {
+    if (qpsk_)
+      symbol(enc_.encode(b), out);
+    else
+      symbol(b ? 2 : 0, out);
+  }
+
+  void symbol(int sym, std::vector<float>* out) {
+    double ni = i_;
+    double nq = q_;
+    if (qpsk_) {
+      rotateQpsk(sym, &ni, &nq);
+    } else if (sym == 0) {
+      ni = -ni;
+      nq = -nq;
+    }
+    move(i_, q_, ni, nq, out);
+    i_ = ni;
+    q_ = nq;
+  }
+
+  void move(double fromI, double fromQ, double toI, double toQ, std::vector<float>* out) {
+    out->reserve(out->size() + static_cast<size_t>(symbol_));
+    for (int k = 0; k < symbol_; ++k) {
+      const double shapeA = 0.5 * std::cos(3.141592653589793 * double(k) / double(symbol_)) + 0.5;
       const double shapeB = 1.0 - shapeA;
-      const double ii = shapeA * fromI + shapeB * ui;
-      const double qq = shapeA * fromQ + shapeB * uq;
-      plan.samples[static_cast<size_t>(at)] = float(0.6 * (ii * std::cos(carrier) + qq * std::sin(carrier)));
-      carrier += step;
-      if (carrier > 6.283185307179586)
-        carrier -= 6.283185307179586;
-      ++at;
+      const double ii = shapeA * fromI + shapeB * toI;
+      const double qq = shapeA * fromQ + shapeB * toQ;
+      out->push_back(float(0.6 * (ii * std::cos(carrier_) + qq * std::sin(carrier_))));
+      carrier_ += step_;
+      if (carrier_ > 6.283185307179586)
+        carrier_ -= 6.283185307179586;
     }
   }
-  return plan;
-}
+
+  bool qpsk_;
+  int symbol_;
+  int dcd_;
+  double step_;
+  double carrier_ = 0.0;
+  double i_ = 1.0;
+  double q_ = 0.0;
+  QpskEncoder enc_;
+};
 
 #include "PskStream.inc"
 
 }  // namespace
 
+std::unique_ptr<LiveTextTx> makeLivePsk(const QString& mode, int centerHz) {
+  const bool qpsk = qpskBaud(mode) > 0.0;
+  const double baud = qpsk ? qpskBaud(mode) : pskBaud(mode);
+  if (baud <= 0.0)
+    return nullptr;
+  return std::make_unique<LivePsk>(baud, qpsk, centerHz);
+}
+
 PskPlan planPsk(const QString& mode, const QString& text, int centerHz) {
-  if (qpskBaud(mode) > 0.0)
-    return planQpsk(mode, text, centerHz);
   PskPlan plan;
-  const double baud = pskBaud(mode);
-  if (baud <= 0.0 || text.isEmpty())
+  auto tx = makeLivePsk(mode, centerHz);
+  if (!tx || text.isEmpty())
     return plan;
-  const int rate = 48000;
-  const int symbol = std::max(8, int(std::lround(double(rate) / baud)));
-  const int center = std::clamp(centerHz, 200, 3000);
-  // The painter's symbol 0 is the phase reference, not a varicode bit.
-  // Each '0' is a reversal (fldigi tx_symbol(0)). Each '1' holds phase
-  // (tx_symbol(2)), which is the unmodulated carrier the far end uses to
-  // drop DCD. Preamble and postamble are both dcdbits long.
-  const int dcd = bpskDcdBits(baud);
-  QString bits(dcd, QLatin1Char('0'));
+  tx->begin(&plan.samples);
   plan.echoAt.assign(static_cast<size_t>(text.size()), -1);
   for (int i = 0; i < text.size(); ++i) {
-    const ushort u = text.at(i).unicode();
-    if (u > 255)
-      continue;
-    plan.echoAt[static_cast<size_t>(i)] = (bits.size() + 1) * symbol;
-    bits.append(QLatin1String(codeFor(static_cast<unsigned char>(u))));
-    bits.append(QLatin1String("00"));
+    const int at = int(plan.samples.size());
+    if (tx->put(text.at(i), &plan.samples))
+      plan.echoAt[static_cast<size_t>(i)] = at;
   }
-  bits.append(QString(dcd, QLatin1Char('1')));
-
-  const int count = (bits.size() + 1) * symbol + symbol;
-  std::vector<double> acc(static_cast<size_t>(count), 0.0);
-  int sign = 1;
-  auto paint = [&](int symbolIndex) {
-    const int origin = symbolIndex * symbol - symbol / 2;
-    for (int k = 0; k < 2 * symbol; ++k) {
-      const int idx = origin + k;
-      if (idx < 0 || idx >= count)
-        continue;
-      const double w = std::sin(3.141592653589793 * double(k) / double(2 * symbol));
-      acc[static_cast<size_t>(idx)] += double(sign) * w * w;
-    }
-  };
-  paint(0);
-  for (int b = 0; b < bits.size(); ++b) {
-    if (bits.at(b) == QLatin1Char('0'))
-      sign = -sign;
-    paint(b + 1);
-  }
-  plan.samples.resize(static_cast<size_t>(count));
-  double phase = 0.0;
-  const double step = 2.0 * 3.141592653589793 * double(center) / double(rate);
-  for (int i = 0; i < count; ++i) {
-    plan.samples[static_cast<size_t>(i)] = float(0.6 * acc[static_cast<size_t>(i)] * std::sin(phase));
-    phase += step;
-    if (phase > 6.283185307179586)
-      phase -= 6.283185307179586;
-  }
+  tx->end(&plan.samples);
   return plan;
 }
 

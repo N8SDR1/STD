@@ -1,6 +1,6 @@
 # STD
 
-**Shift, Tone, Decode.** Software in testing. Version 0.1.4. Around the shack it also answers to **Sending Transmittal Disease**.
+**Shift, Tone, Decode.** Software in testing. Version 0.1.5. Around the shack it also answers to **Sending Transmittal Disease**.
 
 The real expansion is Shift, Tone, Decode. The other one is the joke. STD is a 64-bit Windows application, a Qt 6.11.1 MSVC digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air. [Lyra](https://n8sdr1.github.io/Lyra-SDR-cpp/) is the transceiver. [SDRLogger+](https://n8sdr1.github.io/SDRLoggerPlus/) is the logbook. CW stays in Lyra.
 
@@ -14,7 +14,7 @@ Copyright (C) 2026 Rick Langford (N8SDR).
 
 GNU General Public License, version 3. The license text is [`COPYING`](COPYING).
 
-Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier: GPL-3.0-or-later`). Modem math rewritten from Fldigi (Dave Freese W1HKJ and the Fldigi authors, GPL-3) and the FT8, FT4, and FT2 path from MSHV are GPL-3. CW stays in Lyra.
+Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier: GPL-3.0-or-later`). Modem math rewritten from Fldigi (Dave Freese W1HKJ and the Fldigi authors, GPL-3) and the FT8, FT4, and FT2 path from MSHV are GPL-3. Speech to text uses whisper.cpp (the ggml authors, MIT), built in; its notice is in `resources/licenses/whisper.cpp-LICENSE`. CW stays in Lyra.
 
 ## Screenshots
 
@@ -26,7 +26,7 @@ Original files in this repository are GPL-3.0-or-later (`SPDX-License-Identifier
 
 ## Modes that key
 
-TX sends one of these when the operator presses TX or Tune. Opening the radio does not key. The text command START is never sent. On Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63, a finished pass takes the sent text off the front of the transmit box, as Fldigi does, so the next TX sends only new text. A stopped pass takes the characters that already went out. Text changed during the pass is left alone. JS8 keeps its own queue. The waterfall picture updates once per turn, so a quiet band does not keep the CPU and the GPU busy.
+TX sends one of these when the operator presses TX or Tune. Opening the radio does not key. The text command START is never sent. On Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63, a finished pass takes the sent text off the front of the transmit box, as Fldigi does, so the next TX sends only new text. A stopped pass takes the characters that already went out. Text changed during the pass is left alone. JS8 keeps its own queue. RTTY, PSK, and QPSK send live, as Fldigi does: TX keys and sends what is in the box, text typed while on the air goes out as it is typed, and an empty box sends idle (LTRS in RTTY, phase reversals in PSK) without dropping TRX. Press TX once to end after the box is sent, and again to stop at once; characters not yet on the air go back into the box. A ▶ macro (one with `<TX>`) keys when Macros key is on and, with `<RX>`, returns to RX when its text is done. A macro pressed while on the air is added to the box. Back to RX after (on, 25 s by default; 5, 10, 15, or 25 s) ends a live transmission by itself when nothing new was typed for that long; turn it off to stay keyed until you press TX. Options → Speech… reads received text aloud with a Windows voice on a sound device you pick, not through the radio. It reads RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 a line at a time, or a run of finished words on a long line, and waits quietly for new text. Callsigns and reports are spelled out, noise runs can be skipped, and it stops while you transmit. Hell is a picture and is not read; nor are JS8 or the FT8 family. With read-back on, a Speech chip beside CLR RX mutes and unmutes, and the number beside it is the volume. It is off until you turn it on. Talk does the reverse: it turns your voice into transmit text. In Options → Speech… → Transmit pick a microphone, set the gate, and download a Whisper model (75 to 490 MB, fetched only when you choose one, so STD itself stays small). It runs on the CPU. Hold Talk and speak. The words land at the end of the transmit box with callsigns and reports written the ham way (Kilo Eight Alpha Bravo becomes K8AB, five nine nine becomes 599), and nothing keys until you press TX. **My words** in the same tab lists what Talk should expect (club calls, names, towns, your rig and antenna); your name and QTH from Options → User and the station in the QSO bar are added by themselves. **Corrections** fixes words it keeps getting wrong, one per line as `heard = send`. To teach one on the spot, select the wrong text in the transmit box, right-click, and pick Talk: always send … as, or add it to My words. The waterfall picture updates once per turn, so a quiet band does not keep the CPU and the GPU busy.
 
 | Mode | What this build sends |
 | --- | --- |
@@ -65,14 +65,19 @@ These are not on the Mode menu. They do not key.
 - **8PSK.** A different constellation from QPSK. Not on the menu.
 - **FLD-88** is queued. JS8 Fast, Turbo, Slow, and Ultra are not on the menu.
 - MSHV modes still outside STD are listed in [`docs/mshv-modes.md`](docs/mshv-modes.md).
+- Options → **Contest Mode (RTTY, PSK, Hell)** puts a contest row on the QSO bar: ARRL RTTY Roundup, CQ WW RTTY, NA Sprint, Field Day, a Feld Hell sprint, a serial-number contest, or Custom. F1 to F8 send the Run or S&P messages, Enter sends the next one, their exchange is read from their text, DUPE checks your log, and each QSO logs CONTEST_ID, STX/SRX, and the exchanges. Off until you turn it on. Details in [contest](docs/contest.md).
+- In every menu, an option you can switch on or off has a small circle that fills green when on.
+- Options → **TX Confirmation If 73 Or RR73** is on by default, as in MSHV: in MA Std and MA DX their RR73 is answered with 73 before the QSO ends and is logged. Off, FT8, FT4, FT2, and Q65 end the QSO on their RR73 with no 73. JT65 always sends the 73.
 
 CW stays in Lyra. STD does not send CW.
 
 ## Macros and the log
 
-The RST/LOG macro does not log. Fldigi's `<LOG>` tag is not implemented. Pressing that button inserts text, and nothing is stored. Adding Fldigi-style `<LOG>` is a later change.
+STD reads Fldigi `.mdf` macro files as they are, and a macro's own tags decide what a click does: `<TX>` keys and sends (the button shows ▶), `<RX>` goes back to RX after the text, `<CLRTX>` empties the transmit box first, and a macro without `<TX>` adds its text to the end of the box, so macros can be chained. The **Macros key** chip beside the bank button is the lock: red ON lets ▶ macros key, OFF keys nothing. `<LOG>`, `<CLRQSO>`, `<CLRRX>`, `<INCR>`, and `<DECR>` run once a keyed macro's text has gone out, and `<TIMER:NN>` listens NN seconds and sends it again until you type, click, or hear your call.
 
-`<MYCALL>` and `<MYLOC>` are filled from Options → User. Name, QTH (the station city, `<MYQTH>`), Antenna, Power, and RST on that same dialog fill `<MYNAME>`, `<MYQTH>`, `<ANTENNA>`, `<TX_PWR>`, and `<MYRST>`. An empty box erases the tag. On a keyboard mode the QSO bar fills `<CALL>`, `<NAME>`, `<QTH>`, `<ST>`, `<PR>`, `<LOC>`, `<RST>`, and `<QSOTIME>` for the station being worked. `<LOG>` and `<LNW>` write that QSO and then leave the text. `<CLRQSO>` and `<CLRLOG>` clear the bar.
+`<MYCALL>`, `<MYLOC>`, `<MYNAME>`, `<MYQTH>`, `<ANTENNA>`, `<TX_PWR>` and the other station tags come from Options → User. On a keyboard mode the QSO bar fills `<CALL>`, `<NAME>`, `<QTH>`, `<ST>`, `<PR>`, `<LOC>`, `<RST>`, and `<QSOTIME>`. A ▶ macro that needs an empty QSO bar field does not key; `<NAME|OM>` sends OM instead. The QSO bar offers the name, QTH, report, and locator it reads in their text (a click or Tab takes one), and a call already in STD's log (or a second ADIF log, which STD keeps a copy of in its log folder) fills the empty fields from the last QSO; `<WELCOME>` and `<LASTQSO>` use that. Options → Lookup can also fill name, QTH, state, and locator from HamQTH or QRZ.com, only the name for a portable call, and anything you type wins. Hover a button to see what it will send. `<WX>` sends your local weather from Options → Weather: Open-Meteo from your locator (free, no account), an NWS station, or your Ambient Weather or Ecowitt station. Fldigi tags STD does not run, such as `<IDLE>` and `<MODEM:…>`, are left out and named, never sent as text. Details are in [macros](docs/macros.md).
+
+Options → Log Options → Log file and logger → **Link to a logger over WSJT-X UDP** sends decodes and Status (dial, mode, and the call being worked) the way WSJT-X does, so SDRLogger+, GridTracker, JTAlert, and Log4OM see STD, and the call in STD fills the logger's log entry. With **Accept requests from the logger** on, a click on a decode in the logger works that station in STD just as a double-click in STD would, and the logger can halt TX or set the free text. For SDRLogger+: turn on its Decoder Link (UDP) on port 2237; in STD tick **Link to a logger over WSJT-X UDP**, **Accept requests from the logger**, and **WSJT-X UDP logged QSO** (leave logged ADIF off; SDRLogger+ logs only from logged QSO), port 2237; and tick **Log Automatically QSO** (or Prompt Me To Log QSO) under Options → Log Options. The link alone does not log. Step by step in [connect](docs/connect.md).
 
 A separate path, not the macro tag, stores a QSO when the sent line ends in `73` or `RR73`, that line contains the other station's call, and a log option is on (automatic, prompt, WSJT-X UDP, or DXKeeper TCP). That path writes ADIF.
 
@@ -97,13 +102,13 @@ STD is a 64-bit Windows application. The kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\
 
 ## Run
 
-The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.4.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
+The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.5.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
 
 A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_QPA_PLATFORM=offscreen`, then run `build\std.exe`. Exit status 0 prints `STD self-test ok`.
 
 ## More
 
 - Web version of this page: <https://n8sdr1.github.io/STD/>
-- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.4 pre-release, testing phase · highly transmissible)
+- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.5 pre-release, testing phase · highly transmissible)
 - Wiki: <https://github.com/N8SDR1/STD/wiki>
-- Longer notes: [modes](docs/modes.md), [Hell](docs/hell.md), [macros](docs/macros.md), [connect](docs/connect.md)
+- Longer notes: [modes](docs/modes.md), [Hell](docs/hell.md), [macros](docs/macros.md), [contest](docs/contest.md), [connect](docs/connect.md)

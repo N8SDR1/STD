@@ -41,6 +41,35 @@ QMenu::item:selected {
   color: #00e5ff;
 }
 
+/* Every on/off menu option: a small circle that fills green when on, so an
+   option reads as something you can switch, on or off. */
+QMenu::indicator {
+  width: 9px;
+  height: 9px;
+  margin-left: 6px;
+  background: #080d13;
+  border: 1px solid #5f8a9a;
+  border-radius: 5px;
+}
+
+QMenu::indicator:selected {
+  border-color: #00e5ff;
+}
+
+QMenu::indicator:checked {
+  background: #2ee66b;
+  border-color: #8dffb0;
+}
+
+QMenu::indicator:disabled {
+  border-color: #2b4656;
+}
+
+QMenu::indicator:checked:disabled {
+  background: #2b6f4a;
+  border-color: #2b6f4a;
+}
+
 QMenu::separator {
   height: 1px;
   background: #274150;
@@ -476,6 +505,35 @@ QToolButton#js8Directed:hover {
 QToolButton#js8Directed:disabled {
   color: #5c7284;
   border-color: #1c3344;
+}
+
+/* Every tick box: a cyan outline that fills cyan with a dark check when on,
+   so a setting reads at a glance on the dark theme. */
+QCheckBox::indicator {
+  width: 15px;
+  height: 15px;
+  background: #080d13;
+  border: 2px solid #00b8cc;
+  border-radius: 3px;
+}
+
+QCheckBox::indicator:hover {
+  border-color: #00e5ff;
+}
+
+QCheckBox::indicator:checked {
+  background: #00e5ff;
+  border-color: #00e5ff;
+  image: url(:/std/check-on.svg);
+}
+
+QCheckBox::indicator:disabled {
+  border-color: #2b4656;
+}
+
+QCheckBox::indicator:checked:disabled {
+  background: #2b6f7c;
+  border-color: #2b6f7c;
 }
 
 QCheckBox#js8Filter::indicator {
