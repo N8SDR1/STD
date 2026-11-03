@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 // What the other station told us, read from their received text:
 // "NAME IS BOB", "OP BOB", "QTH DAYTON OH", "UR 579", "LOC EM79", "DE K8AB".
@@ -36,21 +37,22 @@ struct QsoHistory {
   QString grid;
 };
 
-// The ADIF log, read once and again whenever the file changes.
+// The ADIF logs, read once and again whenever a file changes. STD's own
+// log, and optionally another such as a logger's export. A QSO in both
+// (same call, date, and minute) counts once.
 class QsoMemory {
 public:
-  void setPath(const QString& path);
+  void setPaths(const QStringList& paths);
   // Nothing found: count is 0.
   QsoHistory lookup(const QString& call);
-  // For the self-test: read ADIF text directly.
-  void loadText(const QByteArray& adif);
+  // For the self-test: read ADIF text directly, one text per file.
+  void loadText(const QList<QByteArray>& logs);
 
 private:
   void refresh();
 
-  QString path_;
-  QDateTime stamp_;
-  qint64 size_ = -1;
+  QStringList paths_;
+  QString seen_;  // sizes and times of the files as last read
   QHash<QString, QsoHistory> calls_;
 };
 

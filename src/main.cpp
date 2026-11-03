@@ -36,6 +36,7 @@
 #include "UpdateChecker.h"
 #include "WxFeed.h"
 #include "QsoCapture.h"
+#include "Callbook.h"
 #include "WaterfallGpu.h"
 #include "WaterfallWidget.h"
 
@@ -667,18 +668,52 @@ int shellReady(MainWindow& window) {
           !scanQsoText(QStringLiteral("my name is is"), QStringLiteral("N8SDR")).name.isEmpty())
         return fail("smart capture offered our own call or a filler word");
       QsoMemory memory;
-      memory.loadText(QByteArray(
-          "STD log<EOH>\n"
-          "<CALL:4>K8AB<NAME:3>Bob<QTH:6>Dayton<STATE:2>OH<QSO_DATE:8>20250412<TIME_ON:6>140000"
-          "<BAND:3>40M<MODE:4>RTTY<EOR>\n"
-          "<CALL:4>k8ab<GRIDSQUARE:6>EM79TQ<QSO_DATE:8>20260504<TIME_ON:6>020000<BAND:3>20m"
-          "<MODE:5>PSK31<EOR>\n"));
+      // Two logs; the 2026 QSO is in both and counts once.
+      memory.loadText({QByteArray("STD log<EOH>\n"
+                                  "<CALL:4>K8AB<NAME:3>Bob<QTH:6>Dayton<STATE:2>OH<QSO_DATE:8>20250412"
+                                  "<TIME_ON:6>140000<BAND:3>40M<MODE:4>RTTY<EOR>\n"
+                                  "<CALL:4>k8ab<GRIDSQUARE:6>EM79TQ<QSO_DATE:8>20260504<TIME_ON:6>020000"
+                                  "<BAND:3>20m<MODE:5>PSK31<EOR>\n"),
+                       QByteArray("<CALL:4>K8AB<QSO_DATE:8>20260504<TIME_ON:4>0200<BAND:3>20M"
+                                  "<MODE:5>PSK31<EOR>")});
       const QsoHistory k8ab = memory.lookup(QStringLiteral("k8ab"));
       if (k8ab.count != 2 || k8ab.name != QLatin1String("Bob") || k8ab.qth != QLatin1String("Dayton") ||
           k8ab.grid != QLatin1String("EM79TQ") || k8ab.lastDate != QLatin1String("2026-05-04") ||
           k8ab.lastBand != QLatin1String("20m") || k8ab.lastMode != QLatin1String("PSK31") ||
           memory.lookup(QStringLiteral("W1AW")).count != 0)
         return fail("log memory did not read the ADIF");
+      // Callbook answers, and portable calls.
+      QString key;
+      QString err;
+      const CallbookRecord qrz = Callbook::parseQrz(
+          "<?xml version=\"1.0\" ?><QRZDatabase version=\"1.34\"><Callsign><call>AA7BQ</call>"
+          "<fname>FRED L</fname><name>LLOYD</name><addr2>SCOTTSDALE</addr2><state>AZ</state>"
+          "<grid>DM32AF</grid></Callsign><Session><Key>abc123</Key><Count>1</Count></Session></QRZDatabase>",
+          &key, &err);
+      if (!qrz.found || qrz.name != QLatin1String("Fred") || qrz.qth != QLatin1String("Scottsdale") ||
+          qrz.state != QLatin1String("AZ") || qrz.grid != QLatin1String("DM32af") || key != QLatin1String("abc123"))
+        return fail("a QRZ answer did not read");
+      key.clear();
+      err.clear();
+      if (Callbook::parseQrz("<QRZDatabase><Session><Error>Session Timeout</Error></Session></QRZDatabase>", &key,
+                             &err).found ||
+          !key.isEmpty() || err != QLatin1String("Session Timeout"))
+        return fail("a QRZ session timeout was not seen");
+      err.clear();
+      const CallbookRecord hq = Callbook::parseHamqth(
+          R"({"callsign":"OK2CQR","nick":"Petr","qth":"Neratovice","location":{"grid":"jo70gg"},)"
+          R"("address":{"city":"Neratovice"},"region":{"usState":""}})",
+          &err);
+      if (!hq.found || hq.name != QLatin1String("Petr") || hq.qth != QLatin1String("Neratovice") ||
+          hq.grid != QLatin1String("JO70gg"))
+        return fail("a HamQTH answer did not read");
+      if (Callbook::parseHamqthToken(R"({"token":"t0k","expiresIn":3600})", &err) != QLatin1String("t0k") ||
+          !Callbook::parseHamqthToken(R"({"title":"Unauthorized","detail":"Wrong password"})", &err).isEmpty() ||
+          err != QLatin1String("Wrong password"))
+        return fail("a HamQTH login answer did not read");
+      if (!Callbook::portable(QStringLiteral("K8AB/P")) || Callbook::portable(QStringLiteral("K8AB")) ||
+          Callbook::homeCall(QStringLiteral("VE3/K8AB/P")) != QLatin1String("K8AB"))
+        return fail("a portable call was not recognized");
     }
     if (macroButtonLabel(QStringLiteral("CQ  @>|"), mc, true) != QStringLiteral("▶ CQ") ||
         macroButtonLabel(QStringLiteral("Reply <CALL>"), mc, false) != QLatin1String("Reply W1AW"))

@@ -20,6 +20,7 @@
 #include "TciClient.h"
 #include "WaterfallWidget.h"
 #include "WxFeed.h"
+#include "Callbook.h"
 
 #include <algorithm>
 #include <vector>
@@ -226,6 +227,7 @@ QWidget* MainWindow::makeQsoBar(QWidget* parent) {
     label->setFont(qsoUi(12));
     auto* edit = new QLineEdit(bar);
     edit->setObjectName(QLatin1String(f.name));
+    edit->setProperty("qsoLabel", QString::fromLatin1(f.label));
     edit->setFont(qsoMono(13));
     edit->setClearButtonEnabled(false);
     edit->setToolTip(QString::fromLatin1(f.tip) +
@@ -728,6 +730,7 @@ void MainWindow::qsoLookupCall(const QString& call) {
   }
   qsoFromLog_.clear();
   qsoHistory_ = QsoHistory{};
+  callbookFor_.clear();
   auto* seen = findChild<QLabel*>(QStringLiteral("qsoBarHistory"));
   if (seen)
     seen->clear();
@@ -738,8 +741,16 @@ void MainWindow::qsoLookupCall(const QString& call) {
   QString path = store.value(QStringLiteral("log/adifPath")).toString().trimmed();
   if (path.isEmpty())
     path = QsoLog::defaultAdifPath();
-  qsoMemory_.setPath(path);
+  QStringList logs{path};
+  const QString extra = store.value(QStringLiteral("log/memoryAdif")).toString().trimmed();
+  if (!extra.isEmpty())
+    logs << extra;
+  qsoMemory_.setPaths(logs);
   qsoHistory_ = qsoMemory_.lookup(call);
+  // The callbook comes after the log, for what is still empty.
+  callbookFor_ = call.toUpper();
+  if (callbook_ && callbook_->enabled() && callbookWait_)
+    callbookWait_->start();
   if (seen)
     seen->setText(qsoHistory_.count == 0
                       ? QStringLiteral("New station")
@@ -763,6 +774,51 @@ void MainWindow::qsoLookupCall(const QString& call) {
     edit->setStyleSheet(QStringLiteral("QLineEdit { color: #58a6ff; font-style: italic; }"));
     qsoFromLog_.insert(entry.first, entry.second);
   }
+}
+
+// QRZ or HamQTH answered. It fills only fields still empty after your
+// log, in green until you change them. A portable call (/P, /M, /4,
+// VE3/...) gets only the name: its home QTH and grid are not where the
+// station is now. What is in the box when you log is what is logged.
+void MainWindow::callbookAnswered(const QString& asked, const CallbookRecord& record, const QString& error) {
+  if (callbookFor_.isEmpty())
+    return;
+  const QString key = Callbook::portable(callbookFor_) ? Callbook::homeCall(callbookFor_) : callbookFor_;
+  if (asked != key)
+    return;  // an answer for a call no longer in the bar
+  auto* seen = findChild<QLabel*>(QStringLiteral("qsoBarHistory"));
+  const QString service = callbook_->serviceName();
+  if (!record.found) {
+    if (!error.isEmpty() && !error.startsWith(QLatin1String("Not found")))
+      setTxStatus(error + QStringLiteral(" Options → Lookup. This does not key."));
+    else if (seen)
+      seen->setText(seen->text() + QStringLiteral("  ·  not in %1").arg(service));
+    return;
+  }
+  const bool nameOnly = Callbook::portable(callbookFor_) &&
+                        QSettings().value(QStringLiteral("callbook/portableNameOnly"), true).toBool();
+  QList<QPair<QString, QString>> offer = {{QStringLiteral("qsoBarName"), record.name}};
+  if (!nameOnly)
+    offer += {{QStringLiteral("qsoBarQth"), record.qth},
+              {QStringLiteral("qsoBarSt"), record.state},
+              {QStringLiteral("qsoBarLoc"), record.grid}};
+  QStringList filled;
+  for (const auto& entry : offer) {
+    auto* edit = findChild<QLineEdit*>(entry.first);
+    if (!edit || entry.second.isEmpty() || !edit->text().trimmed().isEmpty())
+      continue;
+    edit->setText(entry.second);
+    edit->setStyleSheet(QStringLiteral("QLineEdit { color: #3fb950; font-style: italic; }"));
+    qsoFromLog_.insert(entry.first, entry.second);
+    filled << edit->property("qsoLabel").toString();
+  }
+  if (seen)
+    seen->setText(seen->text() + QStringLiteral("  ·  %1").arg(service));
+  if (!filled.isEmpty())
+    setTxStatus(QStringLiteral("%1 filled %2 for %3%4. Type over any of them; what is in the box is logged. "
+                               "This does not key.")
+                    .arg(service, filled.join(QStringLiteral(", ")), callbookFor_,
+                         nameOnly ? QStringLiteral(" (portable, so only the name)") : QString()));
 }
 
 // Outlines the empty QSO bar fields a macro needs, for a second and a half.

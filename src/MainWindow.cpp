@@ -27,6 +27,7 @@
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
 #include "WxFeed.h"
+#include "Callbook.h"
 #include "ModeProfile.h"
 #include "QsoLog.h"
 #include "StationFiles.h"
@@ -614,6 +615,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   modelDl_ = new SpeechModelDownload(this);
   recognizer_ = new SpeechRecognizer(this);
   wx_ = new WxFeed(this);
+  callbook_ = new Callbook(this);
+  connect(callbook_, &Callbook::answered, this, &MainWindow::callbookAnswered);
+  callbookWait_ = new QTimer(this);
+  callbookWait_->setSingleShot(true);
+  callbookWait_->setInterval(900);
+  connect(callbookWait_, &QTimer::timeout, this, [this] {
+    // Only the call still in the bar once typing has paused.
+    if (!callbookFor_.isEmpty() && callbookFor_ == qsoBarLastCall_.toUpper())
+      callbook_->lookup(Callbook::portable(callbookFor_) ? Callbook::homeCall(callbookFor_) : callbookFor_);
+  });
   // New weather refreshes the macro labels and tooltips that show <WX>.
   connect(wx_, &WxFeed::updated, this, [this] { showMacroSet(); });
   QTimer::singleShot(3000, wx_, [this] { wx_->reload(); });
@@ -3052,6 +3063,13 @@ void MainWindow::buildMenus() {
       "Ambient Weather or Ecowitt station. Off until you pick a source. Does not key."));
   connect(weather, &QAction::triggered, this, [this] { openWeatherDialog(); });
 
+  auto* lookup = optionsMenu->addAction(QStringLiteral("Lookup…"));
+  lookup->setObjectName(QStringLiteral("lookupSettings"));
+  lookup->setToolTip(QStringLiteral(
+      "Fill the QSO bar from your logs and from QRZ.com or HamQTH when a call is entered. "
+      "Off until you set it up. Does not key."));
+  connect(lookup, &QAction::triggered, this, [this] { openLookupDialog(); });
+
   auto* networkConfig = optionsMenu->addAction(QStringLiteral("Network Configuration"));
   networkConfig->setObjectName(QStringLiteral("networkConfig"));
   networkConfig->setToolTip(QStringLiteral(
@@ -4083,7 +4101,10 @@ void MainWindow::showGuide() {
        "are read from their text and offered faintly in an empty field with a dashed outline; a "
        "click or Tab takes it, and nothing is filled until you do. A call already in STD's log "
        "fills the empty Name, QTH, St, and Loc from the last QSO in blue, and the bar shows how "
-       "many times and when. Those fields are the other station. They are not saved as settings. "
+       "many times and when; Options → Lookup can add a second ADIF log. HamQTH or QRZ.com, set "
+       "there too, fills what is still empty in green: name, QTH, state, and locator, or only the "
+       "name for a portable call with a slash. Type over any of them; what is in the box is "
+       "logged. Those fields are the other station. They are not saved as settings. "
        "JS8, WSPR, WEFAX, and the FT8 family do not show the bar. "
        "Auto RST, off until you turn it on, fills Out from the TCI S-meter. S9 is -73 dBm and each "
        "S-unit is 6 dB. It peak-holds a 1.25 second median that must stand 3 dB over a 30 second "

@@ -60,7 +60,11 @@ On Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 the 
 
 **Their text, offered.** While you work a station STD reads their received text for the usual phrases: NAME IS BOB, OP BOB, QTH IS DAYTON OH, UR 579, LOC EM79, and DE K8AB while Call is empty. What it finds shows faintly in the empty field, such as *Bob?*, with a dashed outline. Click the field or press Tab to take it. Nothing is filled until you do, and a field you have filled is never changed.
 
-**Your log, remembered.** When a call goes into Call, STD looks it up in its ADIF log. A station worked before fills the empty Name, QTH, St, and Loc from the last QSO, in blue italics until you change them, and the bar reads, for example, Worked 3x, last 2026-05-04 20m PSK31. A new call reads New station. `<WELCOME>` sends "nice to work you again" when they are in your log and nothing when they are not; `<LASTQSO>` sends the date of the last QSO.
+**Your log, remembered.** When a call goes into Call, STD looks it up in its ADIF log. A station worked before fills the empty Name, QTH, St, and Loc from the last QSO, in blue italics until you change them, and the bar reads, for example, Worked 3x, last 2026-05-04 20m PSK31. A new call reads New station. Options → Lookup can add a second ADIF file, such as your logger's export, so stations you worked in other programs are remembered; a QSO in both counts once.
+
+**The callbook.** Options → Lookup can also ask HamQTH (free) or QRZ.com when a call is entered. It fills only what your log left empty, in green: name, QTH, state, and locator. QRZ needs its XML Data subscription for more than the name. A portable call, one with a slash such as K8AB/P, W8XYZ/4, or VE3/K8AB, gets only the name, because the callbook QTH and grid are home and not where they are now; a checkbox turns that off. Type over any filled field: what is in the box when you log is what is logged.
+
+`<WELCOME>` sends "nice to work you again" when they are in your log and nothing when they are not; `<LASTQSO>` sends the date of the last QSO.
 
 Auto RST, off until you turn it on, fills Out from the TCI S-meter. S9 is −73 dBm and each S-unit is 6 dB. It peak-holds a 1.25 second median that must stand 3 dB over a 30 second noise floor, or over Lyra's SNR when Lyra sends it. Typing in Out stops the fill until the next call. `<RST>` sends what Out shows when you click.
 

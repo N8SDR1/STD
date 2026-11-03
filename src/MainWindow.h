@@ -44,6 +44,8 @@ class PskUploader;
 class WsprNetUploader;
 class UpdateChecker;
 class WxFeed;
+class Callbook;
+struct CallbookRecord;
 class ModeProfile;
 class QAction;
 class QDockWidget;
@@ -107,6 +109,8 @@ private:
   void openNetworkDialog();
   void openUserDialog();
   void openWeatherDialog();
+  void openLookupDialog();
+  void callbookAnswered(const QString& asked, const CallbookRecord& record, const QString& error);
   void openLogDialog();
   void backupSettings();
   void importSettings();
@@ -501,6 +505,9 @@ private:
   WsprNetUploader* wsprnet_ = nullptr;
   UpdateChecker* updates_ = nullptr;
   WxFeed* wx_ = nullptr;  // <WX> macro weather
+  Callbook* callbook_ = nullptr;  // QRZ or HamQTH, Options -> Lookup
+  QTimer* callbookWait_ = nullptr;  // waits for the call to stop changing
+  QString callbookFor_;  // the QSO bar call being looked up
   QAction* updateAction_ = nullptr;
   QString pendingUpdateUrl_;
   bool updateCheckManual_ = false;

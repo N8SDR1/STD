@@ -73,6 +73,7 @@ qt_add_executable(std
     src/MainWindowQso.cpp
   src/MainWindowSpeech.cpp
   src/MainWindowWeather.cpp
+  src/MainWindowLookup.cpp
   src/MaEngine.cpp
   src/MaEngine.h
   src/MainWindow.h
@@ -102,6 +103,8 @@ qt_add_executable(std
   src/QsoLog.cpp
   src/QsoCapture.cpp
   src/QsoCapture.h
+  src/Callbook.cpp
+  src/Callbook.h
   src/QsoLog.h
   src/StationFiles.cpp
   src/StationFiles.h

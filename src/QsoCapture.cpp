@@ -166,21 +166,30 @@ QList<QHash<QString, QString>> parseAdif(const QByteArray& adif) {
   return records;
 }
 
-void QsoMemory::setPath(const QString& path) {
-  if (path != path_) {
-    path_ = path;
-    size_ = -1;
-    stamp_ = QDateTime();
+void QsoMemory::setPaths(const QStringList& paths) {
+  if (paths != paths_) {
+    paths_ = paths;
+    seen_.clear();
   }
 }
 
-void QsoMemory::loadText(const QByteArray& adif) {
+void QsoMemory::loadText(const QList<QByteArray>& logs) {
   calls_.clear();
   QHash<QString, QString> lastStamp;
-  for (const auto& r : parseAdif(adif)) {
+  QSet<QString> counted;
+  QList<QHash<QString, QString>> records;
+  for (const QByteArray& adif : logs)
+    records += parseAdif(adif);
+  for (const auto& r : records) {
     const QString call = r.value(QStringLiteral("CALL")).toUpper();
     if (call.isEmpty())
       continue;
+    // The same QSO in two logs: same call, date, and minute.
+    const QString once = call + QLatin1Char('|') + r.value(QStringLiteral("QSO_DATE")) +
+                         r.value(QStringLiteral("TIME_ON")).left(4);
+    if (counted.contains(once))
+      continue;
+    counted.insert(once);
     QsoHistory& h = calls_[call];
     ++h.count;
     const QString date = r.value(QStringLiteral("QSO_DATE"));
@@ -209,22 +218,23 @@ void QsoMemory::loadText(const QByteArray& adif) {
 }
 
 void QsoMemory::refresh() {
-  if (path_.isEmpty())
-    return;
-  const QFileInfo info(path_);
-  if (!info.exists()) {
-    calls_.clear();
-    size_ = -1;
-    return;
+  QString now;
+  for (const QString& path : paths_) {
+    const QFileInfo info(path);
+    if (info.exists())
+      now += path + QLatin1Char('|') + QString::number(info.size()) + QLatin1Char('|') +
+             QString::number(info.lastModified().toMSecsSinceEpoch()) + QLatin1Char('\n');
   }
-  if (info.size() == size_ && info.lastModified() == stamp_)
+  if (now == seen_)
     return;
-  QFile file(path_);
-  if (!file.open(QIODevice::ReadOnly))
-    return;
-  loadText(file.readAll());
-  size_ = info.size();
-  stamp_ = info.lastModified();
+  QList<QByteArray> logs;
+  for (const QString& path : paths_) {
+    QFile file(path);
+    if (file.open(QIODevice::ReadOnly))
+      logs << file.readAll();
+  }
+  loadText(logs);
+  seen_ = now;
 }
 
 QsoHistory QsoMemory::lookup(const QString& call) {
