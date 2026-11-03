@@ -85,6 +85,7 @@
 #include <QHash>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDataStream>
 #include <QDate>
 #include <QDateTime>
 #include <QDialog>
@@ -714,6 +715,58 @@ int shellReady(MainWindow& window) {
       if (!Callbook::portable(QStringLiteral("K8AB/P")) || Callbook::portable(QStringLiteral("K8AB")) ||
           Callbook::homeCall(QStringLiteral("VE3/K8AB/P")) != QLatin1String("K8AB"))
         return fail("a portable call was not recognized");
+    }
+    // The logger link: a Reply as SDRLogger+ writes it, and Status as it reads it.
+    {
+      QByteArray reply;
+      {
+        QDataStream out(&reply, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_5_4);
+        out.setByteOrder(QDataStream::BigEndian);
+        out << quint32(0xadbccbda) << quint32(3) << quint32(4) << QByteArray("STD") << quint32(52245000)
+            << qint32(-12) << double(0.2) << quint32(1523) << QByteArray("~") << QByteArray("CQ K8AB EN81")
+            << false << quint8(0);
+      }
+      QsoLog::UdpRequest req;
+      if (!QsoLog::parseRequest(reply, &req) || req.type != 4 || req.message != QLatin1String("CQ K8AB EN81") ||
+          req.deltaFrequency != 1523 || req.snr != -12 || req.timeMs != 52245000)
+        return fail("a logger Reply did not read");
+      QByteArray other;
+      {
+        QDataStream out(&other, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_5_4);
+        out.setByteOrder(QDataStream::BigEndian);
+        out << quint32(0xadbccbda) << quint32(3) << quint32(4) << QByteArray("JTDX") << quint32(0) << qint32(0)
+            << double(0.0) << quint32(1500) << QByteArray("~") << QByteArray("CQ K8AB EN81") << false;
+      }
+      QsoLog::UdpRequest notOurs;
+      if (QsoLog::parseRequest(other, &notOurs))
+        return fail("a Reply for another program was taken");
+      QByteArray halt;
+      {
+        QDataStream out(&halt, QIODevice::WriteOnly);
+        out.setVersion(QDataStream::Qt_5_4);
+        out.setByteOrder(QDataStream::BigEndian);
+        out << quint32(0xadbccbda) << quint32(3) << quint32(8) << QByteArray("STD") << true;
+      }
+      QsoLog::UdpRequest h;
+      if (!QsoLog::parseRequest(halt, &h) || h.type != 8 || !h.autoTxOnly)
+        return fail("a logger Halt Tx did not read");
+      QsoLog::UdpStatus st;
+      st.dialHz = 14074000;
+      st.mode = QStringLiteral("FT8");
+      st.dxCall = QStringLiteral("k8ab");
+      st.deCall = QStringLiteral("N8SDR");
+      const QByteArray status = QsoLog::statusDatagram(st);
+      QDataStream in(status);
+      in.setVersion(QDataStream::Qt_5_4);
+      in.setByteOrder(QDataStream::BigEndian);
+      quint32 magic = 0, schema = 0, type = 0;
+      quint64 dial = 0;
+      QByteArray id, smode, dx;
+      in >> magic >> schema >> type >> id >> dial >> smode >> dx;
+      if (magic != 0xadbccbda || type != 1 || id != "STD" || dial != 14074000 || smode != "FT8" || dx != "K8AB")
+        return fail("Status for the logger is wrong");
     }
     if (macroButtonLabel(QStringLiteral("CQ  @>|"), mc, true) != QStringLiteral("▶ CQ") ||
         macroButtonLabel(QStringLiteral("Reply <CALL>"), mc, false) != QLatin1String("Reply W1AW"))

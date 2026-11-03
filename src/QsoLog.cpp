@@ -21,6 +21,10 @@ namespace {
 constexpr quint32 kMagic = 0xadbccbda;
 constexpr quint32 kSchema = 3;
 constexpr quint32 kHeartbeat = 0;
+constexpr quint32 kStatus = 1;
+constexpr quint32 kReply = 4;
+constexpr quint32 kHaltTx = 8;
+constexpr quint32 kFreeText = 9;
 constexpr quint32 kQsoLogged = 5;
 constexpr quint32 kClose = 6;
 constexpr quint32 kLoggedAdif = 12;
@@ -142,6 +146,10 @@ QString qsoBandForHz(qint64 hz) {
 
 QsoLog::QsoLog(QObject* parent) : QObject(parent) {
   udp_ = new QUdpSocket(this);
+  // Bound now so a logger's Reply comes back to the port STD sends from.
+  if (!qEnvironmentVariableIsSet("STD_SELFTEST"))
+    udp_->bind(QHostAddress::AnyIPv4, 0);
+  connect(udp_, &QUdpSocket::readyRead, this, [this] { readRequests(); });
   pulse_ = new QTimer(this);
   pulse_->setInterval(15000);
   connect(pulse_, &QTimer::timeout, this, [this] { sendHeartbeat(); });
@@ -198,8 +206,11 @@ void QsoLog::applySettings() {
   tcpPort_ = portOr(settings.value(QStringLiteral("log/tcpPort"), 52001).toInt(), 52001);
   udpQso_ = settings.value(QStringLiteral("log/udpQso"), false).toBool();
   udpAdif_ = settings.value(QStringLiteral("log/udpAdif"), false).toBool();
+  udpLink_ = settings.value(QStringLiteral("log/udpLink"), false).toBool();
+  udpAccept_ = settings.value(QStringLiteral("log/udpAccept"), true).toBool();
   tcp_ = settings.value(QStringLiteral("log/tcp"), false).toBool();
-  const bool wantUdp = (udpQso_ || udpAdif_) && !qEnvironmentVariableIsSet("STD_SELFTEST");
+  lastStatus_.clear();
+  const bool wantUdp = udpOn() && !qEnvironmentVariableIsSet("STD_SELFTEST");
   if (wantUdp && !pulse_->isActive()) {
     sendHeartbeat();
     pulse_->start();
@@ -241,24 +252,106 @@ bool QsoLog::sendTcp(const QByteArray& payload) {
   return flushed;
 }
 
+bool QsoLog::udpOn() const {
+  return udpLink_ || udpQso_ || udpAdif_;
+}
+
+void QsoLog::sendStatus(const UdpStatus& status) {
+  if (qEnvironmentVariableIsSet("STD_SELFTEST") || !udpOn())
+    return;
+  const QByteArray datagram = statusDatagram(status);
+  if (datagram == lastStatus_)
+    return;
+  lastStatus_ = datagram;
+  sendUdp(datagram);
+}
+
+QByteArray QsoLog::statusDatagram(const UdpStatus& s) {
+  QByteArray packet;
+  QDataStream out(&packet, QIODevice::WriteOnly);
+  out.setVersion(QDataStream::Qt_5_4);
+  out.setByteOrder(QDataStream::BigEndian);
+  // NetworkMessage.hpp Status, schema 3, in order.
+  out << kMagic << kSchema << kStatus << QStringLiteral("STD").toUtf8() << s.dialHz << s.mode.toUtf8()
+      << s.dxCall.toUpper().toUtf8() << s.report.toUtf8() << s.mode.toUtf8() << s.txEnabled << s.transmitting
+      << s.decoding << s.rxDf << s.txDf << s.deCall.toUpper().toUtf8() << s.deGrid.toUtf8() << s.dxGrid.toUtf8()
+      << false /* Tx watchdog */ << QString().toUtf8() /* sub-mode */ << false /* fast mode */
+      << quint8(0) /* special operation */ << quint32(0xFFFFFFFF) /* frequency tolerance */ << s.periodSeconds
+      << QStringLiteral("STD").toUtf8() /* configuration */ << s.txMessage.toUtf8();
+  return packet;
+}
+
+bool QsoLog::parseRequest(const QByteArray& datagram, UdpRequest* r) {
+  QDataStream in(datagram);
+  in.setVersion(QDataStream::Qt_5_4);
+  in.setByteOrder(QDataStream::BigEndian);
+  quint32 magic = 0;
+  quint32 schema = 0;
+  QByteArray id;
+  in >> magic >> schema >> r->type >> id;
+  if (in.status() != QDataStream::Ok || magic != kMagic || schema < 2)
+    return false;
+  r->id = QString::fromUtf8(id);
+  // A request for another program sharing the port is not ours.
+  if (!r->id.isEmpty() && r->id.compare(QLatin1String("STD"), Qt::CaseInsensitive) != 0)
+    return false;
+  if (r->type == kReply) {
+    QByteArray mode;
+    QByteArray message;
+    bool lowConfidence = false;
+    in >> r->timeMs >> r->snr >> r->deltaTime >> r->deltaFrequency >> mode >> message >> lowConfidence;
+    if (in.status() != QDataStream::Ok)
+      return false;
+    if (!in.atEnd())
+      in >> r->modifiers;
+    r->mode = QString::fromUtf8(mode);
+    r->message = QString::fromUtf8(message).trimmed();
+    return !r->message.isEmpty();
+  }
+  if (r->type == kHaltTx) {
+    in >> r->autoTxOnly;
+    return in.status() == QDataStream::Ok;
+  }
+  if (r->type == kFreeText) {
+    QByteArray text;
+    in >> text >> r->send;
+    r->text = QString::fromUtf8(text);
+    return in.status() == QDataStream::Ok;
+  }
+  return false;
+}
+
+void QsoLog::readRequests() {
+  while (udp_ && udp_->hasPendingDatagrams()) {
+    QByteArray datagram(int(udp_->pendingDatagramSize()), Qt::Uninitialized);
+    udp_->readDatagram(datagram.data(), datagram.size());
+    UdpRequest request;
+    if (udpOn() && udpAccept_ && parseRequest(datagram, &request))
+      emit requestReceived(request);
+  }
+}
+
 void QsoLog::sendDecode(const QString& mode, int snr, float deltaTime, quint32 audioHz,
                         const QString& message, const QTime& time) {
-  if (qEnvironmentVariableIsSet("STD_SELFTEST") || (!udpQso_ && !udpAdif_) || message.trimmed().isEmpty())
+  if (qEnvironmentVariableIsSet("STD_SELFTEST") || !udpOn() || message.trimmed().isEmpty())
     return;
   sendUdp(decodeDatagram(mode, snr, deltaTime, audioHz, message, time));
 }
 
 void QsoLog::sendWsprDecode(int snr, float deltaTime, quint64 freqHz, qint32 drift, const QString& call,
                             const QString& grid, qint32 powerDbm, const QTime& time) {
-  if (qEnvironmentVariableIsSet("STD_SELFTEST") || (!udpQso_ && !udpAdif_) || call.trimmed().isEmpty())
+  if (qEnvironmentVariableIsSet("STD_SELFTEST") || !udpOn() || call.trimmed().isEmpty())
     return;
   sendUdp(wsprDecodeDatagram(snr, deltaTime, freqHz, drift, call, grid, powerDbm, time));
 }
 
 void QsoLog::sendHeartbeat() {
-  if (qEnvironmentVariableIsSet("STD_SELFTEST") || (!udpQso_ && !udpAdif_))
+  if (qEnvironmentVariableIsSet("STD_SELFTEST") || !udpOn())
     return;
   sendUdp(heartbeatDatagram(QStringLiteral(STD_VERSION)));
+  // The logger forgets nothing, but a restarted one needs Status again.
+  if (!lastStatus_.isEmpty())
+    sendUdp(lastStatus_);
 }
 
 QString QsoLog::adifRecord(const Record& qso) {

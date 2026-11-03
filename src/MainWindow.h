@@ -7,6 +7,7 @@
 #include "MaEngine.h"
 #include "MacroFile.h"
 #include "QsoCapture.h"
+#include "QsoLog.h"
 #include "RstMeter.h"
 
 #include <QByteArray>
@@ -110,6 +111,8 @@ private:
   void openUserDialog();
   void openWeatherDialog();
   void openLookupDialog();
+  void sendLoggerStatus();
+  void loggerRequest(const QsoLog::UdpRequest& request);
   void callbookAnswered(const QString& asked, const CallbookRecord& record, const QString& error);
   void openLogDialog();
   void backupSettings();

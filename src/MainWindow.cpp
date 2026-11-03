@@ -480,6 +480,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildMenus();
   arrangeDefault();
   qsoLog_ = new QsoLog(this);
+  // The logger link: Status once a second when it changes, and the
+  // logger's Reply, Halt Tx, and Free Text.
+  connect(qsoLog_, &QsoLog::requestReceived, this, &MainWindow::loggerRequest);
+  auto* loggerTick = new QTimer(this);
+  loggerTick->setInterval(1000);
+  connect(loggerTick, &QTimer::timeout, this, [this] { sendLoggerStatus(); });
+  loggerTick->start();
 
   tci_ = new TciClient(this);
   if (profile_ && waterfall_) {
@@ -3279,7 +3286,8 @@ void MainWindow::buildMenus() {
   logFile->setObjectName(QStringLiteral("logFileDialog"));
   logFile->setToolTip(QStringLiteral(
       "Choose the ADIF file and the WSJT-X UDP or DXKeeper TCP logger. "
-      "When a UDP option is on, live decodes go to that address as GridTracker reads them. "
+      "When the logger link or a UDP option is on, live decodes and Status go to that address "
+      "as WSJT-X sends them, and the logger can ask STD to work a station. "
       "The path is saved. This does not key and does not send START."));
   connect(logFile, &QAction::triggered, this, [this] { openLogDialog(); });
 
@@ -4233,7 +4241,17 @@ void MainWindow::showGuide() {
        "STD AppData folder (N8SDR\\STD). The path is remembered. UDP sends the WSJT-X QSO Logged and "
        "Logged ADIF datagrams to the saved host and port. The first address is 127.0.0.1 port 2237. "
        "TCP sends a DXKeeper log command to 127.0.0.1 port 52001 until you change it. UDP and TCP stay "
-       "off until you enable them. A heartbeat goes to the UDP port only while one of those is on. "
+       "off until you enable them. Link to a logger over WSJT-X UDP, in the same dialog, sends decodes "
+       "and Status (dial, mode, offsets, transmitting, and the call being worked: the QSO bar's Call, "
+       "or the station in the FT8 message) the way WSJT-X does, so SDRLogger+, GridTracker, JTAlert, "
+       "and Log4OM see STD. With Accept requests from the logger on, a click on a decode in the logger "
+       "works that station in STD as a double-click would, and the logger can halt TX or set the free "
+       "text. For SDRLogger+: in SDRLogger+ turn on Settings → Decoder Link (UDP), Source 1, port "
+       "2237. In STD, Log file and logger: tick Link to a logger over WSJT-X UDP, leave Accept "
+       "requests from the logger ticked, tick WSJT-X UDP logged ADIF (only one of the two logged "
+       "boxes, or the logger may get the QSO twice), port 2237. Then tick Log Automatically QSO, or "
+       "Prompt Me To Log QSO, under Log Options; with neither, nothing is logged. The link alone does not log. "
+       "A heartbeat goes to the UDP port only while one of those is on. "
        "File → Backup logbook copies that ADIF file and leaves the original in place. "
        "File → Export ADIF writes a copy another logger can import. File → Backup settings "
        "and Import settings save and restore layouts and the callsign and locator from "
@@ -9479,6 +9497,19 @@ void MainWindow::openLogDialog() {
   udpAdif->setChecked(settings.value(QStringLiteral("log/udpAdif"), false).toBool());
   udpAdif->setToolTip(QStringLiteral(
       "Send a WSJT-X Logged ADIF datagram when a contact is logged. This does not key."));
+  auto* udpLink = new QCheckBox(QStringLiteral("Link to a logger over WSJT-X UDP"), &dialog);
+  udpLink->setObjectName(QStringLiteral("logUdpLink"));
+  udpLink->setChecked(settings.value(QStringLiteral("log/udpLink"), false).toBool());
+  udpLink->setToolTip(QStringLiteral(
+      "Send decodes and Status (dial, mode, the call you are working) as WSJT-X does, so SDRLogger+, "
+      "GridTracker, JTAlert, and Log4OM see STD. The call in STD fills the logger's log entry. This does not key."));
+  auto* udpAccept = new QCheckBox(QStringLiteral("Accept requests from the logger"), &dialog);
+  udpAccept->setObjectName(QStringLiteral("logUdpAccept"));
+  udpAccept->setChecked(settings.value(QStringLiteral("log/udpAccept"), true).toBool());
+  udpAccept->setToolTip(QStringLiteral(
+      "A click on a decode in the logger works that station in STD, the same as a double-click in STD: "
+      "the reply is set up and TX is armed. The logger can also halt TX or set the free text. Off: "
+      "STD ignores them. START is never sent."));
   auto* udpHost = new QLineEdit(
       settings.value(QStringLiteral("log/udpHost"), QStringLiteral("127.0.0.1")).toString(), &dialog);
   udpHost->setObjectName(QStringLiteral("logUdpHost"));
@@ -9502,6 +9533,8 @@ void MainWindow::openLogDialog() {
 
   auto* form = new QFormLayout;
   form->addRow(QStringLiteral("ADIF file"), pathRow);
+  form->addRow(udpLink);
+  form->addRow(udpAccept);
   form->addRow(udpQso);
   form->addRow(udpAdif);
   form->addRow(QStringLiteral("UDP server"), udpHost);
@@ -9512,7 +9545,10 @@ void MainWindow::openLogDialog() {
   auto* note = new QLabel(
       QStringLiteral("The QSO pane is not this file. A 73 or RR73 to another station is appended when "
                      "Log Automatically is on, when Prompt Me is answered yes, or when UDP or TCP is "
-                     "on. UDP is the WSJT-X logger datagram, port 2237. TCP is the DXKeeper command, "
+                     "on. UDP is the WSJT-X logger datagram, port 2237. The link sends decodes and Status "
+                     "and hears the logger's requests; it does not log by itself. For SDRLogger+ tick the link, "
+                     "Accept requests, and WSJT-X UDP logged ADIF, port 2237, and turn on Log QSO "
+                     "Automatically. TCP is the DXKeeper command, "
                      "port 52001. Both stay off until enabled. The path and addresses are saved. "
                      "This does not send START and does not key."),
       &dialog);
@@ -9536,6 +9572,8 @@ void MainWindow::openLogDialog() {
     chosen = QsoLog::defaultAdifPath();
   QSettings store;
   store.setValue(QStringLiteral("log/adifPath"), chosen);
+  store.setValue(QStringLiteral("log/udpLink"), udpLink->isChecked());
+  store.setValue(QStringLiteral("log/udpAccept"), udpAccept->isChecked());
   store.setValue(QStringLiteral("log/udpQso"), udpQso->isChecked());
   store.setValue(QStringLiteral("log/udpAdif"), udpAdif->isChecked());
   store.setValue(QStringLiteral("log/udpHost"), udpHost->text().trimmed());
@@ -9546,6 +9584,122 @@ void MainWindow::openLogDialog() {
   if (qsoLog_)
     qsoLog_->applySettings();
   setTxStatus(QStringLiteral("Log file saved. Nothing was keyed. START was not sent."));
+}
+
+// WSJT-X UDP Status for the logger: dial, mode, the call being worked,
+// and whether STD is transmitting. Sent only when something changed.
+void MainWindow::sendLoggerStatus() {
+  if (!qsoLog_ || !qsoLog_->udpOn())
+    return;
+  QsoLog::UdpStatus s;
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  s.dialHz = profile_ ? quint64(std::max<qint64>(0, profile_->dialHz())) : 0;
+  s.mode = mode;
+  s.deCall = stationCall();
+  s.deGrid = stationGrid();
+  const auto* tx = findChild<QPushButton*>(QStringLiteral("txSend"));
+  s.txEnabled = tx && tx->isChecked();
+  s.transmitting = txKeySent_;
+  if (waterfall_) {
+    s.rxDf = quint32(std::max(0, waterfall_->rxHz()));
+    s.txDf = quint32(std::max(0, waterfall_->txHz()));
+  }
+  s.periodSeconds = quint32(std::max(0, periodLengthMs(mode) / 1000));
+  if (keyboardTextMode(mode)) {
+    // The keyboard modes: the QSO bar's station.
+    const QHash<QString, QString> bar = qsoBarTags();
+    s.dxCall = bar.value(QStringLiteral("<CALL>"));
+    s.dxGrid = bar.value(QStringLiteral("<LOC>"));
+    s.report = bar.value(QStringLiteral("<RST>"));
+  } else {
+    // The FT8 family: the station in the selected message, else Tx1.
+    const int slot = selectedTxSlot();
+    const QString name = slot == 6 ? QStringLiteral("txExtra") : QStringLiteral("tx%1").arg(slot + 1);
+    if (const auto* field = findChild<QLineEdit*>(name))
+      s.txMessage = field->text().trimmed();
+    const QString mine = stationCall().trimmed().toUpper();
+    for (const QString& source : {s.txMessage, [this] {
+                                    const auto* t1 = findChild<QLineEdit*>(QStringLiteral("tx1"));
+                                    return t1 ? t1->text() : QString();
+                                  }()}) {
+      for (const QString& word : source.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+        const QString w = word.toUpper();
+        if (w != QLatin1String("CQ") && w != mine && isCall(w)) {
+          s.dxCall = w;
+          break;
+        }
+      }
+      if (!s.dxCall.isEmpty())
+        break;
+    }
+  }
+  qsoLog_->sendStatus(s);
+}
+
+// A request from the logger, accepted in Options → Log. A Reply works the
+// station as a double-click on that decode would; it never does more.
+void MainWindow::loggerRequest(const QsoLog::UdpRequest& r) {
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  if (r.type == 8) {  // Halt Tx
+    if (r.autoTxOnly) {
+      if (auto* tx = findChild<QPushButton*>(QStringLiteral("txSend")); tx && tx->isChecked())
+        tx->click();
+      setTxStatus(QStringLiteral("The logger turned TX off after this transmission. START was not sent."));
+    } else {
+      haltTx();
+      setTxStatus(QStringLiteral("The logger halted TX. Nothing was keyed. START was not sent."));
+    }
+    return;
+  }
+  if (r.type == 9) {  // Free Text
+    if (keyboardTextMode(mode)) {
+      if (auto* box = findChild<QPlainTextEdit*>(QStringLiteral("txHell"))) {
+        QTextCursor tail(box->document());
+        tail.movePosition(QTextCursor::End);
+        tail.insertText((box->toPlainText().isEmpty() ? QString() : QStringLiteral(" ")) + r.text);
+      }
+    } else if (auto* extra = findChild<QLineEdit*>(QStringLiteral("txExtra"))) {
+      extra->setText(r.text.left(13));
+      if (r.send) {
+        if (auto* pick = findChild<QRadioButton*>(QStringLiteral("txPick7")))
+          pick->setChecked(true);
+      }
+    }
+    setTxStatus(QStringLiteral("The logger set the free text: %1. Nothing was keyed. START was not sent.")
+                    .arg(r.text));
+    return;
+  }
+  // Reply: find that decode in STD's list and work it.
+  int best = -1;
+  for (int i = int(shownDecodes_.size()) - 1; i >= 0; --i) {
+    const DecodeRow& row = shownDecodes_.at(i);
+    if (row.message.trimmed().compare(r.message, Qt::CaseInsensitive) != 0)
+      continue;
+    if (best < 0 || std::abs(row.freqHz - int(r.deltaFrequency)) <
+                        std::abs(shownDecodes_.at(best).freqHz - int(r.deltaFrequency)))
+      best = i;
+  }
+  if (best >= 0) {
+    setTxStatus(QStringLiteral("The logger asked to work: %1").arg(r.message));
+    loadReplyFromLine(best);
+    return;
+  }
+  // The keyboard modes have no decode list: the call goes into the QSO bar.
+  const QString mine = stationCall().trimmed().toUpper();
+  for (const QString& word : r.message.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+    const QString w = word.toUpper();
+    if (w != QLatin1String("CQ") && w != QLatin1String("DE") && w != mine && isCall(w)) {
+      if (keyboardTextMode(mode)) {
+        qsoBarPut(QStringLiteral("qsoBarCall"), w);
+        setTxStatus(QStringLiteral("The logger picked %1. Nothing was keyed. START was not sent.").arg(w));
+      } else {
+        setTxStatus(QStringLiteral("The logger asked to work %1, but that decode is not in STD's list. "
+                                   "Nothing was keyed.")
+                        .arg(r.message));
+      }
+      return;
+    }
+  }
 }
 
 void MainWindow::openUserDialog() {

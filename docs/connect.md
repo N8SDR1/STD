@@ -26,6 +26,30 @@ modulation:0,digu
 
 or `modulation:0,digl`. That sideband command is not START, and it does not key.
 
+## Link to a logger
+
+Options → Log Options → Log file and logger → **Link to a logger over WSJT-X UDP** makes STD talk to a logger the way WSJT-X, JTDX, and MSHV do, on the UDP server and port set there (127.0.0.1 port 2237 to start). SDRLogger+ (Settings → Decoder Link), GridTracker, JTAlert, and Log4OM all listen for it.
+
+- **Decodes** go to the logger as they are heard, so its decode list and alerts show STD's stations.
+- **Status** goes once a second when something changes: the dial, the mode, the TX and RX offsets, whether STD is transmitting, and the call being worked. On RTTY, PSK, and the other keyboard modes that is the QSO bar's Call; on FT8 and the other slot modes it is the station in the selected message. The logger fills its log entry and looks the call up.
+- **Accept requests from the logger**, on until you turn it off, lets the logger work stations in STD. A click on a decode there is a double-click on that decode in STD: the reply is set up and TX is armed, as it would be by hand. On a keyboard mode it puts the call in the QSO bar instead. The logger can also halt TX and set the free text. Requests addressed to another program on the same port are ignored.
+
+### Setting up SDRLogger+
+
+1. **In SDRLogger+:** Settings → Decoder Link (UDP) → turn **Source 1** on, UDP port **2237**, multicast blank. Save.
+2. **In STD:** Options → Log Options → **Log file and logger…**
+   - Tick **Link to a logger over WSJT-X UDP**.
+   - Leave **Accept requests from the logger** ticked, so a click in SDRLogger+ works the station in STD.
+   - Tick **WSJT-X UDP logged ADIF**, so each finished QSO is sent to SDRLogger+. Tick only one of the two "WSJT-X UDP logged" boxes; with both, the logger can get the same QSO twice.
+   - UDP server **127.0.0.1**, UDP port **2237**, the same port as step 1. OK.
+3. **In STD:** Options → Log Options → tick **Log Automatically QSO**, or **Prompt Me To Log QSO** to be asked each time. With neither ticked, nothing is logged, here or in SDRLogger+.
+
+Within about 15 seconds SDRLogger+'s Decoder Link shows STD under Clients. STD's decodes then appear in its Digital Decodes panel, the call you are working fills its log entry, and a click on a CQ there works that station in STD. A QSO is logged when it ends: after a 73 or RR73 goes out, or in MA Std when their RR73 arrives, as MSHV does. STD keeps its own ADIF too.
+
+**The link alone does not log.** It carries decodes, Status, and the logger's clicks. Sending a QSO to the logger is the logged ADIF (or logged QSO) box, and deciding to log at all is Log Automatically QSO or Prompt Me To Log QSO.
+
+The link sends a heartbeat every 15 seconds and logs nothing by itself; the WSJT-X UDP logged QSO and logged ADIF options still decide whether a finished QSO is sent. TCI to the radio is separate and unchanged. START is never sent.
+
 ## What keys
 
 `trx:0,true,tci` is sent when the operator presses TX or Tune. `trx:0,false` follows when that transmission ends. No other button sends `trx`.
