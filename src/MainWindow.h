@@ -9,6 +9,8 @@
 #include "QsoCapture.h"
 #include "QsoLog.h"
 #include "RstMeter.h"
+#include "rade/RadeLink.h"
+#include "rade/RateConvert.h"
 
 #include <QByteArray>
 #include <QHash>
@@ -229,6 +231,14 @@ private:
   void stopTune(bool uncheck);
   void pumpUserTx();
   void onTxPull(int sampleRateHz, int length, int channels);
+  void ensureRadeCodec();
+  void closeRadeCodec();
+  void beginRadeTx();
+  void pumpRadeTx();
+  void pushRadeRealtime();
+  void fillRadeTx(float* dst, int frames, int rate);
+  void pushRadeRx(const float* samples, int count, int rate);
+  void playRadePcm(const float* samples, int count);
   void fillTune(float* dst, int frames);
   void fillWave(float* dst, int frames, int step);
   void sendTxBlock(const float* mono, int frames, int rate, int channels);
@@ -349,6 +359,27 @@ private:
   HellEngine* hell_ = nullptr;
   SpeechReader* speech_ = nullptr;
   SpeechInput* talkIn_ = nullptr;
+  SpeechInput* radeMic_ = nullptr;
+  class RadeSpeaker* radeSpeaker_ = nullptr;
+  RadeLink rade_;
+  RateConvert radeRxConv_;
+  RateConvert radeAnalogConv_;
+  std::vector<float> radeModem_;
+  double radeRead_ = 0;
+  bool txRade_ = false;
+  bool radeStopping_ = false;
+  bool radeFinished_ = false;
+  bool radeCodecReady_ = false;
+  bool radeWasSync_ = false;
+  bool radeSpeakerFail_ = false;
+  int radeOpenV2_ = -1;
+  int radeOpenNoBpf_ = -1;
+  int radePushed_ = 0;
+  qint64 radeTailMs_ = 0;
+  qint64 radeOriginMs_ = 0;
+  qint64 radeMeterMs_ = 0;
+  qint64 radeOpenTryMs_ = 0;
+  QString radeSpeakerId_;
   SpeechModelDownload* modelDl_ = nullptr;
   SpeechRecognizer* recognizer_ = nullptr;
   void insertHeardText(const QString& heard, const QString& error);

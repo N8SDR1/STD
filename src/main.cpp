@@ -31,6 +31,7 @@
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
 #include "modem/ToneClock.h"
+#include "rade/RadeLink.h"
 #include "wspr/WsprModem.h"
 #include "spot/PskReporter.h"
 #include "spot/WsprNet.h"
@@ -1028,6 +1029,8 @@ int shellReady(MainWindow& window) {
         !v2->toolTip().contains(QLatin1String("experimental")) ||
         !screen->findChildren<QLineEdit*>().isEmpty())
       return fail("RADE screen is missing");
+    if (radeCodecSelfTest() != 0)
+      return fail("RADE codec round trip failed");
     QSettings radeKeep;
     const bool hadBpfV1 = radeKeep.contains(QStringLiteral("rade/bpfV1"));
     const bool hadBpfV2 = radeKeep.contains(QStringLiteral("rade/bpfV2"));

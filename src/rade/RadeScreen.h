@@ -22,10 +22,13 @@ public:
   // Match the Mode menu. Does not emit variantChosen.
   void showMode(const QString& modeName);
   void refreshDevices();
+  void setLinkReady(bool ready);
+  void setSync(bool on, float snrDb);
 
 signals:
   void variantChosen(const QString& modeName);
   void diguHelper();
+  void optionsChanged();
 
 private:
   void loadBpf(bool v2);

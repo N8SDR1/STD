@@ -140,9 +140,17 @@ qt_add_executable(std
   src/wspr/WsprModem.h
   src/rade/RadeScreen.cpp
   src/rade/RadeScreen.h
-  # librade + Opus FARGAN are not linked yet. When they are, the only
-  # source is https://github.com/freedv/rade_c at
+  src/rade/RadeLink.cpp
+  src/rade/RadeLink.h
+  src/rade/RadeSpeaker.cpp
+  src/rade/RadeSpeaker.h
+  src/rade/RateConvert.h
+  src/MainWindowRade.cpp
+  # librade + Opus FARGAN are the cdecl shim std_rade.dll, built by
+  # scripts/build_rade_shim.sh. The only source is
+  # https://github.com/freedv/rade_c at
   # c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9 (origin/main, 2026-11-03).
+  # The weight objects are not compiled into this MSVC target.
   src/spot/PskReporter.cpp
   src/spot/PskReporter.h
   src/spot/WsprNet.cpp
@@ -236,6 +244,24 @@ if(WIN32)
     VERBATIM)
   add_custom_target(ft8dec DEPENDS "${FT8_DLL}")
   add_dependencies(std ft8dec)
+
+  # MinGW cdecl shim around the pinned rade_c build. MSVC loads it at run time.
+  set(RADE_SHIM_DLL "${CMAKE_BINARY_DIR}/std_rade.dll")
+  add_custom_command(
+    OUTPUT "${RADE_SHIM_DLL}" "${CMAKE_BINARY_DIR}/librade.dll"
+    COMMAND "C:/msys64/usr/bin/bash.exe"
+            "${CMAKE_SOURCE_DIR}/scripts/build_rade_shim.sh"
+            "${CMAKE_BINARY_DIR}"
+            "${CMAKE_SOURCE_DIR}/src/rade/std_rade_shim.c"
+    DEPENDS
+      "${CMAKE_SOURCE_DIR}/src/rade/std_rade_shim.c"
+      "${CMAKE_SOURCE_DIR}/scripts/build_rade_shim.sh"
+      "${CMAKE_SOURCE_DIR}/scripts/rade_shim_check.c"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Linking librade for RADE"
+    VERBATIM)
+  add_custom_target(rade_shim DEPENDS "${RADE_SHIM_DLL}")
+  add_dependencies(std rade_shim)
 endif()
 
 if(MSVC)

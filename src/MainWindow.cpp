@@ -615,6 +615,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         js8_->pushAudio(gained, count, rate);
       if (wspr_)
         wspr_->pushAudio(gained, count, rate);
+      if (profile_ && radeMode(profile_->digitalMode()))
+        pushRadeRx(samples, count, rate);
     }
   });
 
@@ -2694,6 +2696,10 @@ QWidget* MainWindow::makeReceivePanel() {
   rade->hide();
   layout->addWidget(rade, 1);
   connect(rade, &RadeScreen::variantChosen, this, [this](const QString& mode) { activateDigitalMode(mode); });
+  connect(rade, &RadeScreen::optionsChanged, this, [this] {
+    if (!txRade_)
+      ensureRadeCodec();
+  });
   connect(rade, &RadeScreen::diguHelper, this, [this] { applyRadeDigu(); });
   layout->addWidget(echo, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
@@ -3901,6 +3907,10 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
       tci_->isOpen())
     tci_->setSideband(QStringLiteral("DIGU"));
   applyChannelWidth();
+  if (radeHere)
+    ensureRadeCodec();
+  else
+    closeRadeCodec();
   refreshTxChrome();
   applyMacroBar();
   syncWfHellControls();
@@ -4098,9 +4108,9 @@ void MainWindow::showGuide() {
        "10 m starts at 28.330 and also 28.720. 160 m is 1.870, DIGL. 80 m also has 3.625, 3.693, "
        "3.697, 3.803, and the 3.640 net. Click the same band button to cycle those dials. "
        "Type a dial in Extra and press Enter to keep it for this mode and band. Right-click Extra "
-       "clears those extras. 30 m and 6 m have no reporter dial. librade and FARGAN are not linked "
-       "in this build, so the screen does not decode and does not key. Connect still sends "
-       "AUDIO_START for receiver 0. A later transmission uses trx with tci. A useful passband is "
+       "clears those extras. 30 m and 6 m have no reporter dial. librade and FARGAN are linked. "
+       "Speech is 16 kHz and the modem is 8 kHz. TX uses the Speech microphone and trx with tci. "
+       "Connect still sends AUDIO_START for receiver 0. A useful passband is "
        "about 750 to 2250 Hz, with radio NR off. START is never sent."},
       {"FT8, FT4, and FT2",
        "Mode → FT8, FT4, or FT2. All three are DIGU on every band. The band buttons use the WSJT-X "
@@ -4710,6 +4720,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   if (txTune_)
     stopTune(false);
   stopUserTx(false);
+  closeRadeCodec();
   if (qsoLog_)
     qsoLog_->shutdown();
   offerLayoutSave();
@@ -6444,8 +6455,19 @@ void MainWindow::refreshTxChrome() {
     clrTx->setVisible(textMode);
   if (auto* wsprPanel = findChild<QWidget*>(QStringLiteral("wsprPanel")))
     wsprPanel->setVisible(wspr);
-  if (auto* radeNote = findChild<QLabel*>(QStringLiteral("radeTxNote")))
+  const bool radeLinked = rade && rade_.load();
+  if (auto* radeNote = findChild<QLabel*>(QStringLiteral("radeTxNote"))) {
     radeNote->setVisible(rade);
+    if (rade) {
+      radeNote->setText(radeLinked
+                            ? QStringLiteral(
+                                  "TX sends the Speech microphone. Halt stops at once. Tune stays off. "
+                                  "START is never sent.")
+                            : QStringLiteral(
+                                  "TX is not armed until librade is linked. This does not key. "
+                                  "START is never sent."));
+    }
+  }
   if (auto* js8Bands = findChild<QWidget*>(QStringLiteral("js8Bands")))
     js8Bands->setVisible(js8Mode(mode));
   showJs8Layout(js8Mode(mode));
@@ -6458,6 +6480,14 @@ void MainWindow::refreshTxChrome() {
   for (const char* name : {"txTune", "txSend", "txHalt"}) {
     if (auto* w = findChild<QWidget*>(QLatin1String(name)))
       w->setVisible(!fax && !rade);
+  }
+  if (rade) {
+    if (auto* tune = findChild<QWidget*>(QStringLiteral("txTune")))
+      tune->setVisible(false);
+    if (auto* send = findChild<QWidget*>(QStringLiteral("txSend")))
+      send->setVisible(radeLinked);
+    if (auto* halt = findChild<QWidget*>(QStringLiteral("txHalt")))
+      halt->setVisible(radeLinked);
   }
   if (transmitDock_) {
     if (auto* title = transmitDock_->titleBarWidget() ? transmitDock_->titleBarWidget()->findChild<QLabel*>()
@@ -7059,6 +7089,20 @@ void MainWindow::setUserTx(bool on) {
   cancelMacroRepeat(QString());
   auto* button = findChild<QPushButton*>(QStringLiteral("txSend"));
   if (!on) {
+    // RADE finishes the end-of-over frame, holds about 120 ms, then unkeys.
+    // A second press stops at once.
+    if (txRade_ && txKeySent_ && !radeStopping_) {
+      radeStopping_ = true;
+      if (button) {
+        const QSignalBlocker block(button);
+        button->setChecked(true);
+        button->setText(QStringLiteral("ENDING"));
+      }
+      setTxStatus(QStringLiteral(
+          "Ending. The end-of-over frame goes out, then TRX drops. Press TX again to stop now. "
+          "START was not sent."));
+      return;
+    }
     // Live keyboard TX: the first press ends after the box is sent, as
     // Fldigi's TX/RX does. A second press stops at once.
     if (txLive_ && txKeySent_ && !txLiveEnding_) {
@@ -7090,6 +7134,10 @@ void MainWindow::setUserTx(bool on) {
   }
   if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
     release();
+    return;
+  }
+  if (profile_ && radeMode(profile_->digitalMode())) {
+    beginRadeTx();
     return;
   }
   if (stationCall().isEmpty()) {
@@ -7451,7 +7499,9 @@ void MainWindow::onTxPull(int sampleRateHz, int length, int channels) {
     return;
   txLastPullMs_ = QDateTime::currentMSecsSinceEpoch();
   std::vector<float> mono(static_cast<size_t>(frames));
-  if (txTune_)
+  if (txRade_)
+    fillRadeTx(mono.data(), frames, rate);
+  else if (txTune_)
     fillTune(mono.data(), frames);
   else
     fillWave(mono.data(), frames, step);
@@ -7536,6 +7586,10 @@ void MainWindow::pumpUserTx() {
       return;
     }
     pushRealtimeTx();
+    return;
+  }
+  if (txRade_) {
+    pumpRadeTx();
     return;
   }
   if (!tci_ || !profile_ || (txSamples_.empty() && !txLive_)) {
@@ -8008,6 +8062,15 @@ void MainWindow::stopUserTx(bool uncheck) {
   txLiveLogged_ = false;
   txLiveTextMs_ = 0;
   txSampleBase_ = 0;
+  if (radeMic_)
+    radeMic_->stop();
+  txRade_ = false;
+  radeStopping_ = false;
+  radeFinished_ = false;
+  radeTailMs_ = 0;
+  radePushed_ = 0;
+  radeRead_ = 0;
+  radeModem_.clear();
   if (txTimer_)
     txTimer_->stop();
   if (txKeySent_ && tci_)

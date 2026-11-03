@@ -62,8 +62,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   auto* intro = new QLabel(QStringLiteral(
       "V1 is the default waveform, about 1500 Hz wide. V2 is experimental, "
       "about 860 Hz, and will not decode V1. Mic and speaker are the Speech devices. "
-      "Identity stays in Options, User. librade and FARGAN are not linked in this build, "
-      "so nothing is decoded or keyed."),
+      "Identity stays in Options, User. Speech is 16 kHz. The modem is 8 kHz."),
       this);
   intro->setObjectName(QStringLiteral("radeIntro"));
   intro->setFont(uiFont());
@@ -172,10 +171,13 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   layout->addWidget(speaker_);
 
   link_ = new QLabel(QStringLiteral(
-      "librade and FARGAN are not linked yet. Sync stays idle and SNR stays blank. "
-      "Connect still sends AUDIO_START:0. A later TX uses trx with tci. START is never sent."),
+      "librade is not loaded yet. Sync stays idle and SNR stays blank. "
+      "Connect still sends AUDIO_START:0. TX uses trx with tci. START is never sent."),
       this);
   link_->setObjectName(QStringLiteral("radeLink"));
+  link_->setToolTip(QStringLiteral(
+      "freedv/rade_c c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9. "
+      "This does not key. START is never sent."));
   link_->setFont(uiFont());
   link_->setWordWrap(true);
   layout->addWidget(link_);
@@ -189,7 +191,10 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   connect(analog_, &QCheckBox::toggled, this, [](bool on) {
     QSettings().setValue(QStringLiteral("rade/analog"), on);
   });
-  connect(bpf_, &QCheckBox::toggled, this, [this](bool on) { rememberBpf(on); });
+  connect(bpf_, &QCheckBox::toggled, this, [this](bool on) {
+    rememberBpf(on);
+    emit optionsChanged();
+  });
   connect(drive_, &QSlider::valueChanged, this, [this](int value) {
     driveValue_->setText(QString::number(value));
     QSettings().setValue(QStringLiteral("rade/drive"), value);
@@ -208,6 +213,28 @@ void RadeScreen::loadBpf(bool v2) {
 
 void RadeScreen::rememberBpf(bool on) {
   QSettings().setValue(showingV2_ ? QStringLiteral("rade/bpfV2") : QStringLiteral("rade/bpfV1"), on);
+}
+
+void RadeScreen::setLinkReady(bool ready) {
+  if (!link_)
+    return;
+  link_->setText(ready ? QStringLiteral(
+                             "librade and FARGAN are linked. Speech is 16 kHz. The modem is 8 kHz. "
+                             "Connect sends AUDIO_START:0. TX uses trx with tci. START is never sent.")
+                       : QStringLiteral(
+                             "librade did not load. TX stays off. Sync stays idle. "
+                             "Connect still sends AUDIO_START:0. START is never sent."));
+}
+
+void RadeScreen::setSync(bool on, float snrDb) {
+  if (sync_)
+    sync_->setText(on ? QStringLiteral("Sync  yes") : QStringLiteral("Sync  idle"));
+  if (!snr_)
+    return;
+  if (on)
+    snr_->setText(QStringLiteral("SNR  %1 dB").arg(QString::number(double(snrDb), 'f', 1)));
+  else
+    snr_->setText(QStringLiteral("SNR  —"));
 }
 
 void RadeScreen::showMode(const QString& modeName) {

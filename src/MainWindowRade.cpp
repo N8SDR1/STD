@@ -1,0 +1,329 @@
+// Copyright (C) 2026 Rick Langford (N8SDR)
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// RADE voice. librade modulates 8 kHz real SSB. FARGAN speaks at 16 kHz.
+// The microphone and speaker are the Speech devices. End-of-over bits
+// are left unset.
+
+#include "MainWindow.h"
+
+#include "DigitalMode.h"
+#include "ModeProfile.h"
+#include "TciClient.h"
+#include "rade/RadeScreen.h"
+#include "rade/RadeSpeaker.h"
+#include "speech/SpeechInput.h"
+
+#include <QCheckBox>
+#include <QDateTime>
+#include <QPushButton>
+#include <QSettings>
+#include <QSignalBlocker>
+#include <QSlider>
+
+#include <algorithm>
+#include <cmath>
+
+namespace {
+
+int radeDrivePercent(QWidget* window) {
+  if (auto* slider = window->findChild<QSlider*>(QStringLiteral("radeDrive")))
+    return std::clamp(slider->value(), 0, 100);
+  return std::clamp(QSettings().value(QStringLiteral("rade/drive"), 70).toInt(), 0, 100);
+}
+
+bool radeAnalogOn(QWidget* window) {
+  if (auto* box = window->findChild<QCheckBox*>(QStringLiteral("radeAnalog")))
+    return box->isChecked();
+  return QSettings().value(QStringLiteral("rade/analog"), false).toBool();
+}
+
+}  // namespace
+
+void MainWindow::ensureRadeCodec() {
+  auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+  const bool want = profile_ && radeMode(profile_->digitalMode());
+  if (!want) {
+    closeRadeCodec();
+    return;
+  }
+  if (!rade_.load()) {
+    radeCodecReady_ = false;
+    if (screen)
+      screen->setLinkReady(false);
+    return;
+  }
+  // The offscreen test opens the codec itself. Loading the DLL here is
+  // enough for the TX button and the link line.
+  if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    radeCodecReady_ = true;
+    if (screen)
+      screen->setLinkReady(true);
+    return;
+  }
+  const bool v2 = radeV2(profile_->digitalMode());
+  bool bpf = v2;
+  if (auto* box = findChild<QCheckBox*>(QStringLiteral("radeBpf")))
+    bpf = box->isChecked();
+  const int noBpf = (v2 && !bpf) ? 1 : 0;
+  if (rade_.opened() && radeOpenV2_ == int(v2) && radeOpenNoBpf_ == noBpf) {
+    radeCodecReady_ = true;
+    if (screen)
+      screen->setLinkReady(true);
+    return;
+  }
+  if (txRade_)
+    return;
+  if (rade_.open(v2, noBpf != 0)) {
+    radeOpenV2_ = int(v2);
+    radeOpenNoBpf_ = noBpf;
+    radeCodecReady_ = true;
+    radeRxConv_.reset();
+    radeAnalogConv_.reset();
+    if (screen)
+      screen->setLinkReady(true);
+  } else {
+    radeCodecReady_ = false;
+    radeOpenV2_ = -1;
+    if (screen)
+      screen->setLinkReady(false);
+  }
+}
+
+void MainWindow::closeRadeCodec() {
+  if (txRade_)
+    return;
+  rade_.close();
+  radeOpenV2_ = -1;
+  radeOpenNoBpf_ = -1;
+  radeRxConv_.reset();
+  radeAnalogConv_.reset();
+  if (radeSpeaker_)
+    radeSpeaker_->stop();
+}
+
+void MainWindow::beginRadeTx() {
+  auto* button = findChild<QPushButton*>(QStringLiteral("txSend"));
+  auto release = [button] {
+    if (!button)
+      return;
+    const QSignalBlocker block(button);
+    button->setChecked(false);
+    button->setText(QStringLiteral("TX"));
+  };
+  ensureRadeCodec();
+  if (!radeCodecReady_ || !rade_.opened()) {
+    release();
+    setTxStatus(rade_.error().isEmpty()
+                    ? QStringLiteral("librade did not load. TX did not key. START was not sent.")
+                    : rade_.error());
+    return;
+  }
+  if (!tci_ || !tci_->isOpen() || !txTimer_) {
+    release();
+    setTxStatus(QStringLiteral("Radio is not connected. TX did not key. START was not sent."));
+    return;
+  }
+  if (txTune_)
+    stopTune(true);
+  if (!radeMic_)
+    radeMic_ = new SpeechInput(this);
+  const QString micId = QSettings().value(QStringLiteral("speech/mic")).toString();
+  if (!radeMic_->start(micId)) {
+    release();
+    setTxStatus(QStringLiteral("%1 TX did not key. START was not sent.").arg(radeMic_->error()));
+    return;
+  }
+  radeModem_.clear();
+  radeRead_ = 0;
+  radeStopping_ = false;
+  radeFinished_ = false;
+  radeTailMs_ = 0;
+  radeOriginMs_ = QDateTime::currentMSecsSinceEpoch();
+  radePushed_ = 0;
+  txLastPullMs_ = 0;
+  if (speech_)
+    speech_->stop();
+  if (!tci_->setTransmit(true)) {
+    radeMic_->stop();
+    release();
+    setTxStatus(QStringLiteral("Radio is not connected. TX did not key. START was not sent."));
+    return;
+  }
+  txRade_ = true;
+  txKeySent_ = true;
+  markWaterfallTx();
+  if (button)
+    button->setText(QStringLiteral("ON AIR"));
+  setTxStatus(QStringLiteral(
+      "On the air. Speech from the Speech microphone. TRX uses tci. START was not sent."));
+  txTimer_->start(20);
+}
+
+void MainWindow::pumpRadeTx() {
+  if (!tci_ || !tci_->isTransmitting()) {
+    stopUserTx(true);
+    setTxStatus(QStringLiteral("RADE stopped. TRX is off. START was not sent."));
+    return;
+  }
+  if (!radeStopping_) {
+    if (radeMic_) {
+      const std::vector<float> pcm = radeMic_->take();
+      if (!pcm.empty()) {
+        std::vector<float> modem(65536);
+        const int n = rade_.tx(pcm.data(), int(pcm.size()), modem.data(), int(modem.size()));
+        if (n > 0)
+          radeModem_.insert(radeModem_.end(), modem.begin(), modem.begin() + n);
+        else if (n < 0)
+          setTxStatus(QStringLiteral("RADE encode failed. TRX is still up. START was not sent."));
+      }
+    }
+  } else if (!radeFinished_) {
+    if (radeMic_)
+      radeMic_->stop();
+    std::vector<float> modem(65536);
+    const int n = rade_.finish(modem.data(), int(modem.size()));
+    if (n > 0)
+      radeModem_.insert(radeModem_.end(), modem.begin(), modem.begin() + n);
+    radeFinished_ = true;
+  }
+  const bool drained = radeModem_.empty() || radeRead_ + 1.0 >= double(radeModem_.size());
+  if (radeFinished_ && drained) {
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (radeTailMs_ == 0)
+      radeTailMs_ = now;
+    if (now - radeTailMs_ >= 120) {
+      stopUserTx(true);
+      setTxStatus(QStringLiteral("RADE ended. TRX is off. START was not sent."));
+      return;
+    }
+  }
+  pushRadeRealtime();
+}
+
+void MainWindow::pushRadeRealtime() {
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  if (txLastPullMs_ > 0 && now - txLastPullMs_ < 80)
+    return;
+  constexpr int kRate = 48000;
+  constexpr int kChunk = 960;
+  if (radeOriginMs_ <= 0)
+    radeOriginMs_ = now;
+  const int allowed = int((now - radeOriginMs_) * kRate / 1000) + kChunk;
+  if (radePushed_ >= allowed)
+    return;
+  int frames = std::min(kChunk, allowed - radePushed_);
+  if (frames < 1)
+    return;
+  std::vector<float> mono(static_cast<size_t>(frames));
+  fillRadeTx(mono.data(), frames, kRate);
+  sendTxBlock(mono.data(), frames, kRate, 1);
+  radePushed_ += frames;
+}
+
+void MainWindow::fillRadeTx(float* dst, int frames, int rate) {
+  if (!dst || frames < 1)
+    return;
+  if (rate < 1000)
+    rate = 48000;
+  const double step = 8000.0 / double(rate);
+  const float scale = 0.5f * (float(radeDrivePercent(this)) / 100.0f);
+  for (int i = 0; i < frames; ++i) {
+    const int idx = int(radeRead_);
+    const double frac = radeRead_ - double(idx);
+    float sample = 0.0f;
+    if (idx >= 0 && idx + 1 < int(radeModem_.size())) {
+      const float a = radeModem_[static_cast<size_t>(idx)];
+      const float b = radeModem_[static_cast<size_t>(idx + 1)];
+      sample = float((1.0 - frac) * a + frac * b);
+    } else if (idx >= 0 && idx < int(radeModem_.size())) {
+      sample = radeModem_[static_cast<size_t>(idx)];
+    }
+    dst[i] = sample * scale;
+    radeRead_ += step;
+  }
+  const int drop = int(radeRead_);
+  if (drop > 0) {
+    if (drop >= int(radeModem_.size())) {
+      radeModem_.clear();
+      radeRead_ = 0;
+    } else {
+      radeModem_.erase(radeModem_.begin(), radeModem_.begin() + drop);
+      radeRead_ -= drop;
+    }
+  }
+}
+
+void MainWindow::pushRadeRx(const float* samples, int count, int rate) {
+  if (!samples || count < 1 || !profile_ || !radeMode(profile_->digitalMode()))
+    return;
+  if (txRade_ || txKeySent_)
+    return;
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  if (!rade_.opened()) {
+    if (now - radeOpenTryMs_ < 2000)
+      return;
+    radeOpenTryMs_ = now;
+    ensureRadeCodec();
+  }
+  if (!rade_.opened())
+    return;
+  if (rate < 1000)
+    rate = 48000;
+  std::vector<float> modem;
+  radeRxConv_.process(samples, count, rate, 8000, modem);
+  for (float& sample : modem)
+    sample *= 4.0f;
+  const bool syncBefore = radeWasSync_;
+  int speechN = 0;
+  std::vector<float> speech;
+  if (!modem.empty()) {
+    speech.resize(static_cast<size_t>(modem.size()) * 4 + 8192);
+    speechN = rade_.rx(modem.data(), int(modem.size()), speech.data(), int(speech.size()));
+    if (speechN < 0)
+      speechN = 0;
+  }
+  const bool sync = rade_.sync() != 0;
+  if (now - radeMeterMs_ > 100) {
+    radeMeterMs_ = now;
+    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+      screen->setSync(sync, rade_.snr());
+  }
+  if (sync != syncBefore) {
+    radeWasSync_ = sync;
+    if (radeSpeaker_)
+      radeSpeaker_->clear();
+    radeAnalogConv_.reset();
+  } else {
+    radeWasSync_ = sync;
+  }
+  if (sync && speechN > 0) {
+    playRadePcm(speech.data(), speechN);
+    return;
+  }
+  if (!sync && radeAnalogOn(this)) {
+    std::vector<float> analog;
+    radeAnalogConv_.process(samples, count, rate, 16000, analog);
+    if (!analog.empty())
+      playRadePcm(analog.data(), int(analog.size()));
+  }
+}
+
+void MainWindow::playRadePcm(const float* samples, int count) {
+  if (!samples || count < 1)
+    return;
+  if (!radeSpeaker_)
+    radeSpeaker_ = new RadeSpeaker(this);
+  const QString id = QSettings().value(QStringLiteral("speech/output")).toString();
+  if (!radeSpeaker_->running() || radeSpeaker_->deviceId() != id) {
+    if (radeSpeakerFail_ && radeSpeakerId_ == id)
+      return;
+    radeSpeakerId_ = id;
+    if (!radeSpeaker_->start(id)) {
+      radeSpeakerFail_ = true;
+      return;
+    }
+    radeSpeakerFail_ = false;
+  }
+  radeSpeaker_->write(samples, count);
+}
