@@ -157,7 +157,7 @@ target_include_directories(std PRIVATE
 target_link_libraries(std PRIVATE Qt6::Widgets Qt6::GuiPrivate Qt6::Network Qt6::WebSockets)
 if(WIN32)
   # Windows voices for the receive read-back.
-  target_link_libraries(std PRIVATE sapi ole32)
+  target_link_libraries(std PRIVATE sapi ole32 dbghelp)
 endif()
 
 # Speech to text: whisper.cpp (MIT), a pinned release checked by hash and

@@ -4419,7 +4419,8 @@ void MainWindow::resizeToHero() {
 
 namespace {
 struct DockSignature {
-  QByteArray bytes;
+  QByteArray bytes;          // arrangement: which docks, where, tabbed, floating
+  QList<double> shares;      // each docked panel's share of its row or column
   bool parsed = false;
 };
 DockSignature dockSignature(const QByteArray& state);
@@ -4480,7 +4481,9 @@ constexpr uchar kToolBarStateMarker = 0xfe;
 constexpr uchar kToolBarStateMarkerEx = 0xfc;
 constexpr uchar kDockFloating = 0x02;
 
-bool writeDockInfo(QDataStream& in, QDataStream& out) {
+// Splits are kept as shares of their row or column, not pixels. Resizing
+// or maximizing the window moves every split by pixels but not by share.
+bool writeDockInfo(QDataStream& in, QDataStream& out, QList<double>& shares) {
   uchar marker = 0;
   in >> marker;
   if (in.status() != QDataStream::Ok)
@@ -4499,6 +4502,7 @@ bool writeDockInfo(QDataStream& in, QDataStream& out) {
   if (in.status() != QDataStream::Ok || count < 0 || count > 64)
     return false;
   out << orientation << count;
+  QList<qint32> sizes;
   for (qint32 i = 0; i < count; ++i) {
     uchar next = 0;
     in >> next;
@@ -4516,9 +4520,10 @@ bool writeDockInfo(QDataStream& in, QDataStream& out) {
       if (flags & kDockFloating) {
         out << a << b << c << d;
       } else {
-        // pos and size are the split. Minimum and maximum are live widget
-        // constraints and change when a mode panel lays out.
-        out << a << b << qint32(0) << qint32(0);
+        // pos and size are the split, compared as a share below. Minimum and
+        // maximum are live widget constraints that change as a panel lays out.
+        out << qint32(0) << qint32(0) << qint32(0) << qint32(0);
+        sizes << b;
       }
     } else if (next == kSequenceMarker) {
       qint32 pos = 0;
@@ -4526,8 +4531,9 @@ bool writeDockInfo(QDataStream& in, QDataStream& out) {
       qint32 minimum = 0;
       qint32 maximum = 0;
       in >> pos >> size >> minimum >> maximum;
-      out << pos << size << qint32(0) << qint32(0);
-      if (!writeDockInfo(in, out))
+      out << qint32(0) << qint32(0) << qint32(0) << qint32(0);
+      sizes << size;
+      if (!writeDockInfo(in, out, shares))
         return false;
     } else {
       return false;
@@ -4535,6 +4541,22 @@ bool writeDockInfo(QDataStream& in, QDataStream& out) {
     if (in.status() != QDataStream::Ok)
       return false;
   }
+  qint64 total = 0;
+  for (qint32 size : sizes)
+    total += std::max<qint32>(0, size);
+  for (qint32 size : sizes)
+    shares << (total > 0 ? double(std::max<qint32>(0, size)) / double(total) : 0.0);
+  return true;
+}
+
+// Two layouts match when the arrangement is the same and no split moved by
+// more than 2% of its row or column.
+bool sameLayout(const DockSignature& a, const DockSignature& b) {
+  if (!a.parsed || !b.parsed || a.bytes != b.bytes || a.shares.size() != b.shares.size())
+    return false;
+  for (qsizetype i = 0; i < a.shares.size(); ++i)
+    if (std::abs(a.shares.at(i) - b.shares.at(i)) > 0.02)
+      return false;
   return true;
 }
 
@@ -4608,7 +4630,7 @@ DockSignature dockSignature(const QByteArray& state) {
     QSize areaSize;
     in >> pos >> areaSize;
     out << pos << QSize(0, 0);
-    if (!writeDockInfo(in, out))
+    if (!writeDockInfo(in, out, signature.shares))
       return {};
   }
   QSize central;
@@ -4639,7 +4661,7 @@ DockSignature dockSignature(const QByteArray& state) {
     QRect geometry;
     in >> geometry;
     out << marker << geometry;
-    if (!writeDockInfo(in, out))
+    if (!writeDockInfo(in, out, signature.shares))
       return {};
   }
   return {};
@@ -4653,8 +4675,11 @@ void MainWindow::offerLayoutSave() {
       qEnvironmentVariableIsSet("STD_GRAPHICS_RESTART"))
     return;
   const DockSignature now = dockSignature(saveState(1));
-  const QByteArray current = now.parsed ? now.bytes : saveState(1);
-  if (current == layoutBaseline_)
+  DockSignature baseline;
+  baseline.bytes = layoutBaseline_;
+  baseline.shares = layoutBaselineShares_;
+  baseline.parsed = layoutBaselineParsed_;
+  if (now.parsed ? sameLayout(now, baseline) : saveState(1) == layoutBaseline_)
     return;
   const auto answer = QMessageBox::question(this, QStringLiteral("STD"),
                                             QStringLiteral("Save layout for this mode?"),
@@ -4673,6 +4698,8 @@ void MainWindow::captureLayoutBaseline() {
       return;
     const DockSignature saved = dockSignature(saveState(1));
     layoutBaseline_ = saved.parsed ? saved.bytes : saveState(1);
+    layoutBaselineShares_ = saved.shares;
+    layoutBaselineParsed_ = saved.parsed;
     layoutBaselinePending_ = false;
   });
 }

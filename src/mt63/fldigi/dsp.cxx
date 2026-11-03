@@ -1648,7 +1648,7 @@ int dspCmpxOverlapWindow::ProcessSilence(int Slides)
 	Output.Len = 0;
 	for (slide = 0; slide < Slides; slide++) {
 		memcpy(Output.Data + Output.Len, Buff, Dist*sizeof(dspCmpx));
-		memcpy(Buff, Buff + Dist, (Len - Dist)*sizeof(dspCmpx));
+		memmove(Buff, Buff + Dist, (Len - Dist)*sizeof(dspCmpx));	// STD: ranges overlap
 		Output.Len += Dist;
 	}
 	return 0;

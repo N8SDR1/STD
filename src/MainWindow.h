@@ -354,6 +354,8 @@ private:
   std::vector<float> rxScaled_;
   QString layoutMode_ = QStringLiteral("FT8");
   QByteArray layoutBaseline_;
+  QList<double> layoutBaselineShares_;
+  bool layoutBaselineParsed_ = false;
   int layoutEpoch_ = 0;
   bool layoutBaselinePending_ = false;
   bool layoutReady_ = false;

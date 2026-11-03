@@ -37,6 +37,16 @@
 #include "WaterfallGpu.h"
 #include "WaterfallWidget.h"
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dbghelp.h>
+#include <cstdio>
+#include <cstring>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <random>
@@ -3441,7 +3451,64 @@ int shellReady(MainWindow& window) {
 
 }  // namespace
 
+#if defined(_WIN32)
+// STD_CRASH_TRACE=1: on a crash, print the call stack to stderr. Function
+// names and lines need a build with debug info (std.pdb next to std.exe).
+static LONG WINAPI crashTrace(EXCEPTION_POINTERS* info) {
+  const DWORD code = info->ExceptionRecord->ExceptionCode;
+  if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION &&
+      code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_INT_DIVIDE_BY_ZERO &&
+      code != EXCEPTION_ARRAY_BOUNDS_EXCEEDED && code != STATUS_HEAP_CORRUPTION)
+    return EXCEPTION_CONTINUE_SEARCH;
+  static bool once = false;
+  if (once)
+    return EXCEPTION_CONTINUE_SEARCH;
+  once = true;
+  const HANDLE process = GetCurrentProcess();
+  SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+  SymInitialize(process, nullptr, TRUE);
+  fprintf(stderr, "\n=== STD crash 0x%08lx at %p, thread %lu ===\n", code,
+          info->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());
+  CONTEXT context = *info->ContextRecord;
+  STACKFRAME64 frame = {};
+  frame.AddrPC.Offset = context.Rip;
+  frame.AddrPC.Mode = AddrModeFlat;
+  frame.AddrFrame.Offset = context.Rbp;
+  frame.AddrFrame.Mode = AddrModeFlat;
+  frame.AddrStack.Offset = context.Rsp;
+  frame.AddrStack.Mode = AddrModeFlat;
+  alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 512] = {};
+  auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+  for (int depth = 0; depth < 48; ++depth) {
+    if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame, &context, nullptr,
+                     SymFunctionTableAccess64, SymGetModuleBase64, nullptr) ||
+        frame.AddrPC.Offset == 0)
+      break;
+    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+    symbol->MaxNameLen = 511;
+    DWORD64 offset = 0;
+    IMAGEHLP_LINE64 line = {};
+    line.SizeOfStruct = sizeof(line);
+    DWORD lineOffset = 0;
+    char module[MAX_PATH] = "?";
+    if (const DWORD64 base = SymGetModuleBase64(process, frame.AddrPC.Offset))
+      GetModuleFileNameA(reinterpret_cast<HMODULE>(base), module, MAX_PATH);
+    const char* name = SymFromAddr(process, frame.AddrPC.Offset, &offset, symbol) ? symbol->Name : "?";
+    if (SymGetLineFromAddr64(process, frame.AddrPC.Offset, &lineOffset, &line))
+      fprintf(stderr, "  #%02d %s  %s:%lu\n", depth, name, line.FileName, line.LineNumber);
+    else
+      fprintf(stderr, "  #%02d %s+0x%llx  [%s]\n", depth, name, offset, strrchr(module, '\\') ? strrchr(module, '\\') + 1 : module);
+  }
+  fflush(stderr);
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
 int main(int argc, char* argv[]) {
+#if defined(_WIN32)
+  if (qEnvironmentVariableIsSet("STD_CRASH_TRACE"))
+    AddVectoredExceptionHandler(1, crashTrace);
+#endif
   const bool selftest = qEnvironmentVariableIsSet("STD_SELFTEST");
   WaterfallGpu::prepareProcessBackend(!selftest);
 
