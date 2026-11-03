@@ -69,6 +69,8 @@ private:
   void advanceCycle();
   void insertExtra(qint64 hz);
   QList<qint64> storedExtras(int index) const;
+  QList<qint64> cycleDials(int index) const;
+  bool stockDial(int index, qint64 hz) const;
   int effectiveRegion() const;
   qint64 tableHz(int index) const;
 

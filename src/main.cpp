@@ -1070,6 +1070,103 @@ int shellReady(MainWindow& window) {
         !speaker->text().startsWith(QLatin1String("Speaker")) ||
         radeProfile->digitalMode() != QLatin1String("RADE V1"))
       return fail("RADE V1 screen is wrong");
+    auto* radeBar = window.findChild<QWidget*>(QStringLiteral("mshvProfile"));
+    if (!radeBar || radeBar->isHidden())
+      return fail("RADE band bar is hidden");
+    QSettings radeDialSnap;
+    struct RadeDialRestore {
+      bool hadBand = false;
+      QVariant band;
+      QList<QPair<QString, QVariant>> extras;
+      ~RadeDialRestore() {
+        QSettings store;
+        const QStringList now = store.allKeys();
+        for (const QString& key : now) {
+          if (key.startsWith(QLatin1String("profile/extra/RADE")))
+            store.remove(key);
+        }
+        for (const QPair<QString, QVariant>& row : extras)
+          store.setValue(row.first, row.second);
+        if (hadBand)
+          store.setValue(QStringLiteral("profile/band"), band);
+        else
+          store.remove(QStringLiteral("profile/band"));
+      }
+    } radeDialRestore;
+    radeDialRestore.hadBand = radeDialSnap.contains(QStringLiteral("profile/band"));
+    radeDialRestore.band = radeDialSnap.value(QStringLiteral("profile/band"));
+    for (const QString& key : radeDialSnap.allKeys()) {
+      if (key.startsWith(QLatin1String("profile/extra/RADE")))
+        radeDialRestore.extras.append(qMakePair(key, radeDialSnap.value(key)));
+    }
+    QPushButton* band14 = nullptr;
+    QPushButton* band7 = nullptr;
+    QPushButton* band80 = nullptr;
+    QPushButton* band15 = nullptr;
+    QPushButton* band30 = nullptr;
+    QPushButton* originalBand = nullptr;
+    for (QPushButton* button : window.findChildren<QPushButton*>(QStringLiteral("profileBand"))) {
+      if (button->isChecked())
+        originalBand = button;
+      if (button->text() == QLatin1String("14"))
+        band14 = button;
+      else if (button->text() == QLatin1String("7"))
+        band7 = button;
+      else if (button->text() == QLatin1String("3.5"))
+        band80 = button;
+      else if (button->text() == QLatin1String("21"))
+        band15 = button;
+      else if (button->text() == QLatin1String("10"))
+        band30 = button;
+    }
+    if (!band14 || !band7 || !band80 || !band15 || !band30)
+      return fail("RADE band buttons are missing");
+    if (!band14->toolTip().contains(QLatin1String("14236000")) ||
+        !band14->toolTip().contains(QLatin1String("14240000")) ||
+        !band14->toolTip().contains(QLatin1String("DIGU")) ||
+        band14->toolTip().contains(QLatin1String("DIGL")) ||
+        !band7->toolTip().contains(QLatin1String("7177000")) ||
+        !band7->toolTip().contains(QLatin1String("7045000")) ||
+        !band7->toolTip().contains(QLatin1String("7181500")) ||
+        !band7->toolTip().contains(QLatin1String("DIGL")) ||
+        !band80->toolTip().contains(QLatin1String("3643000")) ||
+        !band80->toolTip().contains(QLatin1String("3640000")) ||
+        !band80->toolTip().contains(QLatin1String("DIGL")) ||
+        !band15->toolTip().contains(QLatin1String("21313000")) ||
+        !band15->toolTip().contains(QLatin1String("DIGU")) ||
+        band15->toolTip().contains(QLatin1String("DIGL")) ||
+        !band30->toolTip().contains(QLatin1String("no FreeDV Reporter dial")))
+      return fail("RADE calling dials are wrong");
+    band15->click();
+    band7->click();
+    if (radeProfile->dialHz() != 7177000 || radeProfile->sideband() != QLatin1String("DIGL"))
+      return fail("RADE 40 m dial is wrong");
+    band7->click();
+    if (radeProfile->dialHz() != 7197000)
+      return fail("RADE 40 m did not cycle");
+    band80->click();
+    if (radeProfile->dialHz() != 3643000 || radeProfile->sideband() != QLatin1String("DIGL"))
+      return fail("RADE 80 m dial is wrong");
+    band14->click();
+    if (radeProfile->dialHz() != 14236000 || radeProfile->sideband() != QLatin1String("DIGU"))
+      return fail("RADE 20 m dial is wrong");
+    band14->click();
+    if (radeProfile->dialHz() != 14240000)
+      return fail("RADE 20 m did not cycle");
+    auto* radeExtra = window.findChild<QSpinBox*>(QStringLiteral("profileExtra"));
+    if (!radeExtra)
+      return fail("RADE extra box is missing");
+    radeExtra->setValue(14111000);
+    emit radeExtra->editingFinished();
+    bool sawExtra = false;
+    for (int n = 0; n < 8 && !sawExtra; ++n) {
+      band14->click();
+      sawExtra = radeProfile->dialHz() == 14111000;
+    }
+    if (!sawExtra)
+      return fail("RADE extra dial was not kept");
+    if (originalBand)
+      originalBand->click();
     v2->trigger();
     if (!screen->isVisible() || variant->currentText() != QLatin1String("RADE V2 (experimental)") ||
         !bpf->isChecked() || radeProfile->digitalMode() != QLatin1String("RADE V2 (experimental)"))

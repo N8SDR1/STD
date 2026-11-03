@@ -75,6 +75,35 @@ constexpr Ft8Band kBands[] = {
 constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
 constexpr int kDefaultBand = 4;  // 14 MHz
 
+// FreeDV Reporter calling dials (qso.freedv.org) and the regional nets
+// named on freedv.org. 14.236 is the usual 20 m dial. 160, 80, and 40 are
+// the reporter's LSB dials, so the radio uses DIGL there. Every other band
+// is DIGU. 30 m and 6 m are not on that list. Hz, first entry is the one
+// a band click lands on.
+void radePublished(int index, const qint64*& rows, int& count) {
+  static constexpr qint64 k160[] = {1870000};
+  static constexpr qint64 k80[] = {3643000, 3625000, 3693000, 3697000, 3803000, 3640000};
+  static constexpr qint64 k40[] = {7177000, 7197000, 7045000, 7181500};
+  static constexpr qint64 k20[] = {14236000, 14240000};
+  static constexpr qint64 k17[] = {18118000};
+  static constexpr qint64 k15[] = {21313000};
+  static constexpr qint64 k12[] = {24933000};
+  static constexpr qint64 k10[] = {28330000, 28720000};
+  rows = nullptr;
+  count = 0;
+  switch (index) {
+  case 0: rows = k160; count = 1; break;
+  case 1: rows = k80; count = 6; break;
+  case 2: rows = k40; count = 4; break;
+  case 4: rows = k20; count = 2; break;
+  case 5: rows = k17; count = 1; break;
+  case 6: rows = k15; count = 1; break;
+  case 7: rows = k12; count = 1; break;
+  case 8: rows = k10; count = 2; break;
+  default: break;
+  }
+}
+
 bool ignoredPortable(const QString& token) {
   return token == QLatin1String("P") || token == QLatin1String("M") || token == QLatin1String("MM") ||
          token == QLatin1String("AM") || token == QLatin1String("QRP") || token == QLatin1String("A") ||
@@ -561,6 +590,21 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     start_->setVisible(!keyboard && !rade);
   if (bandwidth_)
     bandwidth_->setVisible(!keyboard && !rade);
+  if (region_)
+    region_->setVisible(!rade);
+  if (extra_) {
+    extra_->setToolTip(rade ? QStringLiteral(
+                                  "Type a dial in Hz and press Enter to insert it for this mode and band. "
+                                  "Click the band button to cycle the FreeDV Reporter dials and those extras. "
+                                  "Right-click clears the extras. 160, 80, and 40 use DIGL. The other bands use DIGU. "
+                                  "Does not key. START is never sent.")
+                            : QStringLiteral(
+                                  "Type a dial in Hz and press Enter to insert it for this mode and band. "
+                                  "Click the mode or the band button to cycle the WSJT-X default and those extras. "
+                                  "Right-click clears them. DIGU. Does not key."));
+    if (auto* extraLabel = findChild<QLabel*>(QStringLiteral("profileExtraLabel")))
+      extraLabel->setToolTip(extra_->toolTip());
+  }
   if (auto* box = findChild<QCheckBox*>(QStringLiteral("profileAutoDec")))
     box->setVisible(!keyboard && !rade);
   const bool ft8 = mode_ == QLatin1String("FT8");
@@ -616,24 +660,35 @@ void ModeProfile::refreshBands() {
                                                         Qt::FindDirectChildrenOnly);
   for (int i = 0; i < buttons.size() && i < kBandCount; ++i) {
     const bool here = i == band_;
-    const qint64 hz = here && cycle_ > 0 && cycle_ <= extras_.size() ? extras_.at(cycle_ - 1) : tableHz(i);
-    const QList<qint64> extras = here ? extras_ : storedExtras(i);
+    const QList<qint64> dials = cycleDials(i);
+    const int step = dials.isEmpty() ? 0 : (here ? std::min(cycle_, static_cast<int>(dials.size()) - 1) : 0);
+    const qint64 hz = dials.isEmpty() ? tableHz(i) : dials.at(step);
     QString cycleNote;
-    if (!extras.isEmpty()) {
-      QStringList dials;
-      dials << QString::number(tableHz(i));
-      for (qint64 extraHz : extras)
-        dials << QString::number(extraHz);
-      const int step = here ? std::min(cycle_, static_cast<int>(dials.size()) - 1) : 0;
+    if (dials.size() > 1) {
+      QStringList texts;
+      for (qint64 dial : dials)
+        texts << QString::number(dial);
       cycleNote = QStringLiteral(" · %1/%2 %3")
                       .arg(step + 1)
                       .arg(dials.size())
-                      .arg(dials.join(QStringLiteral(", ")));
+                      .arg(texts.join(QStringLiteral(", ")));
     }
-    const QString region = chosen >= 1 ? QStringLiteral("Region %1").arg(chosen) : QStringLiteral("Auto");
-    buttons[i]->setToolTip(QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  %4  ·  DIGU%5")
-                               .arg(QString::fromLatin1(kBands[i].label), mode_, QString::number(hz), region,
-                                    cycleNote));
+    if (radeMode(mode_)) {
+      const QString side = i <= 2 ? QStringLiteral("DIGL") : QStringLiteral("DIGU");
+      const QString body =
+          hz > 0 ? QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  %4%5. FreeDV Reporter. Click again to cycle. "
+                                  "Extra keeps another dial for this mode and band. Does not key. "
+                                  "START is never sent.")
+                       .arg(QString::fromLatin1(kBands[i].label), mode_, QString::number(hz), side, cycleNote)
+                 : QStringLiteral("%1 MHz  ·  %2 has no FreeDV Reporter dial. Does not key. START is never sent.")
+                       .arg(QString::fromLatin1(kBands[i].label), mode_);
+      buttons[i]->setToolTip(body);
+    } else {
+      const QString region = chosen >= 1 ? QStringLiteral("Region %1").arg(chosen) : QStringLiteral("Auto");
+      buttons[i]->setToolTip(QStringLiteral("%1 MHz  ·  %2 %3 Hz  ·  %4  ·  DIGU%5")
+                                 .arg(QString::fromLatin1(kBands[i].label), mode_, QString::number(hz), region,
+                                      cycleNote));
+    }
     buttons[i]->setAccessibleName(buttons[i]->toolTip());
   }
 }
@@ -712,6 +767,12 @@ bool ModeProfile::multiAnswer() const {
 
 qint64 ModeProfile::tableHz(int index) const {
   const Ft8Band& band = kBands[index];
+  if (radeMode(mode_)) {
+    const qint64* rows = nullptr;
+    int count = 0;
+    radePublished(index, rows, count);
+    return count > 0 ? rows[0] : 0;
+  }
   if (mode_ == QLatin1String("FT8") && (hound_ || fox_) && QLatin1String(band.label) == QLatin1String("7"))
     return 7056000;
   if (hellFamily(mode_)) {
@@ -733,10 +794,44 @@ qint64 ModeProfile::tableHz(int index) const {
   return band.ft8Hz;
 }
 
+QList<qint64> ModeProfile::cycleDials(int index) const {
+  QList<qint64> dials;
+  if (radeMode(mode_)) {
+    const qint64* rows = nullptr;
+    int count = 0;
+    radePublished(index, rows, count);
+    for (int i = 0; i < count; ++i)
+      dials.append(rows[i]);
+  } else {
+    dials.append(tableHz(index));
+  }
+  const QList<qint64> extras = index == band_ ? extras_ : storedExtras(index);
+  for (qint64 hz : extras) {
+    if (hz > 0 && !dials.contains(hz))
+      dials.append(hz);
+  }
+  return dials;
+}
+
+bool ModeProfile::stockDial(int index, qint64 hz) const {
+  if (radeMode(mode_)) {
+    const qint64* rows = nullptr;
+    int count = 0;
+    radePublished(index, rows, count);
+    for (int i = 0; i < count; ++i) {
+      if (rows[i] == hz)
+        return true;
+    }
+    return false;
+  }
+  return hz == tableHz(index);
+}
+
 qint64 ModeProfile::dialHz() const {
-  if (cycle_ > 0 && cycle_ <= extras_.size())
-    return extras_.at(cycle_ - 1);
-  return tableHz(band_);
+  const QList<qint64> dials = cycleDials(band_);
+  if (dials.isEmpty())
+    return 0;
+  return dials.at(std::clamp(cycle_, 0, static_cast<int>(dials.size()) - 1));
 }
 
 QList<qint64> ModeProfile::storedExtras(int index) const {
@@ -746,7 +841,7 @@ QList<qint64> ModeProfile::storedExtras(int index) const {
       QStringLiteral("profile/extra/%1/%2").arg(mode_, QString::fromLatin1(kBands[index].label));
   const QVariant stored = settings.value(key);
   const auto accept = [&extras, this, index](qint64 hz) {
-    if (hz > 0 && hz != tableHz(index) && !extras.contains(hz))
+    if (hz > 0 && !stockDial(index, hz) && !extras.contains(hz))
       extras.append(hz);
   };
   if (stored.userType() == QMetaType::QStringList) {
@@ -760,7 +855,7 @@ QList<qint64> ModeProfile::storedExtras(int index) const {
 
 void ModeProfile::reloadExtras() {
   extras_ = storedExtras(band_);
-  if (cycle_ > extras_.size())
+  if (cycle_ >= cycleDials(band_).size())
     cycle_ = 0;
   if (!extra_)
     return;
@@ -784,7 +879,7 @@ void ModeProfile::saveExtras() const {
 
 void ModeProfile::advanceCycle() {
   reloadExtras();
-  const int count = extras_.size() + 1;
+  const int count = cycleDials(band_).size();
   if (count <= 1) {
     cycle_ = 0;
     return;
@@ -795,7 +890,7 @@ void ModeProfile::advanceCycle() {
 void ModeProfile::insertExtra(qint64 hz) {
   if (!extra_)
     return;
-  if (hz > 0 && hz != tableHz(band_) && !extras_.contains(hz)) {
+  if (hz > 0 && !stockDial(band_, hz) && !extras_.contains(hz)) {
     extras_.append(hz);
     saveExtras();
   }
@@ -805,6 +900,9 @@ void ModeProfile::insertExtra(qint64 hz) {
 }
 
 QString ModeProfile::sideband() const {
+  // FreeDV Reporter uses LSB on 160, 80, and 40. Those chips are the first three.
+  if (radeMode(mode_) && band_ >= 0 && band_ <= 2)
+    return QStringLiteral("DIGL");
   return QStringLiteral("DIGU");
 }
 

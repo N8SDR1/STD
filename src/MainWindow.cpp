@@ -504,7 +504,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             [this](qint64 hz, const QString&) {
               if (!profile_ || !profile_->mshvFamily())
                 return;
-              // FT8 and FT4 stay DIGU on every band, including 160, 80, and 40.
+              // FT8 and FT4 stay DIGU. RADE follows FreeDV Reporter:
+              // DIGL on 160, 80, and 40, DIGU on the rest.
               qsyDial(hz);
             });
   }
@@ -2174,7 +2175,7 @@ void MainWindow::qsyDial(qint64 hz) {
     return;
   // Band buttons and WSPR hopping. Connect already sent AUDIO_START:0.
   // This writes the dial only. START is never sent, and this does not key.
-  tci_->setSideband(QStringLiteral("DIGU"));
+  tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
   tci_->setDialHz(hz);
   showDial(hz);
 }
@@ -3407,7 +3408,10 @@ void MainWindow::buildMenus() {
     const char* tip;
   } radeRows[] = {
       {"RADE V1", "modeRadeV1",
-       "RADE V1 digital voice on DIGU. About 1500 Hz. Mic and speaker are the Speech devices. "
+       "RADE V1 digital voice. Band buttons use the FreeDV Reporter dials. "
+       "20 m starts at 14.236, DIGU. 160, 80, and 40 use DIGL. "
+       "Click a band again to cycle its dials. Extra stores another dial for this mode and band. "
+       "Mic and speaker are the Speech devices. "
        "The RADE screen is not the Hell tape and not the FT8 sequence. "
        "This does not key and does not send START."},
       {"RADE V2 (experimental)", "modeRadeV2",
@@ -3796,7 +3800,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool text = keyboardTextMode(modeName);
   const bool sequenced = sequencedFamily(modeName);
   const bool rade = radeMode(modeName);
-  const bool family = sequenced || hell;
+  const bool family = sequenced || hell || rade;
   if (profile_) {
     if (sequenced || text || wsprMode(modeName) || wefaxMode(modeName) || rade)
       profile_->setDigitalMode(modeName);
@@ -3921,7 +3925,9 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
                           "RADE V2 experimental. It does not talk to V1. DIGU when the radio is connected. "
                           "Mic and speaker stay the Speech devices. This does not key. START was not sent.")
                     : QStringLiteral(
-                          "RADE V1. DIGU when the radio is connected. A common calling frequency is 14.236 USB. "
+                          "RADE V1. Band buttons use the FreeDV Reporter dials. "
+                          "20 m starts at 14.236, DIGU. 40 m starts at 7.177 and 80 m at 3.643, both DIGL. "
+                          "15 m is 21.313, DIGU. Click the band again to cycle. Extra stores another dial. "
                           "Mic and speaker stay the Speech devices. This does not key. START was not sent."));
 }
 
@@ -4052,9 +4058,13 @@ void MainWindow::cycleDigitalMode() {
 void MainWindow::tuneActiveBand() {
   if (!tci_ || !profile_ || !profile_->mshvFamily())
     return;
-  // FT8 and FT4. DIGU on every band. This is not START and it does not key.
-  tci_->setSideband(QStringLiteral("DIGU"));
-  tci_->setDialHz(profile_->dialHz());
+  const qint64 hz = profile_->dialHz();
+  if (hz < 100000)
+    return;
+  // FT8 and FT4 stay DIGU. RADE uses the reporter sideband for this band.
+  // This is not START and it does not key.
+  tci_->setSideband(profile_->sideband());
+  tci_->setDialHz(hz);
 }
 
 void MainWindow::showGuide() {
@@ -4078,14 +4088,20 @@ void MainWindow::showGuide() {
        "decode. A band button may later send vfo:0,0,<Hz> and modulation:0,digu. TRX goes out only "
        "after Tune or TX is pressed. Connect does not send START, and it does not key."},
       {"RADE",
-       "Mode, RADE V1 is HF digital voice on DIGU. RADE V2 is experimental and does not talk to V1. "
+       "Mode, RADE V1 is HF digital voice. RADE V2 is experimental and does not talk to V1. "
        "The RADE screen replaces the FT8 sequence and the Hell tape. It has Analog, TX band-pass, "
        "drive, a DIGU helper, the V1 or V2 selector, and sync and SNR. Sync opens the audio. SNR is "
        "only a reading. Mic and speaker are the devices in Options, Speech. Identity stays in "
-       "Options, User. librade and FARGAN are not linked in this build, so the screen does not decode "
-       "and does not key. Connect still sends AUDIO_START for receiver 0. A later transmission uses "
-       "trx with tci. A common V1 calling frequency is 14.236 USB, with a passband about 750 to 2250 Hz "
-       "and radio NR off. START is never sent."},
+       "Options, User. The band buttons use the FreeDV Reporter list. 20 m starts at 14.236 and also "
+       "has 14.240, both DIGU. 40 m starts at 7.177, DIGL, and also 7.197, 7.045, and 7.1815. "
+       "80 m starts at 3.643, DIGL. 15 m is 21.313, DIGU. 17 m is 18.118. 12 m is 24.933. "
+       "10 m starts at 28.330 and also 28.720. 160 m is 1.870, DIGL. 80 m also has 3.625, 3.693, "
+       "3.697, 3.803, and the 3.640 net. Click the same band button to cycle those dials. "
+       "Type a dial in Extra and press Enter to keep it for this mode and band. Right-click Extra "
+       "clears those extras. 30 m and 6 m have no reporter dial. librade and FARGAN are not linked "
+       "in this build, so the screen does not decode and does not key. Connect still sends "
+       "AUDIO_START for receiver 0. A later transmission uses trx with tci. A useful passband is "
+       "about 750 to 2250 Hz, with radio NR off. START is never sent."},
       {"FT8, FT4, and FT2",
        "Mode → FT8, FT4, or FT2. All three are DIGU on every band. The band buttons use the WSJT-X "
        "dials, and FT2 uses the MSHV dials. Choosing a mode or a band sends vfo:0,0,<Hz> and "

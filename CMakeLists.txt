@@ -140,6 +140,9 @@ qt_add_executable(std
   src/wspr/WsprModem.h
   src/rade/RadeScreen.cpp
   src/rade/RadeScreen.h
+  # librade + Opus FARGAN are not linked yet. When they are, the only
+  # source is https://github.com/freedv/rade_c at
+  # c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9 (origin/main, 2026-11-03).
   src/spot/PskReporter.cpp
   src/spot/PskReporter.h
   src/spot/WsprNet.cpp
