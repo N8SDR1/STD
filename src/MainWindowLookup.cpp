@@ -6,6 +6,7 @@
 #include "MainWindow.h"
 
 #include "Callbook.h"
+#include "QsoLog.h"
 
 #include <algorithm>
 
@@ -13,6 +14,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -44,7 +46,9 @@ void MainWindow::openLookupDialog() {
   extra->setPlaceholderText(QStringLiteral("Another ADIF log, such as an export from your logger"));
   extra->setToolTip(QStringLiteral(
       "STD always reads its own log. This adds a second ADIF file, so stations you worked in other programs "
-      "are remembered too. A QSO in both counts once. It is read again whenever it changes."));
+      "are remembered too. A QSO in both counts once. It is read again whenever it changes. "
+      "STD keeps a copy in its log folder (imported), refreshed when this file changes, and reads "
+      "the copy if this file is moved or deleted."));
   auto* browse = new QPushButton(QStringLiteral("Browse ..."), logs);
   browse->setObjectName(QStringLiteral("lookupAdifBrowse"));
   connect(browse, &QPushButton::clicked, &dialog, [&] {
@@ -58,6 +62,16 @@ void MainWindow::openLookupDialog() {
   logRow->addWidget(browse);
   auto* logLay = new QVBoxLayout(logs);
   logLay->addLayout(logRow);
+  auto* kept = new QLabel(QStringLiteral("STD keeps a copy in %1, so moving or deleting the file above "
+                                         "does not lose these stations. Options → Log Options → Open log "
+                                         "folder shows it.")
+                              .arg(QDir::toNativeSeparators(QDir(QsoLog::logFolder()).filePath(
+                                  QStringLiteral("imported")))),
+                          logs);
+  kept->setObjectName(QStringLiteral("lookupAdifKept"));
+  kept->setWordWrap(true);
+  kept->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  logLay->addWidget(kept);
 
   // The callbook.
   auto* book = new QGroupBox(QStringLiteral("Callbook"), &dialog);
@@ -112,6 +126,7 @@ void MainWindow::openLookupDialog() {
   auto save = [&] {
     QSettings out;
     out.setValue(QStringLiteral("log/memoryAdif"), extra->text().trimmed());
+    QsoLog::keepAdifCopy(extra->text());
     out.setValue(QStringLiteral("callbook/source"), source->currentData());
     out.setValue(QStringLiteral("callbook/user"), user->text().trimmed());
     out.setValue(QStringLiteral("callbook/password"), password->text());

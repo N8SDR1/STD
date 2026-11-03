@@ -40,13 +40,13 @@ Options → Log Options → Log file and logger → **Link to a logger over WSJT
 2. **In STD:** Options → Log Options → **Log file and logger…**
    - Tick **Link to a logger over WSJT-X UDP**.
    - Leave **Accept requests from the logger** ticked, so a click in SDRLogger+ works the station in STD.
-   - Tick **WSJT-X UDP logged ADIF**, so each finished QSO is sent to SDRLogger+. Tick only one of the two "WSJT-X UDP logged" boxes; with both, the logger can get the same QSO twice.
+   - Tick **WSJT-X UDP logged QSO**, so each finished QSO is logged in SDRLogger+ without a click there. Leave **WSJT-X UDP logged ADIF** off: SDRLogger+ logs only from the logged QSO datagram and ignores logged ADIF, and with both on another logger can get the same QSO twice.
    - UDP server **127.0.0.1**, UDP port **2237**, the same port as step 1. OK.
 3. **In STD:** Options → Log Options → tick **Log Automatically QSO**, or **Prompt Me To Log QSO** to be asked each time. With neither ticked, nothing is logged, here or in SDRLogger+.
 
-Within about 15 seconds SDRLogger+'s Decoder Link shows STD under Clients. STD's decodes then appear in its Digital Decodes panel, the call you are working fills its log entry, and a click on a CQ there works that station in STD. A QSO is logged when it ends: after a 73 or RR73 goes out, or in MA Std when their RR73 arrives, as MSHV does. STD keeps its own ADIF too.
+Within about 15 seconds SDRLogger+'s Decoder Link shows STD under Clients. STD's decodes then appear in its Digital Decodes panel, the call you are working fills its log entry, and a click on a CQ there works that station in STD. A QSO is logged when it ends: after a 73 or RR73 goes out, or in MA Std when their RR73 arrives and Options → TX Confirmation If 73 Or RR73 is off, as MSHV does. With it on (the default) STD answers their RR73 with 73 and logs then. STD keeps its own ADIF too.
 
-**The link alone does not log.** It carries decodes, Status, and the logger's clicks. Sending a QSO to the logger is the logged ADIF (or logged QSO) box, and deciding to log at all is Log Automatically QSO or Prompt Me To Log QSO.
+**The link alone does not log.** It carries decodes, Status, and the logger's clicks. Sending a QSO to the logger is the logged QSO box (logged ADIF for loggers that want it), and deciding to log at all is Log Automatically QSO or Prompt Me To Log QSO.
 
 The link sends a heartbeat every 15 seconds and logs nothing by itself; the WSJT-X UDP logged QSO and logged ADIF options still decide whether a finished QSO is sent. TCI to the radio is separate and unchanged. START is never sent.
 

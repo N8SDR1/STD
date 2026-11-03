@@ -65,6 +65,11 @@ public:
   // WSPR frequency, where MSHV never uses more than one slot.
   int maxSlots() const;
   void setDigitalMode(const QString& mode);
+  // MSHV Options -> TX Confirmation If 73 Or RR73 (RefreshCfm73). On, their
+  // RR73 or 73 is answered with 73 before the QSO ends. Off, the QSO ends on
+  // their RR73; MSHV turns it off only for FT8, FT4, FT2, and Q65.
+  void setCfm73(bool on) { cfm73_ = on; }
+  bool cfm73() const { return cfm73_; }
   void setRestricted(bool restricted);
   void setQueueLimit(int limit);
   // MSHV Max Time / Periods. periods false is minutes.
@@ -140,6 +145,7 @@ private:
   QString current_;
   QString genInTx_ = QStringLiteral("0");
   bool txRx_ = false;
+  bool cfm73_ = true;
   bool stop_ = false;
   bool hadStations_ = false;
   bool blockStop_ = false;

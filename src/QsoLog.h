@@ -93,6 +93,14 @@ public:
   explicit QsoLog(QObject* parent = nullptr);
 
   static QString defaultAdifPath();
+  // STD's own log folder: the folder of defaultAdifPath().
+  static QString logFolder();
+  // A second ADIF (Lookup → Your log) is kept as a copy in
+  // logFolder()/imported, refreshed whenever the original is newer. Returns
+  // the file to read: the original while it exists, else the copy, so a
+  // cleaned-out Downloads folder does not lose those stations.
+  static QString keepAdifCopy(const QString& source);
+  static QString adifCopyPath(const QString& source);
   // The ADIF line store() writes for this record, ending in <EOR>.
   static QString adifRecord(const Record& qso);
   static QByteArray heartbeatDatagram(const QString& version);

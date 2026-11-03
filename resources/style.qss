@@ -41,6 +41,35 @@ QMenu::item:selected {
   color: #00e5ff;
 }
 
+/* Every on/off menu option: a small circle that fills green when on, so an
+   option reads as something you can switch, on or off. */
+QMenu::indicator {
+  width: 9px;
+  height: 9px;
+  margin-left: 6px;
+  background: #080d13;
+  border: 1px solid #5f8a9a;
+  border-radius: 5px;
+}
+
+QMenu::indicator:selected {
+  border-color: #00e5ff;
+}
+
+QMenu::indicator:checked {
+  background: #2ee66b;
+  border-color: #8dffb0;
+}
+
+QMenu::indicator:disabled {
+  border-color: #2b4656;
+}
+
+QMenu::indicator:checked:disabled {
+  background: #2b6f4a;
+  border-color: #2b6f4a;
+}
+
 QMenu::separator {
   height: 1px;
   background: #274150;

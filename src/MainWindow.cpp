@@ -3290,14 +3290,28 @@ void MainWindow::buildMenus() {
       "as WSJT-X sends them, and the logger can ask STD to work a station. "
       "The path is saved. This does not key and does not send START."));
   connect(logFile, &QAction::triggered, this, [this] { openLogDialog(); });
+  auto* logFolder = logMenu->addAction(QStringLiteral("Open log folder"));
+  logFolder->setObjectName(QStringLiteral("logOpenFolder"));
+  logFolder->setToolTip(QStringLiteral(
+      "Opens STD's log folder in Explorer: std.adi, the default logbook, and imported, the copy of "
+      "the ADIF picked in Lookup. A logbook you chose elsewhere stays where you chose it. Does not key."));
+  connect(logFolder, &QAction::triggered, this, [] {
+    const QString dir = QsoLog::logFolder();
+    QDir().mkpath(dir);
+    QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+  });
 
   optionsMenu->addSeparator();
   const QString txTip =
       QStringLiteral("Saved. Transmit is off, so this does not reply and does not key.");
   addCheck(optionsMenu, "aseqMostDistant", QStringLiteral("ASeq: Reply to the Most Distant"), "dx/aseq", false,
            txTip);
-  addCheck(optionsMenu, "txConfirm73", QStringLiteral("TX Confirmation If 73 Or RR73"), "dx/txConfirm73", true,
-           txTip);
+  auto* cfm73 = addCheck(optionsMenu, "txConfirm73", QStringLiteral("TX Confirmation If 73 Or RR73"),
+                         "dx/txConfirm73", true,
+                         QStringLiteral("On, as MSHV ships: in MA Std and MA DX their RR73 or 73 is answered "
+                                        "with 73 before the QSO ends and is logged. Off: FT8, FT4, FT2, and Q65 "
+                                        "end on their RR73 without a 73. Other modes always send it. Does not key."));
+  connect(cfm73, &QAction::toggled, this, [this](bool) { syncMaEngine(); });
   addCheck(optionsMenu, "autoResetQso", QStringLiteral("Auto RESET QSO at end"), "dx/autoReset", true, txTip);
   addCheck(optionsMenu, "qsyOnDecode", QStringLiteral("QSY TX to the clicked decode"), "dx/qsyOnDecode",
            true,
@@ -4003,6 +4017,9 @@ void MainWindow::showGuide() {
        "after each one. DIST follows Options → Decode List Options, miles or kilometers. "
        "Periods, or Max Time, is how long to keep calling that station before the next one in the "
        "queue. A reply from that station starts the count over. If the queue is empty, CNS calls CQ. "
+       "Menu options show a small circle that fills green when on. Options → TX Confirmation If 73 Or RR73 is on by default, as in MSHV: their RR73 or 73 "
+       "is answered with 73 before the QSO ends and is logged. Off, FT8, FT4, FT2, and Q65 end on their "
+       "RR73 without a 73; JT65 always sends it. "
        "CNS off stops. FT8, FT4, FT2, JT65, and Q65 wait for the slot, or join the one that is still open. "
        "FT8 transmits in a 15 second slot, FT4 in 7.5 seconds, FT2 in 3.75 seconds, "
        "JT65 in 60 seconds, and Q65 in 30 seconds. "
@@ -4109,7 +4126,8 @@ void MainWindow::showGuide() {
        "are read from their text and offered faintly in an empty field with a dashed outline; a "
        "click or Tab takes it, and nothing is filled until you do. A call already in STD's log "
        "fills the empty Name, QTH, St, and Loc from the last QSO in blue, and the bar shows how "
-       "many times and when; Options → Lookup can add a second ADIF log. HamQTH or QRZ.com, set "
+       "many times and when; Options → Lookup can add a second ADIF log, and STD keeps a copy of it "
+       "in its log folder so moving or deleting the original does not lose those stations. HamQTH or QRZ.com, set "
        "there too, fills what is still empty in green: name, QTH, state, and locator, or only the "
        "name for a portable call with a slash. Type over any of them; what is in the box is "
        "logged. Those fields are the other station. They are not saved as settings. "
@@ -4248,11 +4266,12 @@ void MainWindow::showGuide() {
        "works that station in STD as a double-click would, and the logger can halt TX or set the free "
        "text. For SDRLogger+: in SDRLogger+ turn on Settings → Decoder Link (UDP), Source 1, port "
        "2237. In STD, Log file and logger: tick Link to a logger over WSJT-X UDP, leave Accept "
-       "requests from the logger ticked, tick WSJT-X UDP logged ADIF (only one of the two logged "
-       "boxes, or the logger may get the QSO twice), port 2237. Then tick Log Automatically QSO, or "
+       "requests from the logger ticked, tick WSJT-X UDP logged QSO and leave logged ADIF off "
+       "(SDRLogger+ logs only from the logged QSO datagram; with both it may get the QSO twice), port 2237. Then tick Log Automatically QSO, or "
        "Prompt Me To Log QSO, under Log Options; with neither, nothing is logged. The link alone does not log. "
        "A heartbeat goes to the UDP port only while one of those is on. "
-       "File → Backup logbook copies that ADIF file and leaves the original in place. "
+       "File → Backup logbook copies that ADIF file and leaves the original in place. Log Options → Open log "
+       "folder opens STD's log folder in Explorer: std.adi and imported, the copy of the Lookup ADIF. "
        "File → Export ADIF writes a copy another logger can import. File → Backup settings "
        "and Import settings save and restore layouts and the callsign and locator from "
        "Options → User. They do not copy the TCI host or port, and they do not add a field. "
@@ -5843,6 +5862,13 @@ void MainWindow::syncMaEngine() {
       want = MaEngine::Mode::Dxpedition;
   }
   ma_.setDigitalMode(mode);
+  // MSHV RefreshCfm73: the option counts only for FT8, FT4, FT2, and Q65;
+  // every other mode always answers RR73 with 73.
+  {
+    const bool ftQ65 = mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
+                       mode == QLatin1String("FT2") || mode.startsWith(QLatin1String("Q65"));
+    ma_.setCfm73(!(ftQ65 && !QSettings().value(QStringLiteral("dx/txConfirm73"), true).toBool()));
+  }
   ma_.setRestricted(maRestrictedDial());
   ma_.setStation(stationCall(), stationGrid());
   const bool wasActive = ma_.active();
@@ -9547,7 +9573,7 @@ void MainWindow::openLogDialog() {
                      "Log Automatically is on, when Prompt Me is answered yes, or when UDP or TCP is "
                      "on. UDP is the WSJT-X logger datagram, port 2237. The link sends decodes and Status "
                      "and hears the logger's requests; it does not log by itself. For SDRLogger+ tick the link, "
-                     "Accept requests, and WSJT-X UDP logged ADIF, port 2237, and turn on Log QSO "
+                     "Accept requests, and WSJT-X UDP logged QSO (not logged ADIF), port 2237, and turn on Log QSO "
                      "Automatically. TCP is the DXKeeper command, "
                      "port 52001. Both stay off until enabled. The path and addresses are saved. "
                      "This does not send START and does not key."),

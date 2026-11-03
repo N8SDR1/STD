@@ -884,6 +884,20 @@ int shellReady(MainWindow& window) {
       return fail("logbook backup replaced itself");
     if (backupLogbookFile(dir.filePath(QStringLiteral("missing.adi")), backupPath, &fileError))
       return fail("logbook backup invented a file");
+    {
+      // Lookup's second ADIF: STD keeps a copy and reads it once the original is gone.
+      const QString name = QStringLiteral("std-selftest-memory-%1.adi").arg(QCoreApplication::applicationPid());
+      const QString memory = dir.filePath(name);
+      QFile::copy(logPath, memory);
+      const QString copy = QsoLog::adifCopyPath(memory);
+      if (QsoLog::keepAdifCopy(memory) != memory || QFile(copy).size() != logBody.size())
+        return fail("Lookup ADIF was not copied into the log folder");
+      QFile::remove(memory);
+      const bool usesCopy = QsoLog::keepAdifCopy(memory) == copy;
+      QFile::remove(copy);
+      if (!usesCopy)
+        return fail("Lookup ADIF copy was not used once the original was gone");
+    }
     const QString exportPath = dir.filePath(QStringLiteral("std-logbook-export.adi"));
     int records = -1;
     if (!exportAdifForLogger(logPath, exportPath, &records, &fileError) || records != 1)
@@ -2837,6 +2851,23 @@ int shellReady(MainWindow& window) {
     stdMa.txEnded();
     if (!stdMa.takeStop())
       return fail("MA Std with CNS off did not stop when Now emptied");
+
+    // MSHV TX Confirmation If 73 Or RR73: on answers their RR73 with 73,
+    // off ends the QSO on it.
+    for (const bool cfm : {true, false}) {
+      MaEngine c;
+      c.setStation(QStringLiteral("N8SDR"), QStringLiteral("EM79"));
+      c.setMode(MaEngine::Mode::Standard);
+      c.setSlotCount(2);
+      c.setCfm73(cfm);
+      c.decoded(QStringLiteral("N8SDR K1ABC FN42"), -5, 1200, false);
+      c.decoded(QStringLiteral("N8SDR K1ABC R-10"), -5, 1200, false);
+      c.decoded(QStringLiteral("N8SDR K1ABC RR73"), -5, 1200, false);
+      const bool sends73 = c.message().contains(QLatin1String("K1ABC N8SDR 73"));
+      if (sends73 != cfm)
+        return fail(cfm ? "MA Std with TX Confirmation on did not answer RR73 with 73"
+                        : "MA Std with TX Confirmation off still sent 73 after RR73");
+    }
 
     MaEngine dx;
     dx.setStation(QStringLiteral("N8SDR"), QStringLiteral("EM79"));

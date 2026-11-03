@@ -744,7 +744,7 @@ void MainWindow::qsoLookupCall(const QString& call) {
   QStringList logs{path};
   const QString extra = store.value(QStringLiteral("log/memoryAdif")).toString().trimmed();
   if (!extra.isEmpty())
-    logs << extra;
+    logs << QsoLog::keepAdifCopy(extra);
   qsoMemory_.setPaths(logs);
   qsoHistory_ = qsoMemory_.lookup(call);
   // The callbook comes after the log, for what is still empty.

@@ -161,6 +161,40 @@ QString QsoLog::defaultAdifPath() {
   return QDir(root).filePath(QStringLiteral("log/std.adi"));
 }
 
+QString QsoLog::logFolder() {
+  return QFileInfo(defaultAdifPath()).absolutePath();
+}
+
+QString QsoLog::adifCopyPath(const QString& source) {
+  const QString name = QFileInfo(source.trimmed()).fileName();
+  if (name.isEmpty())
+    return {};
+  return QDir(logFolder()).filePath(QStringLiteral("imported/") + name);
+}
+
+QString QsoLog::keepAdifCopy(const QString& source) {
+  const QString from = source.trimmed();
+  if (from.isEmpty())
+    return {};
+  const QString copy = adifCopyPath(from);
+  const QFileInfo src(from);
+  if (copy.isEmpty() || QFileInfo(copy).absoluteFilePath() == src.absoluteFilePath())
+    return from;  // already the copy
+  if (!src.isFile())
+    return QFileInfo::exists(copy) ? copy : from;
+  const QFileInfo kept(copy);
+  if (!kept.exists() || kept.size() != src.size() || kept.lastModified() < src.lastModified()) {
+    QDir().mkpath(kept.absolutePath());
+    const QString temp = copy + QStringLiteral(".part");
+    QFile::remove(temp);
+    if (QFile::copy(from, temp)) {
+      QFile::remove(copy);
+      QFile::rename(temp, copy);
+    }
+  }
+  return from;
+}
+
 QByteArray QsoLog::heartbeatDatagram(const QString& version) {
   return wsjt(kHeartbeat, version, nullptr, QString());
 }
