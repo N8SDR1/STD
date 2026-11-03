@@ -72,6 +72,7 @@ qt_add_executable(std
   src/MainWindowWefax.cpp
     src/MainWindowQso.cpp
   src/MainWindowSpeech.cpp
+  src/MainWindowWeather.cpp
   src/MaEngine.cpp
   src/MaEngine.h
   src/MainWindow.h
@@ -99,6 +100,8 @@ qt_add_executable(std
   src/speech/SpeechModel.h
   src/speech/SpeechRecognizer.h
   src/QsoLog.cpp
+  src/QsoCapture.cpp
+  src/QsoCapture.h
   src/QsoLog.h
   src/StationFiles.cpp
   src/StationFiles.h
@@ -135,6 +138,8 @@ qt_add_executable(std
   src/spot/WsprNet.cpp
   src/spot/WsprNet.h
   src/UpdateChecker.cpp
+  src/WxFeed.cpp
+  src/WxFeed.h
   src/UpdateChecker.h
   src/mt63/fldigi/dsp.cxx
   src/mt63/fldigi/mt63base.cxx

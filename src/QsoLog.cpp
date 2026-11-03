@@ -136,6 +136,10 @@ quint16 portOr(int value, quint16 fallback) {
 
 }  // namespace
 
+QString qsoBandForHz(qint64 hz) {
+  return bandForHz(hz);
+}
+
 QsoLog::QsoLog(QObject* parent) : QObject(parent) {
   udp_ = new QUdpSocket(this);
   pulse_ = new QTimer(this);

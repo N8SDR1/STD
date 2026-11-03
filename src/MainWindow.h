@@ -6,6 +6,7 @@
 #include "LiveTx.h"
 #include "MaEngine.h"
 #include "MacroFile.h"
+#include "QsoCapture.h"
 #include "RstMeter.h"
 
 #include <QByteArray>
@@ -42,6 +43,7 @@ class WsprEngine;
 class PskUploader;
 class WsprNetUploader;
 class UpdateChecker;
+class WxFeed;
 class ModeProfile;
 class QAction;
 class QDockWidget;
@@ -104,6 +106,7 @@ private:
   void openMacrosDialog(int index = -1);
   void openNetworkDialog();
   void openUserDialog();
+  void openWeatherDialog();
   void openLogDialog();
   void backupSettings();
   void importSettings();
@@ -169,10 +172,19 @@ private:
   QHash<QString, QString> qsoBarTags() const;
   void qsoBarPut(const QString& field, const QString& word);
   void qsoCallChanged(const QString& text);
+  void qsoScanRx(const QString& text);
+  void showQsoSuggestions();
+  void qsoLookupCall(const QString& call);
+  bool acceptQsoSuggestion(QObject* field);
   void showQsoRstTag();
   void qsoSmeter(double dbm);
   void installQsoRxPicker(class QTextEdit* echo);
-  void qsoMacroActions(const QString& body);
+  MacroContext macroContext() const;
+  void runMacroActions(const MacroPlan& plan);
+  void macroSendFinished(bool completed);
+  void cancelMacroRepeat(const QString& why);
+  void renameMacroBank();
+  void flashQsoFields(const QStringList& labels);
   void paintJs8Activity();
   void revealSentEcho();
   void consumeSentKeyboardText();
@@ -327,6 +339,14 @@ private:
   int macroBank_ = 0;
   QString macroFile_;
   bool macrosDirty_ = false;
+  // A keyed macro's <LOG>, <CLRQSO> and the rest, run when its text is sent.
+  bool macroAfterPending_ = false;
+  MacroPlan macroAfter_;
+  int macroAfterIndex_ = -1;
+  // <TIMER:NN>: the macro waits NN s after it ends, then goes again.
+  QTimer* macroRepeatTimer_ = nullptr;
+  int macroRepeatIndex_ = -1;
+  QString macroHeardTail_;  // received text since the repeat was armed
   QAction* autoConnectAction_ = nullptr;
   QAction* autoMonitorAction_ = nullptr;
   bool autoMonitor_ = true;
@@ -397,6 +417,14 @@ private:
   qint64 qsoStartedMs_ = 0;
   qint64 qsoBarOnMs_ = 0;
   QString qsoBarLastCall_;
+  // Smart capture: what their text said, offered in empty QSO bar fields.
+  QString qsoRxTail_;
+  QsoHints qsoHints_;
+  QHash<QString, QString> qsoSuggest_;  // field object name -> offered value
+  // Log memory: fields filled from earlier QSOs, until the operator edits them.
+  QsoMemory qsoMemory_;
+  QsoHistory qsoHistory_;
+  QHash<QString, QString> qsoFromLog_;
   QString qsoBarLastRecord_;
   double qsoPeakDbm_ = -1.0e9;
   bool qsoRstAuto_ = true;
@@ -472,6 +500,7 @@ private:
   PskUploader* spots_ = nullptr;
   WsprNetUploader* wsprnet_ = nullptr;
   UpdateChecker* updates_ = nullptr;
+  WxFeed* wx_ = nullptr;  // <WX> macro weather
   QAction* updateAction_ = nullptr;
   QString pendingUpdateUrl_;
   bool updateCheckManual_ = false;

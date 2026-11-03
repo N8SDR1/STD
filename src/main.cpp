@@ -34,6 +34,8 @@
 #include "spot/PskReporter.h"
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
+#include "WxFeed.h"
+#include "QsoCapture.h"
 #include "WaterfallGpu.h"
 #include "WaterfallWidget.h"
 
@@ -494,10 +496,14 @@ int shellReady(MainWindow& window) {
   const auto* active = window.findChild<QLabel*>(QStringLiteral("macroActive"));
   const auto* macroOpen = window.findChild<QAction*>(QStringLiteral("macroOpen"));
   const auto* macroSave = window.findChild<QAction*>(QStringLiteral("macroSave"));
-  if (!bank || bank->text() != QLatin1String("1") ||
+  // The bank in use is a saved setting, so any of 1 to 4, with or without a name.
+  if (!bank || !QRegularExpression(QStringLiteral("^[1-4]( .+)?$")).match(bank->text()).hasMatch() ||
       !bank->toolTip().contains(QLatin1String("does not key"), Qt::CaseInsensitive) ||
-      !bank->toolTip().contains(QLatin1String("START")))
+      !bank->toolTip().contains(QLatin1String("START"))) {
+    if (bank)
+      qCritical("macro bank [%s] [%s]", qPrintable(bank->text()), qPrintable(bank->toolTip()));
     return fail("macro bank is missing");
+  }
   if (!active || !macroOpen || !macroSave ||
       !macroOpen->toolTip().contains(QLatin1String("START")) ||
       !macroSave->toolTip().contains(QLatin1String("does not key"), Qt::CaseInsensitive))
@@ -552,6 +558,132 @@ int shellReady(MainWindow& window) {
   if (macroInsertText(QStringLiteral("de <MYNAME>."), QStringLiteral("N8SDR"), QStringLiteral("EM79"),
                       emptyName) != QLatin1String("de ."))
     return fail("an empty station tag stayed in the text");
+  {
+    // The macro engine: Fldigi tags decide what a press does.
+    MacroContext mc;
+    mc.myCall = QStringLiteral("n8sdr");
+    mc.myLoc = QStringLiteral("EM79");
+    mc.tags.insert(QStringLiteral("<CALL>"), QStringLiteral("W1AW"));
+    mc.tags.insert(QStringLiteral("<RST>"), QStringLiteral("599"));
+    mc.tags.insert(QStringLiteral("<NAME>"), QString());
+    mc.tags.insert(QStringLiteral("<MYNAME>"), QStringLiteral("Rick"));
+    mc.serial = 7;
+    mc.nowUtc = QDateTime(QDate(2026, 11, 3), QTime(14, 5), QTimeZone::utc());
+    const MacroPlan reply =
+        planMacro(QStringLiteral("<TX>\n<CALL> de <MYCALL> <RST> TU <LOG> <CLRRX><CLRTX> <RX>"), mc);
+    if (!reply.keys || !reply.backToRx || !reply.log || !reply.clearRx || !reply.clearTx ||
+        reply.text.trimmed() != QLatin1String("W1AW de N8SDR 599 TU") || !reply.missing.isEmpty()) {
+      qCritical("macro plan [%s]", qPrintable(reply.text));
+      return fail("a keyed Fldigi macro did not plan right");
+    }
+    const MacroPlan addOnly = planMacro(QStringLiteral("my name ... <MYNAME>"), mc);
+    if (addOnly.keys || addOnly.text != QLatin1String("my name ... Rick"))
+      return fail("a macro without <TX> was not add-only");
+    mc.tags.insert(QStringLiteral("<CALL>"), QString());
+    const MacroPlan noCall = planMacro(QStringLiteral("<TX><CALL> de <MYCALL><RX>"), mc);
+    if (noCall.missing != QStringList{QStringLiteral("Call")})
+      return fail("an empty Call was not reported");
+    mc.tags.insert(QStringLiteral("<CALL>"), QStringLiteral("W1AW"));
+    if (planMacro(QStringLiteral("tnx <NAME|OM> 73"), mc).text != QLatin1String("tnx OM 73") ||
+        !planMacro(QStringLiteral("tnx <NAME|OM>"), mc).missing.isEmpty())
+      return fail("a tag fallback did not fill in");
+    if (planMacro(QStringLiteral("{CALL} de {MYCALL} {#} {nothing}"), mc).text !=
+        QLatin1String("W1AW de N8SDR 007 {nothing}"))
+      return fail("brace tags did not fill in");
+    const MacroPlan cq = planMacro(QStringLiteral("<TX>CQ <IDLE:5> de <MYCALL> <TIMER:15><RX>"), mc);
+    if (cq.text != QLatin1String("CQ de N8SDR") || cq.repeatSeconds != 15 ||
+        cq.skipped != QStringList{QStringLiteral("<IDLE:5>")})
+      return fail("a Fldigi tag STD does not run was not left out");
+    if (planMacro(QStringLiteral("<< <MYCALL>, <MYNAME> >>"), mc).text != QLatin1String("<< N8SDR, Rick >>"))
+      return fail("brag text with << >> was changed");
+    const QString timed = planMacro(QStringLiteral("<ZDT> <ZT> <COMMENT:note>x"), mc).text;
+    if (timed != QLatin1String("2026-11-03 14:05Z 1405Z x")) {
+      qCritical("time tags [%s]", qPrintable(timed));
+      return fail("time tags did not fill in");
+    }
+    const MacroPlan counted = planMacro(QStringLiteral("<CNTR><INCR><INCR><DECR>"), mc);
+    if (counted.text != QLatin1String("007") || counted.serialStep != 1)
+      return fail("serial tags did not count");
+    // Weather: each source's reply, the line <WX> sends, and an empty <WX>.
+    {
+      QString err;
+      const WxReading om = WxFeed::parseOpenMeteo(
+          R"({"current":{"temperature_2m":12.2,"relative_humidity_2m":72,"weather_code":2,)"
+          R"("wind_speed_10m":12.9,"wind_direction_10m":225}})",
+          &err);
+      if (!om.valid || WxFeed::describe(om, false) != QLatin1String("54F, partly cloudy, wind SW 8 mph, humidity 72%") ||
+          WxFeed::describe(om, true) != QLatin1String("12C, partly cloudy, wind SW 13 km/h, humidity 72%")) {
+        qCritical("wx [%s]", qPrintable(WxFeed::describe(om, false)));
+        return fail("Open-Meteo weather did not read");
+      }
+      const WxReading nws = WxFeed::parseNws(
+          R"({"properties":{"textDescription":"Light Rain","temperature":{"value":10},)"
+          R"("relativeHumidity":{"value":91.4},"windSpeed":{"value":0},"windDirection":{"value":null}}})",
+          &err);
+      if (WxFeed::describe(nws, false) != QLatin1String("50F, light rain, calm, humidity 91%"))
+        return fail("NWS weather did not read");
+      const WxReading amb = WxFeed::parseAmbient(
+          R"([{"lastData":{"tempf":68,"humidity":40,"windspeedmph":5,"winddir":0}}])", &err);
+      if (WxFeed::describe(amb, false) != QLatin1String("68F, wind N 5 mph, humidity 40%"))
+        return fail("Ambient weather did not read");
+      const WxReading eco = WxFeed::parseEcowitt(
+          R"({"code":0,"msg":"success","data":{"outdoor":{"temperature":{"value":"20"},"humidity":{"value":"55"}},)"
+          R"("wind":{"wind_speed":{"value":"16.1"},"wind_direction":{"value":"90"}}}})",
+          &err);
+      if (WxFeed::describe(eco, false) != QLatin1String("68F, wind E 10 mph, humidity 55%"))
+        return fail("Ecowitt weather did not read");
+      if (WxFeed::parseEcowitt(R"({"code":40010,"msg":"illegal api key"})", &err).valid ||
+          !err.contains(QLatin1String("illegal")))
+        return fail("an Ecowitt error was not reported");
+      double lat = 0.0;
+      double lon = 0.0;
+      if (!WxFeed::gridToLatLon(QStringLiteral("EM79tj"), &lat, &lon) || std::abs(lat - 39.40) > 0.05 ||
+          std::abs(lon + 84.38) > 0.05)
+        return fail("a locator did not convert to latitude and longitude");
+      MacroContext wxc = mc;
+      wxc.tags.insert(QStringLiteral("<WX>"), QString());
+      const MacroPlan noWx = planMacro(QStringLiteral("<TX>wx here <WX><RX>"), wxc);
+      if (noWx.missing != QStringList{QStringLiteral("Weather")} ||
+          planMacro(QStringLiteral("wx <WX|fine>"), wxc).text != QLatin1String("wx fine"))
+        return fail("an empty <WX> was not reported");
+    }
+    // Smart capture: what their text tells us, for the QSO bar.
+    {
+      const QsoHints h = scanQsoText(
+          QStringLiteral("N8SDR N8SDR DE K8AB K8AB GM Rick, tnx for the call. Ur RST 579 579. "
+                         "Name hr is BOB BOB. QTH is Dayton, OH. Loc EM79tq. HW? N8SDR de K8AB kn"),
+          QStringLiteral("N8SDR"));
+      if (h.call != QLatin1String("K8AB") || h.name != QLatin1String("Bob") || h.qth != QLatin1String("Dayton") ||
+          h.st != QLatin1String("OH") || h.rstIn != QLatin1String("579") || h.loc != QLatin1String("EM79tq")) {
+        qCritical("capture [%s|%s|%s|%s|%s|%s]", qPrintable(h.call), qPrintable(h.name), qPrintable(h.qth),
+                  qPrintable(h.st), qPrintable(h.rstIn), qPrintable(h.loc));
+        return fail("smart capture missed a field");
+      }
+      const QsoHints op = scanQsoText(QStringLiteral("op: joe qth nr springfield illinois rig ic7300"),
+                                      QStringLiteral("N8SDR"));
+      if (op.name != QLatin1String("Joe") || op.qth != QLatin1String("Springfield Illinois") || !op.st.isEmpty())
+        return fail("smart capture read OP or a long QTH wrong");
+      if (!scanQsoText(QStringLiteral("CQ CQ DE N8SDR N8SDR"), QStringLiteral("N8SDR")).call.isEmpty() ||
+          !scanQsoText(QStringLiteral("my name is is"), QStringLiteral("N8SDR")).name.isEmpty())
+        return fail("smart capture offered our own call or a filler word");
+      QsoMemory memory;
+      memory.loadText(QByteArray(
+          "STD log<EOH>\n"
+          "<CALL:4>K8AB<NAME:3>Bob<QTH:6>Dayton<STATE:2>OH<QSO_DATE:8>20250412<TIME_ON:6>140000"
+          "<BAND:3>40M<MODE:4>RTTY<EOR>\n"
+          "<CALL:4>k8ab<GRIDSQUARE:6>EM79TQ<QSO_DATE:8>20260504<TIME_ON:6>020000<BAND:3>20m"
+          "<MODE:5>PSK31<EOR>\n"));
+      const QsoHistory k8ab = memory.lookup(QStringLiteral("k8ab"));
+      if (k8ab.count != 2 || k8ab.name != QLatin1String("Bob") || k8ab.qth != QLatin1String("Dayton") ||
+          k8ab.grid != QLatin1String("EM79TQ") || k8ab.lastDate != QLatin1String("2026-05-04") ||
+          k8ab.lastBand != QLatin1String("20m") || k8ab.lastMode != QLatin1String("PSK31") ||
+          memory.lookup(QStringLiteral("W1AW")).count != 0)
+        return fail("log memory did not read the ADIF");
+    }
+    if (macroButtonLabel(QStringLiteral("CQ  @>|"), mc, true) != QStringLiteral("▶ CQ") ||
+        macroButtonLabel(QStringLiteral("Reply <CALL>"), mc, false) != QLatin1String("Reply W1AW"))
+      return fail("macro button labels are wrong");
+  }
   const QVector<MacroSlot> blank = blankMacroSet();
   if (blank.size() != 48 || blank.at(0).name != QLatin1String("F-1") ||
       blank.at(47).name != QLatin1String("F-48") || !blank.at(0).text.isEmpty())

@@ -12,6 +12,9 @@
 class QTimer;
 class QUdpSocket;
 
+// ADIF band name for a dial frequency, "40m". Empty out of band.
+QString qsoBandForHz(qint64 hz);
+
 // Local ADIF file plus the logger feeds MSHV uses: WSJT-X UDP
 // (QSO Logged and Logged ADIF) and a DXKeeper TCP log command.
 // Nothing here keys a radio or sends the TCI text command START.

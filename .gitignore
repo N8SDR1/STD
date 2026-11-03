@@ -5,3 +5,4 @@ CMakeUserPresets.json
 compile_commands.json
 *.user
 *.autosave
+build_dbg/
