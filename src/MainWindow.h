@@ -26,6 +26,9 @@ class QEvent;
 class Ft8Decode;
 class HellEngine;
 class SpeechReader;
+class SpeechInput;
+class SpeechModelDownload;
+class SpeechRecognizer;
 class DominoEngine;
 class ThorEngine;
 class MfskEngine;
@@ -266,6 +269,9 @@ private:
   void openSpeechDialog();
   void applySpeechSettings();
   bool speechWanted() const;
+  // Talk chip: record the chosen mic while held (or between clicks).
+  void startTalk();
+  void endTalk();
   QString composedCq(const QString& kind) const;
   QString transmitMessage() const;
   QString wsprOutbound() const;
@@ -312,6 +318,11 @@ private:
   Ft8Decode* ft8_ = nullptr;
   HellEngine* hell_ = nullptr;
   SpeechReader* speech_ = nullptr;
+  SpeechInput* talkIn_ = nullptr;
+  SpeechModelDownload* modelDl_ = nullptr;
+  SpeechRecognizer* recognizer_ = nullptr;
+  void insertHeardText(const QString& heard, const QString& error);
+  bool talkActive_ = false;
   QVector<MacroSlot> macros_;
   int macroBank_ = 0;
   QString macroFile_;

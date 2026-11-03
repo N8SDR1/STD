@@ -20,6 +20,9 @@
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
 #include "speech/SpeechReader.h"
+#include "speech/SpeechInput.h"
+#include "speech/SpeechModel.h"
+#include "speech/SpeechRecognizer.h"
 #include "spot/PskReporter.h"
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
@@ -605,6 +608,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
   hell_ = new HellEngine(this);
   speech_ = new SpeechReader(this);
+  talkIn_ = new SpeechInput(this);
+  modelDl_ = new SpeechModelDownload(this);
+  recognizer_ = new SpeechRecognizer(this);
+  connect(recognizer_, &SpeechRecognizer::done, this, &MainWindow::insertHeardText);
+  // A download keeps going with the Speech window closed; say how it ended.
+  connect(modelDl_, &SpeechModelDownload::finished, this,
+          [this](const QString&, bool, const QString& message) { setTxStatus(message); });
   if (statusStrip_) {
     if (auto* sql = statusStrip_->findChild<QPushButton*>(QStringLiteral("squelchToggle"))) {
       connect(sql, &QPushButton::toggled, this, [this](bool on) {
@@ -2010,9 +2020,36 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "Ends this transmission now, even mid-slot, and stops the sequence. "
         "Does not key."));
     connect(halt, &QPushButton::clicked, this, [this] { haltTx(); });
+    // Speech to text: hold Talk and speak (or click to start and stop,
+    // set in Options -> Speech). Shown only when that is turned on.
+    auto* talk = new QPushButton(QStringLiteral("Talk"), panel);
+    talk->setObjectName(QStringLiteral("txTalk"));
+    talk->setFont(interfaceFont(12));
+    talk->setFocusPolicy(Qt::NoFocus);
+    talk->setToolTip(QStringLiteral(
+        "Speech to text. Hold Talk and speak; let go and the words go into the transmit box. "
+        "Options -> Speech picks the microphone, the gate, and click-to-talk. Talk does not key."));
+    talk->hide();
+    connect(talk, &QPushButton::pressed, this, [this] {
+      if (!QSettings().value(QStringLiteral("speech/talkToggle"), false).toBool())
+        startTalk();
+    });
+    connect(talk, &QPushButton::released, this, [this] {
+      if (!QSettings().value(QStringLiteral("speech/talkToggle"), false).toBool())
+        endTalk();
+    });
+    connect(talk, &QPushButton::clicked, this, [this] {
+      if (!QSettings().value(QStringLiteral("speech/talkToggle"), false).toBool())
+        return;
+      if (talkActive_)
+        endTalk();
+      else
+        startTalk();
+    });
     buttons->addWidget(tune);
     buttons->addWidget(tx);
     buttons->addWidget(halt);
+    buttons->addWidget(talk);
     buttons->addStretch(1);
     layout->addLayout(buttons);
     auto* qso = new QPlainTextEdit(panel);
@@ -9336,6 +9373,7 @@ Licensed under the <b>GNU General Public License, version 3</b> or any later ver
 <li><b>Fldigi</b> (Dave Freese, W1HKJ, GPL-3) — Feld Hell tape, macro files (.mdf), RTTY mark/space (45.45 baud, 170 Hz, mark high on DIGU, shaped keying, Reverse, ITA-2, and the Fldigi baud and shift lists), BPSK varicode, Olivia and Contestia (Pawel Jalocha's block code), MFSK (NASA K=7, IZ8BLY varicode, diagonal interleaver), DominoEX (18-tone IFK+, FEC off), Thor (K=7, 18-tone IFK+), and WEFAX-576 receive.</li>
 <li><b>TCIdigi</b> — TCI audio for a Fldigi-style keyboard. STD does not include that tree.</li>
 <li><b>Lyra</b> (N8SDR, GPL-3) — the TCI client this socket follows. CW stays there.</li>
+<li><b>whisper.cpp</b> (Georgi Gerganov and the ggml authors, MIT) — speech to text for Talk, built into STD. Its notice is in licenses\whisper.cpp-LICENSE. The speech models are downloaded separately.</li>
 </ul>
 )HTML").arg(QLatin1String(STD_VERSION), stdVersionName());
   about.setText(html);

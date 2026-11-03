@@ -20,6 +20,9 @@
 #include "mfsk/MfskModem.h"
 #include "LiveTx.h"
 #include "speech/SpeechReader.h"
+#include "speech/SpeechInput.h"
+#include "speech/SpeechModel.h"
+#include "speech/SpeechRecognizer.h"
 #include "mt63/Mt63Modem.h"
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
@@ -43,6 +46,9 @@
 #include <QByteArray>
 #include <QAction>
 #include <QApplication>
+#include <QtEndian>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -1672,6 +1678,95 @@ int shellReady(MainWindow& window) {
     (void)SpeechReader::voices();
     if (SpeechReader::outputs().isEmpty())
       return fail("Speech has no Windows default device entry");
+    // Talk gate: 1 s quiet, 0.5 s of voice at about -23 dBFS, 1 s quiet.
+    // Kept: the voice, 100 ms before it, and 300 ms after.
+    std::vector<float> mic(size_t(SpeechInput::kRate) * 5 / 2, 0.0f);
+    for (int i = SpeechInput::kRate; i < SpeechInput::kRate * 3 / 2; ++i)
+      mic[size_t(i)] = float(0.1 * std::sin(2.0 * 3.14159265358979 * 300.0 * i / SpeechInput::kRate));
+    const std::vector<float> kept = gateSpeech(mic, -45.0);
+    if (kept.size() < size_t(SpeechInput::kRate) * 85 / 100 || kept.size() > size_t(SpeechInput::kRate) * 95 / 100) {
+      qCritical("Talk gate kept %d samples", int(kept.size()));
+      return fail("Talk gate did not keep the voice with its lead-in and hold");
+    }
+    if (!gateSpeech(std::vector<float>(size_t(SpeechInput::kRate), 0.001f), -45.0).empty())
+      return fail("Talk gate let quiet room noise through");
+    if (SpeechInput::inputs().isEmpty() || !window.findChild<QPushButton*>(QStringLiteral("txTalk")))
+      return fail("Talk is missing");
+    {
+      const QList<SpeechModelInfo> models = speechModels();
+      QStringList ids;
+      for (const SpeechModelInfo& m : models) {
+        if (m.sha256.size() != 64 || m.bytes < 10000000 || !m.url.startsWith(QStringLiteral("https://")) ||
+            !m.url.endsWith(m.file) || ids.contains(m.id))
+          return fail("Speech model list is malformed");
+        ids << m.id;
+      }
+      if (models.size() != 3 || !speechModel(QStringLiteral("base.en")).bytes ||
+          !speechModel(QStringLiteral("nope")).id.isEmpty() || speechModelInstalled(SpeechModelInfo{}) ||
+          speechModelSize(77704715) != QStringLiteral("77.7 MB"))
+        return fail("Speech model helpers are wrong");
+      SpeechModelDownload probe;
+      if (probe.start(SpeechModelInfo{}) || probe.busy())
+        return fail("Speech model download started with no model");
+    }
+    {
+      const QList<QPair<QString, QString>> cases = {
+          {QStringLiteral("CQ CQ de Kilo Eight Alpha Bravo, Kilo Eight Alpha Bravo."),
+           QStringLiteral("CQ CQ DE K8AB K8AB.")},
+          {QStringLiteral("Your report is five nine nine."), QStringLiteral("YOUR REPORT IS 599.")},
+          {QStringLiteral("I am in Ohio, seventy three."), QStringLiteral("I AM IN OHIO, 73.")},
+          {QStringLiteral("This is K-8-A-B slash portable."), QStringLiteral("THIS IS K8AB/P.")},
+          {QStringLiteral("um, name is Rick [BLANK_AUDIO]"), QStringLiteral("NAME IS RICK")},
+          {QStringLiteral("W 8 X Y Z here"), QStringLiteral("W8XYZ HERE")},
+          {QStringLiteral("de Kilo8 Alfa Bravo, Kilo8 Alfa Bravo."), QStringLiteral("DE K8AB K8AB.")},
+          {QStringLiteral("I have a rig"), QStringLiteral("I HAVE A RIG")},
+      };
+      for (const auto& c : cases) {
+        if (speechToTxText(c.first) != c.second) {
+          qCritical().noquote() << speechToTxText(c.first);
+          return fail("Speech clean-up gave the wrong text");
+        }
+      }
+      if (!speechHint(QStringLiteral("n8sdr"), QStringLiteral("W1AW")).contains(QStringLiteral("N8SDR")))
+        return fail("Speech hint is missing the call");
+      SpeechRecognizer::cpuSupported();
+      // Optional end-to-end check with an installed model: STD_SPEECH_WAV
+      // names a 16 kHz mono 16-bit WAV of spoken text.
+      const QString wav = qEnvironmentVariable("STD_SPEECH_WAV");
+      SpeechModelInfo installed;
+      for (const SpeechModelInfo& m : speechModels()) {
+        if (speechModelInstalled(m))
+          installed = m;
+      }
+      if (!wav.isEmpty() && !installed.id.isEmpty()) {
+        QFile file(wav);
+        if (!file.open(QIODevice::ReadOnly))
+          return fail("Speech WAV would not open");
+        const QByteArray data = file.readAll().mid(44);
+        std::vector<float> pcm(size_t(data.size() / 2));
+        for (size_t k = 0; k < pcm.size(); ++k)
+          pcm[k] = float(qFromLittleEndian<qint16>(data.constData() + 2 * k)) / 32768.0f;
+        SpeechRecognizer recognizer;
+        QString heard;
+        QString error;
+        QEventLoop wait;
+        QObject::connect(&recognizer, &SpeechRecognizer::done, &wait, [&](const QString& t, const QString& e) {
+          heard = t;
+          error = e;
+          wait.quit();
+        });
+        QElapsedTimer took;
+        took.start();
+        if (!recognizer.start(speechModelPath(installed), gateSpeech(pcm, -45.0), speechHint(QString(), QString())))
+          return fail("Recognizer did not start");
+        QTimer::singleShot(120000, &wait, &QEventLoop::quit);
+        wait.exec();
+        qInfo().noquote() << "Speech" << installed.id << took.elapsed() << "ms raw:" << heard << "| tx:"
+                          << speechToTxText(heard) << error;
+        if (heard.isEmpty())
+          return fail("Recognizer heard nothing in the WAV");
+      }
+    }
     if (!window.findChild<QAction*>(QStringLiteral("speechSettings")) ||
         !window.findChild<QPushButton*>(QStringLiteral("speechChip")) ||
         !window.findChild<QSpinBox*>(QStringLiteral("speechVolume")))

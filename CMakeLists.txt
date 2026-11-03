@@ -92,6 +92,12 @@ qt_add_executable(std
   src/LiveTx.h
   src/speech/SpeechReader.cpp
   src/speech/SpeechReader.h
+  src/speech/SpeechInput.cpp
+  src/speech/SpeechModel.cpp
+  src/speech/SpeechRecognizer.cpp
+  src/speech/SpeechInput.h
+  src/speech/SpeechModel.h
+  src/speech/SpeechRecognizer.h
   src/QsoLog.cpp
   src/QsoLog.h
   src/StationFiles.cpp
@@ -153,6 +159,32 @@ if(WIN32)
   # Windows voices for the receive read-back.
   target_link_libraries(std PRIVATE sapi ole32)
 endif()
+
+# Speech to text: whisper.cpp (MIT), a pinned release checked by hash and
+# linked into std.exe. CPU only, built for AVX2 processors (2013 and later)
+# so the program runs on other PCs, not just the build machine. The model
+# itself is never shipped; the operator downloads one in Options, Speech.
+include(FetchContent)
+set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "")
+set(WHISPER_BUILD_TESTS OFF CACHE INTERNAL "")
+set(WHISPER_BUILD_EXAMPLES OFF CACHE INTERNAL "")
+set(WHISPER_BUILD_SERVER OFF CACHE INTERNAL "")
+set(WHISPER_ALL_WARNINGS OFF CACHE INTERNAL "")
+set(GGML_NATIVE OFF CACHE INTERNAL "")
+set(GGML_AVX ON CACHE INTERNAL "")
+set(GGML_AVX2 ON CACHE INTERNAL "")
+set(GGML_FMA ON CACHE INTERNAL "")
+set(GGML_F16C ON CACHE INTERNAL "")
+set(GGML_OPENMP OFF CACHE INTERNAL "")
+set(GGML_BLAS OFF CACHE INTERNAL "")
+set(GGML_CUDA OFF CACHE INTERNAL "")
+set(GGML_VULKAN OFF CACHE INTERNAL "")
+FetchContent_Declare(whisper
+  URL https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.5.tar.gz
+  URL_HASH SHA256=ff1a9053feb509ff9d7729703355541ae9690073a6b1c40eb692c962e0dc1720
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(whisper)
+target_link_libraries(std PRIVATE whisper)
 
 if(WIN32)
   set(FT8_DLL "${CMAKE_BINARY_DIR}/ft8dec.dll")

@@ -60,8 +60,10 @@ Type: filesandordirs; Name: "{app}\*"
 
 [Files]
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "test_*.exe,genprobe.exe,std-ready.exe,std-ready.rsp,*.lib,*.pdb,*.exp,*.ilk,*.cmake,*.ninja,*.obj,*.o,*.txt,*.json,CMakeCache.txt,.ninja_deps,.ninja_log,CMakeFiles\*,.qt\*,std_autogen\*,ft8obj\*,ft8_live.*,ft8_smoke.*,ft8_capture.*,ft8-capture.bin,jt65_catch.exe,moc_*.cpp,selftest*,_selftest*,profile-bar.png"
+    Excludes: "test_*.exe,genprobe.exe,std-ready.exe,std-ready.rsp,*.lib,*.pdb,*.exp,*.ilk,*.cmake,*.ninja,*.obj,*.o,*.txt,*.json,CMakeCache.txt,.ninja_deps,.ninja_log,CMakeFiles\*,.qt\*,std_autogen\*,ft8obj\*,_deps\*,ft8_live.*,ft8_smoke.*,ft8_capture.*,ft8-capture.bin,jt65_catch.exe,moc_*.cpp,selftest*,_selftest*,profile-bar.png"
 Source: "{#IcoFile}"; DestDir: "{app}"; Flags: ignoreversion
+; whisper.cpp is linked into std.exe for speech to text; its MIT notice ships with it.
+Source: "..\resources\licenses\whisper.cpp-LICENSE"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\STD"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\std.ico"; Comment: "STD — Shift, Tone, Decode"
