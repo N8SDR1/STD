@@ -3261,6 +3261,14 @@ void MainWindow::buildMenus() {
       "Choosing a contest writes those tags into Tx1 through Tx6. This does not key."));
   connect(contestTags, &QAction::triggered, this, [this] { openContestTags(); });
 
+  auto* contestMode = optionsMenu->addAction(QStringLiteral("Contest Mode (RTTY, PSK, Hell)…"));
+  contestMode->setObjectName(QStringLiteral("contestModeDialog"));
+  contestMode->setToolTip(QStringLiteral(
+      "Contest mode for the keyboard modes: pick the contest and your exchange, and the QSO bar gets "
+      "Run or S&P messages on F1 to F8, their exchange, your serial, and a dupe check. Off until you "
+      "turn it on. This does not key."));
+  connect(contestMode, &QAction::triggered, this, [this] { openContestDialog(); });
+
   auto* speech = optionsMenu->addAction(QStringLiteral("Speech…"));
   speech->setObjectName(QStringLiteral("speechSettings"));
   speech->setToolTip(QStringLiteral(
@@ -3909,6 +3917,7 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"))) {
     bar->setVisible(text && !js8Mode(mode));
+    applyContestRow();
     showQsoRstTag();
   }
   if (auto* wsprHead = findChild<QWidget*>(QStringLiteral("wsprRxHeaderHost"))) {
@@ -4119,6 +4128,15 @@ void MainWindow::showGuide() {
        "only while you are already there. Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, "
        "Thor, MT63, WSPR, and WEFAX center the marker on the carrier. FT8, FT4, FT2, JT65, Q65, and "
        "JS8 start at the cursor and run upward. "
+       "Options → Contest Mode (RTTY, PSK, Hell) adds a contest row to the QSO bar: pick ARRL RTTY Roundup, "
+       "CQ WW RTTY, NA Sprint, Field Day, a Feld Hell sprint, a serial-number contest, or Custom, and your "
+       "exchange (# is the serial). F1 to F8, on screen or the keyboard, send the Run or S&P messages "
+       "(click Run to switch); Insert sends F2. Enter in Call or Exch sends the next one: Run CQ, then his "
+       "call and exchange, then TU and log; S&P your call, then TU, exchange, and log. Space in Call goes to "
+       "Exch. Their exchange is read from their text and offered in Exch. DUPE shows when the call is in "
+       "your log for this contest and band since the session began. A contest QSO logs CONTEST_ID, "
+       "STX_STRING, SRX_STRING, STX, and SRX, and the serial moves on. <XOUT> is your exchange and <XIN> "
+       "theirs in any macro. Messages key only with Macros key on. It stays off until you turn it on. "
        "Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 show a QSO bar for "
        "the station you are working: Call, Name, QTH, St, Pr, Loc, RST in, Out, and Notes, plus "
        "Clear and Log. Right-click a received word to put it in a field. Double-click a callsign "
@@ -6627,6 +6645,9 @@ bool MainWindow::periodReady(const QString& mode) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+  // Contest mode: Enter sends the next message, Space in Call goes to Exch.
+  if (event->type() == QEvent::KeyPress && contestKey(watched, static_cast<QKeyEvent*>(event)))
+    return true;
   // QSO bar: a click or Tab in an empty field takes what their text offered.
   if (!qsoSuggest_.isEmpty() && qsoSuggest_.contains(watched->objectName())) {
     if (event->type() == QEvent::MouseButtonPress)
@@ -8374,6 +8395,7 @@ void MainWindow::showMacroSet() {
                                               "\nThis is the set in use. Options → Macros → Open changes it. "
                                               "Save writes this file. Does not key and does not send START."));
   }
+  applyContestRow();  // the contest F keys and serial follow the bar too
   if (macroDock_) {
     macroDock_->setWindowTitle(macroFile_.isEmpty()
                                    ? QStringLiteral("Macros")
@@ -8410,9 +8432,15 @@ void MainWindow::cycleMacroBank(int step) {
 void MainWindow::insertMacro(int index) {
   if (index < 0 || index >= macros_.size())
     return;
+  sendMacroText(macros_.at(index).text, index);
+}
+
+// One macro press: a bank button (index into macros_) or a contest
+// F key (index -1, which never repeats).
+void MainWindow::sendMacroText(const QString& body, int index) {
   // A press replaces a macro that was waiting to repeat.
   cancelMacroRepeat(QString());
-  MacroPlan plan = planMacro(macros_.at(index).text, macroContext());
+  MacroPlan plan = planMacro(body, macroContext());
   const QString mode = profile_ ? profile_->digitalMode() : QString();
   const QString skipped =
       plan.skipped.isEmpty()

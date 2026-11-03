@@ -21,6 +21,7 @@
 #include "WaterfallWidget.h"
 #include "WxFeed.h"
 #include "Callbook.h"
+#include "ContestMode.h"
 
 #include <algorithm>
 #include <vector>
@@ -307,6 +308,7 @@ QWidget* MainWindow::makeQsoBar(QWidget* parent) {
       "This does not key and does not send START."));
   bottom->addWidget(log);
   grid->addLayout(bottom, 1, 0);
+  grid->addWidget(makeContestRow(bar), 2, 0);
 
   connect(clear, &QPushButton::clicked, this, [this] {
     clearQsoBar();
@@ -369,6 +371,7 @@ void MainWindow::qsoCallChanged(const QString& text) {
                                       QDateTime::fromMSecsSinceEpoch(qsoBarOnMs_, QTimeZone::utc())
                                           .toString(QStringLiteral("HHmm")))
                                 : QString());
+  updateContestDupe();
   showQsoRstTag();
 }
 
@@ -457,6 +460,9 @@ void MainWindow::clearQsoBar() {
   if (auto* out = findChild<QLineEdit*>(QStringLiteral("qsoBarRstOut")))
     out->setText(QStringLiteral("599"));
   qsoBarLastCall_ = QStringLiteral("\x01");
+  if (auto* exch = findChild<QLineEdit*>(QStringLiteral("qsoBarExch")))
+    exch->clear();
+  contestHeard_.clear();
   qsoRxTail_.clear();
   qsoHints_ = QsoHints{};
   qsoCallChanged(QString());
@@ -478,6 +484,14 @@ QHash<QString, QString> MainWindow::qsoBarTags() const {
   const QDateTime on = qsoBarOnMs_ > 0 ? QDateTime::fromMSecsSinceEpoch(qsoBarOnMs_, QTimeZone::utc())
                                        : QDateTime::currentDateTimeUtc();
   tags.insert(QStringLiteral("<QSOTIME>"), on.toString(QStringLiteral("HHmm")));
+  // Contest: <XIN> their exchange, <XOUT> (or <EXCH>) yours with the serial.
+  tags.insert(QStringLiteral("<XIN>"), value("qsoBarExch").toUpper());
+  const QSettings store;
+  const ContestTemplate& t = contestTemplate(store.value(QStringLiteral("contest/template")).toString());
+  const QString mine = contestExchange(t, store.value(QStringLiteral("contest/myExch")).toString(),
+                                       store.value(QStringLiteral("dx/macroSerial"), 1).toInt());
+  tags.insert(QStringLiteral("<XOUT>"), mine);
+  tags.insert(QStringLiteral("<EXCH>"), mine);
   return tags;
 }
 
@@ -506,13 +520,45 @@ QString MainWindow::logQsoBar() {
     record.freqHz += waterfall_->txHz();
   record.timeOff = QDateTime::currentDateTimeUtc();
   record.timeOn = qsoBarOnMs_ > 0 ? QDateTime::fromMSecsSinceEpoch(qsoBarOnMs_, QTimeZone::utc()) : record.timeOff;
+  if (contestActive()) {
+    // Contest: their exchange as SRX_STRING, yours as STX_STRING, the
+    // serials as SRX and STX, and the contest as CONTEST_ID.
+    const QSettings store;
+    const ContestTemplate& t = contestTemplate(store.value(QStringLiteral("contest/template")).toString());
+    const QString myExch = store.value(QStringLiteral("contest/myExch")).toString();
+    const int serial = std::max(1, store.value(QStringLiteral("dx/macroSerial"), 1).toInt());
+    record.contestId = t.adifId;
+    record.stxString = contestExchange(t, myExch, serial);
+    record.srxString = value("qsoBarExch").toUpper();
+    if (myExch.contains(QLatin1Char('#')))
+      record.stx = QString::number(serial);
+    static const QRegularExpression digits(QStringLiteral("^0*([0-9]{1,5})$"));
+    for (const QString& w : record.srxString.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+      const QRegularExpressionMatch m = digits.match(w);
+      if (m.hasMatch() && t.id != QLatin1String("cqww-rtty")) {
+        record.srx = m.captured(1);
+        break;
+      }
+    }
+    if (t.rst) {
+      if (record.rstSent.isEmpty())
+        record.rstSent = QStringLiteral("599");
+      if (record.rstRcvd.isEmpty())
+        record.rstRcvd = QStringLiteral("599");
+    }
+  }
   qsoBarLastRecord_ = QsoLog::adifRecord(record);
-  if (qEnvironmentVariableIsSet("STD_SELFTEST"))
+  if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    if (!record.contestId.isEmpty())
+      contestLogged(record.call, record.freqHz);
     return QStringLiteral("Logged %1. Nothing was keyed. START was not sent.").arg(record.call);
+  }
   const QsoLog::Result result = qsoLog_ ? qsoLog_->store(record) : QsoLog::Result{};
   if (!result.wrote)
     return QStringLiteral("%1 was not logged. %2 Nothing was keyed. START was not sent.")
         .arg(record.call, result.detail);
+  if (!record.contestId.isEmpty())
+    contestLogged(record.call, record.freqHz);
   return QStringLiteral("Logged %1 to %2. Nothing was keyed. START was not sent.").arg(record.call, result.path);
 }
 
@@ -547,9 +593,12 @@ void MainWindow::installQsoRxPicker(QTextEdit* echo) {
         const char* field;
       } picks[] = {{"Call", "qsoBarCall"},     {"Name", "qsoBarName"},     {"QTH", "qsoBarQth"},
                    {"St", "qsoBarSt"},         {"Pr", "qsoBarPr"},         {"Loc", "qsoBarLoc"},
-                   {"RST in", "qsoBarRstIn"},  {"RST out", "qsoBarRstOut"}, {"Notes", "qsoBarNotes"}};
+                   {"RST in", "qsoBarRstIn"},  {"RST out", "qsoBarRstOut"}, {"Notes", "qsoBarNotes"},
+                   {"Exch", "qsoBarExch"}};
       const QString shown = word.size() > 24 ? word.left(24) + QStringLiteral("…") : word;
       for (const auto& p : picks) {
+        if (QLatin1String(p.field) == QLatin1String("qsoBarExch") && !contestActive())
+          continue;
         auto* action = new QAction(QStringLiteral("%1: %2").arg(QLatin1String(p.label), shown), menu);
         const QString field = QLatin1String(p.field);
         connect(action, &QAction::triggered, this, [this, field, word] { qsoBarPut(field, word); });
@@ -674,6 +723,15 @@ void MainWindow::qsoScanRx(const QString& text) {
     return;
   qsoRxTail_ = (qsoRxTail_ + text).right(600);
   qsoHints_ = scanQsoText(qsoRxTail_, stationCall());
+  contestHeard_.clear();
+  if (contestActive()) {
+    const QString call = findChild<QLineEdit*>(QStringLiteral("qsoBarCall"))
+                             ? findChild<QLineEdit*>(QStringLiteral("qsoBarCall"))->text().trimmed()
+                             : QString();
+    const ContestTemplate& t = contestTemplate(QSettings().value(QStringLiteral("contest/template")).toString());
+    if (!call.isEmpty())
+      contestHeard_ = contestExchangeHeard(t, qsoRxTail_, call, stationCall());
+  }
   showQsoSuggestions();
 }
 
@@ -685,6 +743,7 @@ void MainWindow::showQsoSuggestions() {
       {QStringLiteral("qsoBarCall"), qsoHints_.call}, {QStringLiteral("qsoBarName"), qsoHints_.name},
       {QStringLiteral("qsoBarQth"), qsoHints_.qth},   {QStringLiteral("qsoBarSt"), qsoHints_.st},
       {QStringLiteral("qsoBarLoc"), qsoHints_.loc},   {QStringLiteral("qsoBarRstIn"), qsoHints_.rstIn},
+      {QStringLiteral("qsoBarExch"), contestHeard_},
   };
   for (const auto& offer : offers) {
     const QString& field = offer.first;
@@ -827,7 +886,7 @@ void MainWindow::flashQsoFields(const QStringList& labels) {
       {QStringLiteral("Call"), QStringLiteral("qsoBarCall")}, {QStringLiteral("Name"), QStringLiteral("qsoBarName")},
       {QStringLiteral("QTH"), QStringLiteral("qsoBarQth")},   {QStringLiteral("St"), QStringLiteral("qsoBarSt")},
       {QStringLiteral("Pr"), QStringLiteral("qsoBarPr")},     {QStringLiteral("Loc"), QStringLiteral("qsoBarLoc")},
-      {QStringLiteral("RST out"), QStringLiteral("qsoBarRstOut")},
+      {QStringLiteral("RST out"), QStringLiteral("qsoBarRstOut")}, {QStringLiteral("Exch"), QStringLiteral("qsoBarExch")},
   };
   for (const QString& label : labels) {
     auto* edit = findChild<QLineEdit*>(fields.value(label));

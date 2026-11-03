@@ -70,6 +70,8 @@ public:
     QString contestId;
     QString stxString;
     QString srxString;
+    QString stx;  // serial sent, digits only
+    QString srx;  // serial received, digits only
     QString fdClass;
     QString arrlSection;
     QString name;

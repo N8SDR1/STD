@@ -174,6 +174,16 @@ private:
   void clearJs8Activity();
   // QSO bar for the keyboard modes (MainWindowQso.cpp).
   QWidget* makeQsoBar(QWidget* parent);
+  // Contest mode for the keyboard modes (MainWindowContest.cpp).
+  QWidget* makeContestRow(QWidget* parent);
+  bool contestActive() const;
+  void applyContestRow();
+  void openContestDialog();
+  void sendContestMessage(int index);
+  void updateContestDupe();
+  void contestLogged(const QString& call, qint64 dialHz);
+  bool contestKey(QObject* watched, class QKeyEvent* key);
+  void sendMacroText(const QString& body, int index);
   void clearQsoBar();
   QString logQsoBar();
   QHash<QString, QString> qsoBarTags() const;
@@ -439,6 +449,11 @@ private:
   double qsoMeterDbm_ = 0.0;
   RstMeter qsoRstMeter_;
   bool qsoLogged_ = false;
+  // Contest mode: their exchange read from received text, and the dupes.
+  QString contestHeard_;
+  QSet<QString> contestDupes_;
+  QString contestDupeSource_;  // log path, contest, and session it was read for
+  QDateTime contestDupeStamp_;
   QString txHisCall_;
   QString txReport_;
   QString txQrg_;

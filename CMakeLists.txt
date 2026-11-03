@@ -109,6 +109,8 @@ qt_add_executable(std
   src/StationFiles.cpp
   src/StationFiles.h
   src/MacroFile.cpp
+  src/ContestMode.cpp
+  src/MainWindowContest.cpp
   src/MacroFile.h
   src/hell/HellEngine.cpp
   src/hell/HellEngine.h

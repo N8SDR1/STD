@@ -65,6 +65,7 @@ These are not on the Mode menu. They do not key.
 - **8PSK.** A different constellation from QPSK. Not on the menu.
 - **FLD-88** is queued. JS8 Fast, Turbo, Slow, and Ultra are not on the menu.
 - MSHV modes still outside STD are listed in [`docs/mshv-modes.md`](docs/mshv-modes.md).
+- Options → **Contest Mode (RTTY, PSK, Hell)** puts a contest row on the QSO bar: ARRL RTTY Roundup, CQ WW RTTY, NA Sprint, Field Day, a Feld Hell sprint, a serial-number contest, or Custom. F1 to F8 send the Run or S&P messages, Enter sends the next one, their exchange is read from their text, DUPE checks your log, and each QSO logs CONTEST_ID, STX/SRX, and the exchanges. Off until you turn it on. Details in [contest](docs/contest.md).
 - In every menu, an option you can switch on or off has a small circle that fills green when on.
 - Options → **TX Confirmation If 73 Or RR73** is on by default, as in MSHV: in MA Std and MA DX their RR73 is answered with 73 before the QSO ends and is logged. Off, FT8, FT4, FT2, and Q65 end the QSO on their RR73 with no 73. JT65 always sends the 73.
 
@@ -110,4 +111,4 @@ A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_Q
 - Web version of this page: <https://n8sdr1.github.io/STD/>
 - Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.4 pre-release, testing phase · highly transmissible)
 - Wiki: <https://github.com/N8SDR1/STD/wiki>
-- Longer notes: [modes](docs/modes.md), [Hell](docs/hell.md), [macros](docs/macros.md), [connect](docs/connect.md)
+- Longer notes: [modes](docs/modes.md), [Hell](docs/hell.md), [macros](docs/macros.md), [contest](docs/contest.md), [connect](docs/connect.md)

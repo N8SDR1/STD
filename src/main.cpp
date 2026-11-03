@@ -4,6 +4,7 @@
 #include "DigitalMode.h"
 #include "EchoLog.h"
 #include "hell/HellRaster.h"
+#include "ContestMode.h"
 #include "MacroFile.h"
 #include "MaEngine.h"
 #include "MainWindow.h"
@@ -2867,6 +2868,82 @@ int shellReady(MainWindow& window) {
       if (sends73 != cfm)
         return fail(cfm ? "MA Std with TX Confirmation on did not answer RR73 with 73"
                         : "MA Std with TX Confirmation off still sent 73 after RR73");
+    }
+
+    // Contest mode: exchanges, Enter Sends Message, dupes, and the log fields.
+    {
+      const ContestTemplate& ru = contestTemplate(QStringLiteral("rtty-ru"));
+      const ContestTemplate& fd = contestTemplate(QStringLiteral("field-day"));
+      const ContestTemplate& ser = contestTemplate(QStringLiteral("serial"));
+      const ContestTemplate& ww = contestTemplate(QStringLiteral("cqww-rtty"));
+      if (contestExchange(ru, QStringLiteral("oh"), 5) != QLatin1String("599 OH") ||
+          contestExchange(ser, QStringLiteral("#"), 7) != QLatin1String("599 007") ||
+          contestExchange(fd, QStringLiteral("2A OH"), 1) != QLatin1String("2A OH"))
+        return fail("contest exchange out is wrong");
+      if (contestExchangeHeard(ru, QStringLiteral("N8SDR DE W1AW W1AW 599 MA 599 MA K"), QStringLiteral("W1AW"),
+                               QStringLiteral("N8SDR")) != QLatin1String("MA") ||
+          contestExchangeHeard(fd, QStringLiteral("N8SDR W1AW 3A CT 3A CT"), QStringLiteral("W1AW"),
+                               QStringLiteral("N8SDR")) != QLatin1String("3A CT") ||
+          contestExchangeHeard(ser, QStringLiteral("TU 599 012 012"), QStringLiteral("K8AB"),
+                               QStringLiteral("N8SDR")) != QLatin1String("012") ||
+          contestExchangeHeard(ww, QStringLiteral("N8SDR 599 05 OH 599 05 OH"), QStringLiteral("K8AB"),
+                               QStringLiteral("N8SDR")) != QLatin1String("05 OH") ||
+          !contestExchangeHeard(ru, QStringLiteral("CQ RU W1AW W1AW"), QStringLiteral("W1AW"),
+                                QStringLiteral("N8SDR"))
+               .isEmpty())
+        return fail("contest exchange heard is wrong");
+      if (contestEnterMessage(true, true, true) != 0 || contestEnterMessage(true, false, true) != 1 ||
+          contestEnterMessage(true, false, false) != 2 || contestEnterMessage(false, true, true) != -1 ||
+          contestEnterMessage(false, false, true) != 3 || contestEnterMessage(false, false, false) != 1)
+        return fail("contest Enter sends the wrong message");
+      for (const ContestTemplate& t : contestTemplates()) {
+        if (t.run.size() != 8 || t.sp.size() != 8 || t.labels.size() != 8 || t.spLabels.size() != 8)
+          return fail("contest template does not have eight messages");
+        if (!t.run.at(2).contains(QLatin1String("<LOG>")) || !t.sp.at(1).contains(QLatin1String("<LOG>")))
+          return fail("contest TU message does not log");
+      }
+      MacroContext mc;
+      mc.myCall = QStringLiteral("N8SDR");
+      mc.tags.insert(QStringLiteral("<CALL>"), QStringLiteral("W1AW"));
+      mc.tags.insert(QStringLiteral("<XOUT>"), QStringLiteral("599 OH"));
+      mc.tags.insert(QStringLiteral("<XIN>"), QString());
+      const MacroPlan exchPlan = planMacro(ru.run.at(1), mc);
+      if (exchPlan.text != QLatin1String("W1AW 599 OH 599 OH") || !exchPlan.keys || !exchPlan.backToRx)
+        return fail("contest exchange message did not fill");
+      if (!planMacro(QStringLiteral("<TX>TU <XIN><RX>"), mc).missing.contains(QStringLiteral("Exch")))
+        return fail("an empty <XIN> was not reported");
+
+      QTemporaryDir cdir;
+      const QString adi = cdir.filePath(QStringLiteral("contest.adi"));
+      QFile cf(adi);
+      if (!cf.open(QIODevice::WriteOnly))
+        return fail("contest sample log did not write");
+      cf.write("<ADIF_VER:5>3.1.0<EOH>\n"
+               "<CALL:4>W1AW<BAND:3>40m<QSO_DATE:8>20260103<TIME_ON:6>180000<CONTEST_ID:9>ARRL-RTTY<EOR>\n"
+               "<CALL:4>K8AB<BAND:3>20m<QSO_DATE:8>20250104<TIME_ON:4>1200<CONTEST_ID:9>ARRL-RTTY<EOR>\n"
+               "<CALL:4>N0XX<BAND:3>40m<QSO_DATE:8>20260103<TIME_ON:6>181000<CONTEST_ID:6>ARRL-FD<EOR>\n");
+      cf.close();
+      const QDateTime since(QDate(2026, 1, 1), QTime(0, 0), QTimeZone::utc());
+      const QSet<QString> worked = contestWorked(adi, QStringLiteral("ARRL-RTTY"), since);
+      if (!worked.contains(contestDupeKey(QStringLiteral("w1aw"), QStringLiteral("40m"))) ||
+          worked.contains(contestDupeKey(QStringLiteral("W1AW"), QStringLiteral("20m"))) ||
+          worked.contains(contestDupeKey(QStringLiteral("K8AB"), QStringLiteral("20m"))) ||
+          worked.contains(contestDupeKey(QStringLiteral("N0XX"), QStringLiteral("40m"))))
+        return fail("contest dupes read the wrong QSOs");
+
+      QsoLog::Record cr;
+      cr.call = QStringLiteral("W1AW");
+      cr.contestId = QStringLiteral("ARRL-RTTY");
+      cr.stxString = QStringLiteral("599 007");
+      cr.srxString = QStringLiteral("012");
+      cr.stx = QStringLiteral("7");
+      cr.srx = QStringLiteral("12");
+      cr.timeOff = QDateTime::currentDateTimeUtc();
+      const QString crText = QsoLog::adifRecord(cr);
+      if (!crText.contains(QLatin1String("<CONTEST_ID:9>ARRL-RTTY")) ||
+          !crText.contains(QLatin1String("<STX_STRING:7>599 007")) || !crText.contains(QLatin1String("<SRX:2>12")) ||
+          !crText.contains(QLatin1String("<STX:1>7")))
+        return fail("contest QSO is missing its ADIF fields");
     }
 
     MaEngine dx;

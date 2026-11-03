@@ -56,7 +56,7 @@ const QHash<QString, QString>& otherStationLabels() {
       {QStringLiteral("CALL"), QStringLiteral("Call")}, {QStringLiteral("NAME"), QStringLiteral("Name")},
       {QStringLiteral("QTH"), QStringLiteral("QTH")},   {QStringLiteral("ST"), QStringLiteral("St")},
       {QStringLiteral("PR"), QStringLiteral("Pr")},     {QStringLiteral("LOC"), QStringLiteral("Loc")},
-      {QStringLiteral("RST"), QStringLiteral("RST out")},
+      {QStringLiteral("RST"), QStringLiteral("RST out")}, {QStringLiteral("XIN"), QStringLiteral("Exch")},
   };
   return labels;
 }

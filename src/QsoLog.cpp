@@ -80,6 +80,8 @@ QString recordText(const QsoLog::Record& qso) {
   fields << adif(QStringLiteral("CONTEST_ID"), qso.contestId);
   fields << adif(QStringLiteral("STX_STRING"), qso.stxString);
   fields << adif(QStringLiteral("SRX_STRING"), qso.srxString);
+  fields << adif(QStringLiteral("STX"), qso.stx);
+  fields << adif(QStringLiteral("SRX"), qso.srx);
   fields << adif(QStringLiteral("CLASS"), qso.fdClass);
   fields << adif(QStringLiteral("ARRL_SECT"), qso.arrlSection);
   fields << adif(QStringLiteral("NAME"), qso.name);
@@ -107,8 +109,8 @@ QByteArray wsjt(quint32 type, const QString& version, const QsoLog::Record* qso,
     out << off << qso->call.toUtf8() << qso->grid.toUtf8() << hz << qso->mode.toUtf8()
         << qso->rstSent.toUtf8() << qso->rstRcvd.toUtf8() << blank << qso->comment.toUtf8()
         << qso->name.toUtf8()
-        << on << blank << qso->myCall.toUtf8() << qso->myGrid.toUtf8() << blank << blank << blank
-        << blank << blank << blank;
+        << on << blank << qso->myCall.toUtf8() << qso->myGrid.toUtf8() << qso->stxString.toUtf8()
+        << qso->srxString.toUtf8() << blank << blank << blank << blank;
   } else if (type == kLoggedAdif) {
     const QByteArray body =
         QByteArrayLiteral("\n<ADIF_VER:5>3.1.0\n<PROGRAMID:3>STD\n<EOH>\n") + adifRecord.toUtf8();
