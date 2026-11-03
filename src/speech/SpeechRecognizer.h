@@ -5,6 +5,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 #include <atomic>
 #include <mutex>
@@ -54,3 +55,12 @@ QString speechToTxText(const QString& heard);
 
 // Hint words for the recognizer: ham terms plus the operator's own call.
 QString speechHint(const QString& ownCall, const QString& extra);
+
+// The operator's corrections, "heard = send", one per line. Each heard
+// word or phrase is replaced wherever it stands as whole words, ignoring
+// case. Lines without "=" are skipped.
+QString speechApplyCorrections(const QString& text, const QStringList& lines);
+
+// My words for the hint: one per line or comma separated, de-duplicated,
+// kept short enough for the recognizer to use.
+QString speechMyWords(const QStringList& lines);

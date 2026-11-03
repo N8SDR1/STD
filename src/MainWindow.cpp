@@ -1521,6 +1521,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
 
     auto* hellText = new QPlainTextEdit(panel);
     hellText->setObjectName(QStringLiteral("txHell"));
+    installTalkMenu(hellText);
     hellText->setFont(monoFont(13));
     hellText->setPlaceholderText(QStringLiteral(
         "Transmit text. A macro copies into this box. TX sends Hell, RTTY, and PSK31."));
@@ -2053,7 +2054,9 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     talk->setFocusPolicy(Qt::NoFocus);
     talk->setToolTip(QStringLiteral(
         "Speech to text. Hold Talk and speak; let go and the words go into the transmit box. "
-        "Options -> Speech picks the microphone, the gate, and click-to-talk. Talk does not key."));
+        "Options -> Speech picks the microphone, the gate, and click-to-talk, and holds My words "
+        "(what to expect) and Corrections (heard = send). Select wrong text in the transmit box and "
+        "right-click to teach a fix. Talk does not key."));
     talk->hide();
     connect(talk, &QPushButton::pressed, this, [this] {
       if (!QSettings().value(QStringLiteral("speech/talkToggle"), false).toBool())
@@ -4128,6 +4131,9 @@ void MainWindow::showGuide() {
        "only while you are already there. Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, "
        "Thor, MT63, WSPR, and WEFAX center the marker on the carrier. FT8, FT4, FT2, JT65, Q65, and "
        "JS8 start at the cursor and run upward. "
+       "Talk, beside TX, turns your voice into transmit text with a speech model you download in Options → "
+       "Speech → Transmit. My words there lists what to expect, Corrections fixes what it gets wrong (heard = "
+       "send), and a right-click on selected transmit text teaches a fix or a word. Talk never keys. "
        "Options → Contest Mode (RTTY, PSK, Hell) adds a contest row to the QSO bar: pick ARRL RTTY Roundup, "
        "CQ WW RTTY, NA Sprint, Field Day, a Feld Hell sprint, a serial-number contest, or Custom, and your "
        "exchange (# is the serial). F1 to F8, on screen or the keyboard, send the Run or S&P messages "

@@ -144,6 +144,38 @@ QString speechHint(const QString& ownCall, const QString& extra) {
   return hint;
 }
 
+QString speechApplyCorrections(const QString& text, const QStringList& lines) {
+  QString out = text;
+  for (const QString& line : lines) {
+    const int eq = line.indexOf(QLatin1Char('='));
+    if (eq <= 0)
+      continue;
+    const QString heard = line.left(eq).simplified();
+    const QString send = line.mid(eq + 1).simplified();
+    if (heard.isEmpty())
+      continue;
+    const QRegularExpression word(QStringLiteral("(?<![A-Za-z0-9/])") + QRegularExpression::escape(heard) +
+                                      QStringLiteral("(?![A-Za-z0-9/])"),
+                                  QRegularExpression::CaseInsensitiveOption);
+    out.replace(word, send.toUpper());
+  }
+  return out.simplified();
+}
+
+QString speechMyWords(const QStringList& lines) {
+  QStringList words;
+  for (const QString& line : lines)
+    for (const QString& part : line.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+      const QString w = part.simplified();
+      if (!w.isEmpty() && !words.contains(w, Qt::CaseInsensitive))
+        words << w;
+    }
+  QString joined = words.join(QStringLiteral(", "));
+  if (joined.size() > 600)
+    joined = joined.left(600).section(QStringLiteral(", "), 0, -2);
+  return joined;
+}
+
 QString speechToTxText(const QString& heard) {
   static const QHash<QString, QString> spoken = {
       {"alpha", "A"},    {"alfa", "A"},    {"bravo", "B"},   {"charlie", "C"},  {"delta", "D"},

@@ -1974,6 +1974,15 @@ int shellReady(MainWindow& window) {
       }
       if (!speechHint(QStringLiteral("n8sdr"), QStringLiteral("W1AW")).contains(QStringLiteral("N8SDR")))
         return fail("Speech hint is missing the call");
+      const QStringList fixes = {QStringLiteral("hex beam = hexbeam"), QStringLiteral("DAYTON OHIO = Dayton, OH"),
+                                 QStringLiteral("no equals here"), QStringLiteral(" = blank")};
+      if (speechApplyCorrections(QStringLiteral("MY HEX BEAM IS UP IN DAYTON OHIO 73"), fixes) !=
+              QLatin1String("MY HEXBEAM IS UP IN DAYTON, OH 73") ||
+          speechApplyCorrections(QStringLiteral("HEX BEAMS"), fixes) != QLatin1String("HEX BEAMS"))
+        return fail("Speech corrections replaced the wrong words");
+      if (speechMyWords({QStringLiteral("W8AJT, Kenwood"), QStringLiteral("kenwood"), QStringLiteral(" Hexbeam ")}) !=
+          QLatin1String("W8AJT, Kenwood, Hexbeam"))
+        return fail("Speech My words did not join");
       SpeechRecognizer::cpuSupported();
       // Optional end-to-end check with an installed model: STD_SPEECH_WAV
       // names a 16 kHz mono 16-bit WAV of spoken text.

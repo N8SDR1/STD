@@ -22,8 +22,10 @@
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
@@ -244,6 +246,39 @@ void MainWindow::openSpeechDialog() {
   clickMode->setChecked(store.value(QStringLiteral("speech/talkToggle"), false).toBool());
   clickMode->setToolTip(QStringLiteral("For operators who cannot hold a button down. This does not key."));
   txForm->addRow(clickMode);
+
+  // My words: what Talk should expect. Corrections: what it keeps getting wrong.
+  auto* myWords = new QPlainTextEdit(txPage);
+  myWords->setObjectName(QStringLiteral("speechMyWords"));
+  myWords->setFixedHeight(64);
+  myWords->setPlaceholderText(QStringLiteral("One per line or with commas: W8AJT, Kenwood, Hexbeam, Dayton"));
+  myWords->setPlainText(store.value(QStringLiteral("speech/myWords")).toStringList().join(QLatin1Char('\n')));
+  myWords->setToolTip(QStringLiteral(
+      "Words Talk should expect: calls you work often, club calls, names, towns, your rig and antenna. "
+      "Your name and QTH from Options → User and the station in the QSO bar are added by themselves. "
+      "Saved as you type. This does not key."));
+  txForm->addRow(QStringLiteral("My words"), myWords);
+  auto* fixes = new QPlainTextEdit(txPage);
+  fixes->setObjectName(QStringLiteral("speechCorrections"));
+  fixes->setFixedHeight(64);
+  fixes->setPlaceholderText(QStringLiteral("heard = send, one per line:  HEX BEAM = HEXBEAM"));
+  fixes->setPlainText(store.value(QStringLiteral("speech/corrections")).toStringList().join(QLatin1Char('\n')));
+  fixes->setToolTip(QStringLiteral(
+      "Fixes for words Talk keeps getting wrong, one per line as heard = send. The heard words are "
+      "replaced wherever they stand as whole words, ignoring case. You can also select text in the "
+      "transmit box, right-click, and teach a fix there. Saved as you type. This does not key."));
+  txForm->addRow(QStringLiteral("Corrections"), fixes);
+  auto lines = [](const QPlainTextEdit* edit) {
+    QStringList out;
+    for (const QString& line : edit->toPlainText().split(QLatin1Char('\n')))
+      if (!line.simplified().isEmpty())
+        out << line.simplified();
+    return out;
+  };
+  connect(myWords, &QPlainTextEdit::textChanged, &dialog,
+          [myWords, lines] { QSettings().setValue(QStringLiteral("speech/myWords"), lines(myWords)); });
+  connect(fixes, &QPlainTextEdit::textChanged, &dialog,
+          [fixes, lines] { QSettings().setValue(QStringLiteral("speech/corrections"), lines(fixes)); });
 
   // The recognizer model: downloaded only when picked here, never shipped.
   auto* modelRow = new QWidget(txPage);
@@ -494,9 +529,19 @@ void MainWindow::endTalk() {
                     .arg(seconds, 0, 'f', 1));
     return;
   }
-  QString worked;
-  if (const auto* call = findChild<QLineEdit*>(QStringLiteral("qsoBarCall")))
-    worked = call->text().trimmed().toUpper();
+  // The hint: the station being worked, your name and QTH, and My words.
+  QStringList expect;
+  for (const char* field : {"qsoBarCall", "qsoBarName", "qsoBarQth"})
+    if (const auto* edit = findChild<QLineEdit*>(QLatin1String(field)))
+      if (!edit->text().trimmed().isEmpty())
+        expect << edit->text().trimmed();
+  for (const char* key : {"user/name", "user/qth"}) {
+    const QString v = store.value(QLatin1String(key)).toString().trimmed();
+    if (!v.isEmpty())
+      expect << v;
+  }
+  expect << store.value(QStringLiteral("speech/myWords")).toStringList();
+  const QString worked = speechMyWords(expect);
   if (!recognizer_ || !recognizer_->start(speechModelPath(model), speech, speechHint(stationCall(), worked))) {
     setTxStatus(QStringLiteral("Still turning the last speech into text. Nothing was added. Nothing keyed."));
     return;
@@ -509,7 +554,8 @@ void MainWindow::insertHeardText(const QString& heard, const QString& error) {
     setTxStatus(error + QStringLiteral(" Nothing was added. Nothing keyed."));
     return;
   }
-  const QString text = speechToTxText(heard);
+  const QString text = speechApplyCorrections(speechToTxText(heard),
+                                              QSettings().value(QStringLiteral("speech/corrections")).toStringList());
   if (text.isEmpty()) {
     setTxStatus(QStringLiteral("No words were recognized. Nothing was added. Nothing keyed."));
     return;
@@ -530,4 +576,54 @@ void MainWindow::insertHeardText(const QString& heard, const QString& error) {
                      text.endsWith(QLatin1Char('?'));
   setTxStatus(QStringLiteral("Added from speech: %1%2 Nothing keyed; TX sends it.")
                   .arg(text, ended ? QString() : QStringLiteral(".")));
+}
+
+// Right-click on selected text in the transmit box teaches Talk: send this
+// as something else from now on, or expect this word. Nothing keys.
+void MainWindow::installTalkMenu(QPlainTextEdit* box) {
+  box->setContextMenuPolicy(Qt::CustomContextMenu);
+  connect(box, &QWidget::customContextMenuRequested, this, [this, box](const QPoint& pos) {
+    QMenu* menu = box->createStandardContextMenu(pos);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    const QString picked = box->textCursor().selectedText().simplified();
+    if (!picked.isEmpty() && picked.size() <= 60 &&
+        QSettings().value(QStringLiteral("speech/txOn"), false).toBool()) {
+      menu->addSeparator();
+      const QString shown = picked.size() > 24 ? picked.left(24) + QStringLiteral("…") : picked;
+      menu->addAction(QStringLiteral("Talk: always send \"%1\" as …").arg(shown), this, [this, picked] {
+        bool ok = false;
+        const QString send = QInputDialog::getText(
+                                 this, QStringLiteral("Talk correction"),
+                                 QStringLiteral("When Talk hears \"%1\", send this instead:").arg(picked),
+                                 QLineEdit::Normal, picked, &ok)
+                                 .simplified();
+        if (!ok || send.isEmpty() || send.compare(picked, Qt::CaseInsensitive) == 0)
+          return;
+        QSettings store;
+        QStringList fixes = store.value(QStringLiteral("speech/corrections")).toStringList();
+        fixes.erase(std::remove_if(fixes.begin(), fixes.end(),
+                                   [&](const QString& line) {
+                                     return line.section(QLatin1Char('='), 0, 0).simplified().compare(
+                                                picked, Qt::CaseInsensitive) == 0;
+                                   }),
+                    fixes.end());
+        fixes << QStringLiteral("%1 = %2").arg(picked, send.toUpper());
+        store.setValue(QStringLiteral("speech/corrections"), fixes);
+        setTxStatus(QStringLiteral("Talk will send %1 for %2 from now on. Options → Speech → Transmit lists "
+                                   "the corrections. Nothing keyed.")
+                        .arg(send.toUpper(), picked));
+      });
+      menu->addAction(QStringLiteral("Talk: add \"%1\" to My words").arg(shown), this, [this, picked] {
+        QSettings store;
+        QStringList words = store.value(QStringLiteral("speech/myWords")).toStringList();
+        if (!words.contains(picked, Qt::CaseInsensitive))
+          words << picked;
+        store.setValue(QStringLiteral("speech/myWords"), words);
+        setTxStatus(QStringLiteral("Talk now expects %1. Options → Speech → Transmit lists My words. "
+                                   "Nothing keyed.")
+                        .arg(picked));
+      });
+    }
+    menu->popup(box->viewport()->mapToGlobal(pos));
+  });
 }

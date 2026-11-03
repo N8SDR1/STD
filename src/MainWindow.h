@@ -351,6 +351,7 @@ private:
   SpeechModelDownload* modelDl_ = nullptr;
   SpeechRecognizer* recognizer_ = nullptr;
   void insertHeardText(const QString& heard, const QString& error);
+  void installTalkMenu(class QPlainTextEdit* box);
   bool talkActive_ = false;
   QVector<MacroSlot> macros_;
   int macroBank_ = 0;
