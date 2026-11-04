@@ -5,19 +5,15 @@
 
 #include "DigitalMode.h"
 
-#include <algorithm>
-
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFont>
-#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
-#include <QSlider>
 #include <QVBoxLayout>
 
 namespace {
@@ -50,20 +46,16 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
 
   auto* intro = new QLabel(QStringLiteral(
       "V1 is the default waveform, about 1500 Hz wide. V2 is experimental, "
-      "about 860 Hz, and will not decode V1. Mic, speaker, and volume are under the band chips. "
-      "They are the Speech devices. Identity stays in Options, User. Speech is 16 kHz. The modem is 8 kHz."),
+      "about 860 Hz, and will not decode V1. Drive is between Mic and Speaker. "
+      "Analog is after Volume. BPF is next to the radio button. TX and Halt are on this row. "
+      "Speech is 16 kHz. The modem is 8 kHz."),
       this);
   intro->setObjectName(QStringLiteral("radeIntro"));
   intro->setFont(uiFont());
   intro->setWordWrap(true);
   layout->addWidget(intro);
 
-  auto* formHost = new QWidget(this);
-  auto* form = new QFormLayout(formHost);
-  form->setContentsMargins(0, 0, 0, 0);
-  form->setSpacing(6);
-
-  variant_ = new QComboBox(formHost);
+  variant_ = new QComboBox(this);
   variant_->setObjectName(QStringLiteral("radeVariant"));
   variant_->setFont(uiFont());
   variant_->setFocusPolicy(Qt::NoFocus);
@@ -75,18 +67,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   variant_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   variant_->setFixedWidth(220);
 
-  analog_ = new QCheckBox(QStringLiteral("Analog passthrough"), formHost);
-  analog_->setObjectName(QStringLiteral("radeAnalog"));
-  analog_->setFont(uiFont());
-  analog_->setFocusPolicy(Qt::NoFocus);
-  analog_->setChecked(QSettings().value(QStringLiteral("rade/analog"), false).toBool());
-  analog_->setToolTip(QStringLiteral(
-      "Off plays decoded speech only, and stays silent until sync. "
-      "On plays the radio SSB on the speaker while sync is idle, and decoded speech when sync is up. "
-      "This does not key. START is never sent."));
-  form->addRow(QStringLiteral("Analog"), analog_);
-
-  bpf_ = new QCheckBox(QStringLiteral("TX band-pass"), formHost);
+  bpf_ = new QCheckBox(QStringLiteral("BPF"), this);
   bpf_->setObjectName(QStringLiteral("radeBpf"));
   bpf_->setFont(uiFont());
   bpf_->setFocusPolicy(Qt::NoFocus);
@@ -95,29 +76,6 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
       "so the box is remembered and starts off. V2 is about 860 Hz and starts on. "
       "Turning V2 off sends the modem without that band-pass. "
       "This does not change the radio filter. This does not key. START is never sent."));
-  form->addRow(QStringLiteral("BPF"), bpf_);
-
-  auto* driveRow = new QWidget(formHost);
-  auto* driveLayout = new QHBoxLayout(driveRow);
-  driveLayout->setContentsMargins(0, 0, 0, 0);
-  drive_ = new QSlider(Qt::Horizontal, driveRow);
-  drive_->setObjectName(QStringLiteral("radeDrive"));
-  drive_->setRange(0, 100);
-  drive_->setValue(std::clamp(QSettings().value(QStringLiteral("rade/drive"), 70).toInt(), 0, 100));
-  drive_->setFocusPolicy(Qt::NoFocus);
-  drive_->setToolTip(QStringLiteral(
-      "Modem level sent to the radio. 0 is silent. 100 multiplies the modem by one half, "
-      "so a full reading stays about 6 dB under full scale. "
-      "Changing it does not key. START is never sent."));
-  driveValue_ = new QLabel(driveRow);
-  driveValue_->setObjectName(QStringLiteral("radeDriveValue"));
-  driveValue_->setFont(uiFont());
-  driveValue_->setMinimumWidth(28);
-  driveValue_->setText(QString::number(drive_->value()));
-  driveLayout->addWidget(drive_, 1);
-  driveLayout->addWidget(driveValue_);
-  form->addRow(QStringLiteral("Drive"), driveRow);
-  layout->addWidget(formHost);
 
   digu_ = new QPushButton(QStringLiteral("Off"), this);
   digu_->setObjectName(QStringLiteral("radeDigu"));
@@ -139,11 +97,20 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   auto* pair = new QHBoxLayout;
   pair->setContentsMargins(0, 0, 0, 0);
   pair->setSpacing(8);
+  auto* keySlot = new QWidget(this);
+  keySlot->setObjectName(QStringLiteral("radeKeySlot"));
+  auto* keyLayout = new QHBoxLayout(keySlot);
+  keyLayout->setContentsMargins(0, 0, 0, 0);
+  keyLayout->setSpacing(6);
   pair->addWidget(waveLabel);
   pair->addWidget(variant_);
   pair->addSpacing(16);
   pair->addWidget(radioLabel);
   pair->addWidget(digu_);
+  pair->addSpacing(12);
+  pair->addWidget(bpf_);
+  pair->addSpacing(16);
+  pair->addWidget(keySlot);
   pair->addStretch(1);
   layout->insertLayout(2, pair);
 
@@ -183,16 +150,9 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
     rememberBpf(bpf_->isChecked());
     emit variantChosen(mode);
   });
-  connect(analog_, &QCheckBox::toggled, this, [](bool on) {
-    QSettings().setValue(QStringLiteral("rade/analog"), on);
-  });
   connect(bpf_, &QCheckBox::toggled, this, [this](bool on) {
     rememberBpf(on);
     emit optionsChanged();
-  });
-  connect(drive_, &QSlider::valueChanged, this, [this](int value) {
-    driveValue_->setText(QString::number(value));
-    QSettings().setValue(QStringLiteral("rade/drive"), value);
   });
   connect(digu_, &QPushButton::toggled, this, [this](bool on) {
     digu_->setText(on ? QStringLiteral("On") : QStringLiteral("Off"));

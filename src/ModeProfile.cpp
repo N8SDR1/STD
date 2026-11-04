@@ -447,6 +447,26 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   radeMicBox_->setToolTip(QStringLiteral(
       "Speech microphone. Same list as Options, Speech. TX uses this device. "
       "This does not key. START is never sent."));
+  auto* driveLabel = new QLabel(QStringLiteral("Drive"), radeAudio_);
+  driveLabel->setFont(barFont());
+  auto* drive = new QSlider(Qt::Horizontal, radeAudio_);
+  drive->setObjectName(QStringLiteral("radeDrive"));
+  drive->setRange(0, 100);
+  drive->setFixedWidth(160);
+  drive->setFocusPolicy(Qt::NoFocus);
+  drive->setValue(std::clamp(QSettings().value(QStringLiteral("rade/drive"), 70).toInt(), 0, 100));
+  drive->setToolTip(QStringLiteral(
+      "Modem level sent to the radio. 0 is silent. 100 multiplies the modem by one half, "
+      "so a full reading stays about 6 dB under full scale. "
+      "Changing it does not key. START is never sent."));
+  auto* driveValue = new QLabel(QString::number(drive->value()), radeAudio_);
+  driveValue->setObjectName(QStringLiteral("radeDriveValue"));
+  driveValue->setFont(barFont());
+  driveValue->setMinimumWidth(28);
+  connect(drive, &QSlider::valueChanged, this, [driveValue](int value) {
+    driveValue->setText(QString::number(value));
+    QSettings().setValue(QStringLiteral("rade/drive"), value);
+  });
   auto* speakerLabel = new QLabel(QStringLiteral("Speaker"), radeAudio_);
   speakerLabel->setFont(barFont());
   radeSpeakerBox_ = new QComboBox(radeAudio_);
@@ -470,13 +490,29 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   radeVolumeValue_->setObjectName(QStringLiteral("radeVolumeValue"));
   radeVolumeValue_->setFont(barFont());
   radeVolumeValue_->setMinimumWidth(28);
+  auto* analog = new QCheckBox(QStringLiteral("Analog passthrough"), radeAudio_);
+  analog->setObjectName(QStringLiteral("radeAnalog"));
+  analog->setFont(barFont());
+  analog->setFocusPolicy(Qt::NoFocus);
+  analog->setChecked(QSettings().value(QStringLiteral("rade/analog"), false).toBool());
+  analog->setToolTip(QStringLiteral(
+      "Off plays decoded speech only, and stays silent until sync. "
+      "On plays the radio SSB on the speaker while sync is idle, and decoded speech when sync is up. "
+      "This does not key. START is never sent."));
+  connect(analog, &QCheckBox::toggled, this, [](bool on) {
+    QSettings().setValue(QStringLiteral("rade/analog"), on);
+  });
   audio->addWidget(micLabel);
   audio->addWidget(radeMicBox_);
+  audio->addWidget(driveLabel);
+  audio->addWidget(drive);
+  audio->addWidget(driveValue);
   audio->addWidget(speakerLabel);
   audio->addWidget(radeSpeakerBox_);
   audio->addWidget(volumeLabel);
   audio->addWidget(radeVolume_);
   audio->addWidget(radeVolumeValue_);
+  audio->addWidget(analog);
   audio->addStretch(1);
   radeAudio_->hide();
 

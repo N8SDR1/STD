@@ -1077,8 +1077,17 @@ int shellReady(MainWindow& window) {
         !digu->isCheckable() || digu->isChecked() || digu->text() != QLatin1String("Off") ||
         micBox->count() < 1 || spkBox->count() < 1 || radeVol->maximum() != 100 ||
         !spkBox->toolTip().contains(QLatin1String("Play on")) ||
+        drive->maximumWidth() > 180 || analog->parentWidget() != audio ||
+        drive->parentWidget() != audio || bpf->parentWidget() != screen ||
         radeProfile->digitalMode() != QLatin1String("RADE V1"))
       return fail("RADE V1 screen is wrong");
+    auto* radeTx = window.findChild<QPushButton*>(QStringLiteral("txSend"));
+    auto* radeHalt = window.findChild<QPushButton*>(QStringLiteral("txHalt"));
+    auto* keySlot = window.findChild<QWidget*>(QStringLiteral("radeKeySlot"));
+    if (!radeTx || !radeHalt || !keySlot || !radeTx->parentWidget() ||
+        radeTx->parentWidget()->parentWidget() != keySlot ||
+        radeHalt->parentWidget() != radeTx->parentWidget())
+      return fail("RADE TX is still at the bottom");
     digu->click();
     if (!digu->isChecked() || digu->text() != QLatin1String("On"))
       return fail("RADE helper did not latch");
@@ -1189,8 +1198,10 @@ int shellReady(MainWindow& window) {
         !bpf->isChecked() || radeProfile->digitalMode() != QLatin1String("RADE V2 (experimental)"))
       return fail("RADE V2 screen is wrong");
     ft8Back->trigger();
+    auto* buttonRow = window.findChild<QWidget*>(QStringLiteral("txButtonRow"));
     if (radeProfile->digitalMode() != QLatin1String("FT8") || screen->isVisible() || rx->isHidden() ||
-        tx1->isHidden() || audio->isVisible())
+        tx1->isHidden() || audio->isVisible() || !buttonRow || !radeTx->parentWidget() ||
+        radeTx->parentWidget()->parentWidget() != buttonRow)
       return fail("leaving RADE did not restore FT8");
   }
   if (textModeSamplesPerChar(QStringLiteral("Feld Hell")) != 0 ||

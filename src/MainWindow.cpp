@@ -2040,9 +2040,12 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
                             "START was not sent."));
     });
 
-    auto* buttons = new QHBoxLayout();
+    auto* buttonRow = new QWidget(panel);
+    buttonRow->setObjectName(QStringLiteral("txButtonRow"));
+    auto* buttons = new QHBoxLayout(buttonRow);
+    buttons->setContentsMargins(0, 0, 0, 0);
     buttons->setSpacing(6);
-    auto* tune = new QPushButton(QStringLiteral("Tune"), panel);
+    auto* tune = new QPushButton(QStringLiteral("Tune"), buttonRow);
     tune->setObjectName(QStringLiteral("txTune"));
     tune->setCheckable(true);
     tune->setChecked(false);
@@ -2052,7 +2055,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "Send a tone at the TX marker so you can set TX gain and hear RF. "
         "TRX goes out only while this is pressed. START is never sent."));
     connect(tune, &QPushButton::toggled, this, [this](bool on) { setTune(on); });
-    auto* tx = new QPushButton(QStringLiteral("TX"), panel);
+    auto* tx = new QPushButton(QStringLiteral("TX"), buttonRow);
     tx->setObjectName(QStringLiteral("txSend"));
     tx->setCheckable(true);
     tx->setChecked(false);
@@ -2063,7 +2066,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "Max Periods is how many times it keys. Stops on 73, when someone else answers, "
         "or when the try limit is reached. CQ on free continues with CQ. CNS ignores the limit."));
     connect(tx, &QPushButton::toggled, this, [this](bool on) { setUserTx(on); });
-    auto* halt = new QPushButton(QStringLiteral("Halt"), panel);
+    auto* halt = new QPushButton(QStringLiteral("Halt"), buttonRow);
     halt->setObjectName(QStringLiteral("txHalt"));
     halt->setFont(interfaceFont(12));
     halt->setFocusPolicy(Qt::NoFocus);
@@ -2073,7 +2076,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     connect(halt, &QPushButton::clicked, this, [this] { haltTx(); });
     // Speech to text: hold Talk and speak (or click to start and stop,
     // set in Options -> Speech). Shown only when that is turned on.
-    auto* talk = new QPushButton(QStringLiteral("Talk"), panel);
+    auto* talk = new QPushButton(QStringLiteral("Talk"), buttonRow);
     talk->setObjectName(QStringLiteral("txTalk"));
     talk->setFont(interfaceFont(12));
     talk->setFocusPolicy(Qt::NoFocus);
@@ -2099,12 +2102,18 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       else
         startTalk();
     });
+    auto* keyPair = new QWidget(buttonRow);
+    keyPair->setObjectName(QStringLiteral("txKeyPair"));
+    auto* keys = new QHBoxLayout(keyPair);
+    keys->setContentsMargins(0, 0, 0, 0);
+    keys->setSpacing(6);
+    keys->addWidget(tx);
+    keys->addWidget(halt);
     buttons->addWidget(tune);
-    buttons->addWidget(tx);
-    buttons->addWidget(halt);
+    buttons->addWidget(keyPair);
     buttons->addWidget(talk);
     buttons->addStretch(1);
-    layout->addLayout(buttons);
+    layout->addWidget(buttonRow);
     auto* qso = new QPlainTextEdit(panel);
     qso->setObjectName(QStringLiteral("txQso"));
     qso->setReadOnly(true);
@@ -4140,13 +4149,13 @@ void MainWindow::showGuide() {
        "after Tune or TX is pressed. Connect does not send START, and it does not key."},
       {"RADE",
        "Mode, RADE V1 is HF digital voice. RADE V2 is experimental and does not talk to V1. "
-       "The RADE screen replaces the FT8 sequence and the Hell tape. It has Analog, TX band-pass, "
-       "drive, a DIGU helper, the V1 or V2 selector, and sync and SNR. "
-       "Waveform and the DIGU helper sit side by side. The helper lights On while it holds DIGU, "
-       "and Off sends the band sideband. It does not set the radio filter. "
-       "Mic, speaker, and volume are the row under the band chips. They are the Speech devices. "
-       "Volume is the Speech playback level, from 0 to 100. "
-       "Analog off plays decoded speech only and stays silent until sync. Identity stays in "
+       "The RADE screen replaces the FT8 sequence and the Hell tape. Waveform and the DIGU helper "
+       "sit side by side. BPF is the tick box after the radio button. The helper lights On while "
+       "it holds DIGU, and Off sends the band sideband. It does not set the radio filter. "
+       "Under the band chips the row is Mic, a short Drive, Speaker, Volume, then Analog. "
+       "Drive 0 is silent and 100 multiplies the modem by one half. Volume is the Speech playback "
+       "level, from 0 to 100. Analog off plays decoded speech only and stays silent until sync. "
+       "TX and Halt sit on the Waveform row. The transmit dock stays closed in RADE. Identity stays in "
        "Options, User. The band buttons use the FreeDV Reporter list. 20 m starts at 14.236 and also "
        "has 14.240, both DIGU. Those are digital voice. SSTV calling is 14.230 and digital SSTV is 14.233. "
        "40 m starts at 7.177, DIGL, and also 7.197, 7.045, and 7.1815. "
@@ -6535,12 +6544,28 @@ void MainWindow::refreshTxChrome() {
     if (auto* halt = findChild<QWidget*>(QStringLiteral("txHalt")))
       halt->setVisible(radeLinked);
   }
+  if (auto* keyPair = findChild<QWidget*>(QStringLiteral("txKeyPair"))) {
+    QWidget* target = rade ? findChild<QWidget*>(QStringLiteral("radeKeySlot"))
+                           : findChild<QWidget*>(QStringLiteral("txButtonRow"));
+    if (target && keyPair->parentWidget() != target) {
+      if (auto* row = qobject_cast<QHBoxLayout*>(target->layout()))
+        row->addWidget(keyPair);
+    }
+  }
+  if (auto* send = findChild<QPushButton*>(QStringLiteral("txSend"))) {
+    send->setToolTip(rade ? QStringLiteral(
+                                "Send the Speech microphone. TRX uses tci. Halt stops at once. "
+                                "START is never sent.")
+                          : QStringLiteral(
+                                "Send the selected line on its slot and hold TRX until that slot ends. "
+                                "Max Periods is how many times it keys. Stops on 73, when someone else answers, "
+                                "or when the try limit is reached. CQ on free continues with CQ. CNS ignores the limit."));
+  }
   if (transmitDock_) {
+    transmitDock_->setVisible(!rade);
     if (auto* title = transmitDock_->titleBarWidget() ? transmitDock_->titleBarWidget()->findChild<QLabel*>()
                                                       : nullptr)
-      title->setText(fax ? QStringLiteral("Stations")
-                         : rade ? QStringLiteral("RADE")
-                                : QStringLiteral("Transmit"));
+      title->setText(fax ? QStringLiteral("Stations") : QStringLiteral("Transmit"));
   }
   const char* sequenceNames[] = {"txStandard", "txActivity", "txPick1", "tx1", "txPick2", "tx2",
                                  "txPick3",    "tx3",        "txPick4", "tx4", "txPick5", "tx5",

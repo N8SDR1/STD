@@ -9,7 +9,6 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPushButton;
-class QSlider;
 
 // RADE operating screen. It is not the Hell tape and not the FT8 sequence.
 // Mic and speaker are the devices already chosen for Speech. Identity stays
@@ -37,10 +36,7 @@ private:
   void rememberBpf(bool on);
 
   QComboBox* variant_ = nullptr;
-  QCheckBox* analog_ = nullptr;
   QCheckBox* bpf_ = nullptr;
-  QSlider* drive_ = nullptr;
-  QLabel* driveValue_ = nullptr;
   QPushButton* digu_ = nullptr;
   QLabel* sync_ = nullptr;
   QLabel* snr_ = nullptr;
