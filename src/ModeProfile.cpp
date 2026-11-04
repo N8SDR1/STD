@@ -566,7 +566,7 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   micGain->setValue(std::clamp(QSettings().value(QStringLiteral("rade/micGain"), 0).toInt(), 0, 30));
   micGain->setToolTip(QStringLiteral(
       "Microphone gain before the leveler, in dB. 0 leaves the microphone as Windows set it. "
-      "The bar beside it shows the speech peaks after the leveler. "
+      "The bar after it shows the speech peaks after the leveler. "
       "Options, Speech has no microphone gain; its Volume is playback. "
       "Drive is the modem level and does not move the bar. "
       "This does not key. START is never sent."));
@@ -580,10 +580,10 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   });
   audio->addWidget(micLabel);
   audio->addWidget(radeMicBox_);
-  audio->addWidget(new RadeMicBar(radeAudio_));
   audio->addWidget(gainLabel);
   audio->addWidget(micGain);
   audio->addWidget(micGainValue);
+  audio->addWidget(new RadeMicBar(radeAudio_));
   audio->addWidget(driveLabel);
   audio->addWidget(drive);
   audio->addWidget(driveValue);

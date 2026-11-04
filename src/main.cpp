@@ -1143,8 +1143,8 @@ int shellReady(MainWindow& window) {
         micGain->maximum() != 30 || micGain->width() > 120 ||
         !micGain->toolTip().contains(QLatin1String("leveler")) ||
         !micGain->toolTip().contains(QLatin1String("Drive")) ||
-        (micBar->x() > 0 && micGain->x() > 0 && drive->x() > 0 &&
-         (micGain->x() < micBar->x() || micGain->x() > drive->x())))
+        (micBox->x() > 0 && micGain->x() > 0 && micBar->x() > 0 && drive->x() > 0 &&
+         (micGain->x() < micBox->x() || micGain->x() > micBar->x() || micBar->x() > drive->x())))
       return fail("RADE mic gain is missing");
     auto* offset = window.findChild<QLabel*>(QStringLiteral("radeOffset"));
     if (!snrTrace || snrTrace->parentWidget() != screen || snrTrace->height() < 32 ||
