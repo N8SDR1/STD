@@ -12,6 +12,7 @@
 #include "ModeProfile.h"
 #include "TciClient.h"
 #include "rade/RadeScreen.h"
+#include "rade/RadeMeters.h"
 #include "rade/RadeSpeaker.h"
 #include "spot/FreeDvReporter.h"
 #include "speech/SpeechInput.h"
@@ -494,6 +495,8 @@ void MainWindow::pumpRadeTx() {
           radeModem_.insert(radeModem_.end(), modem.begin(), modem.begin() + n);
         else if (n < 0)
           setTxStatus(QStringLiteral("RADE encode failed. TRX is still up. START was not sent."));
+        if (auto* bar = findChild<RadeMicBar*>(QStringLiteral("radeMicLevel")))
+          bar->note(rade_.micPeak());
       }
     }
   } else if (!radeFinished_) {

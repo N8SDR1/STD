@@ -39,6 +39,9 @@ public:
   // Last callsign read from an end-of-over; seq goes up with each new one.
   int heard(QString* call);
   float snr();
+  // Peak of the levelled speech since the previous read, 0 to 1.
+  // Drive is applied after this and does not change it.
+  float micPeak();
   // Frequency offset of the received station in Hz, 0 when not in sync.
   float freqOffset();
   int selftest();
@@ -71,6 +74,7 @@ private:
   RxFn rx_ = nullptr;
   SyncFn sync_ = nullptr;
   SnrFn snr_ = nullptr;
+  SnrFn micPeak_ = nullptr;
   SnrFn foff_ = nullptr;
   TestFn selftest_ = nullptr;
   ErrFn errorFn_ = nullptr;

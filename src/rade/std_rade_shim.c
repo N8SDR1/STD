@@ -125,6 +125,8 @@ static int g_agc_valid;
 static double g_agc_target;
 static double g_agc_gain;
 static double g_lim_gain = 1.0;
+/* Highest speech sample since the last read, after the leveler and limiter. */
+static float g_mic_peak;
 
 static void biquad_set(Biquad* q, double b0, double b1, double b2, double a0, double a1, double a2) {
   q->b0 = b0 / a0;
@@ -163,6 +165,7 @@ static void agc_reset(void) {
   g_agc_ms_n = g_agc_ms_at = g_agc_fill = g_agc_blocks = g_agc_valid = 0;
   g_agc_target = g_agc_gain = 0.0;
   g_lim_gain = 1.0;
+  g_mic_peak = 0.0f;
 }
 
 static void agc_block(float* x) {
@@ -211,7 +214,13 @@ static void agc_block(float* x) {
       else
         g_lim_gain += (1.0 - g_lim_gain) * release;
       x[i] = (float)(v * g_lim_gain);
+      if (x[i] > g_mic_peak)
+        g_mic_peak = x[i];
+      else if (-x[i] > g_mic_peak)
+        g_mic_peak = -x[i];
     }
+    if (g_mic_peak > 1.0f)
+      g_mic_peak = 1.0f;
   }
 }
 
@@ -942,6 +951,16 @@ __declspec(dllexport) int std_rade_tx(const float* speech, int n, float* modem, 
     set_err("rade_tx failed");
   LeaveCriticalSection(&g_lock);
   return written;
+}
+
+/* Peak of the levelled speech, 0 to 1. Drive is applied later, in STD. */
+__declspec(dllexport) float std_rade_mic_peak(void) {
+  float peak;
+  EnterCriticalSection(&g_lock);
+  peak = g_mic_peak;
+  g_mic_peak = 0.0f;
+  LeaveCriticalSection(&g_lock);
+  return peak;
 }
 
 __declspec(dllexport) int std_rade_finish(float* modem, int cap) {

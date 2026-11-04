@@ -1129,6 +1129,17 @@ int shellReady(MainWindow& window) {
         drive->parentWidget() != audio || bpf->parentWidget() != screen ||
         radeProfile->digitalMode() != QLatin1String("RADE V1"))
       return fail("RADE V1 screen is wrong");
+    auto* micBar = window.findChild<QWidget*>(QStringLiteral("radeMicLevel"));
+    auto* snrTrace = window.findChild<QWidget*>(QStringLiteral("radeSnrTrace"));
+    if (!micBar || micBar->parentWidget() != audio || micBar->width() > 140 ||
+        !micBar->toolTip().contains(QLatin1String("0.5")) ||
+        !micBar->toolTip().contains(QLatin1String("clip")) ||
+        !micBar->toolTip().contains(QLatin1String("Drive")))
+      return fail("RADE mic bar is missing");
+    if (!snrTrace || snrTrace->parentWidget() != screen ||
+        !snrTrace->toolTip().contains(QLatin1String("-10")) ||
+        !snrTrace->toolTip().contains(QLatin1String("35")))
+      return fail("RADE SNR trace is missing");
     auto* radeTx = window.findChild<QPushButton*>(QStringLiteral("txSend"));
     auto* radeHalt = window.findChild<QPushButton*>(QStringLiteral("txHalt"));
     auto* keySlot = window.findChild<QWidget*>(QStringLiteral("radeKeySlot"));

@@ -20,6 +20,7 @@
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
 #include "rade/RadeScreen.h"
+#include "rade/RadeMeters.h"
 #include "speech/SpeechReader.h"
 #include "speech/SpeechInput.h"
 #include "speech/SpeechModel.h"
@@ -4155,11 +4156,12 @@ void MainWindow::showGuide() {
        "out without gaps. The band buttons set the sideband over TCI: DIGL on 160, 80, and 40 m, "
        "DIGU on 30 m and up, the FreeDV convention. The waterfall cursor goes to 1500 Hz, where the "
        "modem sits. Analog passthrough is the separate voice mix. STD does not set the radio filter. "
-       "Under the band chips the row is Mic, a short Drive, Mic NR, Speaker, Volume, BW expand, "
+       "Under the band chips the row is Mic, the speech-level bar, a short Drive, Mic NR, Speaker, Volume, BW expand, "
        "then Analog. Mic NR is RNNoise noise suppression on your microphone and BW expand fills in "
        "the band above 8 kHz on decoded speech, both on by default as in the FreeDV app. "
        "Drive 0 is silent and 100 is the FreeDV app's level; set it so ALC barely moves. The "
        "microphone is levelled before the encoder, as FreeDV does, so speak normally. "
+       "The bar beside Mic shows those speech peaks from 0 to 1. The mark is half scale, where the FreeDV manual says the level should average, and the top of the bar is clipping. The trace beside SNR is the last 3 minutes, from -10 to 35 dB. "
        "Heard shows the callsign from the other station's end-of-over. Offset shows how far the station you receive is from where it should be, in Hz, as the FreeDV app shows it: plus is above, minus below, and RADE tracks only about 50 Hz either way. Volume is the Speech playback "
        "level, from 0 to 100. Analog off plays decoded speech only and stays silent until sync. "
        "RX and TX sit on the Waveform row. RX and TX work like the radio's switch: RX is green while receiving, TX shows ON AIR while transmitting, and clicking RX (or TX again) ends the over with the end-of-over and your callsign, with RX amber for that moment. Halt is not shown in RADE, because it would drop without your callsign. "
@@ -8166,6 +8168,8 @@ void MainWindow::stopUserTx(bool uncheck) {
   if (wasRade) {
     updateFreedvReporter(true);
     refreshRadeRxChip();
+    if (auto* bar = findChild<RadeMicBar*>(QStringLiteral("radeMicLevel")))
+      bar->clear();
   }
   radeStopping_ = false;
   radeFinished_ = false;

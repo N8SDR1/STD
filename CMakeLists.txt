@@ -140,6 +140,8 @@ qt_add_executable(std
   src/wspr/WsprModem.h
   src/rade/RadeScreen.cpp
   src/rade/RadeScreen.h
+  src/rade/RadeMeters.cpp
+  src/rade/RadeMeters.h
   src/rade/RadeLink.cpp
   src/rade/RadeLink.h
   src/rade/RadeSpeaker.cpp

@@ -3,6 +3,7 @@
 
 #include "DigitalMode.h"
 #include "ModeProfile.h"
+#include "rade/RadeMeters.h"
 #include "speech/SpeechInput.h"
 #include "speech/SpeechReader.h"
 #include "dominoex/DominoModem.h"
@@ -557,6 +558,7 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   });
   audio->addWidget(micLabel);
   audio->addWidget(radeMicBox_);
+  audio->addWidget(new RadeMicBar(radeAudio_));
   audio->addWidget(driveLabel);
   audio->addWidget(drive);
   audio->addWidget(driveValue);

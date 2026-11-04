@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "rade/RadeScreen.h"
+#include "rade/RadeMeters.h"
 
 #include "DigitalMode.h"
 #include "ModeProfile.h"
@@ -54,7 +55,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
 
   auto* intro = new QLabel(QStringLiteral(
       "V1 is the default waveform, about 1500 Hz wide. V2 is experimental, "
-      "about 860 Hz, and will not decode V1. Drive is between Mic and Speaker. "
+      "about 860 Hz, and will not decode V1. The speech-level bar is beside Mic. Drive is between Mic and Speaker. "
       "Analog is after Volume. BPF is after Waveform. RX and TX are on this row; click RX to end your over. The band buttons set DIGU or DIGL. "
       "The mic is 16 kHz, speech plays at 48 kHz. The modem is 8 kHz."),
       this);
@@ -187,6 +188,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   meters->addWidget(sync_);
   meters->addSpacing(16);
   meters->addWidget(snr_);
+  meters->addWidget(new RadeSnrTrace(this));
   meters->addSpacing(16);
   offset_ = new QLabel(QStringLiteral("Offset  —"), this);
   offset_->setObjectName(QStringLiteral("radeOffset"));
@@ -294,6 +296,8 @@ void RadeScreen::setSync(bool on, float snrDb, float offsetHz) {
     snr_->setText(QStringLiteral("SNR  %1 dB").arg(QString::number(double(snrDb), 'f', 1)));
   else
     snr_->setText(QStringLiteral("SNR  —"));
+  if (auto* trace = findChild<RadeSnrTrace*>(QStringLiteral("radeSnrTrace")))
+    trace->push(on, snrDb);
 }
 
 void RadeScreen::setTxState(int state) {
