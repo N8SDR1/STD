@@ -2860,23 +2860,42 @@ int shellReady(MainWindow& window) {
     auto* dialBox = window.findChild<QFrame*>(QStringLiteral("dialBox"));
     auto* dialFreq = window.findChild<QLabel*>(QStringLiteral("dialFreq"));
     auto* dialRole = window.findChild<QLabel*>(QStringLiteral("dialRole"));
+    auto* dialSide = window.findChild<QLabel*>(QStringLiteral("dialSide"));
     auto* brand = window.findChild<QToolBar*>(QStringLiteral("brandBar"));
-    if (!dialBox || !dialFreq || !dialRole || !brand || dialBox->parentWidget() == nullptr ||
+    if (!dialBox || !dialFreq || !dialRole || !dialSide || !brand || dialBox->parentWidget() == nullptr ||
         !brand->isAncestorOf(dialBox) || !dialBox->toolTip().contains(QLatin1String("green")) ||
-        !dialBox->toolTip().contains(QLatin1String("red")) || !dialBox->styleSheet().contains(QLatin1String("#3a4250"))) {
+        !dialBox->toolTip().contains(QLatin1String("red")) ||
+        !dialBox->toolTip().contains(QLatin1String("DIGU")) ||
+        !dialBox->styleSheet().contains(QLatin1String("#3a4250")) ||
+        (dialSide->text() != QLatin1String("DIGU") && dialSide->text() != QLatin1String("DIGL"))) {
       restore();
       return fail("the dial box is missing");
     }
     ft8Action->trigger();
+    if (auto* host = dialBox->parentWidget()) {
+      if (host->layout())
+        host->layout()->activate();
+      if (host->width() > 640 && dialBox->width() > 0) {
+        const int center = dialBox->x() + dialBox->width() / 2;
+        if (qAbs(center - host->width() / 2) > 140) {
+          restore();
+          return fail("the dial box is not centered");
+        }
+      }
+    }
     if (strip->isVisibleTo(&window) || actions->isVisibleTo(&window) || screen->isVisibleTo(&window) ||
-        !dialBox->isVisibleTo(&window)) {
+        !dialBox->isVisibleTo(&window) || dialSide->text() != QLatin1String("DIGU")) {
       restore();
       return fail("the JS8 screen shows outside JS8");
     }
     js8Action->trigger();
     const auto* echo = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+    if (auto* host = dialBox->parentWidget(); host && host->layout())
+      host->layout()->activate();
     if (!strip->isVisibleTo(&window) || !actions->isVisibleTo(&window) || !screen->isVisibleTo(&window) ||
-        !dialBox->isVisibleTo(&window) || (echo && echo->isVisibleTo(&window))) {
+        !dialBox->isVisibleTo(&window) ||
+        (dialBox->x() > 0 && strip->x() > 0 && dialBox->x() >= strip->x()) ||
+        (echo && echo->isVisibleTo(&window))) {
       restore();
       return fail("the JS8 screen does not replace the plain receive pane in JS8");
     }

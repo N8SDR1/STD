@@ -134,6 +134,7 @@ private:
   void showRadioUp(const QString& host, quint16 port);
   void showDial(qint64 hz);
   void refreshDialBox();
+  void placeDialBox(bool js8);
 
   QWidget* makeTextPanel(const QString& editName, const QString& placeholder,
                          bool readOnly, const QString& note);
@@ -465,6 +466,7 @@ private:
   bool layoutGuard_ = false;
   QVector<DecodeRow> decodes_;
   QString dialText_ = QString::fromUtf8("—");
+  QString radioSide_;
   qint64 liveDialHz_ = 0;
   MaEngine ma_;
   QDockWidget* waterfallDock_ = nullptr;

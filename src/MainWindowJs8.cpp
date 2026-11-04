@@ -424,6 +424,8 @@ void MainWindow::showJs8Layout(bool on) {
       js8Clock_->stop();
     }
   }
+  placeDialBox(on);
+  refreshDialBox();
 }
 
 void MainWindow::tickJs8() {

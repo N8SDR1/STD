@@ -538,8 +538,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   });
   connect(tci_, &TciClient::dialChanged, this, [this](qint64 hz) { showDial(hz); });
   connect(tci_, &TciClient::modeChanged, this, [this](const QString& mode) {
+    radioSide_ = mode.trimmed().toUpper();
     if (statusStrip_)
       statusStrip_->setMode(mode);
+    refreshDialBox();
   });
   connect(tci_, &TciClient::pttChanged, this, [this](bool on) {
     refreshDialBox();
@@ -1012,6 +1014,7 @@ void MainWindow::buildBrandBar() {
   brandBar_->setAllowedAreas(Qt::TopToolBarArea);
 
   auto* host = new QWidget(brandBar_);
+  host->setObjectName(QStringLiteral("brandHost"));
   host->setFixedHeight(110);
   host->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   auto* layout = new QHBoxLayout(host);
@@ -1019,11 +1022,13 @@ void MainWindow::buildBrandBar() {
   layout->setSpacing(14);
 
   auto* mark = new QLabel(host);
+  mark->setObjectName(QStringLiteral("brandMark"));
   const QPixmap icon(":/std/std-icon.png");
   mark->setPixmap(icon.scaled(72, 72, Qt::KeepAspectRatio, Qt::SmoothTransformation));
   mark->setFixedSize(72, 72);
 
   auto* words = new QWidget(host);
+  words->setObjectName(QStringLiteral("brandWords"));
   auto* wordLayout = new QVBoxLayout(words);
   wordLayout->setContentsMargins(0, 0, 0, 0);
   wordLayout->setSpacing(4);
@@ -1042,28 +1047,47 @@ void MainWindow::buildBrandBar() {
   dial->setObjectName(QStringLiteral("dialBox"));
   dial->setFixedSize(268, 78);
   dial->setToolTip(QStringLiteral(
-      "Radio dial. The border is green while receiving and red while transmitting. "
-      "This does not key. START is never sent."));
+      "Radio dial. DIGU or DIGL is the sideband. The border is green while receiving and red while "
+      "transmitting. This does not key. START is never sent."));
   auto* dialCol = new QVBoxLayout(dial);
   dialCol->setContentsMargins(12, 6, 12, 8);
   dialCol->setSpacing(0);
+  auto* top = new QHBoxLayout();
+  top->setContentsMargins(0, 0, 0, 0);
+  top->setSpacing(8);
   auto* role = new QLabel(QStringLiteral("RX"), dial);
   role->setObjectName(QStringLiteral("dialRole"));
   role->setFont(interfaceFont(12, QFont::Bold));
   role->setStyleSheet(QStringLiteral("color: #efb340; background: transparent; border: none;"));
+  auto* side = new QLabel(dial);
+  side->setObjectName(QStringLiteral("dialSide"));
+  side->setFont(interfaceFont(13, QFont::Bold));
+  side->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+  side->setStyleSheet(QStringLiteral("color: #d7e2ea; background: transparent; border: none;"));
+  top->addWidget(role);
+  top->addStretch(1);
+  top->addWidget(side);
   auto* freq = new QLabel(dialText_, dial);
   freq->setObjectName(QStringLiteral("dialFreq"));
   freq->setFont(monoFont(28));
   freq->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
   freq->setStyleSheet(QStringLiteral("color: #ffb000; background: transparent; border: none;"));
-  dialCol->addWidget(role);
+  dialCol->addLayout(top);
   dialCol->addWidget(freq, 1);
+
+  auto* balance = new QWidget(host);
+  balance->setObjectName(QStringLiteral("dialBalance"));
+  balance->setAttribute(Qt::WA_TransparentForMouseEvents);
 
   layout->addWidget(mark);
   layout->addWidget(words);
-  layout->addWidget(makeJs8Strip(host));
   layout->addStretch(1);
   layout->addWidget(dial, 0, Qt::AlignVCenter);
+  layout->addStretch(1);
+  layout->addWidget(balance);
+  layout->addWidget(makeJs8Strip(host));
+  layout->addStretch(0);
+  placeDialBox(false);
   refreshDialBox();
 
   brandBar_->addWidget(host);
@@ -2248,6 +2272,7 @@ void MainWindow::qsyDial(qint64 hz) {
     return;
   // Band buttons and WSPR hopping. Connect already sent AUDIO_START:0.
   // This writes the dial only. START is never sent, and this does not key.
+  radioSide_.clear();
   tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
   tci_->setDialHz(hz);
   showDial(hz);
@@ -3984,10 +4009,12 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     wefax_->setArmed(autoMonitor_ && fax);
   }
   if (tci_ && tci_->isOpen()) {
+    radioSide_.clear();
     if (radeHere)
       tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
     else if (rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax)
       tci_->setSideband(QStringLiteral("DIGU"));
+    refreshDialBox();
   }
   applyChannelWidth();
   if (radeHere) {
@@ -4147,8 +4174,10 @@ void MainWindow::tuneActiveBand() {
     return;
   // FT8 and FT4 stay DIGU. RADE uses the reporter sideband for this band.
   // This is not START and it does not key.
+  radioSide_.clear();
   tci_->setSideband(profile_->sideband());
   tci_->setDialHz(hz);
+  refreshDialBox();
 }
 
 void MainWindow::showGuide() {
@@ -10246,6 +10275,7 @@ void MainWindow::showRadioDown(const QString& error) {
   const QString dash = QString::fromUtf8("—");
   liveDialHz_ = 0;
   dialText_ = dash;
+  radioSide_.clear();
   setReceivePlaceholder(false);
   const QString line = error.isEmpty() ? QStringLiteral("Radio not connected")
                                         : QStringLiteral("Radio not connected: %1").arg(error);
@@ -10315,6 +10345,36 @@ void MainWindow::refreshDialBox() {
                          .arg(border));
   role->setText(tx ? QStringLiteral("TX") : QStringLiteral("RX"));
   freq->setText(dialText_);
+  if (auto* side = findChild<QLabel*>(QStringLiteral("dialSide"))) {
+    QString band = radioSide_;
+    if (band.isEmpty())
+      band = profile_ ? profile_->sideband() : QStringLiteral("DIGU");
+    side->setText(band);
+  }
+}
+
+void MainWindow::placeDialBox(bool js8) {
+  auto* host = findChild<QWidget*>(QStringLiteral("brandHost"));
+  auto* layout = host ? qobject_cast<QHBoxLayout*>(host->layout()) : nullptr;
+  auto* balance = findChild<QWidget*>(QStringLiteral("dialBalance"));
+  auto* mark = findChild<QLabel*>(QStringLiteral("brandMark"));
+  auto* words = findChild<QWidget*>(QStringLiteral("brandWords"));
+  if (!layout || !balance || !mark || !words)
+    return;
+  // 0 logo, 1 title, 2 lead, 3 dial, 4 tail, 5 balance, 6 JS8 row, 7 end.
+  if (js8) {
+    balance->hide();
+    layout->setStretch(2, 0);
+    layout->setStretch(4, 0);
+    layout->setStretch(7, 1);
+  } else {
+    balance->setFixedWidth(mark->width() + layout->spacing() + words->sizeHint().width());
+    balance->show();
+    layout->setStretch(2, 1);
+    layout->setStretch(4, 1);
+    layout->setStretch(7, 0);
+  }
+  layout->invalidate();
 }
 
 void MainWindow::showAbout() {
