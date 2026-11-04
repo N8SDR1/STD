@@ -503,16 +503,43 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   connect(analog, &QCheckBox::toggled, this, [](bool on) {
     QSettings().setValue(QStringLiteral("rade/analog"), on);
   });
+  auto* denoise = new QCheckBox(QStringLiteral("Mic NR"), radeAudio_);
+  denoise->setObjectName(QStringLiteral("radeDenoise"));
+  denoise->setFont(barFont());
+  denoise->setFocusPolicy(Qt::NoFocus);
+  denoise->setChecked(QSettings().value(QStringLiteral("rade/denoise"), true).toBool());
+  denoise->setToolTip(QStringLiteral(
+      "Mic noise suppression (RNNoise) before the encoder, as in the FreeDV app, where it "
+      "is on by default. It takes fans, hum and room noise out of what you send. "
+      "This does not key. START is never sent."));
+  connect(denoise, &QCheckBox::toggled, this, [](bool on) {
+    QSettings().setValue(QStringLiteral("rade/denoise"), on);
+  });
+  auto* wide = new QCheckBox(QStringLiteral("BW expand"), radeAudio_);
+  wide->setObjectName(QStringLiteral("radeWide"));
+  wide->setFont(barFont());
+  wide->setFocusPolicy(Qt::NoFocus);
+  wide->setChecked(QSettings().value(QStringLiteral("rade/wide"), true).toBool());
+  wide->setToolTip(QStringLiteral(
+      "Bandwidth expander for decoded speech, as in the FreeDV app, where it is on by "
+      "default. RADE speech is 16 kHz; this fills in the band above 8 kHz so it plays at "
+      "48 kHz and sounds fuller. Off plays the same speech without the top band. "
+      "This does not key. START is never sent."));
+  connect(wide, &QCheckBox::toggled, this, [](bool on) {
+    QSettings().setValue(QStringLiteral("rade/wide"), on);
+  });
   audio->addWidget(micLabel);
   audio->addWidget(radeMicBox_);
   audio->addWidget(driveLabel);
   audio->addWidget(drive);
   audio->addWidget(driveValue);
+  audio->addWidget(denoise);
   audio->addWidget(speakerLabel);
   audio->addWidget(radeSpeakerBox_);
   audio->addWidget(volumeLabel);
   audio->addWidget(radeVolume_);
   audio->addWidget(radeVolumeValue_);
+  audio->addWidget(wide);
   audio->addWidget(analog);
   audio->addStretch(1);
   radeAudio_->hide();

@@ -55,6 +55,15 @@ bool RadeLink::load() {
   errorFn_ = reinterpret_cast<ErrFn>(GetProcAddress(mod, "std_rade_error"));
   call_ = reinterpret_cast<CallFn>(GetProcAddress(mod, "std_rade_set_callsign"));
   heard_ = reinterpret_cast<HeardFn>(GetProcAddress(mod, "std_rade_heard"));
+  options_ = reinterpret_cast<OptionsFn>(GetProcAddress(mod, "std_rade_set_options"));
+  auto rateFn = reinterpret_cast<SyncFn>(GetProcAddress(mod, "std_rade_speech_rate"));
+  // The speaker plays 48 kHz. An older DLL that speaks 16 kHz would play
+  // three times too fast, so refuse it.
+  if (!rateFn || rateFn() != 48000) {
+    error_ = QStringLiteral("std_rade.dll is an older build. TX stays off. START was not sent.");
+    open_ = nullptr;
+    return false;
+  }
   if (!open_ || !close_ || !tx_ || !finish_ || !rx_ || !sync_ || !snr_ || !selftest_) {
     error_ = QStringLiteral("std_rade.dll is missing an export. TX stays off. START was not sent.");
     open_ = nullptr;
@@ -122,6 +131,11 @@ int RadeLink::sync() {
 void RadeLink::setCallsign(const QString& call) {
   if (call_)
     call_(call.trimmed().toUpper().toLatin1().constData());
+}
+
+void RadeLink::setOptions(bool denoise, bool wide) {
+  if (options_)
+    options_(denoise ? 1 : 0, wide ? 1 : 0);
 }
 
 int RadeLink::heard(QString* call) {

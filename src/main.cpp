@@ -33,6 +33,7 @@
 #include "modem/ToneClock.h"
 #include "rade/RadeLink.h"
 #include "wspr/WsprModem.h"
+#include "spot/FreeDvReporter.h"
 #include "spot/PskReporter.h"
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
@@ -86,6 +87,9 @@
 #include <QScrollBar>
 #include <QHash>
 #include <QCheckBox>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QComboBox>
 #include <QDataStream>
 #include <QDate>
@@ -1067,6 +1071,14 @@ int shellReady(MainWindow& window) {
     auto* tx1 = window.findChild<QWidget*>(QStringLiteral("tx1"));
     if (window.findChild<QPushButton*>(QStringLiteral("radeDigu")))
       return fail("RADE sideband button is back");
+    {
+      auto* denoise = window.findChild<QCheckBox*>(QStringLiteral("radeDenoise"));
+      auto* wide = window.findChild<QCheckBox*>(QStringLiteral("radeWide"));
+      if (!denoise || !wide || denoise->parentWidget() != audio || wide->parentWidget() != audio ||
+          !denoise->toolTip().contains(QLatin1String("RNNoise")) ||
+          !wide->toolTip().contains(QLatin1String("48 kHz")))
+        return fail("RADE Mic NR or BW expand is missing from the audio row");
+    }
     if (!variant || !analog || !bpf || !drive || !sync || !snr || !micBox || !spkBox ||
         !radeVol || !audio || !rx || !radeHellBox || !tx1 || !screen->isVisible() || audio->isHidden() ||
         variant->currentText() != QLatin1String("RADE V1") || bpf->isChecked() || !rx->isHidden() ||
@@ -3560,6 +3572,29 @@ int shellReady(MainWindow& window) {
   if (pskReporterModeName(QStringLiteral("JT65A")) != QLatin1String("JT65") ||
       pskReporterModeName(QStringLiteral("Q65A")) != QLatin1String("Q65"))
     return fail("PSK Reporter mode name is wrong");
+  {
+    // FreeDV Reporter, socket.io v4 protocol 2, as freedv-gui sends it.
+    const QByteArray hello = freedvReporterConnectPacket(QStringLiteral("n8sdr"), QStringLiteral("EM79"),
+                                                         QStringLiteral("STD 1"), false);
+    const QJsonObject auth = QJsonDocument::fromJson(hello.mid(2)).object();
+    if (!hello.startsWith("40{") || auth.value(QStringLiteral("role")).toString() != QLatin1String("report") ||
+        auth.value(QStringLiteral("callsign")).toString() != QLatin1String("N8SDR") ||
+        auth.value(QStringLiteral("grid_square")).toString() != QLatin1String("EM79") ||
+        auth.value(QStringLiteral("protocol_version")).toInt() != 2 ||
+        auth.value(QStringLiteral("rx_only")).toBool(true))
+      return fail("FreeDV Reporter connect packet is wrong");
+    const QJsonObject view = QJsonDocument::fromJson(
+        freedvReporterConnectPacket(QString(), QStringLiteral("EM79"), QStringLiteral("STD 1"), false).mid(2)).object();
+    if (view.value(QStringLiteral("role")).toString() != QLatin1String("view") || view.contains(QStringLiteral("callsign")))
+      return fail("FreeDV Reporter reported without a callsign");
+    const QByteArray freq = freedvReporterEvent(
+        QStringLiteral("freq_change"),
+        QJsonDocument(QJsonObject{{QStringLiteral("freq"), QJsonValue(qint64(14236000))}}).toJson(QJsonDocument::Compact));
+    if (freq != QByteArray("42[\"freq_change\",{\"freq\":14236000}]") ||
+        freedvReporterEvent(QStringLiteral("hide_self")) != QByteArray("42[\"hide_self\"]") ||
+        freedvReporterModeName(false) != QLatin1String("RADEV1"))
+      return fail("FreeDV Reporter event is wrong");
+  }
   const QString mapUrl = pskReporterMapUrl(QStringLiteral("n8sdr"));
   if (!mapUrl.startsWith(QLatin1String("https://pskreporter.info/pskmap.html")) ||
       !mapUrl.contains(QLatin1String("callsign=N8SDR")))

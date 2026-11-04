@@ -1,7 +1,8 @@
 // Copyright (C) 2026 Rick Langford (N8SDR)
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// RADE voice. librade modulates 8 kHz real SSB. FARGAN speaks at 16 kHz.
+// RADE voice. librade modulates 8 kHz real SSB. FARGAN speaks at 16 kHz and
+// the bandwidth expander turns that into 48 kHz for the speaker.
 // The microphone and speaker are the Speech devices. End-of-over bits
 // carry the Options -> User callsign the way FreeDV sends it.
 
@@ -12,6 +13,7 @@
 #include "TciClient.h"
 #include "rade/RadeScreen.h"
 #include "rade/RadeSpeaker.h"
+#include "spot/FreeDvReporter.h"
 #include "speech/SpeechInput.h"
 
 #include <QCheckBox>
@@ -32,6 +34,12 @@ int radeDrivePercent(QWidget* window) {
   return std::clamp(QSettings().value(QStringLiteral("rade/drive"), 70).toInt(), 0, 100);
 }
 
+bool radeBox(QWidget* window, const char* name, const char* key) {
+  if (auto* box = window->findChild<QCheckBox*>(QString::fromLatin1(name)))
+    return box->isChecked();
+  return QSettings().value(QString::fromLatin1(key), true).toBool();
+}
+
 bool radeAnalogOn(QWidget* window) {
   if (auto* box = window->findChild<QCheckBox*>(QStringLiteral("radeAnalog")))
     return box->isChecked();
@@ -39,6 +47,39 @@ bool radeAnalogOn(QWidget* window) {
 }
 
 }  // namespace
+
+void MainWindow::applyRadeOptions() {
+  const int want = (radeBox(this, "radeDenoise", "rade/denoise") ? 1 : 0) |
+                   (radeBox(this, "radeWide", "rade/wide") ? 2 : 0);
+  if (want == radeOptions_)
+    return;
+  radeOptions_ = want;
+  rade_.setOptions((want & 1) != 0, (want & 2) != 0);
+}
+
+void MainWindow::updateFreedvReporter(bool now) {
+  const qint64 ms = QDateTime::currentMSecsSinceEpoch();
+  if (!now && ms - freedvReporterMs_ < 500)
+    return;
+  freedvReporterMs_ = ms;
+  const bool rade = profile_ && radeMode(profile_->digitalMode());
+  const bool on = rade && tci_ && tci_->isOpen() &&
+                  QSettings().value(QStringLiteral("dx/freedvReporterEnabled"), false).toBool();
+  if (!freedvReporter_) {
+    if (!on)
+      return;
+    freedvReporter_ = new FreeDvReporter(this);
+    connect(freedvReporter_, &FreeDvReporter::status, this, [this](const QString& text) {
+      if (profile_ && radeMode(profile_->digitalMode()))
+        setTxStatus(text);
+    });
+  }
+  if (on) {
+    freedvReporter_->setFrequency(liveDialHz_);
+    freedvReporter_->setTransmit(freedvReporterModeName(radeV2(profile_->digitalMode())), txRade_);
+  }
+  freedvReporter_->setActive(on, stationCall(), stationGrid());
+}
 
 void MainWindow::applyRadePlaybackVolume(int percent) {
   if (radeSpeaker_)
@@ -62,6 +103,7 @@ void MainWindow::applyRadeOutput(const QString& id) {
 }
 
 void MainWindow::ensureRadeCodec() {
+  updateFreedvReporter(true);
   auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"));
   const bool want = profile_ && radeMode(profile_->digitalMode());
   if (!want) {
@@ -149,6 +191,7 @@ void MainWindow::beginRadeTx() {
     stopTune(true);
   // FreeDV stations and FreeDV Reporter read the call from the end-of-over.
   rade_.setCallsign(stationCall());
+  applyRadeOptions();
   if (!radeMic_)
     radeMic_ = new SpeechInput(this);
   const QString micId = QSettings().value(QStringLiteral("speech/mic")).toString();
@@ -176,6 +219,7 @@ void MainWindow::beginRadeTx() {
   }
   txRade_ = true;
   txKeySent_ = true;
+  updateFreedvReporter(true);
   markWaterfallTx();
   if (button)
     button->setText(QStringLiteral("ON AIR"));
@@ -185,6 +229,7 @@ void MainWindow::beginRadeTx() {
 }
 
 void MainWindow::pumpRadeTx() {
+  updateFreedvReporter(false);
   if (!tci_ || !tci_->isTransmitting()) {
     stopUserTx(true);
     setTxStatus(QStringLiteral("RADE stopped. TRX is off. START was not sent."));
@@ -307,6 +352,8 @@ void MainWindow::pushRadeRx(const float* samples, int count, int rate) {
     return;
   if (rate < 1000)
     rate = 48000;
+  applyRadeOptions();
+  updateFreedvReporter(false);
   std::vector<float> modem;
   radeRxConv_.process(samples, count, rate, 8000, modem);
   for (float& sample : modem)
@@ -315,7 +362,8 @@ void MainWindow::pushRadeRx(const float* samples, int count, int rate) {
   int speechN = 0;
   std::vector<float> speech;
   if (!modem.empty()) {
-    speech.resize(static_cast<size_t>(modem.size()) * 4 + 8192);
+    // 8 kHz modem to 48 kHz speech is 6x; leave room for a whole frame more.
+    speech.resize(static_cast<size_t>(modem.size()) * 12 + 24576);
     speechN = rade_.rx(modem.data(), int(modem.size()), speech.data(), int(speech.size()));
     if (speechN < 0)
       speechN = 0;
@@ -328,9 +376,21 @@ void MainWindow::pushRadeRx(const float* samples, int count, int rate) {
     const QString utc = QDateTime::currentDateTimeUtc().toString(QStringLiteral("HH:mm"));
     if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
       screen->setHeard(heardCall, utc);
-    if (!heardCall.isEmpty())
+    if (!heardCall.isEmpty()) {
       setTxStatus(QStringLiteral("RADE heard %1 at %2 UTC. This does not key. START was not sent.")
                       .arg(heardCall, utc));
+      if (freedvReporter_)
+        freedvReporter_->reportReceive(heardCall, freedvReporterModeName(radeV2(profile_->digitalMode())),
+                                       int(std::lround(rade_.snr())));
+      radeSyncReportMs_ = now;
+    }
+  }
+  // While in sync with no callsign yet, FreeDV Reporter is told once a
+  // second that something is being received, as the FreeDV app does.
+  if (sync && freedvReporter_ && now - radeSyncReportMs_ >= 1000) {
+    radeSyncReportMs_ = now;
+    freedvReporter_->reportReceive(QString(), freedvReporterModeName(radeV2(profile_->digitalMode())),
+                                   int(std::lround(rade_.snr())));
   }
   if (now - radeMeterMs_ > 100) {
     radeMeterMs_ = now;
@@ -351,7 +411,7 @@ void MainWindow::pushRadeRx(const float* samples, int count, int rate) {
   }
   if (!sync && radeAnalogOn(this)) {
     std::vector<float> analog;
-    radeAnalogConv_.process(samples, count, rate, 16000, analog);
+    radeAnalogConv_.process(samples, count, rate, 48000, analog);
     if (!analog.empty())
       playRadePcm(analog.data(), int(analog.size()));
   }

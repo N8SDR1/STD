@@ -48,7 +48,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
       "V1 is the default waveform, about 1500 Hz wide. V2 is experimental, "
       "about 860 Hz, and will not decode V1. Drive is between Mic and Speaker. "
       "Analog is after Volume. BPF is after Waveform. TX and Halt are on this row. The band buttons set DIGU or DIGL. "
-      "Speech is 16 kHz. The modem is 8 kHz."),
+      "The mic is 16 kHz, speech plays at 48 kHz. The modem is 8 kHz."),
       this);
   intro->setObjectName(QStringLiteral("radeIntro"));
   intro->setFont(uiFont());
@@ -167,7 +167,8 @@ void RadeScreen::setLinkReady(bool ready) {
   if (!link_)
     return;
   link_->setText(ready ? QStringLiteral(
-                             "librade and FARGAN are linked. Speech is 16 kHz. The modem is 8 kHz. "
+                             "librade, FARGAN, RNNoise and the bandwidth expander are linked. "
+                             "Speech plays at 48 kHz. The modem is 8 kHz. "
                              "Connect sends AUDIO_START:0. TX uses trx with tci. START is never sent.")
                        : QStringLiteral(
                              "librade did not load. TX stays off. Sync stays idle. "

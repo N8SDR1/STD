@@ -4123,7 +4123,9 @@ void MainWindow::showGuide() {
        "out without gaps. The band buttons set the sideband over TCI: DIGL on 160, 80, and 40 m, "
        "DIGU on 30 m and up, the FreeDV convention. The waterfall cursor goes to 1500 Hz, where the "
        "modem sits. Analog passthrough is the separate voice mix. STD does not set the radio filter. "
-       "Under the band chips the row is Mic, a short Drive, Speaker, Volume, then Analog. "
+       "Under the band chips the row is Mic, a short Drive, Mic NR, Speaker, Volume, BW expand, "
+       "then Analog. Mic NR is RNNoise noise suppression on your microphone and BW expand fills in "
+       "the band above 8 kHz on decoded speech, both on by default as in the FreeDV app. "
        "Drive 0 is silent and 100 is the FreeDV app's level; set it so ALC barely moves. The "
        "microphone is levelled before the encoder, as FreeDV does, so speak normally. "
        "Heard shows the callsign from the other station's end-of-over. Volume is the Speech playback "
@@ -4137,7 +4139,10 @@ void MainWindow::showGuide() {
        "3.697, 3.803, and the 3.640 net. Click the same band button to cycle those dials. "
        "Type a dial in Extra and press Enter to keep it for this mode and band. Right-click Extra "
        "clears those extras. 30 m and 6 m have no reporter dial. librade and FARGAN are linked. "
-       "Speech is 16 kHz and the modem is 8 kHz. TX uses the Speech microphone and trx with tci. "
+       "The mic is 16 kHz, decoded speech plays at 48 kHz, and the modem is 8 kHz. TX uses the "
+       "Speech microphone and trx with tci. FreeDV Reporter, under Options → Network Configuration, "
+       "is Off until you choose On; then while RADE is the mode it shows your call, locator, dial, "
+       "and TX on qso.freedv.org and reports each RADE station you hear. "
        "Connect still sends AUDIO_START for receiver 0. A useful passband is "
        "about 750 to 2250 Hz, with radio NR off. START is never sent."},
       {"FT8, FT4, and FT2",
@@ -4513,7 +4518,10 @@ void MainWindow::showGuide() {
        "a key. WSPRnet reports opens the page of stations reported by the callsign saved under "
        "Options → User. PSK Reporter stays off until Enable is checked. WSPR stations go to PSK "
        "Reporter only when Also send WSPR spots is checked. WSPRnet stays off until On "
-       "is selected. A UDP option under Log Options also sends live decode packets "
+       "is selected. FreeDV Reporter, also in that dialog, is Off until On is chosen; then it "
+       "connects to qso.freedv.org only while RADE is the mode, shows your call, locator, dial and "
+       "TX, and reports each RADE station heard with its SNR. View FreeDV Reporter opens the map "
+       "and does not connect. A UDP option under Log Options also sends live decode packets "
        "for GridTracker. Decode List Options "
        "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
        "decode is on by default. Log options, the ADIF path, the logger addresses, ASeq, TX "
@@ -8108,7 +8116,10 @@ void MainWindow::stopUserTx(bool uncheck) {
   txSampleBase_ = 0;
   if (radeMic_)
     radeMic_->stop();
+  const bool wasRade = txRade_;
   txRade_ = false;
+  if (wasRade)
+    updateFreedvReporter(true);
   radeStopping_ = false;
   radeFinished_ = false;
   radeTailMs_ = 0;
@@ -9407,6 +9418,50 @@ void MainWindow::openNetworkDialog() {
                      "Choose Off and nothing is posted. This does not send START and does not key."),
       &dialog);
   wsprNote->setWordWrap(true);
+  auto* fdvChoice = new QWidget(&dialog);
+  fdvChoice->setObjectName(QStringLiteral("freedvReporterChoice"));
+  auto* fdvOff = new QRadioButton(QStringLiteral("Off"), fdvChoice);
+  auto* fdvOn = new QRadioButton(QStringLiteral("On"), fdvChoice);
+  fdvOff->setObjectName(QStringLiteral("freedvReporterOff"));
+  fdvOn->setObjectName(QStringLiteral("freedvReporterOn"));
+  fdvOff->setStyleSheet(wsprRadioStyle);
+  fdvOn->setStyleSheet(wsprRadioStyle);
+  auto* fdvGroup = new QButtonGroup(fdvChoice);
+  fdvGroup->setExclusive(true);
+  fdvGroup->addButton(fdvOff);
+  fdvGroup->addButton(fdvOn);
+  const bool fdvSaved = settings.value(QStringLiteral("dx/freedvReporterEnabled"), false).toBool();
+  fdvOn->setChecked(fdvSaved);
+  fdvOff->setChecked(!fdvSaved);
+  const QString fdvTip = QStringLiteral(
+      "On shows you on FreeDV Reporter (qso.freedv.org) while a RADE mode is selected: your call, "
+      "locator, dial frequency, when you transmit, and each RADE station you hear with its SNR. "
+      "Off connects to nothing. Does not key. START is never sent.");
+  fdvOff->setToolTip(fdvTip);
+  fdvOn->setToolTip(fdvTip);
+  auto* fdvLabel = new QLabel(QStringLiteral("FreeDV Reporter"), fdvChoice);
+  fdvLabel->setStyleSheet(QStringLiteral("color: #f7ffff; font-size: 14px;"));
+  auto* fdvRow = new QHBoxLayout(fdvChoice);
+  fdvRow->setContentsMargins(0, 6, 0, 0);
+  fdvRow->setSpacing(14);
+  fdvRow->addWidget(fdvLabel);
+  fdvRow->addWidget(fdvOff);
+  fdvRow->addWidget(fdvOn);
+  fdvRow->addStretch(1);
+  auto* fdvNote = new QLabel(
+      QStringLiteral("FreeDV Reporter is the live map the FreeDV app reports to. STD connects only while "
+                     "RADE V1 or V2 is the mode and the radio is connected, and leaves when you change mode. "
+                     "The callsign and locator are the ones in Options → User; with either empty nothing is "
+                     "sent. View FreeDV Reporter opens the map and does not connect. "
+                     "This does not send START and does not key."),
+      &dialog);
+  fdvNote->setWordWrap(true);
+  auto* fdvView = new QPushButton(QStringLiteral("View FreeDV Reporter"), &dialog);
+  fdvView->setObjectName(QStringLiteral("freedvReporterView"));
+  fdvView->setToolTip(QStringLiteral(
+      "Opens qso.freedv.org in the browser. Does not connect, does not key, and does not send START."));
+  connect(fdvView, &QPushButton::clicked, this,
+          [] { QDesktopServices::openUrl(QUrl(QStringLiteral("https://qso.freedv.org/"))); });
   auto* map = new QPushButton(QStringLiteral("View spots"), &dialog);
   map->setObjectName(QStringLiteral("pskReporterMap"));
   map->setToolTip(QStringLiteral(
@@ -9424,6 +9479,7 @@ void MainWindow::openNetworkDialog() {
   auto* buttons = new QHBoxLayout;
   buttons->addWidget(map);
   buttons->addWidget(reports);
+  buttons->addWidget(fdvView);
   buttons->addStretch(1);
   buttons->addWidget(ok);
   buttons->addWidget(cancel);
@@ -9434,6 +9490,8 @@ void MainWindow::openNetworkDialog() {
   layout->addWidget(note);
   layout->addWidget(wsprChoice);
   layout->addWidget(wsprNote);
+  layout->addWidget(fdvChoice);
+  layout->addWidget(fdvNote);
   layout->addLayout(buttons);
   connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
   connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -9443,6 +9501,7 @@ void MainWindow::openNetworkDialog() {
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
   store.setValue(QStringLiteral("dx/reportWspr"), reportWspr->isChecked());
   store.setValue(QStringLiteral("dx/wsprnetEnabled"), wsprOn->isChecked());
+  store.setValue(QStringLiteral("dx/freedvReporterEnabled"), fdvOn->isChecked());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
   store.setValue(QStringLiteral("dx/reportAntenna"), antenna->text().trimmed());
@@ -9453,6 +9512,7 @@ void MainWindow::openNetworkDialog() {
   refreshDecodes();
   applyStationLock();
   refreshTxFields();
+  updateFreedvReporter(true);
 }
 
 void MainWindow::rememberQso(const QString& call, const QString& grid, const QString& theirReport,

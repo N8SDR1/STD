@@ -7,7 +7,8 @@
 
 // Loads std_rade.dll (cdecl) from the executable directory. The DLL is
 // built from freedv/rade_c c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9.
-// Speech is 16 kHz float. Modem samples are 8 kHz real, nominal 1.
+// Speech goes in at 16 kHz and comes out at 48 kHz, float. Modem samples
+// are 8 kHz real, nominal 1.
 class RadeLink {
 public:
   RadeLink();
@@ -32,6 +33,9 @@ public:
   int sync();
   // Callsign for the V1 end-of-over, as FreeDV sends it. Ignored on V2.
   void setCallsign(const QString& call);
+  // Mic noise suppression (RNNoise) and the speech bandwidth expander, as
+  // in the FreeDV app. Both are on until this is called.
+  void setOptions(bool denoise, bool wide);
   // Last callsign read from an end-of-over; seq goes up with each new one.
   int heard(QString* call);
   float snr();
@@ -57,6 +61,7 @@ private:
   using ErrFn = const char* (*)();
   using CallFn = void (*)(const char*);
   using HeardFn = int (*)(char*, int);
+  using OptionsFn = void (*)(int, int);
   OpenFn open_ = nullptr;
   CloseFn close_ = nullptr;
   TxFn tx_ = nullptr;
@@ -68,6 +73,7 @@ private:
   ErrFn errorFn_ = nullptr;
   CallFn call_ = nullptr;
   HeardFn heard_ = nullptr;
+  OptionsFn options_ = nullptr;
 };
 
 // Offscreen self-test. 0 means rade_tx produced energy and rade_rx accepted it.

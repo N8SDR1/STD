@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build std_rade.dll against freedv/rade_c c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9.
+# Build std_rade.dll against freedv/rade_c c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9
+# and freedv/rnnoise (scripts/build_rnnoise.sh).
 # Usage: build_rade_shim.sh <dest-dir> <std_rade_shim.c>
 set -eu
 export PATH="/mingw64/bin:/usr/bin:$PATH"
@@ -26,12 +27,15 @@ if [ ! -f "$DLL" ] || [ ! -f "$IMPLIB" ] || [ ! -f "$OPUS" ]; then
   echo "librade build products are missing under $RADE/build-mingw" >&2
   exit 1
 fi
+# RNNoise for the mic, pinned to the commit the FreeDV app uses.
+RNLIB="$(sh "$ROOT/scripts/build_rnnoise.sh")"
+RNINC="/c/Users/N8SDR/src/rnnoise/include"
+OB="$RADE/build-mingw/build_opus-prefix/src/build_opus"
 mkdir -p "$DEST"
-gcc -O2 -shared -fno-stack-protector \
-  -I"$RADE/build-mingw/build_opus-prefix/src/build_opus/dnn" \
-  -I"$RADE/build-mingw/build_opus-prefix/src/build_opus/include" \
-  -I"$RADE/build-mingw/build_opus-prefix/src/build_opus/celt" \
-  -o "$DEST/std_rade.dll" "$SHIM" "$IMPLIB" "$OPUS" -lm
+gcc -O2 -shared -fno-stack-protector -Wno-cpp -DHAVE_CONFIG_H \
+  -I"$OB" -I"$OB/dnn" -I"$OB/include" -I"$OB/celt" -I"$OB/silk" -I"$OB/silk/float" \
+  -I"$RNINC" -I"$ROOT/src/rade" \
+  -o "$DEST/std_rade.dll" "$SHIM" "$IMPLIB" "$OPUS" "$RNLIB" -lm
 cp -f "$DLL" "$DEST/librade.dll"
 for dep in libgcc_s_seh-1.dll libwinpthread-1.dll libstdc++-6.dll; do
   src="$(gcc -print-file-name="$dep")"

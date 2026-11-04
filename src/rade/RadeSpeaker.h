@@ -11,7 +11,7 @@
 #include <thread>
 #include <vector>
 
-// Plays 16 kHz mono float on the Speech speaker. The saved id is a
+// Plays 48 kHz mono float on the Speech speaker. The saved id is a
 // Windows voice-output token; the matching playback device is opened
 // by friendly name. This does not key and does not send START.
 class RadeSpeaker : public QObject {

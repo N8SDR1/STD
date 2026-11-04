@@ -5,7 +5,9 @@
  * The only source is https://github.com/freedv/rade_c at
  * c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9
  *
- * Speech in and out is 16 kHz float, about [-1, 1].
+ * Speech in is 16 kHz float and speech out is 48 kHz float, about [-1, 1].
+ * TX runs RNNoise on the mic and RX runs the Opus bandwidth expander, as
+ * the FreeDV app does; std_rade_set_options turns either off.
  * Modem in and out is 8 kHz real, the rade_tx real part (nominal 1).
  * STD applies the TCI scales. This file does not.
  * V1 end-of-over carries the callsign the way FreeDV does: a 6-bit
@@ -19,6 +21,9 @@
 #include <windows.h>
 
 #include "fargan.h"
+#include "osce.h"
+#include "osce_structs.h"
+#include "rnnoise.h"
 #include "std_rade_hra.h"
 #include "lpcnet.h"
 
@@ -84,6 +89,8 @@ static float* g_eoo_bits;
 static float* g_speech;
 static int g_speech_n;
 static int g_speech_cap;
+static float* g_s16;
+static int g_s16_cap;
 static RADE_COMP* g_tx;
 static RADE_COMP* g_eoo;
 static RADE_COMP* g_rx_scratch;
@@ -222,6 +229,180 @@ static int agc_feed(const float* in, int n, float* out) {
   return produced;
 }
 
+/* ---- 16 kHz <-> 48 kHz, RNNoise, and bandwidth expansion ---------------
+ * RNNoise works on 48 kHz 10 ms frames. The bandwidth expander turns 16 kHz
+ * speech into 48 kHz with the band above 8 kHz filled in. Both are what the
+ * FreeDV app runs ("TX Noise Suppression" and "BW Expander", both on by
+ * default there). The 3:1 converters are a 144-tap Blackman-windowed sinc,
+ * cut off at 7.4 kHz, run as three 48-tap phases. */
+enum { kPhaseTaps = 48, kRnFrame = 480, kBweFrame = 320 };
+static float g_r3[3][kPhaseTaps];
+static int g_r3_built;
+
+static void build_r3(void) {
+  const double pi = 3.14159265358979323846;
+  const int n = 3 * kPhaseTaps;
+  const double fc = 7400.0 / 48000.0;
+  double sum = 0.0;
+  double h[3 * kPhaseTaps];
+  int i;
+  for (i = 0; i < n; i++) {
+    double t = (double)i - (double)(n - 1) / 2.0;
+    double arg = 2.0 * fc * t;
+    double sinc = fabs(arg) < 1e-12 ? 1.0 : sin(pi * arg) / (pi * arg);
+    double w = 0.42 - 0.5 * cos(2.0 * pi * i / (n - 1)) + 0.08 * cos(4.0 * pi * i / (n - 1));
+    h[i] = sinc * w;
+    sum += h[i];
+  }
+  for (i = 0; i < n; i++)
+    g_r3[i % 3][i / 3] = (float)(h[i] / sum);
+  g_r3_built = 1;
+}
+
+/* Up by 3: each 16 kHz input sample gives three 48 kHz outputs. */
+typedef struct {
+  float hist[kPhaseTaps];
+} Up3;
+
+static void up3_reset(Up3* u) {
+  memset(u, 0, sizeof *u);
+}
+
+static void up3_run(Up3* u, const float* in, int n, float* out) {
+  int i, p, k;
+  for (i = 0; i < n; i++) {
+    memmove(u->hist + 1, u->hist, (kPhaseTaps - 1) * sizeof(float));
+    u->hist[0] = in[i];
+    for (p = 0; p < 3; p++) {
+      float acc = 0.0f;
+      for (k = 0; k < kPhaseTaps; k++)
+        acc += g_r3[p][k] * u->hist[k];
+      out[3 * i + p] = 3.0f * acc;
+    }
+  }
+}
+
+/* Down by 3: three 48 kHz inputs give one 16 kHz output. */
+typedef struct {
+  float hist[3 * kPhaseTaps];
+  int phase;
+} Down3;
+
+static void down3_reset(Down3* d) {
+  memset(d, 0, sizeof *d);
+}
+
+static int down3_run(Down3* d, const float* in, int n, float* out) {
+  int i, k, produced = 0;
+  for (i = 0; i < n; i++) {
+    memmove(d->hist + 1, d->hist, (3 * kPhaseTaps - 1) * sizeof(float));
+    d->hist[0] = in[i];
+    if (++d->phase == 3) {
+      float acc = 0.0f;
+      d->phase = 0;
+      for (k = 0; k < 3 * kPhaseTaps; k++)
+        acc += g_r3[k % 3][k / 3] * d->hist[k];
+      out[produced++] = acc;
+    }
+  }
+  return produced;
+}
+
+static int g_denoise = 1;
+static int g_bwe = 1;
+static DenoiseState* g_rn;
+static int g_rn_first;
+static float g_rn_in[kRnFrame];
+static int g_rn_fill;
+static Up3 g_tx_up;
+static Down3 g_tx_down;
+
+static OSCEModel* g_osce;
+static silk_OSCE_BWE_struct* g_bwe_state;
+static int g_osce_ok;
+static opus_int16 g_bwe_in[kBweFrame];
+static int g_bwe_fill;
+static Up3 g_rx_up;
+
+static void denoise_reset(void) {
+  if (g_rn)
+    rnnoise_init(g_rn, NULL);
+  g_rn_first = 1;
+  g_rn_fill = 0;
+  up3_reset(&g_tx_up);
+  down3_reset(&g_tx_down);
+}
+
+static void bwe_reset(void) {
+  if (g_bwe_state)
+    osce_bwe_reset(g_bwe_state);
+  g_bwe_fill = 0;
+  up3_reset(&g_rx_up);
+}
+
+/* 16 kHz mic in, 16 kHz noise-suppressed mic out. The first RNNoise frame is
+ * dropped, as the FreeDV app does, so the model starts from a known state. */
+static int denoise_feed(const float* in, int n, float* out) {
+  float up[3 * 64];
+  float clean[kRnFrame];
+  int produced = 0;
+  int at = 0;
+  while (at < n) {
+    int chunk = n - at;
+    int i;
+    if (chunk > 64)
+      chunk = 64;
+    up3_run(&g_tx_up, in + at, chunk, up);
+    at += chunk;
+    for (i = 0; i < 3 * chunk; i++) {
+      /* RNNoise wants the 16-bit sample range. */
+      g_rn_in[g_rn_fill++] = up[i] * 32768.0f;
+      if (g_rn_fill == kRnFrame) {
+        int k;
+        g_rn_fill = 0;
+        rnnoise_process_frame(g_rn, clean, g_rn_in);
+        if (g_rn_first) {
+          g_rn_first = 0;
+          continue;
+        }
+        for (k = 0; k < kRnFrame; k++)
+          clean[k] *= 1.0f / 32768.0f;
+        produced += down3_run(&g_tx_down, clean, kRnFrame, out + produced);
+      }
+    }
+  }
+  return produced;
+}
+
+/* 16 kHz decoded speech in, 48 kHz speech out. With the expander off the
+ * speech is only resampled, so the band above 8 kHz stays empty. */
+static int widen_speech(const float* in, int n, float* out) {
+  int produced = 0;
+  int i;
+  if (!g_bwe || !g_osce_ok) {
+    up3_run(&g_rx_up, in, n, out);
+    return 3 * n;
+  }
+  for (i = 0; i < n; i++) {
+    float v = in[i] * 32768.0f;
+    if (v > 32767.0f)
+      v = 32767.0f;
+    if (v < -32768.0f)
+      v = -32768.0f;
+    g_bwe_in[g_bwe_fill++] = (opus_int16)lrintf(v);
+    if (g_bwe_fill == kBweFrame) {
+      opus_int16 wide[3 * kBweFrame];
+      int k;
+      g_bwe_fill = 0;
+      osce_bwe(g_osce, g_bwe_state, wide, g_bwe_in, kBweFrame, g_arch);
+      for (k = 0; k < 3 * kBweFrame; k++)
+        out[produced + k] = (float)wide[k] * (1.0f / 32768.0f);
+      produced += 3 * kBweFrame;
+    }
+  }
+  return produced;
+}
+
 static void set_err(const char* text) {
   snprintf(g_err, sizeof g_err, "%s", text ? text : "");
 }
@@ -235,6 +416,8 @@ static void reset_stream(void) {
   g_sync = 0;
   g_snr = 0.0f;
   agc_reset();
+  denoise_reset();
+  bwe_reset();
 }
 
 static void free_buffers(void) {
@@ -258,6 +441,18 @@ static void destroy_codec(void) {
   }
   free(g_fargan);
   g_fargan = NULL;
+  if (g_rn) {
+    rnnoise_destroy(g_rn);
+    g_rn = NULL;
+  }
+  free(g_osce);
+  g_osce = NULL;
+  free(g_bwe_state);
+  g_bwe_state = NULL;
+  g_osce_ok = 0;
+  free(g_s16);
+  g_s16 = NULL;
+  g_s16_cap = 0;
   if (g_r) {
     rade_close(g_r);
     g_r = NULL;
@@ -612,6 +807,26 @@ __declspec(dllexport) int std_rade_callsign_bits(const char* call, float* out, i
   return callsign_eoo_bits(call, out, n_bits);
 }
 
+/* Noise suppression on the mic and bandwidth expansion of decoded speech.
+ * Both are on by default, as in the FreeDV app. */
+__declspec(dllexport) void std_rade_set_options(int denoise, int bwe) {
+  EnterCriticalSection(&g_lock);
+  if (g_denoise != (denoise ? 1 : 0)) {
+    g_denoise = denoise ? 1 : 0;
+    denoise_reset();
+  }
+  if (g_bwe != (bwe ? 1 : 0)) {
+    g_bwe = bwe ? 1 : 0;
+    bwe_reset();
+  }
+  LeaveCriticalSection(&g_lock);
+}
+
+/* Speech out of std_rade_rx is at this rate. */
+__declspec(dllexport) int std_rade_speech_rate(void) {
+  return 48000;
+}
+
 __declspec(dllexport) const char* std_rade_error(void) {
   return g_err;
 }
@@ -667,6 +882,12 @@ __declspec(dllexport) int std_rade_open(int v2, int no_bpf) {
     return -1;
   }
   fargan_init(g_fargan);
+  if (!g_r3_built)
+    build_r3();
+  g_rn = rnnoise_create(NULL);
+  g_osce = (OSCEModel*)calloc(1, sizeof(OSCEModel));
+  g_bwe_state = (silk_OSCE_BWE_struct*)calloc(1, sizeof(silk_OSCE_BWE_struct));
+  g_osce_ok = g_osce && g_bwe_state && osce_load_models(g_osce, NULL, 0) == 0;
   reset_stream();
   {
     float zeros[FARGAN_CONT_SAMPLES];
@@ -677,8 +898,9 @@ __declspec(dllexport) int std_rade_open(int v2, int no_bpf) {
     g_fargan_ready = 1;
   }
   apply_callsign();
-  snprintf(g_err, sizeof g_err, "open v%d features %d tx %d eoo %d nin %d", g_v2 ? 2 : 1, g_n_feat,
-           g_n_tx, g_n_eoo, g_nin_max);
+  snprintf(g_err, sizeof g_err, "open v%d features %d tx %d eoo %d nin %d rnnoise %s bwe %s",
+           g_v2 ? 2 : 1, g_n_feat, g_n_tx, g_n_eoo, g_nin_max, g_rn ? "ok" : "missing",
+           g_osce_ok ? "ok" : "missing");
   LeaveCriticalSection(&g_lock);
   return 0;
 }
@@ -699,12 +921,19 @@ __declspec(dllexport) int std_rade_tx(const float* speech, int n, float* modem, 
     return -1;
   }
   if (n > 0 && speech) {
-    if (!ensure_speech(g_speech_n + n + kAgcBlock)) {
+    if (!ensure_speech(g_speech_n + 2 * n + 2 * kRnFrame + kAgcBlock)) {
       set_err("speech buffer failed");
       LeaveCriticalSection(&g_lock);
       return -1;
     }
-    g_speech_n += agc_feed(speech, n, g_speech + g_speech_n);
+    if (g_denoise && g_rn) {
+      /* Denoise into the free end of the buffer, then level in place. */
+      float* tail = g_speech + g_speech_n + n + kRnFrame;
+      const int clean = denoise_feed(speech, n, tail);
+      g_speech_n += agc_feed(tail, clean, g_speech + g_speech_n);
+    } else {
+      g_speech_n += agc_feed(speech, n, g_speech + g_speech_n);
+    }
   }
   written = pull_features(modem, cap, 0);
   if (written < 0)
@@ -728,6 +957,7 @@ __declspec(dllexport) int std_rade_finish(float* modem, int cap) {
   g_speech_n = 0;
   g_feat_idx = 0;
   agc_reset();
+  denoise_reset();
   if (written + g_n_eoo > cap) {
     set_err("end-of-over frame did not fit");
     LeaveCriticalSection(&g_lock);
@@ -748,6 +978,7 @@ __declspec(dllexport) int std_rade_finish(float* modem, int cap) {
 
 __declspec(dllexport) int std_rade_rx(const float* modem, int n, float* speech, int cap) {
   int written = 0;
+  int cap16;
   int i;
   EnterCriticalSection(&g_lock);
   if (!g_r || !g_fargan || !speech || cap < 1) {
@@ -772,6 +1003,23 @@ __declspec(dllexport) int std_rade_rx(const float* modem, int n, float* speech, 
     }
     g_rx_n += n;
   }
+  /* FARGAN speaks 16 kHz; that becomes 48 kHz on the way out. Leave room
+   * for a part frame held by the expander. */
+  cap16 = cap / 3 - kBweFrame;
+  if (cap16 < g_frames_per * LPCNET_FRAME_SIZE) {
+    LeaveCriticalSection(&g_lock);
+    return 0;
+  }
+  if (cap16 > g_s16_cap) {
+    float* next = (float*)realloc(g_s16, (size_t)cap16 * sizeof(float));
+    if (!next) {
+      set_err("speech buffer failed");
+      LeaveCriticalSection(&g_lock);
+      return -1;
+    }
+    g_s16 = next;
+    g_s16_cap = cap16;
+  }
   for (;;) {
     int nin = rade_nin(g_r);
     int has_eoo = 0;
@@ -785,7 +1033,7 @@ __declspec(dllexport) int std_rade_rx(const float* modem, int n, float* speech, 
     }
     if (g_rx_n < nin)
       break;
-    if (written + g_frames_per * LPCNET_FRAME_SIZE > cap)
+    if (written + g_frames_per * LPCNET_FRAME_SIZE > cap16)
       break;
     memcpy(g_rx_scratch, g_rx_pending, (size_t)nin * sizeof(RADE_COMP));
     memmove(g_rx_pending, g_rx_pending + nin, (size_t)(g_rx_n - nin) * sizeof(RADE_COMP));
@@ -802,9 +1050,10 @@ __declspec(dllexport) int std_rade_rx(const float* modem, int n, float* speech, 
         g_heard_seq++;
       }
     } else if (n_out > 0) {
-      synthesize_features(g_feat_out, n_out, speech, cap, &written);
+      synthesize_features(g_feat_out, n_out, g_s16, cap16, &written);
     }
   }
+  written = written > 0 ? widen_speech(g_s16, written, speech) : 0;
   LeaveCriticalSection(&g_lock);
   return written;
 }
@@ -823,6 +1072,95 @@ __declspec(dllexport) float std_rade_snr(void) {
   snr = g_r && g_sync ? g_snr : 0.0f;
   LeaveCriticalSection(&g_lock);
   return snr;
+}
+
+static double rms(const float* x, int n) {
+  double e = 0.0;
+  int i;
+  for (i = 0; i < n; i++)
+    e += (double)x[i] * (double)x[i];
+  return n > 0 ? sqrt(e / n) : 0.0;
+}
+
+/* Power of x at f Hz, by Goertzel. */
+static double tone_power(const float* x, int n, double f, double fs) {
+  const double w = 2.0 * 3.14159265358979323846 * f / fs;
+  const double c = 2.0 * cos(w);
+  double s1 = 0.0, s2 = 0.0;
+  int i;
+  for (i = 0; i < n; i++) {
+    const double s0 = x[i] + c * s1 - s2;
+    s2 = s1;
+    s1 = s0;
+  }
+  return (s1 * s1 + s2 * s2 - c * s1 * s2) / ((double)n * n);
+}
+
+/* The 3:1 converters keep a tone, RNNoise takes noise down, and the
+ * expander puts energy above 8 kHz that plain resampling does not. */
+static int check_dsp(void) {
+  enum { kN = 16000 };
+  static float in[kN], mid[3 * kN], out[3 * kN + 3 * kBweFrame];
+  const int saved_bwe = g_bwe;
+  double a, b, hi_on = 0.0, hi_off = 0.0;
+  unsigned seed = 12345u;
+  int i, n, m;
+  if (!g_rn || !g_osce_ok) {
+    snprintf(g_err, sizeof g_err, "rnnoise %s bwe %s", g_rn ? "ok" : "missing",
+             g_osce_ok ? "ok" : "missing");
+    return -1;
+  }
+  for (i = 0; i < kN; i++)
+    in[i] = 0.3f * sinf(2.0f * 3.14159265f * 1000.0f * (float)i / 16000.0f);
+  up3_reset(&g_tx_up);
+  down3_reset(&g_tx_down);
+  up3_run(&g_tx_up, in, kN, mid);
+  n = down3_run(&g_tx_down, mid, 3 * kN, out);
+  a = rms(in + kN / 2, kN / 2);
+  b = rms(out + n / 2, n - n / 2);
+  if (n != kN || b < 0.95 * a || b > 1.05 * a) {
+    snprintf(g_err, sizeof g_err, "3:1 converters lost the tone (%d samples, %.3f vs %.3f)", n, b, a);
+    return -1;
+  }
+  for (i = 0; i < kN; i++) {
+    seed = seed * 1664525u + 1013904223u;
+    in[i] = 0.05f * ((float)(seed >> 8) / 8388608.0f - 1.0f);
+  }
+  denoise_reset();
+  n = denoise_feed(in, kN, out);
+  a = rms(in, kN);
+  b = rms(out + n / 2, n - n / 2);
+  denoise_reset();
+  if (n < kN / 2 || b > 0.3 * a) {
+    snprintf(g_err, sizeof g_err, "rnnoise did not take noise down (%d samples, %.4f vs %.4f)", n, b, a);
+    return -1;
+  }
+  /* A 150 Hz buzz with all its harmonics, like a voiced vowel. */
+  for (i = 0; i < kN; i++) {
+    float phase = (float)i * 150.0f / 16000.0f;
+    float frac = phase - floorf(phase);
+    in[i] = 0.4f * (frac - 0.5f);
+  }
+  for (m = 0; m < 2; m++) {
+    double hi = 0.0;
+    g_bwe = m == 0;
+    bwe_reset();
+    n = widen_speech(in, kN, out);
+    for (i = 0; i < 4; i++)
+      hi += tone_power(out + n / 2, n / 2, 10050.0 + 1500.0 * i, 48000.0);
+    if (m == 0)
+      hi_on = hi;
+    else
+      hi_off = hi;
+  }
+  g_bwe = saved_bwe;
+  bwe_reset();
+  if (n < 3 * kN - 3 * kBweFrame || hi_on < 100.0 * hi_off || hi_on <= 0.0) {
+    snprintf(g_err, sizeof g_err, "bandwidth expander added nothing above 8 kHz (%.3g vs %.3g)", hi_on,
+             hi_off);
+    return -1;
+  }
+  return 0;
 }
 
 __declspec(dllexport) int std_rade_selftest(void) {
@@ -859,6 +1197,8 @@ __declspec(dllexport) int std_rade_selftest(void) {
   /* The end-of-over must carry a callsign and read back. */
   snprintf(g_call, sizeof g_call, "%s", "N8SDR/VE");
   if (std_rade_open(0, 0) != 0)
+    goto done;
+  if (check_dsp() != 0)
     goto done;
   produced = std_rade_tx(speech, kSpeech, modem, kCap);
   if (produced < 0)

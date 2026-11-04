@@ -139,14 +139,14 @@ bool RadeSpeaker::start(const QString& sapiOutputId) {
       hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&client));
     }
     if (SUCCEEDED(hr)) {
-      step = "set 16 kHz mono";
+      step = "set 48 kHz mono";
       WAVEFORMATEX format{};
       format.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
       format.nChannels = 1;
-      format.nSamplesPerSec = 16000;
+      format.nSamplesPerSec = 48000;
       format.wBitsPerSample = 32;
       format.nBlockAlign = 4;
-      format.nAvgBytesPerSec = 16000 * 4;
+      format.nAvgBytesPerSec = 48000 * 4;
       hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED,
                               AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 10000000,
                               0, &format, nullptr);
@@ -240,7 +240,7 @@ void RadeSpeaker::write(const float* samples, int count) {
     return;
   const std::lock_guard<std::mutex> lock(mutex_);
   queue_.insert(queue_.end(), samples, samples + count);
-  constexpr size_t kMax = 16000 * 2;
+  constexpr size_t kMax = 48000 * 2;
   if (queue_.size() > kMax)
     queue_.erase(queue_.begin(), queue_.begin() + static_cast<std::ptrdiff_t>(queue_.size() - kMax));
 }

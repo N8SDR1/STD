@@ -149,12 +149,16 @@ qt_add_executable(std
   # librade + Opus FARGAN are the cdecl shim std_rade.dll, built by
   # scripts/build_rade_shim.sh. The only source is
   # https://github.com/freedv/rade_c at
-  # c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9 (origin/main, 2026-11-03).
+  # c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9 (origin/main, 2026-11-03), with
+  # RNNoise from https://github.com/freedv/rnnoise at
+  # 8b12912d0e4a4503ca7d83fd1111f00f7e8298e8 (scripts/build_rnnoise.sh).
   # The weight objects are not compiled into this MSVC target.
   src/spot/PskReporter.cpp
   src/spot/PskReporter.h
   src/spot/WsprNet.cpp
   src/spot/WsprNet.h
+  src/spot/FreeDvReporter.cpp
+  src/spot/FreeDvReporter.h
   src/UpdateChecker.cpp
   src/WxFeed.cpp
   src/WxFeed.h
@@ -257,6 +261,7 @@ if(WIN32)
       "${CMAKE_SOURCE_DIR}/src/rade/std_rade_shim.c"
       "${CMAKE_SOURCE_DIR}/src/rade/std_rade_hra.h"
       "${CMAKE_SOURCE_DIR}/scripts/build_rade_shim.sh"
+      "${CMAKE_SOURCE_DIR}/scripts/build_rnnoise.sh"
       "${CMAKE_SOURCE_DIR}/scripts/rade_shim_check.c"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     COMMENT "Linking librade for RADE"

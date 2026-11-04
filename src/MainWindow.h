@@ -138,6 +138,11 @@ private:
   void applyMacroBar();
   void showKeyboardReceive(const QString& mode);
   void applyRadePlaybackVolume(int percent);
+  // Pushes the Mic NR and BW expand boxes to the codec when they change.
+  void applyRadeOptions();
+  // FreeDV Reporter follows RADE mode, the dial and TX. now skips the
+  // half-second throttle.
+  void updateFreedvReporter(bool now);
   void applyRadeCapture(const QString& id);
   void applyRadeOutput(const QString& id);
 
@@ -371,6 +376,10 @@ private:
   double radeRead_ = 0;
   bool radePrimed_ = false;
   int radeHeardSeq_ = 0;
+  int radeOptions_ = -1;
+  class FreeDvReporter* freedvReporter_ = nullptr;
+  qint64 freedvReporterMs_ = 0;
+  qint64 radeSyncReportMs_ = 0;
   bool txRade_ = false;
   bool radeStopping_ = false;
   bool radeFinished_ = false;
