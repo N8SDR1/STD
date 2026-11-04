@@ -1043,6 +1043,13 @@ int shellReady(MainWindow& window) {
       // Identity stays in Options → User; the only text box here is the
       // FreeDV Reporter message.
       return fail("RADE screen is missing");
+    {
+      const QString loop = window.radeTxLoopback();
+      if (!loop.isEmpty()) {
+        qWarning("RADE TX loopback: %s", qPrintable(loop));
+        return fail("RADE TX through STD's output path did not decode");
+      }
+    }
     if (radeCodecSelfTest() != 0)
       return fail("RADE codec round trip failed");
     QSettings radeKeep;

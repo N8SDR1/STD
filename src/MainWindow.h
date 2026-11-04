@@ -71,6 +71,9 @@ public:
   void placeAnswer(const QString& call);
   // Puts the waterfall RHI widget in the tree before the window is shown.
   void primeGraphics();
+  // Self-test: RADE TX through STD's own 48 kHz output path, decoded back.
+  // Empty when it syncs and reads the callsign; otherwise what failed.
+  QString radeTxLoopback();
 
 protected:
   void showEvent(QShowEvent* event) override;

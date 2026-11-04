@@ -91,6 +91,108 @@ QString scanDialText(qint64 hz) {
 
 }  // namespace
 
+QString MainWindow::radeTxLoopback() {
+  if (!rade_.load())
+    return QStringLiteral("librade did not load");
+  if (!rade_.open(false, false))
+    return QStringLiteral("rade_open failed");
+  rade_.setCallsign(QStringLiteral("N8SDR"));
+  rade_.setOptions(true, true);
+  // A voiced buzz with a slow envelope, 6 s, fed 20 ms at a time as the
+  // microphone does, while the radio takes 20 ms of 48 kHz each tick.
+  constexpr int kTick = 320;
+  constexpr int kTicks = 300;
+  std::vector<float> out;
+  radeModem_.clear();
+  radeRead_ = 0;
+  radePrimed_ = false;
+  radeFinished_ = false;
+  int reprimes = 0;
+  bool wasPrimed = false;
+  std::vector<float> modem(65536);
+  auto pull = [&] {
+    std::vector<float> block(960);
+    fillRadeTx(block.data(), 960, 48000);
+    if (wasPrimed && !radePrimed_)
+      ++reprimes;
+    wasPrimed = radePrimed_;
+    out.insert(out.end(), block.begin(), block.end());
+  };
+  for (int t = 0; t < kTicks; ++t) {
+    float speech[kTick];
+    for (int i = 0; i < kTick; ++i) {
+      const int n = t * kTick + i;
+      const float time = float(n) / 16000.0f;
+      const float phase = time * 140.0f;
+      const float frac = phase - std::floor(phase);
+      const float env = 0.5f + 0.5f * std::sin(2.0f * 3.14159265f * 2.5f * time);
+      speech[i] = 0.3f * env * (frac - 0.5f);
+    }
+    const int n = rade_.tx(speech, kTick, modem.data(), int(modem.size()));
+    if (n < 0)
+      return QStringLiteral("rade_tx failed: %1").arg(rade_.error());
+    radeModem_.insert(radeModem_.end(), modem.begin(), modem.begin() + n);
+    pull();
+  }
+  const int tail = rade_.finish(modem.data(), int(modem.size()));
+  if (tail > 0)
+    radeModem_.insert(radeModem_.end(), modem.begin(), modem.begin() + tail);
+  radeFinished_ = true;
+  for (int i = 0; i < 400 && radeRead_ + 1.0 < double(radeModem_.size()); ++i)
+    pull();
+  // The 200 ms of silence after the end-of-over.
+  out.insert(out.end(), 9600, 0.0f);
+  radeModem_.clear();
+  radeRead_ = 0;
+  radeFinished_ = false;
+  double peak = 0.0, energy = 0.0;
+  for (float v : out) {
+    peak = std::max(peak, double(std::fabs(v)));
+    energy += double(v) * double(v);
+  }
+  const double rms = out.empty() ? 0.0 : std::sqrt(energy / double(out.size()));
+  // Decode it the way pushRadeRx does, from a fresh receiver.
+  rade_.close();
+  if (!rade_.open(false, false))
+    return QStringLiteral("rade_open failed for RX");
+  RateConvert conv;
+  int synced = 0;
+  QString heard;
+  int heardSeq = rade_.heard(nullptr);
+  std::vector<float> speech(65536);
+  for (size_t at = 0; at < out.size(); at += 960) {
+    const int n = int(std::min<size_t>(960, out.size() - at));
+    std::vector<float> m8;
+    conv.process(out.data() + at, n, 48000, 8000, m8);
+    for (float& v : m8)
+      v *= 4.0f;
+    if (!m8.empty())
+      rade_.rx(m8.data(), int(m8.size()), speech.data(), int(speech.size()));
+    if (rade_.sync())
+      ++synced;
+    QString call;
+    const int seq = rade_.heard(&call);
+    if (seq != heardSeq) {
+      heardSeq = seq;
+      heard = call;
+    }
+  }
+  rade_.close();
+  const QString levels = QStringLiteral("peak %1, rms %2, %3 restarts")
+                             .arg(peak, 0, 'f', 3)
+                             .arg(rms, 0, 'f', 3)
+                             .arg(reprimes);
+  if (reprimes > 0)
+    return QStringLiteral("TX ran dry mid-over (%1)").arg(levels);
+  if (synced < 50)
+    return QStringLiteral("receiver did not sync on STD's TX audio (%1)").arg(levels);
+  if (heard != QLatin1String("N8SDR"))
+    return QStringLiteral("callsign did not read back, got '%1' (%2)").arg(heard, levels);
+  qInfo("RADE TX loopback ok: %s, sync %d of %d blocks", qPrintable(levels), synced,
+        int(out.size() / 960));
+  return QString();
+}
+
 void MainWindow::refreshRadeRxChip() {
   const int state = !txRade_ ? 0 : (radeStopping_ ? 2 : 1);
   if (state == radeRxState_)
