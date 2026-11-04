@@ -1136,9 +1136,11 @@ int shellReady(MainWindow& window) {
         !micBar->toolTip().contains(QLatin1String("clip")) ||
         !micBar->toolTip().contains(QLatin1String("Drive")))
       return fail("RADE mic bar is missing");
-    if (!snrTrace || snrTrace->parentWidget() != screen ||
-        !snrTrace->toolTip().contains(QLatin1String("-10")) ||
-        !snrTrace->toolTip().contains(QLatin1String("35")))
+    auto* heard = window.findChild<QLabel*>(QStringLiteral("radeHeard"));
+    if (!snrTrace || snrTrace->parentWidget() != screen || snrTrace->height() > 18 ||
+        snrTrace->width() > 160 || !snrTrace->toolTip().contains(QLatin1String("-10")) ||
+        !snrTrace->toolTip().contains(QLatin1String("35")) || !heard || !snr ||
+        snrTrace->x() < heard->x() || heard->x() < snr->x())
       return fail("RADE SNR trace is missing");
     auto* radeTx = window.findChild<QPushButton*>(QStringLiteral("txSend"));
     auto* radeHalt = window.findChild<QPushButton*>(QStringLiteral("txHalt"));

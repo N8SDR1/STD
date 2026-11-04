@@ -4161,7 +4161,7 @@ void MainWindow::showGuide() {
        "the band above 8 kHz on decoded speech, both on by default as in the FreeDV app. "
        "Drive 0 is silent and 100 is the FreeDV app's level; set it so ALC barely moves. The "
        "microphone is levelled before the encoder, as FreeDV does, so speak normally. "
-       "The bar beside Mic shows those speech peaks from 0 to 1. The mark is half scale, where the FreeDV manual says the level should average, and the top of the bar is clipping. The trace beside SNR is the last 3 minutes, from -10 to 35 dB. "
+       "The bar beside Mic shows those speech peaks from 0 to 1. The mark is half scale, where the FreeDV manual says the level should average, and the top of the bar is clipping. The thin trace after Heard is the last 3 minutes of SNR, from -10 to 35 dB. "
        "Heard shows the callsign from the other station's end-of-over. Offset shows how far the station you receive is from where it should be, in Hz, as the FreeDV app shows it: plus is above, minus below, and RADE tracks only about 50 Hz either way. Volume is the Speech playback "
        "level, from 0 to 100. Analog off plays decoded speech only and stays silent until sync. "
        "RX and TX sit on the Waveform row. RX and TX work like the radio's switch: RX is green while receiving, TX shows ON AIR while transmitting, and clicking RX (or TX again) ends the over with the end-of-over and your callsign, with RX amber for that moment. Halt is not shown in RADE, because it would drop without your callsign. "
