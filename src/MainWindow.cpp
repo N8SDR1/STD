@@ -4213,6 +4213,7 @@ void MainWindow::showGuide() {
        "out without gaps. The band buttons set the sideband over TCI: DIGL on 160, 80, and 40 m, "
        "DIGU on 30 m and up, the FreeDV convention. The waterfall cursor goes to 1500 Hz, where the "
        "modem sits. Analog passthrough is the separate voice mix. STD does not set the radio filter. "
+       "The top bar shows the radio dial in every mode, including JS8. The border is green while receiving, red while transmitting, and gray when the radio is not connected. DIGU or DIGL is in that box. The digits are centered. The box does not tune and does not key. "
        "Under the band chips the row is Mic, a short Gain, the speech-level bar, a short Drive, Mic NR, Speaker, Volume, BW expand, "
        "then Analog. Mic NR is RNNoise noise suppression on your microphone and BW expand fills in "
        "the band above 8 kHz on decoded speech, both on by default as in the FreeDV app. "
