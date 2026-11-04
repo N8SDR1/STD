@@ -36,6 +36,15 @@ int radeDrivePercent(QWidget* window) {
   return std::clamp(QSettings().value(QStringLiteral("rade/drive"), 70).toInt(), 0, 100);
 }
 
+// Extra microphone gain, in dB, before RNNoise and the leveler. The leveler
+// itself adds at most 12 dB and stays frozen below -33 LUFS, so a quiet
+// Windows level never reaches the speech bar. 0 leaves the mic unchanged.
+int radeMicGainDb(QWidget* window) {
+  if (auto* slider = window->findChild<QSlider*>(QStringLiteral("radeMicGain")))
+    return std::clamp(slider->value(), 0, 30);
+  return std::clamp(QSettings().value(QStringLiteral("rade/micGain"), 0).toInt(), 0, 30);
+}
+
 bool radeBox(QWidget* window, const char* name, const char* key) {
   if (auto* box = window->findChild<QCheckBox*>(QString::fromLatin1(name)))
     return box->isChecked();
@@ -487,8 +496,14 @@ void MainWindow::pumpRadeTx() {
   }
   if (!radeStopping_) {
     if (radeMic_) {
-      const std::vector<float> pcm = radeMic_->take();
+      std::vector<float> pcm = radeMic_->take();
       if (!pcm.empty()) {
+        const int gainDb = radeMicGainDb(this);
+        if (gainDb > 0) {
+          const float gain = std::pow(10.0f, float(gainDb) / 20.0f);
+          for (float& sample : pcm)
+            sample *= gain;
+        }
         std::vector<float> modem(65536);
         const int n = rade_.tx(pcm.data(), int(pcm.size()), modem.data(), int(modem.size()));
         if (n > 0)

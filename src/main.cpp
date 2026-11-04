@@ -1136,6 +1136,14 @@ int shellReady(MainWindow& window) {
         !micBar->toolTip().contains(QLatin1String("clip")) ||
         !micBar->toolTip().contains(QLatin1String("Drive")))
       return fail("RADE mic bar is missing");
+    auto* micGain = window.findChild<QSlider*>(QStringLiteral("radeMicGain"));
+    if (!micGain || micGain->parentWidget() != audio || micGain->minimum() != 0 ||
+        micGain->maximum() != 30 || micGain->width() > 120 ||
+        !micGain->toolTip().contains(QLatin1String("leveler")) ||
+        !micGain->toolTip().contains(QLatin1String("Drive")) ||
+        (micBar->x() > 0 && micGain->x() > 0 && drive->x() > 0 &&
+         (micGain->x() < micBar->x() || micGain->x() > drive->x())))
+      return fail("RADE mic gain is missing");
     auto* offset = window.findChild<QLabel*>(QStringLiteral("radeOffset"));
     if (!snrTrace || snrTrace->parentWidget() != screen || snrTrace->height() < 32 ||
         snrTrace->height() > 48 || snrTrace->width() > 200 ||

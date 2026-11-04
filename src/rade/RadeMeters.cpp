@@ -27,6 +27,7 @@ RadeMicBar::RadeMicBar(QWidget* parent) : QWidget(parent) {
       "This is the same scale as FreeDV's Frm Mic plot. "
       "The mark is 0.5, half scale. The FreeDV manual says the level should average about half scale, "
       "and the peaks should not clip at the top. "
+      "Gain, beside this bar, raises the microphone before the leveler. "
       "The Drive slider is the modem level. It does not move this bar. "
       "This does not key. START is never sent."));
   decay_ = new QTimer(this);

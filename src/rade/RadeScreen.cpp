@@ -55,7 +55,8 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
 
   auto* intro = new QLabel(QStringLiteral(
       "V1 is the default waveform, about 1500 Hz wide. V2 is experimental, "
-      "about 860 Hz, and will not decode V1. The speech-level bar is beside Mic. Drive is between Mic and Speaker. "
+      "about 860 Hz, and will not decode V1. The speech-level bar is beside Mic. Gain is beside that bar. "
+      "Drive is between Mic and Speaker. "
       "Analog is after Volume. BPF is after Waveform. RX and TX are on this row; click RX to end your over. The band buttons set DIGU or DIGL. "
       "The mic is 16 kHz, speech plays at 48 kHz. The modem is 8 kHz."),
       this);
