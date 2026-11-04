@@ -19,6 +19,7 @@
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
+#include "rade/RadeScreen.h"
 #include "speech/SpeechReader.h"
 #include "speech/SpeechInput.h"
 #include "speech/SpeechModel.h"
@@ -503,7 +504,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             [this](qint64 hz, const QString&) {
               if (!profile_ || !profile_->mshvFamily())
                 return;
-              // FT8 and FT4 stay DIGU on every band, including 160, 80, and 40.
+              // A band click by the operator takes over from Scan.
+              if (radeScanOn_ && !radeScanTuning_)
+                stopRadeScan(QStringLiteral("Scan stopped: a band was chosen."));
+              // FT8 and FT4 stay DIGU. RADE follows FreeDV Reporter:
+              // DIGL on 160, 80, and 40, DIGU on the rest.
               qsyDial(hz);
             });
   }
@@ -613,6 +618,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         js8_->pushAudio(gained, count, rate);
       if (wspr_)
         wspr_->pushAudio(gained, count, rate);
+      if (profile_ && radeMode(profile_->digitalMode()))
+        pushRadeRx(samples, count, rate);
     }
   });
 
@@ -1049,6 +1056,17 @@ void MainWindow::buildBrandBar() {
 void MainWindow::buildDocks() {
   waterfall_ = new WaterfallWidget(this);
   profile_ = new ModeProfile(this);
+  connect(profile_, &ModeProfile::radeVolumeChanged, this, [this](int value) {
+    if (speech_)
+      speech_->setVolume(value);
+    if (auto* spin = findChild<QSpinBox*>(QStringLiteral("speechVolume"))) {
+      const QSignalBlocker block(spin);
+      spin->setValue(value);
+    }
+    applyRadePlaybackVolume(value);
+  });
+  connect(profile_, &ModeProfile::radeCaptureChanged, this, [this](const QString& id) { applyRadeCapture(id); });
+  connect(profile_, &ModeProfile::radeOutputChanged, this, [this](const QString& id) { applyRadeOutput(id); });
   auto* column = new QWidget(this);
   column->setObjectName("waterfallColumn");
   auto* columnLayout = new QVBoxLayout(column);
@@ -1106,6 +1124,28 @@ void MainWindow::buildDocks() {
   statusDock_->setObjectName("statusDock");
   statusStrip_ = new StatusStrip(statusDock_);
   statusDock_->setWidget(statusStrip_);
+  connect(statusStrip_, &StatusStrip::spotToggled, this, [this](const QString& key, bool on) {
+    QString what = QStringLiteral("PSK Reporter spots");
+    if (key == QLatin1String("dx/wsprnetEnabled"))
+      what = QStringLiteral("WSPRnet posts");
+    else if (key == QLatin1String("dx/freedvReporterEnabled"))
+      what = QStringLiteral("FreeDV Reporter");
+    if (key == QLatin1String("dx/freedvReporterEnabled"))
+      updateFreedvReporter(true);
+    QString note;
+    if (on && (stationCall().isEmpty() || stationGrid().isEmpty()))
+      note = QStringLiteral(" Set your callsign and locator under Options → User first.");
+    setTxStatus(QStringLiteral("%1 %2.%3 This does not key. START was not sent.")
+                    .arg(what, on ? QStringLiteral("on") : QStringLiteral("off"), note));
+  });
+  connect(statusStrip_, &StatusStrip::spotMapRequested, this, [this](const QString& service) {
+    if (service == QLatin1String("wsprnet"))
+      openWsprnetReports();
+    else if (service == QLatin1String("freedv"))
+      QDesktopServices::openUrl(QUrl(QStringLiteral("https://qso.freedv.org/")));
+    else
+      openPskReporterMap();
+  });
   statusDock_->setAllowedAreas(Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea);
   statusDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
   statusDock_->setMinimumHeight(40);
@@ -1684,6 +1724,16 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     wsprLayout->addWidget(wsprFormHost);
     wspr->hide();
     layout->addWidget(wspr);
+
+    auto* radeNote = new QLabel(QStringLiteral(
+        "RADE controls are on the RADE screen. TX is not armed until librade is linked. "
+        "This does not key. START is never sent."),
+        panel);
+    radeNote->setObjectName(QStringLiteral("radeTxNote"));
+    radeNote->setFont(interfaceFont(12));
+    radeNote->setWordWrap(true);
+    radeNote->hide();
+    layout->addWidget(radeNote);
     connect(power, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, power](int) {
       QSettings().setValue(QStringLiteral("wspr/power"), power->currentData().toInt());
       refreshTxFields();
@@ -2015,9 +2065,12 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
                             "START was not sent."));
     });
 
-    auto* buttons = new QHBoxLayout();
+    auto* buttonRow = new QWidget(panel);
+    buttonRow->setObjectName(QStringLiteral("txButtonRow"));
+    auto* buttons = new QHBoxLayout(buttonRow);
+    buttons->setContentsMargins(0, 0, 0, 0);
     buttons->setSpacing(6);
-    auto* tune = new QPushButton(QStringLiteral("Tune"), panel);
+    auto* tune = new QPushButton(QStringLiteral("Tune"), buttonRow);
     tune->setObjectName(QStringLiteral("txTune"));
     tune->setCheckable(true);
     tune->setChecked(false);
@@ -2027,7 +2080,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "Send a tone at the TX marker so you can set TX gain and hear RF. "
         "TRX goes out only while this is pressed. START is never sent."));
     connect(tune, &QPushButton::toggled, this, [this](bool on) { setTune(on); });
-    auto* tx = new QPushButton(QStringLiteral("TX"), panel);
+    auto* tx = new QPushButton(QStringLiteral("TX"), buttonRow);
     tx->setObjectName(QStringLiteral("txSend"));
     tx->setCheckable(true);
     tx->setChecked(false);
@@ -2038,7 +2091,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
         "Max Periods is how many times it keys. Stops on 73, when someone else answers, "
         "or when the try limit is reached. CQ on free continues with CQ. CNS ignores the limit."));
     connect(tx, &QPushButton::toggled, this, [this](bool on) { setUserTx(on); });
-    auto* halt = new QPushButton(QStringLiteral("Halt"), panel);
+    auto* halt = new QPushButton(QStringLiteral("Halt"), buttonRow);
     halt->setObjectName(QStringLiteral("txHalt"));
     halt->setFont(interfaceFont(12));
     halt->setFocusPolicy(Qt::NoFocus);
@@ -2048,7 +2101,7 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     connect(halt, &QPushButton::clicked, this, [this] { haltTx(); });
     // Speech to text: hold Talk and speak (or click to start and stop,
     // set in Options -> Speech). Shown only when that is turned on.
-    auto* talk = new QPushButton(QStringLiteral("Talk"), panel);
+    auto* talk = new QPushButton(QStringLiteral("Talk"), buttonRow);
     talk->setObjectName(QStringLiteral("txTalk"));
     talk->setFont(interfaceFont(12));
     talk->setFocusPolicy(Qt::NoFocus);
@@ -2074,12 +2127,18 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
       else
         startTalk();
     });
+    auto* keyPair = new QWidget(buttonRow);
+    keyPair->setObjectName(QStringLiteral("txKeyPair"));
+    auto* keys = new QHBoxLayout(keyPair);
+    keys->setContentsMargins(0, 0, 0, 0);
+    keys->setSpacing(6);
+    keys->addWidget(tx);
+    keys->addWidget(halt);
     buttons->addWidget(tune);
-    buttons->addWidget(tx);
-    buttons->addWidget(halt);
+    buttons->addWidget(keyPair);
     buttons->addWidget(talk);
     buttons->addStretch(1);
-    layout->addLayout(buttons);
+    layout->addWidget(buttonRow);
     auto* qso = new QPlainTextEdit(panel);
     qso->setObjectName(QStringLiteral("txQso"));
     qso->setReadOnly(true);
@@ -2163,7 +2222,7 @@ void MainWindow::qsyDial(qint64 hz) {
     return;
   // Band buttons and WSPR hopping. Connect already sent AUDIO_START:0.
   // This writes the dial only. START is never sent, and this does not key.
-  tci_->setSideband(QStringLiteral("DIGU"));
+  tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
   tci_->setDialHz(hz);
   showDial(hz);
 }
@@ -2465,6 +2524,9 @@ QWidget* MainWindow::makeReceivePanel() {
     QSettings().setValue(QStringLiteral("speech/volume"), value);
     if (speech_)
       speech_->setVolume(value);
+    applyRadePlaybackVolume(value);
+    if (profile_)
+      profile_->refreshRadeDevices();
   });
   applySpeechSettings();
   auto* faxStart = new QPushButton(QStringLiteral("Start"), panel);
@@ -2678,6 +2740,21 @@ QWidget* MainWindow::makeReceivePanel() {
   wsprHeadHost->hide();
   layout->addWidget(wsprHeadHost);
   layout->addWidget(makeJs8Receive(panel), 1);
+  auto* rade = new RadeScreen(panel);
+  rade->hide();
+  layout->addWidget(rade, 1);
+  connect(rade, &RadeScreen::variantChosen, this, [this](const QString& mode) { activateDigitalMode(mode); });
+  connect(rade, &RadeScreen::rxRequested, this, [this] { radeRxClicked(); });
+  connect(rade, &RadeScreen::scanToggled, this, [this](bool on) {
+    if (on)
+      startRadeScan();
+    else
+      stopRadeScan(QStringLiteral("Scan stopped."));
+  });
+  connect(rade, &RadeScreen::optionsChanged, this, [this] {
+    if (!txRade_)
+      ensureRadeCodec();
+  });
   layout->addWidget(echo, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
@@ -3385,6 +3462,31 @@ void MainWindow::buildMenus() {
       "The locator is Options → User. TX sends it. START is never sent."));
   modes->addAction(wsprAction);
   connect(wsprAction, &QAction::triggered, this, [this] { activateDigitalMode(QStringLiteral("WSPR")); });
+  const struct {
+    const char* label;
+    const char* objectName;
+    const char* tip;
+  } radeRows[] = {
+      {"RADE V1", "modeRadeV1",
+       "RADE V1 digital voice. Band buttons use the FreeDV Reporter dials. "
+       "20 m starts at 14.236, DIGU, then 14.240. SSTV calling is 14.230. 160, 80, and 40 use DIGL. "
+       "Click a band again to cycle its dials. Extra stores another dial for this mode and band. "
+       "Mic and speaker are the Speech devices. "
+       "The RADE screen is not the Hell tape and not the FT8 sequence. "
+       "This does not key and does not send START."},
+      {"RADE V2 (experimental)", "modeRadeV2",
+       "RADE V2 is experimental. It does not talk to V1 and may change. About 860 Hz. "
+       "The RADE screen is not the Hell tape and not the FT8 sequence. "
+       "This does not key and does not send START."}};
+  for (const auto& row : radeRows) {
+    auto* action = modeMenu->addAction(QString::fromLatin1(row.label));
+    action->setCheckable(true);
+    action->setObjectName(QString::fromLatin1(row.objectName));
+    action->setToolTip(QString::fromLatin1(row.tip));
+    modes->addAction(action);
+    const QString modeName = QString::fromLatin1(row.label);
+    connect(action, &QAction::triggered, this, [this, modeName] { activateDigitalMode(modeName); });
+  }
   auto* hellMenu = modeMenu->addMenu(QStringLiteral("Hell"));
   hellMenu->setObjectName(QStringLiteral("modeHellMenu"));
   hellMenu->setToolTip(QStringLiteral(
@@ -3757,13 +3859,14 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool hell = hellFamily(modeName);
   const bool text = keyboardTextMode(modeName);
   const bool sequenced = sequencedFamily(modeName);
-  const bool family = sequenced || hell;
+  const bool rade = radeMode(modeName);
+  const bool family = sequenced || hell || rade;
   if (profile_) {
-    if (sequenced || text || wsprMode(modeName) || wefaxMode(modeName))
+    if (sequenced || text || wsprMode(modeName) || wefaxMode(modeName) || rade)
       profile_->setDigitalMode(modeName);
     profile_->setMshvFamily(family);
   }
-  const QString layoutKey = hell ? QStringLiteral("Hell") : modeName;
+  const QString layoutKey = hell ? QStringLiteral("Hell") : (rade ? QStringLiteral("RADE") : modeName);
   if (layoutKey != layoutMode_) {
     offerLayoutSave();
     layoutMode_ = layoutKey;
@@ -3789,6 +3892,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool js8 = js8Mode(modeName);
   const bool wspr = wsprMode(modeName);
   const bool fax = wefaxMode(modeName);
+  const bool radeHere = radeMode(modeName);
   if ((hell || rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr) && waterfall_)
     waterfall_->setRxHz(1500);
   if (jt65Mode(modeName) && waterfall_) {
@@ -3853,10 +3957,21 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
       wefax_->clear();
     wefax_->setArmed(autoMonitor_ && fax);
   }
-  if ((rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax) && tci_ &&
-      tci_->isOpen())
-    tci_->setSideband(QStringLiteral("DIGU"));
+  if (tci_ && tci_->isOpen()) {
+    if (radeHere)
+      tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
+    else if (rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax)
+      tci_->setSideband(QStringLiteral("DIGU"));
+  }
   applyChannelWidth();
+  if (radeHere) {
+    // The modem is always centered on 1500 Hz in the audio.
+    if (waterfall_)
+      waterfall_->setRxHz(1500);
+    ensureRadeCodec();
+  } else {
+    closeRadeCodec();
+  }
   refreshTxChrome();
   applyMacroBar();
   syncWfHellControls();
@@ -3875,6 +3990,18 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
         "JS8. Band buttons move the radio to the JS8Call-improved calling dial. "
         "TX waits for the next 15 second UTC period and sends one frame, starting half a second in. "
         "A longer message continues on the following periods. This does not key. START was not sent."));
+  else if (radeHere)
+    setTxStatus(radeV2(modeName)
+                    ? QStringLiteral(
+                          "RADE V2 experimental. It does not talk to V1. "
+                          "20 m and above stay DIGU. 160 m, 80 m, and 40 m stay DIGL. "
+                          "Mic and speaker stay the Speech devices. This does not key. START was not sent.")
+                    : QStringLiteral(
+                          "RADE V1. Band buttons use the FreeDV Reporter dials. "
+                          "20 m starts at 14.236, DIGU, then 14.240. SSTV calling is 14.230. "
+                          "40 m starts at 7.177 and 80 m at 3.643, both DIGL. "
+                          "15 m is 21.313, DIGU. Click the band again to cycle. Extra stores another dial. "
+                          "Mic and speaker stay the Speech devices. This does not key. START was not sent."));
 }
 
 void MainWindow::showKeyboardReceive(const QString& mode) {
@@ -3882,6 +4009,7 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   const bool hell = hellFamily(mode);
   const bool fax = wefaxMode(mode);
   const bool wspr = wsprMode(mode);
+  const bool rade = radeMode(mode);
   if (auto* raster = findChild<HellRaster*>(QStringLiteral("hellReceive"))) {
     if (hell)
       raster->clear();
@@ -3889,7 +4017,7 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
     // JS8 shows its activity lists and conversation instead.
-    echo->setVisible((text || wspr) && !js8Mode(mode));
+    echo->setVisible((text || wspr) && !js8Mode(mode) && !rade);
     const QString body = withoutWsprTitleLine(echo->toPlainText());
     if (body != echo->toPlainText())
       echo->setPlainText(body);
@@ -3918,8 +4046,13 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
           "This does not key and does not send START."));
     }
   }
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"))) {
+    screen->setVisible(rade);
+    if (rade)
+      screen->showMode(mode);
+  }
   if (auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"))) {
-    bar->setVisible(text && !js8Mode(mode));
+    bar->setVisible(text && !js8Mode(mode) && !rade);
     applyContestRow();
     showQsoRstTag();
   }
@@ -3935,13 +4068,13 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
     clrRx->setVisible(text || fax || wspr);
   applySpeechSettings();
   if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
-    edit->setVisible(!text && !fax && !wspr);
+    edit->setVisible(!text && !fax && !wspr && !rade);
   if (auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader")))
-    header->setVisible(!text && !fax && !wspr);
+    header->setVisible(!text && !fax && !wspr && !rade);
   if (auto* filter = findChild<QLineEdit*>(QStringLiteral("decodeFilter")))
-    filter->setVisible(!text && !fax && !wspr);
+    filter->setVisible(!text && !fax && !wspr && !rade);
   if (auto* clear = findChild<QPushButton*>(QStringLiteral("decodeClear")))
-    clear->setVisible(!text && !fax && !wspr);
+    clear->setVisible(!text && !fax && !wspr && !rade);
   if (auto* scroll = findChild<QWidget*>(QStringLiteral("wefaxScroll")))
     scroll->setVisible(fax);
   for (const char* name : {"hellSave", "hellOpen"}) {
@@ -3983,9 +4116,13 @@ void MainWindow::cycleDigitalMode() {
 void MainWindow::tuneActiveBand() {
   if (!tci_ || !profile_ || !profile_->mshvFamily())
     return;
-  // FT8 and FT4. DIGU on every band. This is not START and it does not key.
-  tci_->setSideband(QStringLiteral("DIGU"));
-  tci_->setDialHz(profile_->dialHz());
+  const qint64 hz = profile_->dialHz();
+  if (hz < 100000)
+    return;
+  // FT8 and FT4 stay DIGU. RADE uses the reporter sideband for this band.
+  // This is not START and it does not key.
+  tci_->setSideband(profile_->sideband());
+  tci_->setDialHz(hz);
 }
 
 void MainWindow::showGuide() {
@@ -4008,13 +4145,49 @@ void MainWindow::showGuide() {
        "Auto-connect opens the last host and port when STD starts. Auto monitor stays on receive and "
        "decode. A band button may later send vfo:0,0,<Hz> and modulation:0,digu. TRX goes out only "
        "after Tune or TX is pressed. Connect does not send START, and it does not key."},
+      {"RADE",
+       "Mode, RADE V1 is HF digital voice. RADE V2 is experimental and does not talk to V1. "
+       "The RADE screen replaces the FT8 sequence and the Hell tape. Waveform and BPF "
+       "sit side by side. BPF is the tick box after Waveform; it is the V2 modem band-pass and is "
+       "greyed out on V1, which sends without one, as FreeDV does. The end-of-over carries your "
+       "callsign from Options, User, coded the way the FreeDV app codes it, so FreeDV stations and "
+       "FreeDV Reporter show your call. TX fills a quarter-second buffer first so the modem frames go "
+       "out without gaps. The band buttons set the sideband over TCI: DIGL on 160, 80, and 40 m, "
+       "DIGU on 30 m and up, the FreeDV convention. The waterfall cursor goes to 1500 Hz, where the "
+       "modem sits. Analog passthrough is the separate voice mix. STD does not set the radio filter. "
+       "Under the band chips the row is Mic, a short Drive, Mic NR, Speaker, Volume, BW expand, "
+       "then Analog. Mic NR is RNNoise noise suppression on your microphone and BW expand fills in "
+       "the band above 8 kHz on decoded speech, both on by default as in the FreeDV app. "
+       "Drive 0 is silent and 100 is the FreeDV app's level; set it so ALC barely moves. The "
+       "microphone is levelled before the encoder, as FreeDV does, so speak normally. "
+       "Heard shows the callsign from the other station's end-of-over. Offset shows how far the station you receive is from where it should be, in Hz, as the FreeDV app shows it: plus is above, minus below, and RADE tracks only about 50 Hz either way. Volume is the Speech playback "
+       "level, from 0 to 100. Analog off plays decoded speech only and stays silent until sync. "
+       "RX and TX sit on the Waveform row. RX and TX work like the radio's switch: RX is green while receiving, TX shows ON AIR while transmitting, and clicking RX (or TX again) ends the over with the end-of-over and your callsign, with RX amber for that moment. Halt is not shown in RADE, because it would drop without your callsign. "
+       "Scan, after RX and TX, steps the FreeDV Reporter calling dials from 160 m to 10 m and listens for RADE on each. Dwell sets how long each dial is held, 5 to 30 seconds. With Stay on sync on, Scan stops on the first dial where a station syncs; with it off, Scan stays while the station is in sync and moves on a few seconds after it drops. Click Scan again to stop, or to start from the next dial. Right-click Scan to pick the bands: All bands, or any of 160, 80, 60, 40, 20, 17, 15, 12, and 10 m; the chip then reads Scan 40 m or Scan 3 bands. Dials you add with Extra for a band are scanned too, after that band's reporter dials. A band click, TX, or a mode change stops it. Scan only moves the dial. "
+       "The transmit dock stays closed in RADE. Identity stays in "
+       "Options, User. The band buttons use the FreeDV Reporter list. 20 m starts at 14.236 and also "
+       "has 14.240, both DIGU. Those are digital voice. SSTV calling is 14.230 and digital SSTV is 14.233. "
+       "40 m starts at 7.177, DIGL, and also 7.197, 7.045, and 7.1815. "
+       "80 m starts at 3.643, DIGL. 15 m is 21.313, DIGU. 17 m is 18.118. 12 m is 24.933. "
+       "10 m starts at 28.330 and also 28.720. 60 m (the 5.3 chip, after 3.5) is 5.3685 and 5.4035, DIGU. "
+       "160 m is 1.870, DIGL. 80 m also has 3.625, 3.693, "
+       "3.697, 3.803, and the 3.640 net. Click the same band button to cycle those dials. "
+       "Type a dial in Extra and press Enter to keep it for this mode and band. Right-click Extra "
+       "lists those extras: double-click one to edit it, Delete removes it, Add adds one, and Clear "
+       "all empties the list. 30 m and 6 m have no reporter dial. librade and FARGAN are linked. "
+       "The mic is 16 kHz, decoded speech plays at 48 kHz, and the modem is 8 kHz. TX uses the "
+       "Speech microphone and trx with tci. FreeDV Reporter, under Options → Network Configuration, "
+       "is Off until you choose On; then while RADE is the mode it shows your call, locator, dial, "
+       "and TX on qso.freedv.org and reports each RADE station you hear. "
+       "Connect still sends AUDIO_START for receiver 0. A useful passband is "
+       "about 750 to 2250 Hz, with radio NR off. START is never sent."},
       {"FT8, FT4, and FT2",
        "Mode → FT8, FT4, or FT2. All three are DIGU on every band. The band buttons use the WSJT-X "
        "dials, and FT2 uses the MSHV dials. Choosing a mode or a band sends vfo:0,0,<Hz> and "
        "modulation:0,digu. Region Auto reads the callsign. N8SDR/VE uses VE, and the call is left as "
        "typed. Region 1, 2, or 3 overrides that. 40 m FT4 is 7.0475 MHz in every region. 80 m FT4 is "
        "3.568 MHz in Region 3 and 3.575 MHz otherwise. Type a dial in Extra and press Enter to insert "
-       "it for this mode and band. Right-click Extra clears that list. Clicking the mode again, or the "
+       "it for this mode and band. Right-click Extra lists those dials to edit, delete, add, or clear. Clicking the mode again, or the "
        "same band button, cycles the default and those extras. Those commands do not key, and they are "
        "not START. FT8 is a 15 second period. Auto Dec is on by default. The decoder starts about 11.8 "
        "seconds in, then again at 13.6 and 14.6 seconds when three-stage is on. FT4 is one pass at 6.1 "
@@ -4381,7 +4554,16 @@ void MainWindow::showGuide() {
        "a key. WSPRnet reports opens the page of stations reported by the callsign saved under "
        "Options → User. PSK Reporter stays off until Enable is checked. WSPR stations go to PSK "
        "Reporter only when Also send WSPR spots is checked. WSPRnet stays off until On "
-       "is selected. A UDP option under Log Options also sends live decode packets "
+       "is selected. FreeDV Reporter, also in that dialog, is Off until On is chosen; then it "
+       "connects to qso.freedv.org only while RADE is the mode, shows your call, locator, dial and "
+       "TX, and reports each RADE station heard with its SNR. The box beside On is the Message column "
+       "text, such as your name, QTH and rig; the RADE screen has the same box as Reporter message. "
+       "The status strip at the bottom also has a spot chip for the reporter the current mode feeds: "
+       "PSK RPT in FT8, FT4, FT2, JT65, Q65 and JS8, WSPRNET in WSPR, and FREEDV RPT in RADE. "
+       "Click the name to open that service's live page in your web browser; click On/Off to turn "
+       "that reporter on or off, the same switch as this dialog. Other modes show no chip. "
+       "View FreeDV Reporter opens the map "
+       "and does not connect. A UDP option under Log Options also sends live decode packets "
        "for GridTracker. Decode List Options "
        "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
        "decode is on by default. Log options, the ADIF path, the logger addresses, ASeq, TX "
@@ -4459,7 +4641,7 @@ void MainWindow::applyMacroBar() {
   const bool hell = hellFamily(mode);
   const bool mshv = profile_ && profile_->mshvFamily() && !hell;
   const bool wspr = wsprMode(mode);
-  macroDock_->setVisible(!mshv && !wspr && !wefaxMode(mode));
+  macroDock_->setVisible(!mshv && !wspr && !wefaxMode(mode) && !radeMode(mode));
 }
 
 void MainWindow::syncWfHellControls() {
@@ -4476,11 +4658,15 @@ void MainWindow::syncWfHellControls() {
     const auto* afc = findChild<QPushButton*>(QStringLiteral("afcToggle"));
     return afc && afc->isChecked();
   }();
+  const bool rade = radeMode(mode);
   if (auto* afc = findChild<QPushButton*>(QStringLiteral("wfAfc"))) {
     const QSignalBlocker block(afc);
     afc->setEnabled(follow);
     afc->setChecked(follow && afcOn);
-    afc->setToolTip(hell ? QStringLiteral(
+    afc->setToolTip(rade ? QStringLiteral(
+                               "RADE has no AFC switch. Sync is on the RADE screen. "
+                               "This does not key and does not send START.")
+                    : hell ? QStringLiteral(
                                "Feld Hell has no AFC switch. Fldigi leaves AFC off. "
                                "This does not key and does not send START.")
                     : track ? QStringLiteral(
@@ -4497,7 +4683,10 @@ void MainWindow::syncWfHellControls() {
     const QSignalBlocker block(sql);
     sql->setEnabled(hell || follow);
     sql->setChecked((hell || follow) && sqlOn);
-    sql->setToolTip(hell ? QStringLiteral(
+    sql->setToolTip(rade ? QStringLiteral(
+                               "RADE opens audio from frame sync. The SNR figure is not a squelch. "
+                               "This does not key and does not send START.")
+                    : hell ? QStringLiteral(
                                "Fldigi squelch. On drops a Hell column at or below the level. "
                                "Off prints the tape. This does not key and does not send START.")
                     : track ? QStringLiteral(
@@ -4609,6 +4798,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   if (txTune_)
     stopTune(false);
   stopUserTx(false);
+  closeRadeCodec();
   if (qsoLog_)
     qsoLog_->shutdown();
   offerLayoutSave();
@@ -6308,6 +6498,7 @@ void MainWindow::refreshTxChrome() {
   const bool textMode = keyboardTextMode(mode);
   const bool wspr = wsprMode(mode);
   const bool hell = hellFamily(mode);
+  const bool rade = radeMode(mode);
   if (auto* rttyRow = findChild<QWidget*>(QStringLiteral("rttyOptions")))
     rttyRow->setVisible(rttyMode(mode));
   if (auto* liveRow = findChild<QWidget*>(QStringLiteral("liveTxOptions")))
@@ -6342,6 +6533,19 @@ void MainWindow::refreshTxChrome() {
     clrTx->setVisible(textMode);
   if (auto* wsprPanel = findChild<QWidget*>(QStringLiteral("wsprPanel")))
     wsprPanel->setVisible(wspr);
+  const bool radeLinked = rade && rade_.load();
+  if (auto* radeNote = findChild<QLabel*>(QStringLiteral("radeTxNote"))) {
+    radeNote->setVisible(rade);
+    if (rade) {
+      radeNote->setText(radeLinked
+                            ? QStringLiteral(
+                                  "TX sends the Speech microphone. Halt stops at once. Tune stays off. "
+                                  "START is never sent.")
+                            : QStringLiteral(
+                                  "TX is not armed until librade is linked. This does not key. "
+                                  "START is never sent."));
+    }
+  }
   if (auto* js8Bands = findChild<QWidget*>(QStringLiteral("js8Bands")))
     js8Bands->setVisible(js8Mode(mode));
   showJs8Layout(js8Mode(mode));
@@ -6353,9 +6557,38 @@ void MainWindow::refreshTxChrome() {
   }
   for (const char* name : {"txTune", "txSend", "txHalt"}) {
     if (auto* w = findChild<QWidget*>(QLatin1String(name)))
-      w->setVisible(!fax);
+      w->setVisible(!fax && !rade);
+  }
+  if (rade) {
+    if (auto* tune = findChild<QWidget*>(QStringLiteral("txTune")))
+      tune->setVisible(false);
+    if (auto* send = findChild<QWidget*>(QStringLiteral("txSend")))
+      send->setVisible(radeLinked);
+    // RADE ends an over with RX, which sends the end-of-over and callsign.
+    // Halt would drop without them, so it is not shown here.
+    if (auto* halt = findChild<QWidget*>(QStringLiteral("txHalt")))
+      halt->setVisible(false);
+  }
+  if (auto* keyPair = findChild<QWidget*>(QStringLiteral("txKeyPair"))) {
+    QWidget* target = rade ? findChild<QWidget*>(QStringLiteral("radeKeySlot"))
+                           : findChild<QWidget*>(QStringLiteral("txButtonRow"));
+    if (target && keyPair->parentWidget() != target) {
+      if (auto* row = qobject_cast<QHBoxLayout*>(target->layout()))
+        row->addWidget(keyPair);
+    }
+  }
+  if (auto* send = findChild<QPushButton*>(QStringLiteral("txSend"))) {
+    send->setToolTip(rade ? QStringLiteral(
+                                "Send the Speech microphone. Red ON AIR while transmitting. Click RX, or "
+                                "TX again, to end the over with your callsign. TRX uses tci. "
+                                "START is never sent.")
+                          : QStringLiteral(
+                                "Send the selected line on its slot and hold TRX until that slot ends. "
+                                "Max Periods is how many times it keys. Stops on 73, when someone else answers, "
+                                "or when the try limit is reached. CQ on free continues with CQ. CNS ignores the limit."));
   }
   if (transmitDock_) {
+    transmitDock_->setVisible(!rade);
     if (auto* title = transmitDock_->titleBarWidget() ? transmitDock_->titleBarWidget()->findChild<QLabel*>()
                                                       : nullptr)
       title->setText(fax ? QStringLiteral("Stations") : QStringLiteral("Transmit"));
@@ -6364,7 +6597,7 @@ void MainWindow::refreshTxChrome() {
                                  "txPick3",    "tx3",        "txPick4", "tx4", "txPick5", "tx5",
                                  "txPick6",    "tx6",        "txPick7", "txExtra", "txQso",
                                  "txClrQueue", "txClrNow"};
-  if (textMode || wspr || fax) {
+  if (textMode || wspr || fax || rade) {
     for (const char* name : sequenceNames) {
       if (auto* widget = findChild<QWidget*>(QLatin1String(name)))
         widget->setVisible(false);
@@ -6953,6 +7186,20 @@ void MainWindow::setUserTx(bool on) {
   cancelMacroRepeat(QString());
   auto* button = findChild<QPushButton*>(QStringLiteral("txSend"));
   if (!on) {
+    // RADE finishes the end-of-over frame, holds about 120 ms, then unkeys.
+    // A second press stops at once.
+    if (txRade_ && txKeySent_ && !radeStopping_) {
+      radeStopping_ = true;
+      if (button) {
+        const QSignalBlocker block(button);
+        button->setChecked(true);
+        button->setText(QStringLiteral("ENDING"));
+      }
+      setTxStatus(QStringLiteral(
+          "Ending. The end-of-over frame goes out, then TRX drops. Press TX again to stop now. "
+          "START was not sent."));
+      return;
+    }
     // Live keyboard TX: the first press ends after the box is sent, as
     // Fldigi's TX/RX does. A second press stops at once.
     if (txLive_ && txKeySent_ && !txLiveEnding_) {
@@ -6984,6 +7231,10 @@ void MainWindow::setUserTx(bool on) {
   }
   if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
     release();
+    return;
+  }
+  if (profile_ && radeMode(profile_->digitalMode())) {
+    beginRadeTx();
     return;
   }
   if (stationCall().isEmpty()) {
@@ -7345,7 +7596,9 @@ void MainWindow::onTxPull(int sampleRateHz, int length, int channels) {
     return;
   txLastPullMs_ = QDateTime::currentMSecsSinceEpoch();
   std::vector<float> mono(static_cast<size_t>(frames));
-  if (txTune_)
+  if (txRade_)
+    fillRadeTx(mono.data(), frames, rate);
+  else if (txTune_)
     fillTune(mono.data(), frames);
   else
     fillWave(mono.data(), frames, step);
@@ -7430,6 +7683,10 @@ void MainWindow::pumpUserTx() {
       return;
     }
     pushRealtimeTx();
+    return;
+  }
+  if (txRade_) {
+    pumpRadeTx();
     return;
   }
   if (!tci_ || !profile_ || (txSamples_.empty() && !txLive_)) {
@@ -7902,6 +8159,20 @@ void MainWindow::stopUserTx(bool uncheck) {
   txLiveLogged_ = false;
   txLiveTextMs_ = 0;
   txSampleBase_ = 0;
+  if (radeMic_)
+    radeMic_->stop();
+  const bool wasRade = txRade_;
+  txRade_ = false;
+  if (wasRade) {
+    updateFreedvReporter(true);
+    refreshRadeRxChip();
+  }
+  radeStopping_ = false;
+  radeFinished_ = false;
+  radeTailMs_ = 0;
+  radePushed_ = 0;
+  radeRead_ = 0;
+  radeModem_.clear();
   if (txTimer_)
     txTimer_->stop();
   if (txKeySent_ && tci_)
@@ -9194,6 +9465,58 @@ void MainWindow::openNetworkDialog() {
                      "Choose Off and nothing is posted. This does not send START and does not key."),
       &dialog);
   wsprNote->setWordWrap(true);
+  auto* fdvChoice = new QWidget(&dialog);
+  fdvChoice->setObjectName(QStringLiteral("freedvReporterChoice"));
+  auto* fdvOff = new QRadioButton(QStringLiteral("Off"), fdvChoice);
+  auto* fdvOn = new QRadioButton(QStringLiteral("On"), fdvChoice);
+  fdvOff->setObjectName(QStringLiteral("freedvReporterOff"));
+  fdvOn->setObjectName(QStringLiteral("freedvReporterOn"));
+  fdvOff->setStyleSheet(wsprRadioStyle);
+  fdvOn->setStyleSheet(wsprRadioStyle);
+  auto* fdvGroup = new QButtonGroup(fdvChoice);
+  fdvGroup->setExclusive(true);
+  fdvGroup->addButton(fdvOff);
+  fdvGroup->addButton(fdvOn);
+  const bool fdvSaved = settings.value(QStringLiteral("dx/freedvReporterEnabled"), false).toBool();
+  fdvOn->setChecked(fdvSaved);
+  fdvOff->setChecked(!fdvSaved);
+  const QString fdvTip = QStringLiteral(
+      "On shows you on FreeDV Reporter (qso.freedv.org) while a RADE mode is selected: your call, "
+      "locator, dial frequency, when you transmit, and each RADE station you hear with its SNR. "
+      "Off connects to nothing. Does not key. START is never sent.");
+  fdvOff->setToolTip(fdvTip);
+  fdvOn->setToolTip(fdvTip);
+  auto* fdvLabel = new QLabel(QStringLiteral("FreeDV Reporter"), fdvChoice);
+  fdvLabel->setStyleSheet(QStringLiteral("color: #f7ffff; font-size: 14px;"));
+  auto* fdvRow = new QHBoxLayout(fdvChoice);
+  fdvRow->setContentsMargins(0, 6, 0, 0);
+  fdvRow->setSpacing(14);
+  fdvRow->addWidget(fdvLabel);
+  fdvRow->addWidget(fdvOff);
+  fdvRow->addWidget(fdvOn);
+  auto* fdvMessage = new QLineEdit(settings.value(QStringLiteral("dx/freedvReporterMessage")).toString(), fdvChoice);
+  fdvMessage->setObjectName(QStringLiteral("freedvReporterMessage"));
+  fdvMessage->setMaxLength(80);
+  fdvMessage->setPlaceholderText(QStringLiteral("Message, e.g. Rick, Ohio, IC-7300 dipole"));
+  fdvMessage->setToolTip(QStringLiteral(
+      "The free-text Message column on FreeDV Reporter. Sent when STD connects and whenever it "
+      "changes. Leave it empty to show nothing. This is not a callsign or a locator. "
+      "Does not key. START is never sent."));
+  fdvRow->addWidget(fdvMessage, 1);
+  auto* fdvNote = new QLabel(
+      QStringLiteral("FreeDV Reporter is the live map the FreeDV app reports to. STD connects only while "
+                     "RADE V1 or V2 is the mode and the radio is connected, and leaves when you change mode. "
+                     "The callsign and locator are the ones in Options → User; with either empty nothing is "
+                     "sent. View FreeDV Reporter opens the map and does not connect. "
+                     "This does not send START and does not key."),
+      &dialog);
+  fdvNote->setWordWrap(true);
+  auto* fdvView = new QPushButton(QStringLiteral("View FreeDV Reporter"), &dialog);
+  fdvView->setObjectName(QStringLiteral("freedvReporterView"));
+  fdvView->setToolTip(QStringLiteral(
+      "Opens qso.freedv.org in the browser. Does not connect, does not key, and does not send START."));
+  connect(fdvView, &QPushButton::clicked, this,
+          [] { QDesktopServices::openUrl(QUrl(QStringLiteral("https://qso.freedv.org/"))); });
   auto* map = new QPushButton(QStringLiteral("View spots"), &dialog);
   map->setObjectName(QStringLiteral("pskReporterMap"));
   map->setToolTip(QStringLiteral(
@@ -9211,6 +9534,7 @@ void MainWindow::openNetworkDialog() {
   auto* buttons = new QHBoxLayout;
   buttons->addWidget(map);
   buttons->addWidget(reports);
+  buttons->addWidget(fdvView);
   buttons->addStretch(1);
   buttons->addWidget(ok);
   buttons->addWidget(cancel);
@@ -9221,6 +9545,8 @@ void MainWindow::openNetworkDialog() {
   layout->addWidget(note);
   layout->addWidget(wsprChoice);
   layout->addWidget(wsprNote);
+  layout->addWidget(fdvChoice);
+  layout->addWidget(fdvNote);
   layout->addLayout(buttons);
   connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
   connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -9230,6 +9556,8 @@ void MainWindow::openNetworkDialog() {
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
   store.setValue(QStringLiteral("dx/reportWspr"), reportWspr->isChecked());
   store.setValue(QStringLiteral("dx/wsprnetEnabled"), wsprOn->isChecked());
+  store.setValue(QStringLiteral("dx/freedvReporterEnabled"), fdvOn->isChecked());
+  store.setValue(QStringLiteral("dx/freedvReporterMessage"), fdvMessage->text().trimmed());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
   store.setValue(QStringLiteral("dx/reportAntenna"), antenna->text().trimmed());
@@ -9240,6 +9568,11 @@ void MainWindow::openNetworkDialog() {
   refreshDecodes();
   applyStationLock();
   refreshTxFields();
+  updateFreedvReporter(true);
+  if (statusStrip_)
+    statusStrip_->refreshSpot();
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+    screen->refreshMessage();
 }
 
 void MainWindow::rememberQso(const QString& call, const QString& grid, const QString& theirReport,

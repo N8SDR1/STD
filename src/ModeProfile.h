@@ -4,10 +4,14 @@
 #pragma once
 
 #include <QList>
+#include <QPair>
+#include <QStringList>
 #include <QString>
 #include <QWidget>
 
 class QComboBox;
+class QLabel;
+class QSlider;
 class QSpinBox;
 
 // The controls an MSHV-family mode shows under the waterfall. Keyboard
@@ -50,6 +54,24 @@ public:
   // suffix such as N8SDR/VE uses that country. The call text is not rewritten.
   void setRegionOverride(const QString& choice);
   void refreshStation();
+  // Fills the Mic, speaker, and volume row from the Speech settings.
+  void refreshRadeDevices();
+  // RADE scan: every FreeDV Reporter calling dial, low band to high, as
+  // (band index, Hz).
+  // meters limits it to those bands ("160", "80", "60", "40", "20", "17",
+  // "15", "12", "10"); empty means every band.
+  // extras adds the dials typed into Extra for each band, after the
+  // reporter dials of that band.
+  QList<QPair<int, qint64>> radeScanDials(const QStringList& meters = QStringList(), bool extras = true) const;
+  // The bands Scan can use, in order.
+  static QStringList radeScanBands();
+  // Moves to that band and dial and emits tuneRequested, as a band click does.
+  void selectDial(int band, qint64 hz);
+  // Right-click Extra: list, edit, delete, or add this band's extra dials.
+  void editExtras();
+  // The extra dials for the current mode and band, and setting them.
+  QList<qint64> extraDials() const { return extras_; }
+  void setExtraDials(const QList<qint64>& dials);
 
 signals:
   void tuneRequested(qint64 dialHz, const QString& sideband);
@@ -59,6 +81,9 @@ signals:
   void multiAnswerChanged(bool on);
   void filtersChanged(bool on);
   void filterEditRequested();
+  void radeVolumeChanged(int percent);
+  void radeCaptureChanged(const QString& micId);
+  void radeOutputChanged(const QString& speakerId);
 
 private:
   void applySpan();
@@ -69,11 +94,18 @@ private:
   void advanceCycle();
   void insertExtra(qint64 hz);
   QList<qint64> storedExtras(int index) const;
+  QList<qint64> cycleDials(int index) const;
+  bool stockDial(int index, qint64 hz) const;
   int effectiveRegion() const;
   qint64 tableHz(int index) const;
 
   QWidget* bar_ = nullptr;
+  QWidget* radeAudio_ = nullptr;
   QWidget* keyboard_ = nullptr;
+  QComboBox* radeMicBox_ = nullptr;
+  QComboBox* radeSpeakerBox_ = nullptr;
+  QSlider* radeVolume_ = nullptr;
+  QLabel* radeVolumeValue_ = nullptr;
   QSpinBox* speed_ = nullptr;
   QSpinBox* start_ = nullptr;
   QSpinBox* bandwidth_ = nullptr;

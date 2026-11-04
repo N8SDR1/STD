@@ -235,7 +235,7 @@ QPushButton#waterfallAuto, QPushButton#waterfallFlatten {
 }
 
 QPushButton#waterfallAuto:checked, QPushButton#waterfallFlatten:checked,
-QPushButton#wfAfc:checked {
+QPushButton#wfAfc:checked, QPushButton#radeDigu:checked {
   background: #1d5a73;
   color: #ffffff;
   border: 2px solid #00e5ff;

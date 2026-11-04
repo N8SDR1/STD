@@ -9,6 +9,8 @@
 #include "QsoCapture.h"
 #include "QsoLog.h"
 #include "RstMeter.h"
+#include "rade/RadeLink.h"
+#include "rade/RateConvert.h"
 
 #include <QByteArray>
 #include <QHash>
@@ -69,6 +71,9 @@ public:
   void placeAnswer(const QString& call);
   // Puts the waterfall RHI widget in the tree before the window is shown.
   void primeGraphics();
+  // Self-test: RADE TX through STD's own 48 kHz output path, decoded back.
+  // Empty when it syncs and reads the callsign; otherwise what failed.
+  QString radeTxLoopback();
 
 protected:
   void showEvent(QShowEvent* event) override;
@@ -135,6 +140,22 @@ private:
   void placeDockTitle(QDockWidget* dock, const QString& title, std::initializer_list<const char*> buttons);
   void applyMacroBar();
   void showKeyboardReceive(const QString& mode);
+  void applyRadePlaybackVolume(int percent);
+  // Pushes the Mic NR and BW expand boxes to the codec when they change.
+  void applyRadeOptions();
+  // FreeDV Reporter follows RADE mode, the dial and TX. now skips the
+  // half-second throttle.
+  void updateFreedvReporter(bool now);
+  // RADE activity scan over the FreeDV Reporter calling dials.
+  void startRadeScan();
+  void stopRadeScan(const QString& why);
+  void radeScanTick();
+  void radeScanTune();
+  // Green RX while receiving, amber while the over ends.
+  void refreshRadeRxChip();
+  void radeRxClicked();
+  void applyRadeCapture(const QString& id);
+  void applyRadeOutput(const QString& id);
 
   // JS8 operating screen (MainWindowJs8.cpp). Shown only in JS8 mode.
   struct Js8BandRow {
@@ -228,6 +249,14 @@ private:
   void stopTune(bool uncheck);
   void pumpUserTx();
   void onTxPull(int sampleRateHz, int length, int channels);
+  void ensureRadeCodec();
+  void closeRadeCodec();
+  void beginRadeTx();
+  void pumpRadeTx();
+  void pushRadeRealtime();
+  void fillRadeTx(float* dst, int frames, int rate);
+  void pushRadeRx(const float* samples, int count, int rate);
+  void playRadePcm(const float* samples, int count);
   void fillTune(float* dst, int frames);
   void fillWave(float* dst, int frames, int step);
   void sendTxBlock(const float* mono, int frames, int rate, int channels);
@@ -348,6 +377,41 @@ private:
   HellEngine* hell_ = nullptr;
   SpeechReader* speech_ = nullptr;
   SpeechInput* talkIn_ = nullptr;
+  SpeechInput* radeMic_ = nullptr;
+  class RadeSpeaker* radeSpeaker_ = nullptr;
+  RadeLink rade_;
+  RateConvert radeRxConv_;
+  RateConvert radeAnalogConv_;
+  SincTable radeTxKernel_;
+  std::vector<float> radeModem_;
+  double radeRead_ = 0;
+  bool radePrimed_ = false;
+  int radeHeardSeq_ = 0;
+  int radeOptions_ = -1;
+  class FreeDvReporter* freedvReporter_ = nullptr;
+  qint64 freedvReporterMs_ = 0;
+  qint64 radeSyncReportMs_ = 0;
+  class QTimer* radeScanTimer_ = nullptr;
+  bool radeScanOn_ = false;
+  bool radeScanTuning_ = false;
+  int radeScanIndex_ = -1;
+  qint64 radeScanTuneMs_ = 0;
+  qint64 radeScanSyncMs_ = 0;
+  int radeRxState_ = -1;
+  bool txRade_ = false;
+  bool radeStopping_ = false;
+  bool radeFinished_ = false;
+  bool radeCodecReady_ = false;
+  bool radeWasSync_ = false;
+  bool radeSpeakerFail_ = false;
+  int radeOpenV2_ = -1;
+  int radeOpenNoBpf_ = -1;
+  int radePushed_ = 0;
+  qint64 radeTailMs_ = 0;
+  qint64 radeOriginMs_ = 0;
+  qint64 radeMeterMs_ = 0;
+  qint64 radeOpenTryMs_ = 0;
+  QString radeSpeakerId_;
   SpeechModelDownload* modelDl_ = nullptr;
   SpeechRecognizer* recognizer_ = nullptr;
   void insertHeardText(const QString& heard, const QString& error);

@@ -292,6 +292,62 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
   sqlRow->addWidget(level);
   layout->addWidget(sqlGroup);
   applyDecoderControls(QStringLiteral("FT8"));
+
+  // One spot chip for whichever reporter this mode feeds: PSK Reporter for
+  // FT8, FT4, FT2, JT65, Q65 and JS8, WSPRnet for WSPR, FreeDV Reporter
+  // for RADE. It is the same switch as Options → Network Configuration.
+  spotSep_ = separator();
+  layout->addWidget(spotSep_);
+  auto* spotGroup = new QWidget(this);
+  spotGroup->setObjectName(QStringLiteral("spotGroup"));
+  auto* spotRow = new QHBoxLayout(spotGroup);
+  spotRow->setContentsMargins(0, 0, 0, 0);
+  spotRow->setSpacing(6);
+  // The name is a link: click it to open that reporter's live page.
+  auto* spotName = new QPushButton(QStringLiteral("PSK RPT"), spotGroup);
+  spotName->setObjectName(QStringLiteral("spotName"));
+  spotName->setFlat(true);
+  spotName->setFocusPolicy(Qt::NoFocus);
+  spotName->setCursor(Qt::PointingHandCursor);
+  spotName->setFixedHeight(22);
+  spotName->setStyleSheet(QStringLiteral(
+      "QPushButton#spotName { color: #00e5ff; background: transparent; border: none; padding: 0 2px; }"
+      "QPushButton#spotName:hover { color: #f7ffff; text-decoration: underline; }"));
+  {
+    QFont small("Inter");
+    small.setPixelSize(10);
+    small.setLetterSpacing(QFont::AbsoluteSpacing, 1.1);
+    spotName->setFont(small);
+  }
+  auto* spot = new QPushButton(QStringLiteral("Off"), spotGroup);
+  spot->setObjectName(QStringLiteral("spotToggle"));
+  spot->setCheckable(true);
+  spot->setFocusPolicy(Qt::NoFocus);
+  spot->setFixedHeight(22);
+  spot->setFont(monoFont(12));
+  spot->setContextMenuPolicy(Qt::CustomContextMenu);
+  spotRow->addWidget(spotName);
+  spotRow->addWidget(spot);
+  layout->addWidget(spotGroup);
+  connect(spot, &QPushButton::toggled, this, [this, spot](bool on) {
+    const QString key = spot->property("settingKey").toString();
+    if (key.isEmpty())
+      return;
+    spot->setText(on ? QStringLiteral("On") : QStringLiteral("Off"));
+    QSettings().setValue(key, on);
+    emit spotToggled(key, on);
+  });
+  connect(spotName, &QPushButton::clicked, this, [this, spot] {
+    const QString service = spot->property("service").toString();
+    if (!service.isEmpty())
+      emit spotMapRequested(service);
+  });
+  connect(spot, &QPushButton::customContextMenuRequested, this, [this, spot](const QPoint&) {
+    const QString service = spot->property("service").toString();
+    if (!service.isEmpty())
+      emit spotMapRequested(service);
+  });
+  applySpot(QStringLiteral("FT8"));
   layout->addWidget(separator());
   layout->addWidget(readout("DIAL", "dialValue", QString::fromUtf8("—")));
   layout->addWidget(separator());
@@ -348,6 +404,69 @@ void StatusStrip::setDigitalMode(const QString& mode) {
   if (auto* chip = findChild<QPushButton*>(QStringLiteral("digitalModeChip")))
     showDigitalMode(chip, mode);
   applyDecoderControls(mode);
+  applySpot(mode);
+}
+
+void StatusStrip::refreshSpot() {
+  applySpot(spotMode_);
+}
+
+void StatusStrip::applySpot(const QString& mode) {
+  spotMode_ = mode;
+  auto* group = findChild<QWidget*>(QStringLiteral("spotGroup"));
+  auto* name = findChild<QPushButton*>(QStringLiteral("spotName"));
+  auto* spot = findChild<QPushButton*>(QStringLiteral("spotToggle"));
+  if (!group || !name || !spot)
+    return;
+  QString label, key, service, tip;
+  if (radeMode(mode)) {
+    label = QStringLiteral("FREEDV RPT");
+    key = QStringLiteral("dx/freedvReporterEnabled");
+    service = QStringLiteral("freedv");
+    tip = QStringLiteral(
+        "FreeDV Reporter. On shows your call, locator, dial and TX on qso.freedv.org while RADE is "
+        "the mode, and reports each RADE station you hear. Same switch as Options → Network "
+        "Configuration. Does not key. START is never sent.");
+  } else if (wsprMode(mode)) {
+    label = QStringLiteral("WSPRNET");
+    key = QStringLiteral("dx/wsprnetEnabled");
+    service = QStringLiteral("wsprnet");
+    tip = QStringLiteral(
+        "WSPRnet. On posts each WSPR station STD decodes to wsprnet.org. Same switch as Options → "
+        "Network Configuration. Does not key. START is never sent.");
+  } else if (sequencedFamily(mode) || mode.startsWith(QLatin1String("JS8"), Qt::CaseInsensitive)) {
+    label = QStringLiteral("PSK RPT");
+    key = QStringLiteral("dx/reportEnabled");
+    service = QStringLiteral("psk");
+    tip = QStringLiteral(
+        "PSK Reporter. On uploads a spot a few seconds after each decode. Same switch as Enable in "
+        "Options → Network Configuration. Does not key. START is never sent.");
+  }
+  const bool show = !key.isEmpty();
+  group->setVisible(show);
+  if (spotSep_)
+    spotSep_->setVisible(show);
+  spot->setProperty("settingKey", QString());
+  if (!show)
+    return;
+  name->setText(label);
+  const bool on = QSettings().value(key, false).toBool();
+  {
+    const QSignalBlocker block(spot);
+    spot->setChecked(on);
+    spot->setText(on ? QStringLiteral("On") : QStringLiteral("Off"));
+  }
+  spot->setProperty("settingKey", key);
+  spot->setProperty("service", service);
+  spot->setToolTip(tip);
+  const QString page = service == QLatin1String("freedv")
+                           ? QStringLiteral("qso.freedv.org, the live FreeDV Reporter map")
+                       : service == QLatin1String("wsprnet")
+                           ? QStringLiteral("wsprnet.org, the stations your call reported")
+                           : QStringLiteral("pskreporter.info, the map for your call");
+  name->setToolTip(QStringLiteral(
+      "Click to open %1 in your web browser. On/Off beside it turns reporting on or off. "
+      "Does not key. START is never sent.").arg(page));
 }
 
 void StatusStrip::applyDecoderControls(const QString& mode) {

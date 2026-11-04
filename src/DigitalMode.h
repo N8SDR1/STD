@@ -205,6 +205,25 @@ inline bool wsprMode(const QString& mode) {
   return mode.compare(QLatin1String("WSPR"), Qt::CaseInsensitive) == 0;
 }
 
+// RADE HF digital voice. V1 is the on-air waveform. V2 is experimental
+// and does not interoperate with V1. Neither one is a keyboard mode,
+// and neither one uses the FT8 sequencer or the Hell tape.
+inline QString radeV1Name() {
+  return QStringLiteral("RADE V1");
+}
+
+inline QString radeV2Name() {
+  return QStringLiteral("RADE V2 (experimental)");
+}
+
+inline bool radeV2(const QString& mode) {
+  return mode.startsWith(QLatin1String("RADE V2"), Qt::CaseInsensitive);
+}
+
+inline bool radeMode(const QString& mode) {
+  return mode.compare(radeV1Name(), Qt::CaseInsensitive) == 0 || radeV2(mode);
+}
+
 inline bool sequencedFamily(const QString& mode) {
   return mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
          mode == QLatin1String("FT2") || jt65Mode(mode) || q65Mode(mode);

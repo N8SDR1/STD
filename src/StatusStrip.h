@@ -23,10 +23,22 @@ public:
   void setTxHot(bool hot);
   // samples are float -1..1. A null pointer clears the meter.
   void setRxLevel(const float* samples, int count);
+  // Re-reads the spot chip from the Network Configuration settings.
+  void refreshSpot();
+
+signals:
+  // The spot chip was clicked. key is the setting it changed.
+  void spotToggled(const QString& key, bool on);
+  // Right-click on the spot chip: "psk", "wsprnet", or "freedv".
+  void spotMapRequested(const QString& service);
 
 private:
   void refreshRxLevel();
   void applyDecoderControls(const QString& mode);
+  void applySpot(const QString& mode);
+
+  QString spotMode_;
+  QWidget* spotSep_ = nullptr;
 
   double rxMeanSq_ = 0.0;
   qint64 rxHeardMs_ = 0;

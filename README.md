@@ -1,6 +1,6 @@
 # STD
 
-**Shift, Tone, Decode.** Software in testing. Version 0.1.5. Around the shack it also answers to **Sending Transmittal Disease**.
+**Shift, Tone, Decode.** Software in testing. Version 0.1.6. Around the shack it also answers to **Sending Transmittal Disease**.
 
 The real expansion is Shift, Tone, Decode. The other one is the joke. STD is a 64-bit Windows application, a Qt 6.11.1 MSVC digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air. [Lyra](https://n8sdr1.github.io/Lyra-SDR-cpp/) is the transceiver. [SDRLogger+](https://n8sdr1.github.io/SDRLoggerPlus/) is the logbook. CW stays in Lyra.
 
@@ -52,6 +52,8 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | Thor | 4, 5, 8, 11, 16, 22 are NASA K=7. 25x4, 50x1, 50x2, and 100 are IEEE K=15. Thor Micro stays off the menu. |
 | MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L. 64 carriers, Walsh code, short or long interleave. |
 | JS8 | JS8Call-improved Normal. 15 s, 50 Hz. Band activity, conversation, and call activity, with HB, CQ, Reply, SNR?, INFO?, STATUS?, GRID?, Directed, and Deselect. TX waits for the next 15 s UTC period and sends one frame, starting half a second in. A longer message continues on the following periods. |
+| RADE V1 | FreeDV RADE digital voice, about 1500 Hz wide, from the FreeDV rade_c library. DIGL on 160, 80, and 40 m, DIGU on 60 m and 30 m and up, the FreeDV convention. 60 m (the 5.3 chip) has the FreeDV Reporter dials 5.3685 and 5.4035, and FT8 has 5.357; other modes hide it. Speech from the Speech microphone. The end-of-over carries your callsign from Options → User the way the FreeDV app sends it, so FreeDV stations and FreeDV Reporter can show who you are, and **Heard** shows the call from the other station's end-of-over. **Offset** shows the received station's frequency offset in Hz, as FreeDV shows it. The microphone is levelled before the encoder, as FreeDV does. TX waits about a quarter second to fill its buffer, so the modem frames go out without gaps, and holds 200 ms of silence after the end-of-over. Drive 100 is the FreeDV app's level. **RX** (green while receiving) and **TX** work like the radio's switch; click RX to end your over with your callsign. Halt is hidden in RADE. **Scan** steps the FreeDV Reporter calling dials (Dwell 5–30 s each) and listens for a RADE station; **Stay on sync** stops it on the first one heard, or it keeps looping. Right-click Scan to scan all bands or only the ones you check. Dials you add with Extra are scanned too; right-click Extra to edit or delete them. **Mic NR** (RNNoise noise suppression) and **BW expand** (decoded speech widened to 48 kHz) are on by default, as in the FreeDV app. FreeDV Reporter is in Options → Network Configuration. |
+| RADE V2 | Experimental, about 860 Hz, will not talk to V1. BPF (on by default) is the modem band-pass; it is greyed out on V1, which sends without one, as FreeDV does. |
 | WSPR | WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Tx power, Tx Pct, and band hopping. The locator is Options → User. Rows stay in the receive colour, under titles, with a rule between periods. Heard stations post to WSPRnet only when WSPRnet is On, and only while WSPR is the mode. |
 
 ## Receive only
@@ -92,7 +94,7 @@ Radio → Connect opens one WebSocket. The default port is 50001.
 
 The text command START is never sent.
 
-Options → PSK Reporter map opens the map for the callsign in Options → User. Options → Network Configuration uploads a spot after a decode only when Enable is checked. Antenna is the description sent with the spot. Also send WSPR spots to PSK Reporter stays off until checked. WSPRnet is Off or On in that same dialog, and Off posts nothing. That box is off until the operator turns it on. There is no second callsign field. File → Backup settings saves layouts and the callsign and locator from Options → User. It does not copy the TCI host or port. File → Import settings, Backup logbook, and Export ADIF do not key.
+Options → PSK Reporter map opens the map for the callsign in Options → User. Options → Network Configuration uploads a spot after a decode only when Enable is checked. Antenna is the description sent with the spot. Also send WSPR spots to PSK Reporter stays off until checked. WSPRnet is Off or On in that same dialog, and Off posts nothing. That box is off until the operator turns it on. FreeDV Reporter is Off or On there too: On shows your call, locator, dial and TX on qso.freedv.org while a RADE mode is selected, and reports each RADE station you hear with its SNR. The box beside On is the Message column (name, QTH, rig), also on the RADE screen as Reporter message. The bottom status strip has a spot chip for the reporter the current mode feeds (PSK RPT in FT8/FT4/FT2/JT65/Q65/JS8, WSPRNET in WSPR, FREEDV RPT in RADE): click the name to open that service's live page in your browser, and On/Off to turn it on or off. View FreeDV Reporter opens the map without connecting. There is no second callsign field. File → Backup settings saves layouts and the callsign and locator from Options → User. It does not copy the TCI host or port. File → Import settings, Backup logbook, and Export ADIF do not key.
 
 Help → Check for Updates uses the same notice as Lyra. A newer GitHub release, including a pre-release, opens a dialog the first time, then leaves an indicator on the brand bar.
 
@@ -102,13 +104,13 @@ STD is a 64-bit Windows application. The kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\
 
 ## Run
 
-The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.5.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
+The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.6.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
 
 A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_QPA_PLATFORM=offscreen`, then run `build\std.exe`. Exit status 0 prints `STD self-test ok`.
 
 ## More
 
 - Web version of this page: <https://n8sdr1.github.io/STD/>
-- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.5 pre-release, testing phase · highly transmissible)
+- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.6 pre-release, testing phase · highly transmissible)
 - Wiki: <https://github.com/N8SDR1/STD/wiki>
 - Longer notes: [modes](docs/modes.md), [Hell](docs/hell.md), [macros](docs/macros.md), [contest](docs/contest.md), [connect](docs/connect.md)

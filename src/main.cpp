@@ -31,7 +31,9 @@
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
 #include "modem/ToneClock.h"
+#include "rade/RadeLink.h"
 #include "wspr/WsprModem.h"
+#include "spot/FreeDvReporter.h"
 #include "spot/PskReporter.h"
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
@@ -85,6 +87,10 @@
 #include <QScrollBar>
 #include <QHash>
 #include <QCheckBox>
+#include <QHBoxLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QComboBox>
 #include <QDataStream>
 #include <QDate>
@@ -1009,8 +1015,312 @@ int shellReady(MainWindow& window) {
       keyboardTextMode(QStringLiteral("FT8")) ||
       keyboardTextMode(QStringLiteral("FT4")) || keyboardTextMode(QStringLiteral("FT2")) ||
       keyboardTextMode(QStringLiteral("JT65A")) || keyboardTextMode(QStringLiteral("Q65A")) ||
-      keyboardTextMode(QStringLiteral("CW")))
+      keyboardTextMode(QStringLiteral("CW")) ||
+      keyboardTextMode(QStringLiteral("RADE V1")) ||
+      keyboardTextMode(QStringLiteral("RADE V2 (experimental)")))
     return fail("keyboard text mode list is wrong");
+  if (!radeMode(QStringLiteral("RADE V1")) || !radeV2(QStringLiteral("RADE V2 (experimental)")) ||
+      radeV2(QStringLiteral("RADE V1")) || radeMode(QStringLiteral("FT8")) ||
+      sequencedFamily(QStringLiteral("RADE V1")) || hellFamily(QStringLiteral("RADE V1")))
+    return fail("RADE mode list is wrong");
+  {
+    auto* v1 = window.findChild<QAction*>(QStringLiteral("modeRadeV1"));
+    auto* v2 = window.findChild<QAction*>(QStringLiteral("modeRadeV2"));
+    auto* ft8Back = window.findChild<QAction*>(QStringLiteral("modeFt8"));
+    auto* screen = window.findChild<QWidget*>(QStringLiteral("radeScreen"));
+    auto* radeProfile = window.findChild<ModeProfile*>();
+    if (!v1 || !v2 || !ft8Back || !screen || !radeProfile ||
+        !v1->toolTip().contains(QLatin1String("START")) ||
+        !v2->toolTip().contains(QLatin1String("experimental")) ||
+        [screen] {
+          // Text boxes other than those inside a spin box.
+          QList<QLineEdit*> edits;
+          for (QLineEdit* edit : screen->findChildren<QLineEdit*>())
+            if (!qobject_cast<QAbstractSpinBox*>(edit->parentWidget()))
+              edits.append(edit);
+          return edits.size() != 1 || edits.first()->objectName() != QLatin1String("radeReporterMessage");
+        }())
+      // Identity stays in Options → User; the only text box here is the
+      // FreeDV Reporter message.
+      return fail("RADE screen is missing");
+    {
+      const QString loop = window.radeTxLoopback();
+      if (!loop.isEmpty()) {
+        qWarning("RADE TX loopback: %s", qPrintable(loop));
+        return fail("RADE TX through STD's output path did not decode");
+      }
+    }
+    if (radeCodecSelfTest() != 0)
+      return fail("RADE codec round trip failed");
+    QSettings radeKeep;
+    const bool hadBpfV1 = radeKeep.contains(QStringLiteral("rade/bpfV1"));
+    const bool hadBpfV2 = radeKeep.contains(QStringLiteral("rade/bpfV2"));
+    const QVariant bpfV1 = radeKeep.value(QStringLiteral("rade/bpfV1"));
+    const QVariant bpfV2 = radeKeep.value(QStringLiteral("rade/bpfV2"));
+    struct BpfRestore {
+      bool had1 = false;
+      bool had2 = false;
+      QVariant v1;
+      QVariant v2;
+      ~BpfRestore() {
+        QSettings store;
+        if (had1)
+          store.setValue(QStringLiteral("rade/bpfV1"), v1);
+        if (had2)
+          store.setValue(QStringLiteral("rade/bpfV2"), v2);
+      }
+    } bpfRestore{hadBpfV1, hadBpfV2, bpfV1, bpfV2};
+    radeKeep.remove(QStringLiteral("rade/bpfV1"));
+    radeKeep.remove(QStringLiteral("rade/bpfV2"));
+    v1->trigger();
+    auto* variant = window.findChild<QComboBox*>(QStringLiteral("radeVariant"));
+    auto* analog = window.findChild<QCheckBox*>(QStringLiteral("radeAnalog"));
+    auto* bpf = window.findChild<QCheckBox*>(QStringLiteral("radeBpf"));
+    auto* drive = window.findChild<QSlider*>(QStringLiteral("radeDrive"));
+    auto* sync = window.findChild<QLabel*>(QStringLiteral("radeSync"));
+    auto* snr = window.findChild<QLabel*>(QStringLiteral("radeSnr"));
+    auto* micBox = window.findChild<QComboBox*>(QStringLiteral("radeMicDevice"));
+    auto* spkBox = window.findChild<QComboBox*>(QStringLiteral("radeSpeakerDevice"));
+    auto* radeVol = window.findChild<QSlider*>(QStringLiteral("radeVolume"));
+    auto* audio = window.findChild<QWidget*>(QStringLiteral("radeAudioBar"));
+    auto* rx = window.findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
+    auto* radeHellBox = window.findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
+    auto* tx1 = window.findChild<QWidget*>(QStringLiteral("tx1"));
+    if (window.findChild<QPushButton*>(QStringLiteral("radeDigu")))
+      return fail("RADE sideband button is back");
+    {
+      auto* denoise = window.findChild<QCheckBox*>(QStringLiteral("radeDenoise"));
+      auto* wide = window.findChild<QCheckBox*>(QStringLiteral("radeWide"));
+      if (!denoise || !wide || denoise->parentWidget() != audio || wide->parentWidget() != audio ||
+          !denoise->toolTip().contains(QLatin1String("RNNoise")) ||
+          !wide->toolTip().contains(QLatin1String("48 kHz")))
+        return fail("RADE Mic NR or BW expand is missing from the audio row");
+      if (!window.findChild<QLineEdit*>(QStringLiteral("radeReporterMessage")))
+        return fail("RADE screen has no FreeDV Reporter message box");
+    }
+    {
+      // The status strip shows the reporter that the mode feeds, and none otherwise.
+      StatusStrip strip;
+      auto* group = strip.findChild<QWidget*>(QStringLiteral("spotGroup"));
+      auto* name = strip.findChild<QPushButton*>(QStringLiteral("spotName"));
+      if (!group || !name)
+        return fail("status strip has no spot chip");
+      const struct {
+        const char* mode;
+        const char* label;
+      } spotCases[] = {{"FT8", "PSK RPT"}, {"Q65A", "PSK RPT"}, {"JS8", "PSK RPT"},
+                       {"WSPR", "WSPRNET"}, {"RADE V1", "FREEDV RPT"}, {"BPSK31", nullptr}};
+      for (const auto& spotCase : spotCases) {
+        strip.setDigitalMode(QString::fromLatin1(spotCase.mode));
+        const bool want = spotCase.label != nullptr;
+        if (group->isHidden() == want || (want && name->text() != QLatin1String(spotCase.label)))
+          return fail("spot chip shows the wrong reporter for a mode");
+      }
+    }
+    if (!variant || !analog || !bpf || !drive || !sync || !snr || !micBox || !spkBox ||
+        !radeVol || !audio || !rx || !radeHellBox || !tx1 || !screen->isVisible() || audio->isHidden() ||
+        variant->currentText() != QLatin1String("RADE V1") || bpf->isChecked() || !rx->isHidden() ||
+        !radeHellBox->isHidden() || !tx1->isHidden() ||
+        !analog->toolTip().contains(QLatin1String("silent")) ||
+        variant->maximumWidth() > 280 || bpf->isEnabled() ||
+        micBox->count() < 1 || spkBox->count() < 1 || radeVol->maximum() != 100 ||
+        !spkBox->toolTip().contains(QLatin1String("Play on")) ||
+        drive->maximumWidth() > 180 || analog->parentWidget() != audio ||
+        drive->parentWidget() != audio || bpf->parentWidget() != screen ||
+        radeProfile->digitalMode() != QLatin1String("RADE V1"))
+      return fail("RADE V1 screen is wrong");
+    auto* radeTx = window.findChild<QPushButton*>(QStringLiteral("txSend"));
+    auto* radeHalt = window.findChild<QPushButton*>(QStringLiteral("txHalt"));
+    auto* keySlot = window.findChild<QWidget*>(QStringLiteral("radeKeySlot"));
+    if (!radeTx || !radeHalt || !keySlot || !radeTx->parentWidget() ||
+        radeTx->parentWidget()->parentWidget() != keySlot ||
+        radeHalt->parentWidget() != radeTx->parentWidget())
+      return fail("RADE TX is still at the bottom");
+    {
+      // RX sits before TX, lit green while receiving; Halt is hidden in RADE.
+      auto* rx = window.findChild<QPushButton*>(QStringLiteral("radeRx"));
+      auto* slotRow = qobject_cast<QHBoxLayout*>(keySlot->layout());
+      if (!rx || !slotRow || slotRow->indexOf(rx) != 0 || rx->text() != QLatin1String("RX") ||
+          !rx->styleSheet().contains(QLatin1String("#2ecc71")) || !radeHalt->isHidden())
+        return fail("RADE RX chip is missing or Halt is still shown");
+    }
+    {
+      // Scan sits after RX and TX: chip, Dwell 5-30 s in 5 s steps, Stay on sync.
+      auto* scan = window.findChild<QPushButton*>(QStringLiteral("radeScan"));
+      auto* dwell = window.findChild<QSpinBox*>(QStringLiteral("radeScanDwell"));
+      auto* stay = window.findChild<QCheckBox*>(QStringLiteral("radeScanStay"));
+      auto* waveRow = scan ? qobject_cast<QBoxLayout*>(scan->parentWidget()->layout()) : nullptr;
+      QHBoxLayout* pairRow = nullptr;
+      if (waveRow) {
+        for (int i = 0; i < waveRow->count() && !pairRow; ++i)
+          if (auto* inner = qobject_cast<QHBoxLayout*>(waveRow->itemAt(i)->layout()))
+            if (inner->indexOf(keySlot) >= 0)
+              pairRow = inner;
+      }
+      if (!scan || !dwell || !stay || !pairRow || pairRow->indexOf(scan) <= pairRow->indexOf(keySlot) ||
+          pairRow->indexOf(dwell) != pairRow->indexOf(scan) + 1 ||
+          pairRow->indexOf(stay) != pairRow->indexOf(dwell) + 1 || dwell->minimum() != 5 ||
+          dwell->maximum() != 30 || dwell->singleStep() != 5 || !scan->isCheckable())
+        return fail("RADE Scan controls are missing or out of place");
+      // No radio in the self-test: Scan must refuse and stay off.
+      scan->click();
+      if (scan->isChecked())
+        return fail("RADE Scan started without a radio");
+      // Scan can be limited to chosen bands.
+      // Reporter dials only; the operator's own extras would change the counts.
+      const auto all = radeProfile->radeScanDials({}, false);
+      const auto only40 = radeProfile->radeScanDials({QStringLiteral("40")}, false);
+      const auto two = radeProfile->radeScanDials({QStringLiteral("20"), QStringLiteral("40")}, false);
+      bool only40ok = only40.size() == 4;
+      for (const auto& dial : only40)
+        only40ok = only40ok && dial.second >= 7000000 && dial.second < 7300000;
+      if (all.size() != 20 || !only40ok || two.size() != 6 || two.first().second != 7177000 ||
+          ModeProfile::radeScanBands().size() != 9 || !scan->toolTip().contains(QLatin1String("Right-click")))
+        return fail("RADE Scan band choice is wrong");
+    }
+    auto* radeBar = window.findChild<QWidget*>(QStringLiteral("mshvProfile"));
+    if (!radeBar || radeBar->isHidden())
+      return fail("RADE band bar is hidden");
+    QSettings radeDialSnap;
+    struct RadeDialRestore {
+      bool hadBand = false;
+      QVariant band;
+      QList<QPair<QString, QVariant>> extras;
+      ~RadeDialRestore() {
+        QSettings store;
+        const QStringList now = store.allKeys();
+        for (const QString& key : now) {
+          if (key.startsWith(QLatin1String("profile/extra/RADE")))
+            store.remove(key);
+        }
+        for (const QPair<QString, QVariant>& row : extras)
+          store.setValue(row.first, row.second);
+        if (hadBand)
+          store.setValue(QStringLiteral("profile/band"), band);
+        else
+          store.remove(QStringLiteral("profile/band"));
+      }
+    } radeDialRestore;
+    radeDialRestore.hadBand = radeDialSnap.contains(QStringLiteral("profile/band"));
+    radeDialRestore.band = radeDialSnap.value(QStringLiteral("profile/band"));
+    for (const QString& key : radeDialSnap.allKeys()) {
+      if (key.startsWith(QLatin1String("profile/extra/RADE")))
+        radeDialRestore.extras.append(qMakePair(key, radeDialSnap.value(key)));
+    }
+    QPushButton* band14 = nullptr;
+    QPushButton* band7 = nullptr;
+    QPushButton* band80 = nullptr;
+    QPushButton* band15 = nullptr;
+    QPushButton* band30 = nullptr;
+    QPushButton* originalBand = nullptr;
+    for (QPushButton* button : window.findChildren<QPushButton*>(QStringLiteral("profileBand"))) {
+      if (button->isChecked())
+        originalBand = button;
+      if (button->text() == QLatin1String("14"))
+        band14 = button;
+      else if (button->text() == QLatin1String("7"))
+        band7 = button;
+      else if (button->text() == QLatin1String("3.5"))
+        band80 = button;
+      else if (button->text() == QLatin1String("21"))
+        band15 = button;
+      else if (button->text() == QLatin1String("10"))
+        band30 = button;
+    }
+    if (!band14 || !band7 || !band80 || !band15 || !band30)
+      return fail("RADE band buttons are missing");
+    if (!band14->toolTip().contains(QLatin1String("14236000")) ||
+        !band14->toolTip().contains(QLatin1String("14240000")) ||
+        !band14->toolTip().contains(QLatin1String("DIGU")) ||
+        !band14->toolTip().contains(QLatin1String("14.230")) ||
+        !band14->toolTip().contains(QLatin1String("SSTV")) ||
+        band14->toolTip().contains(QLatin1String("DIGL")) ||
+        !band7->toolTip().contains(QLatin1String("7177000")) ||
+        !band7->toolTip().contains(QLatin1String("7045000")) ||
+        !band7->toolTip().contains(QLatin1String("7181500")) ||
+        !band7->toolTip().contains(QLatin1String("DIGL")) ||
+        !band80->toolTip().contains(QLatin1String("3643000")) ||
+        !band80->toolTip().contains(QLatin1String("3640000")) ||
+        !band80->toolTip().contains(QLatin1String("DIGL")) ||
+        !band15->toolTip().contains(QLatin1String("21313000")) ||
+        !band15->toolTip().contains(QLatin1String("DIGU")) ||
+        band15->toolTip().contains(QLatin1String("DIGL")) ||
+        !band30->toolTip().contains(QLatin1String("no FreeDV Reporter dial")))
+      return fail("RADE calling dials are wrong");
+    band15->click();
+    band7->click();
+    if (radeProfile->dialHz() != 7177000 || radeProfile->sideband() != QLatin1String("DIGL"))
+      return fail("RADE 40 m dial is wrong");
+    band7->click();
+    if (radeProfile->dialHz() != 7197000)
+      return fail("RADE 40 m did not cycle");
+    band80->click();
+    if (radeProfile->dialHz() != 3643000 || radeProfile->sideband() != QLatin1String("DIGL"))
+      return fail("RADE 80 m dial is wrong");
+    band14->click();
+    if (radeProfile->dialHz() != 14236000 || radeProfile->sideband() != QLatin1String("DIGU"))
+      return fail("RADE 20 m dial is wrong");
+    band14->click();
+    if (radeProfile->dialHz() != 14240000)
+      return fail("RADE 20 m did not cycle");
+    {
+      // 60 m: the two FreeDV Reporter dials on USB, placed after 3.5 MHz.
+      QPushButton* band60 = nullptr;
+      for (QPushButton* button : window.findChildren<QPushButton*>(QStringLiteral("profileBand")))
+        if (button->text() == QLatin1String("5.3"))
+          band60 = button;
+      auto* bandRow = band60 ? qobject_cast<QHBoxLayout*>(band60->parentWidget()->layout()) : nullptr;
+      if (!band60 || band60->isHidden() || !bandRow ||
+          bandRow->indexOf(band60) != bandRow->indexOf(band80) + 1)
+        return fail("RADE 60 m button is missing or out of order");
+      band60->click();
+      if (radeProfile->dialHz() != 5368500 || radeProfile->sideband() != QLatin1String("DIGU"))
+        return fail("RADE 60 m dial is wrong");
+      band60->click();
+      if (radeProfile->dialHz() != 5403500)
+        return fail("RADE 60 m did not cycle");
+      band14->click();
+    }
+    auto* radeExtra = window.findChild<QSpinBox*>(QStringLiteral("profileExtra"));
+    if (!radeExtra)
+      return fail("RADE extra box is missing");
+    radeExtra->setValue(14111000);
+    emit radeExtra->editingFinished();
+    bool sawExtra = false;
+    for (int n = 0; n < 8 && !sawExtra; ++n) {
+      band14->click();
+      sawExtra = radeProfile->dialHz() == 14111000;
+    }
+    if (!sawExtra)
+      return fail("RADE extra dial was not kept");
+    {
+      // Scan covers that extra too, after the band's reporter dials.
+      const auto scan20 = radeProfile->radeScanDials({QStringLiteral("20")});
+      QList<qint64> hz;
+      for (const auto& dial : scan20)
+        hz << dial.second;
+      if (hz.size() < 3 || hz.at(0) != 14236000 || hz.at(1) != 14240000 || !hz.contains(14111000))
+        return fail("RADE Scan does not cover the Extra dials");
+      // Editing: replace, drop a stock dial, then delete all.
+      radeProfile->setExtraDials({14112000, 14236000, 14111000});
+      const QList<qint64> edited = radeProfile->extraDials();
+      radeProfile->setExtraDials({});
+      if (edited != QList<qint64>{14112000, 14111000} || !radeProfile->extraDials().isEmpty())
+        return fail("RADE Extra dials did not edit or delete");
+    }
+    if (originalBand)
+      originalBand->click();
+    v2->trigger();
+    if (!screen->isVisible() || variant->currentText() != QLatin1String("RADE V2 (experimental)") ||
+        !bpf->isChecked() || radeProfile->digitalMode() != QLatin1String("RADE V2 (experimental)"))
+      return fail("RADE V2 screen is wrong");
+    ft8Back->trigger();
+    auto* buttonRow = window.findChild<QWidget*>(QStringLiteral("txButtonRow"));
+    if (radeProfile->digitalMode() != QLatin1String("FT8") || screen->isVisible() || rx->isHidden() ||
+        tx1->isHidden() || audio->isVisible() || !buttonRow || !radeTx->parentWidget() ||
+        radeTx->parentWidget()->parentWidget() != buttonRow)
+      return fail("leaving RADE did not restore FT8");
+  }
   if (textModeSamplesPerChar(QStringLiteral("Feld Hell")) != 0 ||
       textModeSamplesPerChar(QStringLiteral("Hell 80")) != 0 ||
       textModeSamplesPerChar(QStringLiteral("PSK31")) != 0 ||
@@ -1331,7 +1641,7 @@ int shellReady(MainWindow& window) {
   if (!autoDec)
     return fail("auto decode is missing");
   const auto bands = window.findChildren<QPushButton*>("profileBand");
-  if (bands.size() != 10)
+  if (bands.size() != 11)
     return fail("band buttons are missing");
   int checked = 0;
   for (const QPushButton* button : bands) {
@@ -3375,6 +3685,29 @@ int shellReady(MainWindow& window) {
   if (pskReporterModeName(QStringLiteral("JT65A")) != QLatin1String("JT65") ||
       pskReporterModeName(QStringLiteral("Q65A")) != QLatin1String("Q65"))
     return fail("PSK Reporter mode name is wrong");
+  {
+    // FreeDV Reporter, socket.io v4 protocol 2, as freedv-gui sends it.
+    const QByteArray hello = freedvReporterConnectPacket(QStringLiteral("n8sdr"), QStringLiteral("EM79"),
+                                                         QStringLiteral("STD 1"), false);
+    const QJsonObject auth = QJsonDocument::fromJson(hello.mid(2)).object();
+    if (!hello.startsWith("40{") || auth.value(QStringLiteral("role")).toString() != QLatin1String("report") ||
+        auth.value(QStringLiteral("callsign")).toString() != QLatin1String("N8SDR") ||
+        auth.value(QStringLiteral("grid_square")).toString() != QLatin1String("EM79") ||
+        auth.value(QStringLiteral("protocol_version")).toInt() != 2 ||
+        auth.value(QStringLiteral("rx_only")).toBool(true))
+      return fail("FreeDV Reporter connect packet is wrong");
+    const QJsonObject view = QJsonDocument::fromJson(
+        freedvReporterConnectPacket(QString(), QStringLiteral("EM79"), QStringLiteral("STD 1"), false).mid(2)).object();
+    if (view.value(QStringLiteral("role")).toString() != QLatin1String("view") || view.contains(QStringLiteral("callsign")))
+      return fail("FreeDV Reporter reported without a callsign");
+    const QByteArray freq = freedvReporterEvent(
+        QStringLiteral("freq_change"),
+        QJsonDocument(QJsonObject{{QStringLiteral("freq"), QJsonValue(qint64(14236000))}}).toJson(QJsonDocument::Compact));
+    if (freq != QByteArray("42[\"freq_change\",{\"freq\":14236000}]") ||
+        freedvReporterEvent(QStringLiteral("hide_self")) != QByteArray("42[\"hide_self\"]") ||
+        freedvReporterModeName(false) != QLatin1String("RADEV1"))
+      return fail("FreeDV Reporter event is wrong");
+  }
   const QString mapUrl = pskReporterMapUrl(QStringLiteral("n8sdr"));
   if (!mapUrl.startsWith(QLatin1String("https://pskreporter.info/pskmap.html")) ||
       !mapUrl.contains(QLatin1String("callsign=N8SDR")))

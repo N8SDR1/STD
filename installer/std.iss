@@ -6,12 +6,12 @@
 ; resources/std.ico, used for Setup, the Start Menu, and the desktop shortcut.
 ;
 ; Build:  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\std.iss
-; Output: dist\STD-Setup-0.1.5.exe
+; Output: dist\STD-Setup-0.1.6.exe
 ;
 ; Keep AppVersion in sync with CMake project(VERSION) / STD_VERSION.
 
 #define AppName      "STD"
-#define AppVersion   "0.1.5"
+#define AppVersion   "0.1.6"
 #define AppPublisher "Rick Langford (N8SDR)"
 #define AppURL       "https://github.com/N8SDR1/STD"
 #define AppExe       "std.exe"
@@ -60,7 +60,7 @@ Type: filesandordirs; Name: "{app}\*"
 
 [Files]
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "test_*.exe,genprobe.exe,std-ready.exe,std-ready.rsp,std_running.exe,*.lib,*.pdb,*.exp,*.ilk,*.cmake,*.ninja,*.obj,*.o,*.txt,*.json,CMakeCache.txt,.ninja_deps,.ninja_log,CMakeFiles\*,.qt\*,std_autogen\*,ft8obj\*,_deps\*,ft8_live.*,ft8_smoke.*,ft8_capture.*,ft8-capture.bin,jt65_catch.exe,moc_*.cpp,selftest*,_selftest*,profile-bar.png"
+    Excludes: "test_*.exe,genprobe.exe,std-ready.exe,std-ready.rsp,std_running.exe,rade_shim_check.exe,*.lib,*.pdb,*.exp,*.ilk,*.cmake,*.ninja,*.obj,*.o,*.txt,*.json,CMakeCache.txt,.ninja_deps,.ninja_log,CMakeFiles\*,.qt\*,std_autogen\*,ft8obj\*,_deps\*,ft8_live.*,ft8_smoke.*,ft8_capture.*,ft8-capture.bin,jt65_catch.exe,moc_*.cpp,selftest*,_selftest*,profile-bar.png"
 Source: "{#IcoFile}"; DestDir: "{app}"; Flags: ignoreversion
 ; whisper.cpp is linked into std.exe for speech to text; its MIT notice ships with it.
 Source: "..\resources\licenses\whisper.cpp-LICENSE"; DestDir: "{app}\licenses"; Flags: ignoreversion
