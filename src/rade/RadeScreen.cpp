@@ -86,7 +86,9 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   digu_->setFixedWidth(64);
   digu_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   digu_->setToolTip(QStringLiteral(
-      "DIGU helper. On sends modulation:0,digu and stays lit. Off sends the band sideband. "
+      "Radio helper for 20 m and above. On sends DIGU and stays lit. "
+      "160 m, 80 m, and 40 m stay DIGL. Turning it on there does not switch the radio to DIGU. "
+      "Off sends the band sideband. "
       "It does not set the radio filter and it does not move the VFO. "
       "A useful passband is about 750 to 2250 Hz. Leave radio NR and compression off. "
       "On also moves the waterfall cursor to 1500 Hz. This does not key. START is never sent."));

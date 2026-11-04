@@ -3927,9 +3927,12 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
       wefax_->clear();
     wefax_->setArmed(autoMonitor_ && fax);
   }
-  if ((rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax || radeHere) && tci_ &&
-      tci_->isOpen())
-    tci_->setSideband(QStringLiteral("DIGU"));
+  if (tci_ && tci_->isOpen()) {
+    if (radeHere)
+      tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
+    else if (rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax)
+      tci_->setSideband(QStringLiteral("DIGU"));
+  }
   applyChannelWidth();
   if (radeHere)
     ensureRadeCodec();
@@ -3959,7 +3962,8 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   else if (radeHere)
     setTxStatus(radeV2(modeName)
                     ? QStringLiteral(
-                          "RADE V2 experimental. It does not talk to V1. DIGU when the radio is connected. "
+                          "RADE V2 experimental. It does not talk to V1. "
+                          "20 m and above stay DIGU. 160 m, 80 m, and 40 m stay DIGL. "
                           "Mic and speaker stay the Speech devices. This does not key. START was not sent.")
                     : QStringLiteral(
                           "RADE V1. Band buttons use the FreeDV Reporter dials. "
@@ -3970,6 +3974,17 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
 }
 
 void MainWindow::applyRadeDigu(bool on) {
+  const bool upper = profile_ && profile_->sideband() == QLatin1String("DIGU");
+  if (on && !upper) {
+    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+      screen->setDiguOn(false);
+    if (tci_ && tci_->isOpen())
+      tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGL"));
+    setTxStatus(QStringLiteral(
+        "160 m, 80 m, and 40 m stay DIGL. The helper does not switch them to DIGU. "
+        "This does not key. START was not sent."));
+    return;
+  }
   if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
     screen->setDiguOn(on);
   const bool open = tci_ && tci_->isOpen();
@@ -3979,7 +3994,8 @@ void MainWindow::applyRadeDigu(bool on) {
     if (waterfall_)
       waterfall_->setRxHz(1500);
     setTxStatus(open ? QStringLiteral(
-                           "RADE helper is on. DIGU was sent. The radio filter was not changed. "
+                           "RADE helper is on. DIGU was sent. 160 m, 80 m, and 40 m are left on DIGL. "
+                           "The radio filter was not changed. "
                            "A useful passband is about 750 to 2250 Hz. Leave NR and compression off. "
                            "The VFO was not moved. This does not key. START was not sent.")
                      : QStringLiteral(
@@ -4001,6 +4017,11 @@ void MainWindow::holdRadeDigu() {
   auto* button = findChild<QPushButton*>(QStringLiteral("radeDigu"));
   if (!button || !button->isChecked() || !profile_ || !radeMode(profile_->digitalMode()))
     return;
+  if (profile_->sideband() != QLatin1String("DIGU")) {
+    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+      screen->setDiguOn(false);
+    return;
+  }
   if (tci_ && tci_->isOpen())
     tci_->setSideband(QStringLiteral("DIGU"));
 }
@@ -4149,9 +4170,10 @@ void MainWindow::showGuide() {
        "after Tune or TX is pressed. Connect does not send START, and it does not key."},
       {"RADE",
        "Mode, RADE V1 is HF digital voice. RADE V2 is experimental and does not talk to V1. "
-       "The RADE screen replaces the FT8 sequence and the Hell tape. Waveform and the DIGU helper "
-       "sit side by side. BPF is the tick box after the radio button. The helper lights On while "
-       "it holds DIGU, and Off sends the band sideband. It does not set the radio filter. "
+       "The RADE screen replaces the FT8 sequence and the Hell tape. Waveform and the radio helper "
+       "sit side by side. BPF is the tick box after the radio button. The helper lights On only "
+       "on 20 m and above, where it holds DIGU. 160 m, 80 m, and 40 m stay DIGL, and the helper "
+       "does not switch them to DIGU. Off sends the band sideband. It does not set the radio filter. "
        "Under the band chips the row is Mic, a short Drive, Speaker, Volume, then Analog. "
        "Drive 0 is silent and 100 multiplies the modem by one half. Volume is the Speech playback "
        "level, from 0 to 100. Analog off plays decoded speech only and stays silent until sync. "
