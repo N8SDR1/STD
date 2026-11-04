@@ -170,7 +170,6 @@ private:
   void gpuFallback(const QString& why);
   void paintMarkers(QPainter& painter) const;
   void paintRuler(QPainter& painter) const;
-  void paintDial(QPainter& painter, int y) const;
   void pushTrace(qint64 endSample);
   void analyze(qint64 endSample, TraceRow* row);
   void noteTxSpill(bool spilling);

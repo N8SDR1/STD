@@ -68,6 +68,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFrame>
+#include <QToolBar>
 #include <QImage>
 #include <QSettings>
 #include <QCoreApplication>
@@ -2855,15 +2857,26 @@ int shellReady(MainWindow& window) {
       restore();
       return fail("the JS8 screen is missing");
     }
+    auto* dialBox = window.findChild<QFrame*>(QStringLiteral("dialBox"));
+    auto* dialFreq = window.findChild<QLabel*>(QStringLiteral("dialFreq"));
+    auto* dialRole = window.findChild<QLabel*>(QStringLiteral("dialRole"));
+    auto* brand = window.findChild<QToolBar*>(QStringLiteral("brandBar"));
+    if (!dialBox || !dialFreq || !dialRole || !brand || dialBox->parentWidget() == nullptr ||
+        !brand->isAncestorOf(dialBox) || !dialBox->toolTip().contains(QLatin1String("green")) ||
+        !dialBox->toolTip().contains(QLatin1String("red")) || !dialBox->styleSheet().contains(QLatin1String("#3a4250"))) {
+      restore();
+      return fail("the dial box is missing");
+    }
     ft8Action->trigger();
-    if (strip->isVisibleTo(&window) || actions->isVisibleTo(&window) || screen->isVisibleTo(&window)) {
+    if (strip->isVisibleTo(&window) || actions->isVisibleTo(&window) || screen->isVisibleTo(&window) ||
+        !dialBox->isVisibleTo(&window)) {
       restore();
       return fail("the JS8 screen shows outside JS8");
     }
     js8Action->trigger();
     const auto* echo = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
     if (!strip->isVisibleTo(&window) || !actions->isVisibleTo(&window) || !screen->isVisibleTo(&window) ||
-        (echo && echo->isVisibleTo(&window))) {
+        !dialBox->isVisibleTo(&window) || (echo && echo->isVisibleTo(&window))) {
       restore();
       return fail("the JS8 screen does not replace the plain receive pane in JS8");
     }

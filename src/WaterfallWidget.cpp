@@ -1519,9 +1519,6 @@ void WaterfallWidget::paintOverlays(QPainter& painter) const {
   paintMarkers(painter);
   paintTxHot(painter);
   paintRuler(painter);
-  const QRect plot = plotRect();
-  painter.fillRect(QRect(8, plot.top() + 4, 248, 18), QColor(0, 2, 12, 210));
-  paintDial(painter, plot.top() + 5);
   if (rowCount_ <= 0)
     paintStandbyPlate(painter);
 }
@@ -1665,8 +1662,6 @@ void WaterfallWidget::paintPlaceholder(QPainter& painter) const {
   mono.setPixelSize(12);
   painter.setFont(mono);
 
-  paintDial(painter, 8);
-
   painter.setPen(QColor("#8399ac"));
   const QStringList ticks = {
       QString::fromUtf8("−2"),
@@ -1708,17 +1703,6 @@ void WaterfallWidget::paintStandbyPlate(QPainter& painter) const {
   painter.drawText(plate.adjusted(0, 36, 0, 0), Qt::AlignHCenter | Qt::AlignTop,
                    radioConnected_ ? QStringLiteral("Waiting for audio")
                                    : QStringLiteral("Radio not connected"));
-}
-
-void WaterfallWidget::paintDial(QPainter& painter, int y) const {
-  QFont mono("JetBrains Mono");
-  mono.setStyleHint(QFont::Monospace);
-  mono.setPixelSize(12);
-  painter.setFont(mono);
-  painter.setPen(QColor("#6d8496"));
-  painter.drawText(QRect(12, y, 42, 16), Qt::AlignLeft | Qt::AlignVCenter, "DIAL");
-  painter.setPen(QColor("#00e5ff"));
-  painter.drawText(QRect(54, y, 220, 16), Qt::AlignLeft | Qt::AlignVCenter, dialText_);
 }
 
 void WaterfallWidget::paintRuler(QPainter& painter) const {

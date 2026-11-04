@@ -133,6 +133,7 @@ private:
   void showRadioDown(const QString& error);
   void showRadioUp(const QString& host, quint16 port);
   void showDial(qint64 hz);
+  void refreshDialBox();
 
   QWidget* makeTextPanel(const QString& editName, const QString& placeholder,
                          bool readOnly, const QString& note);

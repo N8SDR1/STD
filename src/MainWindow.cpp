@@ -542,6 +542,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       statusStrip_->setMode(mode);
   });
   connect(tci_, &TciClient::pttChanged, this, [this](bool on) {
+    refreshDialBox();
     if (statusStrip_)
       statusStrip_->setPtt(on, tci_->isOpen());
     // The lamp follows the radio. The waterfall TX trace follows only
@@ -1012,6 +1013,7 @@ void MainWindow::buildBrandBar() {
 
   auto* host = new QWidget(brandBar_);
   host->setFixedHeight(110);
+  host->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   auto* layout = new QHBoxLayout(host);
   layout->setContentsMargins(10, 8, 16, 8);
   layout->setSpacing(14);
@@ -1036,10 +1038,33 @@ void MainWindow::buildBrandBar() {
   wordLayout->addWidget(name);
   wordLayout->addWidget(subtitle);
 
+  auto* dial = new QFrame(host);
+  dial->setObjectName(QStringLiteral("dialBox"));
+  dial->setFixedSize(268, 78);
+  dial->setToolTip(QStringLiteral(
+      "Radio dial. The border is green while receiving and red while transmitting. "
+      "This does not key. START is never sent."));
+  auto* dialCol = new QVBoxLayout(dial);
+  dialCol->setContentsMargins(12, 6, 12, 8);
+  dialCol->setSpacing(0);
+  auto* role = new QLabel(QStringLiteral("RX"), dial);
+  role->setObjectName(QStringLiteral("dialRole"));
+  role->setFont(interfaceFont(12, QFont::Bold));
+  role->setStyleSheet(QStringLiteral("color: #efb340; background: transparent; border: none;"));
+  auto* freq = new QLabel(dialText_, dial);
+  freq->setObjectName(QStringLiteral("dialFreq"));
+  freq->setFont(monoFont(28));
+  freq->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+  freq->setStyleSheet(QStringLiteral("color: #ffb000; background: transparent; border: none;"));
+  dialCol->addWidget(role);
+  dialCol->addWidget(freq, 1);
+
   layout->addWidget(mark);
   layout->addWidget(words);
   layout->addWidget(makeJs8Strip(host));
   layout->addStretch(1);
+  layout->addWidget(dial, 0, Qt::AlignVCenter);
+  refreshDialBox();
 
   brandBar_->addWidget(host);
   updateAction_ = brandBar_->addAction(QStringLiteral("\u2B06  Update"));
@@ -10236,6 +10261,7 @@ void MainWindow::showRadioDown(const QString& error) {
     waterfall_->clearAudio();
     waterfall_->setRadio(false, dash);
   }
+  refreshDialBox();
   if (ft8_)
     ft8_->clear();
 }
@@ -10254,6 +10280,7 @@ void MainWindow::showRadioUp(const QString& host, quint16 port) {
     waterfall_->clearAudio();
     waterfall_->setRadio(true, dialText_);
   }
+  refreshDialBox();
 }
 
 void MainWindow::showDial(qint64 hz) {
@@ -10271,6 +10298,23 @@ void MainWindow::showDial(qint64 hz) {
     statusStrip_->setDial(dialText_);
   if (waterfall_)
     waterfall_->setRadio(true, dialText_);
+  refreshDialBox();
+}
+
+void MainWindow::refreshDialBox() {
+  auto* box = findChild<QFrame*>(QStringLiteral("dialBox"));
+  auto* role = findChild<QLabel*>(QStringLiteral("dialRole"));
+  auto* freq = findChild<QLabel*>(QStringLiteral("dialFreq"));
+  if (!box || !role || !freq)
+    return;
+  const bool open = tci_ && tci_->isOpen();
+  const bool tx = open && tci_->isTransmitting();
+  const QString border = !open ? QStringLiteral("#3a4250") : tx ? QStringLiteral("#ff4136") : QStringLiteral("#34c759");
+  box->setStyleSheet(QStringLiteral(
+                         "QFrame#dialBox { background-color: #0a0e12; border: 2px solid %1; border-radius: 6px; }")
+                         .arg(border));
+  role->setText(tx ? QStringLiteral("TX") : QStringLiteral("RX"));
+  freq->setText(dialText_);
 }
 
 void MainWindow::showAbout() {
