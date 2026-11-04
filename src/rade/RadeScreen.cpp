@@ -188,8 +188,8 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   meters->addWidget(sync_);
   meters->addSpacing(16);
   meters->addWidget(snr_);
+  meters->addWidget(new RadeSnrTrace(this), 0, Qt::AlignVCenter);
   meters->addSpacing(16);
-  auto* snrTrace = new RadeSnrTrace(this);
   offset_ = new QLabel(QStringLiteral("Offset  —"), this);
   offset_->setObjectName(QStringLiteral("radeOffset"));
   offset_->setFont(uiFont());
@@ -202,8 +202,6 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   meters->addWidget(offset_);
   meters->addSpacing(16);
   meters->addWidget(heard_);
-  meters->addSpacing(16);
-  meters->addWidget(snrTrace, 0, Qt::AlignVCenter);
   meters->addStretch(1);
   layout->addLayout(meters);
 

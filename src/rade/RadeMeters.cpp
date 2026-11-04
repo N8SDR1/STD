@@ -85,12 +85,12 @@ void RadeMicBar::paintEvent(QPaintEvent*) {
 
 RadeSnrTrace::RadeSnrTrace(QWidget* parent) : QWidget(parent) {
   setObjectName(QStringLiteral("radeSnrTrace"));
-  setFixedSize(140, 14);
+  setFixedSize(168, 36);
   setFocusPolicy(Qt::NoFocus);
   setToolTip(QStringLiteral(
-      "SNR for the last 3 minutes, drawn as a thin trace after the status readings. "
-      "The scale runs from -10 to 35 dB, the same range as the FreeDV SNR plot. "
-      "Idle sits on the bottom. It does not mute. This does not key. START is never sent."));
+      "SNR for the last 3 minutes. The scale runs from -10 to 35 dB, "
+      "the same range as the FreeDV SNR plot. Idle sits on the bottom. "
+      "It does not mute. This does not key. START is never sent."));
 }
 
 void RadeSnrTrace::push(bool sync, float snrDb) {
@@ -108,30 +108,27 @@ void RadeSnrTrace::push(bool sync, float snrDb) {
 
 void RadeSnrTrace::paintEvent(QPaintEvent*) {
   QPainter paint(this);
-  const QRect track(0, (height() - 10) / 2, width(), 10);
-  paint.fillRect(track, QColor(18, 30, 42));
-  paint.setPen(QColor(58, 78, 94));
-  paint.drawRect(track.adjusted(0, 0, -1, -1));
-  const QRect plot = track.adjusted(1, 1, -1, -1);
-  if (plot.width() < 2 || plot.height() < 2)
-    return;
-  const auto yOf = [&](float db) {
-    const float span = kSnrCeil - kSnrFloor;
-    const float norm = (db - kSnrFloor) / span;
-    return plot.bottom() - int(norm * float(plot.height() - 1));
-  };
-  paint.setPen(QColor(58, 78, 94));
-  paint.drawLine(plot.left(), yOf(0.0f), plot.right(), yOf(0.0f));
-  if (samples_.isEmpty())
+  const QRect plot = rect().adjusted(1, 2, -2, -2);
+  paint.fillRect(rect(), QColor(14, 24, 34));
+  paint.setPen(QColor(48, 66, 80));
+  paint.drawRect(rect().adjusted(0, 0, -1, -1));
+  if (plot.width() < 2 || samples_.size() < 2)
     return;
   const qint64 end = samples_.last().first;
   const qint64 begin = end - kSnrSpanMs;
   const auto xOf = [&](qint64 t) {
     return plot.left() + int((t - begin) * plot.width() / kSnrSpanMs);
   };
-  paint.setPen(QColor(72, 196, 186));
+  const auto yOf = [&](float db) {
+    const float span = kSnrCeil - kSnrFloor;
+    const float norm = (db - kSnrFloor) / span;
+    return plot.bottom() - int(norm * float(plot.height()));
+  };
+  paint.setPen(QColor(40, 58, 70));
+  const int zero = yOf(0.0f);
+  paint.drawLine(plot.left(), zero, plot.right(), zero);
+  paint.setPen(QColor(94, 196, 168));
   QPoint previous(xOf(samples_.first().first), yOf(samples_.first().second));
-  paint.drawPoint(previous);
   for (int i = 1; i < samples_.size(); ++i) {
     const QPoint next(xOf(samples_.at(i).first), yOf(samples_.at(i).second));
     paint.drawLine(previous, next);
