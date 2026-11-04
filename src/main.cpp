@@ -1159,6 +1159,16 @@ int shellReady(MainWindow& window) {
       scan->click();
       if (scan->isChecked())
         return fail("RADE Scan started without a radio");
+      // Scan can be limited to chosen bands.
+      const auto all = radeProfile->radeScanDials();
+      const auto only40 = radeProfile->radeScanDials({QStringLiteral("40")});
+      const auto two = radeProfile->radeScanDials({QStringLiteral("20"), QStringLiteral("40")});
+      bool only40ok = only40.size() == 4;
+      for (const auto& dial : only40)
+        only40ok = only40ok && dial.second >= 7000000 && dial.second < 7300000;
+      if (all.size() != 20 || !only40ok || two.size() != 6 || two.first().second != 7177000 ||
+          ModeProfile::radeScanBands().size() != 9 || !scan->toolTip().contains(QLatin1String("Right-click")))
+        return fail("RADE Scan band choice is wrong");
     }
     auto* radeBar = window.findChild<QWidget*>(QStringLiteral("mshvProfile"));
     if (!radeBar || radeBar->isHidden())

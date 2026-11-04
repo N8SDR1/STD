@@ -4,6 +4,7 @@
 #include "rade/RadeScreen.h"
 
 #include "DigitalMode.h"
+#include "ModeProfile.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -11,6 +12,9 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QCursor>
+#include <QMenu>
+#include <QWidgetAction>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -123,7 +127,8 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
       "Scan the FreeDV Reporter calling dials, 160 m through 10 m, for RADE activity. Each dial "
       "is held for the Dwell time. When a station syncs, Stay on sync stops the scan there; with it "
       "off STD listens while the signal is in sync and then moves on. Click again to stop, or to "
-      "start again from the next dial. Clicking a band button, TX, or changing mode also stops it. "
+      "start again from the next dial. Right-click picks the bands to scan, one or several. "
+      "Clicking a band button, TX, or changing mode also stops it. "
       "Scanning only moves the dial over TCI. It does not key. START is never sent."));
   scanDwell_ = new QSpinBox(this);
   scanDwell_->setObjectName(QStringLiteral("radeScanDwell"));
@@ -151,6 +156,9 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   pair->addWidget(scanStay_);
   pair->addStretch(1);
   connect(scan_, &QPushButton::toggled, this, [this](bool on) { emit scanToggled(on); });
+  scan_->setContextMenuPolicy(Qt::CustomContextMenu);
+  connect(scan_, &QPushButton::customContextMenuRequested, this, [this](const QPoint&) { showScanBandMenu(); });
+  refreshScanLabel();
   connect(scanDwell_, qOverload<int>(&QSpinBox::valueChanged), this,
           [](int value) { QSettings().setValue(QStringLiteral("rade/scanDwell"), value); });
   connect(scanStay_, &QCheckBox::toggled, this,
@@ -297,7 +305,98 @@ void RadeScreen::setScanning(bool on) {
     return;
   const QSignalBlocker block(scan_);
   scan_->setChecked(on);
-  scan_->setText(on ? QStringLiteral("Scanning") : QStringLiteral("Scan"));
+  refreshScanLabel();
+}
+
+QStringList RadeScreen::scanBands() const {
+  const QStringList all = ModeProfile::radeScanBands();
+  QStringList chosen;
+  for (const QString& band : QSettings().value(QStringLiteral("rade/scanBands")).toStringList())
+    if (all.contains(band) && !chosen.contains(band))
+      chosen << band;
+  return chosen.size() == all.size() ? QStringList() : chosen;
+}
+
+void RadeScreen::refreshScanLabel() {
+  if (!scan_)
+    return;
+  const QStringList bands = scanBands();
+  QString which;
+  if (bands.size() == 1)
+    which = QStringLiteral(" %1 m").arg(bands.first());
+  else if (!bands.isEmpty())
+    which = QStringLiteral(" %1 bands").arg(bands.size());
+  scan_->setText((scan_->isChecked() ? QStringLiteral("Scanning") : QStringLiteral("Scan")) + which);
+}
+
+void RadeScreen::showScanBandMenu() {
+  // Check boxes in the menu, so it stays open while bands are picked.
+  QMenu menu(this);
+  const QStringList all = ModeProfile::radeScanBands();
+  QStringList chosen = scanBands();
+  if (chosen.isEmpty())
+    chosen = all;
+  QList<QCheckBox*> boxes;
+  auto* allBox = new QCheckBox(QStringLiteral("All bands"), &menu);
+  auto addBox = [&menu](QCheckBox* box) {
+    box->setFont(uiFont());
+    box->setStyleSheet(QStringLiteral("QCheckBox { padding: 3px 12px; }"));
+    auto* action = new QWidgetAction(&menu);
+    action->setDefaultWidget(box);
+    menu.addAction(action);
+  };
+  addBox(allBox);
+  menu.addSeparator();
+  for (const QString& band : all) {
+    auto* box = new QCheckBox(QStringLiteral("%1 m").arg(band), &menu);
+    box->setProperty("band", band);
+    box->setChecked(chosen.contains(band));
+    boxes << box;
+    addBox(box);
+  }
+  allBox->setChecked(chosen.size() == all.size());
+  auto save = [this, &boxes, allBox] {
+    QStringList picked;
+    for (QCheckBox* box : boxes)
+      if (box->isChecked())
+        picked << box->property("band").toString();
+    const QSignalBlocker block(allBox);
+    allBox->setChecked(picked.size() == boxes.size());
+    QSettings().setValue(QStringLiteral("rade/scanBands"), picked);
+    refreshScanLabel();
+    emit scanBandsChanged();
+  };
+  connect(allBox, &QCheckBox::toggled, &menu, [&boxes, save](bool on) {
+    for (QCheckBox* box : boxes) {
+      const QSignalBlocker block(box);
+      box->setChecked(on);
+    }
+    // Scan needs a band. Unchecking All leaves 20 m, the busiest.
+    if (!on)
+      for (QCheckBox* box : boxes)
+        if (box->property("band").toString() == QLatin1String("20")) {
+          const QSignalBlocker block(box);
+          box->setChecked(true);
+        }
+    save();
+  });
+  for (QCheckBox* box : boxes) {
+    connect(box, &QCheckBox::toggled, &menu, [&boxes, box, save](bool on) {
+      if (!on) {
+        bool any = false;
+        for (QCheckBox* other : boxes)
+          any = any || other->isChecked();
+        if (!any) {
+          // The last band stays on.
+          const QSignalBlocker block(box);
+          box->setChecked(true);
+          return;
+        }
+      }
+      save();
+    });
+  }
+  menu.exec(QCursor::pos());
 }
 
 int RadeScreen::scanDwellSeconds() const {

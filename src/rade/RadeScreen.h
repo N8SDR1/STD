@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <QStringList>
 #include <QWidget>
 
 class QCheckBox;
@@ -35,6 +36,8 @@ public:
   // True: stop on the first dial that syncs. False: listen while it is in
   // sync, then move on.
   bool scanStay() const;
+  // Bands Scan uses, as meters ("40", "20"). Empty means all of them.
+  QStringList scanBands() const;
 
 signals:
   void variantChosen(const QString& modeName);
@@ -42,8 +45,12 @@ signals:
   void scanToggled(bool on);
   // RX clicked: end the over properly, with the end-of-over and callsign.
   void rxRequested();
+  void scanBandsChanged();
 
 private:
+  void showScanBandMenu();
+  void refreshScanLabel();
+
   void loadBpf(bool v2);
   void rememberBpf(bool on);
 

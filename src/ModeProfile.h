@@ -5,6 +5,7 @@
 
 #include <QList>
 #include <QPair>
+#include <QStringList>
 #include <QString>
 #include <QWidget>
 
@@ -57,7 +58,11 @@ public:
   void refreshRadeDevices();
   // RADE scan: every FreeDV Reporter calling dial, low band to high, as
   // (band index, Hz).
-  QList<QPair<int, qint64>> radeScanDials() const;
+  // meters limits it to those bands ("160", "80", "60", "40", "20", "17",
+  // "15", "12", "10"); empty means every band.
+  QList<QPair<int, qint64>> radeScanDials(const QStringList& meters = QStringList()) const;
+  // The bands Scan can use, in order.
+  static QStringList radeScanBands();
   // Moves to that band and dial and emits tuneRequested, as a band click does.
   void selectDial(int band, qint64 hz);
 

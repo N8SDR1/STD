@@ -126,7 +126,7 @@ void MainWindow::startRadeScan() {
     setTxStatus(why + QStringLiteral(" This does not key. START was not sent."));
     return;
   }
-  const auto dials = profile_->radeScanDials();
+  const auto dials = profile_->radeScanDials(screen ? screen->scanBands() : QStringList());
   if (dials.isEmpty()) {
     if (screen)
       screen->setScanning(false);
@@ -166,7 +166,9 @@ void MainWindow::stopRadeScan(const QString& why) {
 }
 
 void MainWindow::radeScanTune() {
-  const auto dials = profile_->radeScanDials();
+  auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+  // Read every step, so a band picked mid-scan is used on the next dial.
+  const auto dials = profile_->radeScanDials(screen ? screen->scanBands() : QStringList());
   if (dials.isEmpty())
     return;
   radeScanIndex_ = ((radeScanIndex_ % int(dials.size())) + int(dials.size())) % int(dials.size());

@@ -1101,11 +1101,31 @@ void ModeProfile::saveExtras() const {
   settings.setValue(key, texts);
 }
 
-QList<QPair<int, qint64>> ModeProfile::radeScanDials() const {
+namespace {
+
+// RADE bands with FreeDV Reporter dials, low to high: band index and meters.
+struct ScanBand {
+  int index;
+  const char* meters;
+};
+constexpr ScanBand kScanBands[] = {{0, "160"}, {1, "80"}, {k60mBand, "60"}, {2, "40"}, {4, "20"},
+                                   {5, "17"},  {6, "15"}, {7, "12"},        {8, "10"}};
+
+}  // namespace
+
+QStringList ModeProfile::radeScanBands() {
+  QStringList out;
+  for (const ScanBand& band : kScanBands)
+    out << QString::fromLatin1(band.meters);
+  return out;
+}
+
+QList<QPair<int, qint64>> ModeProfile::radeScanDials(const QStringList& meters) const {
   QList<QPair<int, qint64>> out;
-  // 160, 80, 60, 40, then 30 m and up, the order the band row shows.
-  static constexpr int kOrder[] = {0, 1, k60mBand, 2, 3, 4, 5, 6, 7, 8, 9};
-  for (int band : kOrder) {
+  for (const ScanBand& scanBand : kScanBands) {
+    if (!meters.isEmpty() && !meters.contains(QString::fromLatin1(scanBand.meters)))
+      continue;
+    const int band = scanBand.index;
     const qint64* rows = nullptr;
     int count = 0;
     radePublished(band, rows, count);
