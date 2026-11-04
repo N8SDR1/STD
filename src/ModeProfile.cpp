@@ -456,8 +456,8 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   drive->setFocusPolicy(Qt::NoFocus);
   drive->setValue(std::clamp(QSettings().value(QStringLiteral("rade/drive"), 70).toInt(), 0, 100));
   drive->setToolTip(QStringLiteral(
-      "Modem level sent to the radio. 0 is silent. 100 multiplies the modem by one half, "
-      "so a full reading stays about 6 dB under full scale. "
+      "Modem level sent to the radio. 0 is silent. 100 is the FreeDV app's level. "
+      "Set it so ALC barely moves; RADE peaks run well above its average. "
       "Changing it does not key. START is never sent."));
   auto* driveValue = new QLabel(QString::number(drive->value()), radeAudio_);
   driveValue->setObjectName(QStringLiteral("radeDriveValue"));
@@ -496,8 +496,9 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   analog->setFocusPolicy(Qt::NoFocus);
   analog->setChecked(QSettings().value(QStringLiteral("rade/analog"), false).toBool());
   analog->setToolTip(QStringLiteral(
-      "Off plays decoded speech only, and stays silent until sync. "
-      "On plays the radio SSB on the speaker while sync is idle, and decoded speech when sync is up. "
+      "Analog voice mix only. Off plays decoded RADE speech and stays silent until sync. "
+      "On also plays the radio SSB while sync is idle. "
+      "This does not change DIGU or DIGL, and it does not stop TCI audio. "
       "This does not key. START is never sent."));
   connect(analog, &QCheckBox::toggled, this, [](bool on) {
     QSettings().setValue(QStringLiteral("rade/analog"), on);

@@ -8,7 +8,8 @@
  * Speech in and out is 16 kHz float, about [-1, 1].
  * Modem in and out is 8 kHz real, the rade_tx real part (nominal 1).
  * STD applies the TCI scales. This file does not.
- * End-of-over bits are not set.
+ * V1 end-of-over carries the callsign the way FreeDV does: a 6-bit
+ * character set, CRC-8, LDPC(112,56), interleaved QPSK.
  */
 
 #include <math.h>
@@ -18,6 +19,7 @@
 #include <windows.h>
 
 #include "fargan.h"
+#include "std_rade_hra.h"
 #include "lpcnet.h"
 
 typedef struct {
@@ -41,6 +43,7 @@ int RADE_API rade_n_eoo_bits(struct rade* r);
 int RADE_API rade_nin(struct rade* r);
 int RADE_API rade_tx(struct rade* r, RADE_COMP tx_out[], float features_in[]);
 int RADE_API rade_tx_eoo(struct rade* r, RADE_COMP tx_eoo_out[]);
+void RADE_API rade_tx_set_eoo_bits(struct rade* r, float eoo_bits[]);
 int RADE_API rade_rx(struct rade* r, float features_out[], int* has_eoo_out, float eoo_out[],
                      RADE_COMP rx_in[]);
 int RADE_API rade_sync(struct rade* r);
@@ -59,6 +62,7 @@ __attribute__((constructor)) static void std_rade_init_lock(void) {
 }
 
 static char g_err[256];
+static char g_call[16];
 static struct rade* g_r;
 static LPCNetEncState* g_lpc;
 static FARGANState* g_fargan;
@@ -90,6 +94,134 @@ static float g_cont[5 * NB_TOTAL_FEATURES];
 static int g_sync;
 static float g_snr;
 
+/* ---- Microphone leveller ----------------------------------------------
+ * FreeDV levels the microphone before the encoder: momentary loudness
+ * (400 ms, K-weighted) is pulled toward -23 LUFS with at most +12 dB and
+ * -20 dB of gain, 0.5 s down and 6 s up, frozen below -33 LUFS, and a
+ * limiter keeps the peaks under -1 dBFS. This is the same behaviour,
+ * written here from those numbers. */
+enum { kAgcBlock = 160, kAgcWindow = 40 };
+typedef struct {
+  double b0, b1, b2, a1, a2;
+  double z1, z2;
+} Biquad;
+static Biquad g_kw[2];
+static double g_agc_ms[kAgcWindow];
+static int g_agc_ms_n;
+static int g_agc_ms_at;
+static float g_agc_block[kAgcBlock];
+static int g_agc_fill;
+static int g_agc_blocks;
+static int g_agc_valid;
+static double g_agc_target;
+static double g_agc_gain;
+static double g_lim_gain = 1.0;
+
+static void biquad_set(Biquad* q, double b0, double b1, double b2, double a0, double a1, double a2) {
+  q->b0 = b0 / a0;
+  q->b1 = b1 / a0;
+  q->b2 = b2 / a0;
+  q->a1 = a1 / a0;
+  q->a2 = a2 / a0;
+  q->z1 = q->z2 = 0.0;
+}
+
+static double biquad_run(Biquad* q, double x) {
+  const double y = q->b0 * x + q->z1;
+  q->z1 = q->b1 * x - q->a1 * y + q->z2;
+  q->z2 = q->b2 * x - q->a2 * y;
+  return y;
+}
+
+static void agc_reset(void) {
+  const double fs = 16000.0;
+  const double pi = 3.14159265358979323846;
+  /* ITU-R BS.1770 K-weighting: a high shelf, then a high pass. */
+  {
+    const double gain = 3.99984385397, q = 0.7071752369554193, fc = 1681.9744509555319;
+    const double a = pow(10.0, gain / 40.0), w = 2.0 * pi * fc / fs;
+    const double c = cos(w), alpha = sin(w) / (2.0 * q), r = 2.0 * sqrt(a) * alpha;
+    biquad_set(&g_kw[0], a * ((a + 1) + (a - 1) * c + r), -2 * a * ((a - 1) + (a + 1) * c),
+               a * ((a + 1) + (a - 1) * c - r), (a + 1) - (a - 1) * c + r, 2 * ((a - 1) - (a + 1) * c),
+               (a + 1) - (a - 1) * c - r);
+  }
+  {
+    const double q = 0.5003270373253953, fc = 38.13547087613982;
+    const double w = 2.0 * pi * fc / fs, c = cos(w), alpha = sin(w) / (2.0 * q);
+    biquad_set(&g_kw[1], (1 + c) / 2, -(1 + c), (1 + c) / 2, 1 + alpha, -2 * c, 1 - alpha);
+  }
+  memset(g_agc_ms, 0, sizeof g_agc_ms);
+  g_agc_ms_n = g_agc_ms_at = g_agc_fill = g_agc_blocks = g_agc_valid = 0;
+  g_agc_target = g_agc_gain = 0.0;
+  g_lim_gain = 1.0;
+}
+
+static void agc_block(float* x) {
+  double ms = 0.0;
+  int i;
+  for (i = 0; i < kAgcBlock; i++) {
+    const double k = biquad_run(&g_kw[1], biquad_run(&g_kw[0], x[i]));
+    ms += k * k;
+  }
+  g_agc_ms[g_agc_ms_at] = ms / kAgcBlock;
+  g_agc_ms_at = (g_agc_ms_at + 1) % kAgcWindow;
+  if (g_agc_ms_n < kAgcWindow)
+    g_agc_ms_n++;
+  if (++g_agc_blocks >= 5) {
+    double sum = 0.0;
+    g_agc_blocks = 0;
+    for (i = 0; i < g_agc_ms_n; i++)
+      sum += g_agc_ms[i];
+    sum /= kAgcWindow; /* momentary loudness looks at the whole 400 ms */
+    g_agc_valid = 0;
+    if (sum > 0.0) {
+      const double lufs = -0.691 + 10.0 * log10(sum);
+      if (lufs > -33.0) {
+        g_agc_valid = 1;
+        g_agc_target = -23.0 - lufs;
+        if (g_agc_target > 12.0)
+          g_agc_target = 12.0;
+        if (g_agc_target < -20.0)
+          g_agc_target = -20.0;
+      }
+    }
+  }
+  if (g_agc_valid) {
+    const double tc = g_agc_target < g_agc_gain ? 0.5 : 6.0;
+    g_agc_gain += (g_agc_target - g_agc_gain) / tc * ((double)kAgcBlock / 16000.0);
+  }
+  {
+    const double scale = pow(10.0, g_agc_gain / 20.0);
+    const double ceiling = 0.8912509; /* -1 dBFS */
+    const double release = 1.0 - exp(-1.0 / (0.05 * 16000.0));
+    for (i = 0; i < kAgcBlock; i++) {
+      const double v = x[i] * scale;
+      const double peak = fabs(v) * g_lim_gain;
+      if (peak > ceiling)
+        g_lim_gain = ceiling / fabs(v);
+      else
+        g_lim_gain += (1.0 - g_lim_gain) * release;
+      x[i] = (float)(v * g_lim_gain);
+    }
+  }
+}
+
+/* Levels n samples in place, in 10 ms blocks; the last partial block waits. */
+static int agc_feed(const float* in, int n, float* out) {
+  int produced = 0;
+  int i;
+  for (i = 0; i < n; i++) {
+    g_agc_block[g_agc_fill++] = in[i];
+    if (g_agc_fill == kAgcBlock) {
+      agc_block(g_agc_block);
+      memcpy(out + produced, g_agc_block, sizeof g_agc_block);
+      produced += kAgcBlock;
+      g_agc_fill = 0;
+    }
+  }
+  return produced;
+}
+
 static void set_err(const char* text) {
   snprintf(g_err, sizeof g_err, "%s", text ? text : "");
 }
@@ -102,6 +234,7 @@ static void reset_stream(void) {
   g_cont_frames = 0;
   g_sync = 0;
   g_snr = 0.0f;
+  agc_reset();
 }
 
 static void free_buffers(void) {
@@ -238,6 +371,247 @@ static void synthesize_features(const float* feat, int n_out, float* speech, int
   }
 }
 
+/* FreeDV's over-the-air character set: 1-9 are ASCII 38-46, 10-19 the
+ * digits, 20-45 the letters, 46 the slash. Anything else is skipped. */
+static int ota_char(int c) {
+  if (c >= 'a' && c <= 'z')
+    c -= 'a' - 'A';
+  if (c >= 'A' && c <= 'Z')
+    return c - 'A' + 20;
+  if (c >= '0' && c <= '9')
+    return c - '0' + 10;
+  if (c == '/')
+    return 46;
+  if (c >= 38 && c <= 46)
+    return c - 37;
+  return 0;
+}
+
+static unsigned char crc8_1d(const unsigned char* data, int n) {
+  unsigned char crc = 0;
+  int i;
+  int b;
+  for (i = 0; i < n && data[i]; i++) {
+    crc ^= data[i];
+    for (b = 0; b < 8; b++)
+      crc = (unsigned char)((crc & 0x80) ? ((crc << 1) ^ 0x1D) : (crc << 1));
+  }
+  return crc;
+}
+
+/* Fills the rade_n_eoo_bits() floats for one callsign. Returns 0 on success. */
+static int callsign_eoo_bits(const char* call, float* out, int n_bits) {
+  enum { kChars = 8, kInfo = 56, kCode = 112 };
+  unsigned char chars[kChars];
+  unsigned char code[kCode];
+  unsigned char woven[kCode];
+  unsigned long long info = 0;
+  int n = 0;
+  int i;
+  if (n_bits < kCode)
+    return -1;
+  memset(chars, 0, sizeof chars);
+  for (i = 0; call && call[i] && i < kChars; i++) {
+    const int c = ota_char((unsigned char)call[i]);
+    if (c)
+      chars[n++] = (unsigned char)c;
+  }
+  /* Bits 0-7 are the CRC, then eight 6-bit characters, all LSB first. */
+  {
+    const unsigned char crc = crc8_1d(chars, n);
+    for (i = 0; i < 8; i++)
+      code[i] = (unsigned char)((crc >> i) & 1);
+    for (i = 8; i < kInfo; i++)
+      code[i] = (unsigned char)((chars[(i - 8) / 6] >> ((i - 8) % 6)) & 1);
+  }
+  for (i = 0; i < kInfo; i++)
+    if (code[i])
+      info |= 1ULL << i;
+  /* Parity: the check matrix's parity half is lower-bidiagonal, so each
+   * parity bit is its row's information parity plus the one before it. */
+  for (i = 0; i < kInfo; i++) {
+    unsigned long long v = info & std_rade_hra_rows[i];
+    int p = 0;
+    while (v) {
+      p ^= 1;
+      v &= v - 1;
+    }
+    if (i > 0)
+      p ^= code[kInfo + i - 1];
+    code[kInfo + i] = (unsigned char)p;
+  }
+  /* Bit pairs are spread across the 56 symbols, symbol k to 37k mod 56. */
+  for (i = 0; i < kCode / 2; i++) {
+    const int to = (37 * i) % (kCode / 2);
+    woven[2 * to] = code[2 * i];
+    woven[2 * to + 1] = code[2 * i + 1];
+  }
+  for (i = 0; i < kCode / 2; i++) {
+    const int pair = woven[2 * i] * 2 + woven[2 * i + 1];
+    static const float re[4] = {1.0f, 0.0f, 0.0f, -1.0f};
+    static const float im[4] = {0.0f, 1.0f, -1.0f, 0.0f};
+    out[2 * i] = re[pair];
+    out[2 * i + 1] = im[pair];
+  }
+  /* The rest of the frame is a known (1, 0) pattern the receiver uses for noise. */
+  for (i = kCode; i < n_bits; i++)
+    out[i] = (i % 2) ? 0.0f : 1.0f;
+  return 0;
+}
+
+static char g_heard[16];
+static int g_heard_seq;
+
+static int call_char(int v) {
+  if (v >= 1 && v <= 9)
+    return v + 37;
+  if (v >= 10 && v <= 19)
+    return v - 10 + '0';
+  if (v >= 20 && v <= 45)
+    return v - 20 + 'A';
+  if (v == 46)
+    return '/';
+  return 0;
+}
+
+/* Reads a callsign out of an end-of-over: undo the symbol spreading, turn
+ * each QPSK symbol into two bit likelihoods, run normalised min-sum over the
+ * LDPC(112,56) check matrix, then check the CRC. Returns 1 on a good call. */
+static int callsign_from_eoo(const float* eoo, int n_bits, char* out, int cap) {
+  enum { kInfo = 56, kCode = 112, kRows = 56, kMaxDeg = 64, kIter = 100 };
+  static int cols[kRows][kMaxDeg];
+  static int deg[kRows];
+  static int built;
+  float llr[kCode];
+  float total[kCode];
+  float msg[kRows][kMaxDeg];
+  unsigned char bit[kCode];
+  int i, r, k, it;
+  if (!out || cap < 2 || n_bits < kCode)
+    return 0;
+  out[0] = 0;
+  if (!built) {
+    for (r = 0; r < kRows; r++) {
+      int d = 0;
+      for (k = 0; k < kInfo; k++)
+        if (std_rade_hra_rows[r] >> k & 1ULL)
+          cols[r][d++] = k;
+      if (r > 0)
+        cols[r][d++] = kInfo + r - 1;
+      cols[r][d++] = kInfo + r;
+      deg[r] = d;
+    }
+    built = 1;
+  }
+  /* Code pair i went out on symbol 37i mod 56. Positive means bit 0. */
+  for (i = 0; i < kCode / 2; i++) {
+    const int at = (37 * i) % (kCode / 2);
+    const float re = eoo[2 * at], im = eoo[2 * at + 1];
+    llr[2 * i] = re + im;
+    llr[2 * i + 1] = re - im;
+  }
+  memset(msg, 0, sizeof msg);
+  for (it = 0; it < kIter; it++) {
+    int ok = 1;
+    for (i = 0; i < kCode; i++)
+      total[i] = llr[i];
+    for (r = 0; r < kRows; r++)
+      for (k = 0; k < deg[r]; k++)
+        total[cols[r][k]] += msg[r][k];
+    for (i = 0; i < kCode; i++)
+      bit[i] = total[i] < 0.0f;
+    for (r = 0; r < kRows && ok; r++) {
+      int p = 0;
+      for (k = 0; k < deg[r]; k++)
+        p ^= bit[cols[r][k]];
+      ok = !p;
+    }
+    if (ok)
+      break;
+    for (r = 0; r < kRows; r++) {
+      float min1 = 1e30f, min2 = 1e30f;
+      int minAt = -1, sign = 0;
+      float in[kMaxDeg];
+      for (k = 0; k < deg[r]; k++) {
+        const float v = total[cols[r][k]] - msg[r][k];
+        const float a = fabsf(v);
+        in[k] = v;
+        sign ^= v < 0.0f;
+        if (a < min1) {
+          min2 = min1;
+          min1 = a;
+          minAt = k;
+        } else if (a < min2) {
+          min2 = a;
+        }
+      }
+      for (k = 0; k < deg[r]; k++) {
+        const float mag = 0.75f * (k == minAt ? min2 : min1);
+        const int s = sign ^ (in[k] < 0.0f);
+        msg[r][k] = s ? -mag : mag;
+      }
+    }
+  }
+  if (it >= kIter)
+    return 0;
+  {
+    unsigned char chars[8];
+    unsigned char crc = 0;
+    int n = 0;
+    for (i = 0; i < 8; i++)
+      crc |= (unsigned char)(bit[i] << i);
+    memset(chars, 0, sizeof chars);
+    for (i = 8; i < kInfo; i++)
+      chars[(i - 8) / 6] |= (unsigned char)(bit[i] << ((i - 8) % 6));
+    if (crc8_1d(chars, 8) != crc)
+      return 0;
+    for (i = 0; i < 8 && chars[i]; i++) {
+      const int c = call_char(chars[i]);
+      if (c && n + 1 < cap)
+        out[n++] = (char)c;
+    }
+    out[n] = 0;
+    return n > 0;
+  }
+}
+
+/* The last callsign heard in an end-of-over. Returns a count that goes up
+ * by one each time a new one is decoded, 0 before the first. */
+__declspec(dllexport) int std_rade_heard(char* out, int cap) {
+  int seq;
+  EnterCriticalSection(&g_lock);
+  if (out && cap > 0)
+    snprintf(out, (size_t)cap, "%s", g_heard);
+  seq = g_heard_seq;
+  LeaveCriticalSection(&g_lock);
+  return seq;
+}
+
+/* Test hook: decode end-of-over floats without an open codec. */
+__declspec(dllexport) int std_rade_decode_callsign(const float* eoo, int n_bits, char* out, int cap) {
+  return callsign_from_eoo(eoo, n_bits, out, cap);
+}
+
+static void apply_callsign(void) {
+  if (!g_r || g_v2 || g_n_eoo_bits < 1 || !g_eoo_bits || !g_call[0])
+    return;
+  if (callsign_eoo_bits(g_call, g_eoo_bits, g_n_eoo_bits) == 0)
+    rade_tx_set_eoo_bits(g_r, g_eoo_bits);
+}
+
+/* Sets the callsign sent in the V1 end-of-over. V2 has no text channel. */
+__declspec(dllexport) void std_rade_set_callsign(const char* call) {
+  EnterCriticalSection(&g_lock);
+  snprintf(g_call, sizeof g_call, "%s", call ? call : "");
+  apply_callsign();
+  LeaveCriticalSection(&g_lock);
+}
+
+/* Test hook: the end-of-over floats for a callsign, without an open codec. */
+__declspec(dllexport) int std_rade_callsign_bits(const char* call, float* out, int n_bits) {
+  return callsign_eoo_bits(call, out, n_bits);
+}
+
 __declspec(dllexport) const char* std_rade_error(void) {
   return g_err;
 }
@@ -294,6 +668,15 @@ __declspec(dllexport) int std_rade_open(int v2, int no_bpf) {
   }
   fargan_init(g_fargan);
   reset_stream();
+  {
+    float zeros[FARGAN_CONT_SAMPLES];
+    float none[5 * NB_FEATURES];
+    memset(zeros, 0, sizeof zeros);
+    memset(none, 0, sizeof none);
+    fargan_cont(g_fargan, zeros, none);
+    g_fargan_ready = 1;
+  }
+  apply_callsign();
   snprintf(g_err, sizeof g_err, "open v%d features %d tx %d eoo %d nin %d", g_v2 ? 2 : 1, g_n_feat,
            g_n_tx, g_n_eoo, g_nin_max);
   LeaveCriticalSection(&g_lock);
@@ -316,13 +699,12 @@ __declspec(dllexport) int std_rade_tx(const float* speech, int n, float* modem, 
     return -1;
   }
   if (n > 0 && speech) {
-    if (!ensure_speech(g_speech_n + n)) {
+    if (!ensure_speech(g_speech_n + n + kAgcBlock)) {
       set_err("speech buffer failed");
       LeaveCriticalSection(&g_lock);
       return -1;
     }
-    memcpy(g_speech + g_speech_n, speech, (size_t)n * sizeof(float));
-    g_speech_n += n;
+    g_speech_n += agc_feed(speech, n, g_speech + g_speech_n);
   }
   written = pull_features(modem, cap, 0);
   if (written < 0)
@@ -341,18 +723,11 @@ __declspec(dllexport) int std_rade_finish(float* modem, int cap) {
     LeaveCriticalSection(&g_lock);
     return -1;
   }
-  /* A short tail under one LPC frame is dropped, matching rade_tx_wav. */
+  /* Speech not yet a whole modem frame is dropped, as the FreeDV app does,
+   * and the end-of-over follows the last full frame. */
   g_speech_n = 0;
-  if (g_feat_idx > 0) {
-    memset(&g_feat[g_feat_idx * NB_TOTAL_FEATURES], 0,
-           (size_t)(g_frames_per - g_feat_idx) * NB_TOTAL_FEATURES * sizeof(float));
-    written = emit_tx(modem, cap, 0);
-    if (written < 0) {
-      set_err("finish frame did not fit");
-      LeaveCriticalSection(&g_lock);
-      return -1;
-    }
-  }
+  g_feat_idx = 0;
+  agc_reset();
   if (written + g_n_eoo > cap) {
     set_err("end-of-over frame did not fit");
     LeaveCriticalSection(&g_lock);
@@ -419,9 +794,16 @@ __declspec(dllexport) int std_rade_rx(const float* modem, int n, float* speech, 
     g_sync = rade_sync(g_r);
     if (g_sync)
       g_snr = rade_snrdB_3k_est(g_r);
-    if (n_out > 0)
+    if (has_eoo) {
+      /* The end-of-over holds the callsign, not speech. */
+      char call[16];
+      if (!g_v2 && g_eoo_bits && callsign_from_eoo(g_eoo_bits, g_n_eoo_bits, call, sizeof call)) {
+        snprintf(g_heard, sizeof g_heard, "%s", call);
+        g_heard_seq++;
+      }
+    } else if (n_out > 0) {
       synthesize_features(g_feat_out, n_out, speech, cap, &written);
-    (void)has_eoo;
+    }
   }
   LeaveCriticalSection(&g_lock);
   return written;
@@ -456,6 +838,9 @@ __declspec(dllexport) int std_rade_selftest(void) {
   int off;
   double energy = 0.0;
   int rc = 1;
+  char saved_call[sizeof g_call];
+  int heard_before = g_heard_seq;
+  memcpy(saved_call, g_call, sizeof g_call);
   speech = (float*)malloc(sizeof(float) * kSpeech);
   modem = (float*)malloc(sizeof(float) * kCap);
   back = (float*)malloc(sizeof(float) * kCap);
@@ -471,6 +856,8 @@ __declspec(dllexport) int std_rade_selftest(void) {
     float pulse = frac < 0.04f ? (1.0f - frac / 0.04f) : 0.0f;
     speech[i] = 0.25f * env * pulse;
   }
+  /* The end-of-over must carry a callsign and read back. */
+  snprintf(g_call, sizeof g_call, "%s", "N8SDR/VE");
   if (std_rade_open(0, 0) != 0)
     goto done;
   produced = std_rade_tx(speech, kSpeech, modem, kCap);
@@ -486,6 +873,11 @@ __declspec(dllexport) int std_rade_selftest(void) {
     snprintf(g_err, sizeof g_err, "tx energy low samples %d energy %.3f", total, energy);
     goto done;
   }
+  /* 200 ms of silence after the end-of-over, as goes out on the air. */
+  if (total + 1600 <= kCap) {
+    memset(modem + total, 0, 1600 * sizeof(float));
+    total += 1600;
+  }
   off = 0;
   while (off < total) {
     int chunk = total - off;
@@ -498,11 +890,15 @@ __declspec(dllexport) int std_rade_selftest(void) {
     got += n;
     off += chunk;
   }
-  snprintf(g_err, sizeof g_err, "modem %d energy %.1f speech %d sync %d", total, energy, got,
-           std_rade_sync());
+  if (g_heard_seq == heard_before || strcmp(g_heard, "N8SDR/VE") != 0) {
+    snprintf(g_err, sizeof g_err, "end-of-over callsign did not read back (%s)", g_heard);
+    goto done;
+  }
+  snprintf(g_err, sizeof g_err, "modem %d energy %.1f speech %d heard %s", total, energy, got, g_heard);
   rc = 0;
 done:
   std_rade_close();
+  snprintf(g_call, sizeof g_call, "%s", saved_call);
   free(speech);
   free(modem);
   free(back);

@@ -30,6 +30,10 @@ public:
   int finish(float* modem, int cap);
   int rx(const float* modem, int n, float* speech, int cap);
   int sync();
+  // Callsign for the V1 end-of-over, as FreeDV sends it. Ignored on V2.
+  void setCallsign(const QString& call);
+  // Last callsign read from an end-of-over; seq goes up with each new one.
+  int heard(QString* call);
   float snr();
   int selftest();
   QString error() const { return error_; }
@@ -51,6 +55,8 @@ private:
   using SnrFn = float (*)();
   using TestFn = int (*)();
   using ErrFn = const char* (*)();
+  using CallFn = void (*)(const char*);
+  using HeardFn = int (*)(char*, int);
   OpenFn open_ = nullptr;
   CloseFn close_ = nullptr;
   TxFn tx_ = nullptr;
@@ -60,6 +66,8 @@ private:
   SnrFn snr_ = nullptr;
   TestFn selftest_ = nullptr;
   ErrFn errorFn_ = nullptr;
+  CallFn call_ = nullptr;
+  HeardFn heard_ = nullptr;
 };
 
 // Offscreen self-test. 0 means rade_tx produced energy and rade_rx accepted it.

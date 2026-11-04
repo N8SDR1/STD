@@ -52,6 +52,8 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | Thor | 4, 5, 8, 11, 16, 22 are NASA K=7. 25x4, 50x1, 50x2, and 100 are IEEE K=15. Thor Micro stays off the menu. |
 | MT63 | 500S, 500L, 1000S, 1000L, 2000S, 2000L. 64 carriers, Walsh code, short or long interleave. |
 | JS8 | JS8Call-improved Normal. 15 s, 50 Hz. Band activity, conversation, and call activity, with HB, CQ, Reply, SNR?, INFO?, STATUS?, GRID?, Directed, and Deselect. TX waits for the next 15 s UTC period and sends one frame, starting half a second in. A longer message continues on the following periods. |
+| RADE V1 | FreeDV RADE digital voice, about 1500 Hz wide, from the FreeDV rade_c library. DIGL on 160, 80, and 40 m, DIGU on 30 m and up, the FreeDV convention. Speech from the Speech microphone. The end-of-over carries your callsign from Options → User the way the FreeDV app sends it, so FreeDV stations and FreeDV Reporter can show who you are, and **Heard** shows the call from the other station's end-of-over. The microphone is levelled before the encoder, as FreeDV does. TX waits about a quarter second to fill its buffer, so the modem frames go out without gaps, and holds 200 ms of silence after the end-of-over. Drive 100 is the FreeDV app's level. |
+| RADE V2 | Experimental, about 860 Hz, will not talk to V1. BPF (on by default) is the modem band-pass; it is greyed out on V1, which sends without one, as FreeDV does. |
 | WSPR | WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Tx power, Tx Pct, and band hopping. The locator is Options → User. Rows stay in the receive colour, under titles, with a rule between periods. Heard stations post to WSPRnet only when WSPRnet is On, and only while WSPR is the mode. |
 
 ## Receive only

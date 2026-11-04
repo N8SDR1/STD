@@ -1056,7 +1056,6 @@ int shellReady(MainWindow& window) {
     auto* analog = window.findChild<QCheckBox*>(QStringLiteral("radeAnalog"));
     auto* bpf = window.findChild<QCheckBox*>(QStringLiteral("radeBpf"));
     auto* drive = window.findChild<QSlider*>(QStringLiteral("radeDrive"));
-    auto* digu = window.findChild<QPushButton*>(QStringLiteral("radeDigu"));
     auto* sync = window.findChild<QLabel*>(QStringLiteral("radeSync"));
     auto* snr = window.findChild<QLabel*>(QStringLiteral("radeSnr"));
     auto* micBox = window.findChild<QComboBox*>(QStringLiteral("radeMicDevice"));
@@ -1066,15 +1065,14 @@ int shellReady(MainWindow& window) {
     auto* rx = window.findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
     auto* radeHellBox = window.findChild<QPlainTextEdit*>(QStringLiteral("txHell"));
     auto* tx1 = window.findChild<QWidget*>(QStringLiteral("tx1"));
-    if (!variant || !analog || !bpf || !drive || !digu || !sync || !snr || !micBox || !spkBox ||
+    if (window.findChild<QPushButton*>(QStringLiteral("radeDigu")))
+      return fail("RADE sideband button is back");
+    if (!variant || !analog || !bpf || !drive || !sync || !snr || !micBox || !spkBox ||
         !radeVol || !audio || !rx || !radeHellBox || !tx1 || !screen->isVisible() || audio->isHidden() ||
         variant->currentText() != QLatin1String("RADE V1") || bpf->isChecked() || !rx->isHidden() ||
         !radeHellBox->isHidden() || !tx1->isHidden() ||
-        !digu->toolTip().contains(QLatin1String("does not key")) ||
-        !digu->toolTip().contains(QLatin1String("START")) ||
         !analog->toolTip().contains(QLatin1String("silent")) ||
-        variant->maximumWidth() > 280 || digu->maximumWidth() > 90 ||
-        !digu->isCheckable() || digu->isChecked() || digu->text() != QLatin1String("Off") ||
+        variant->maximumWidth() > 280 || bpf->isEnabled() ||
         micBox->count() < 1 || spkBox->count() < 1 || radeVol->maximum() != 100 ||
         !spkBox->toolTip().contains(QLatin1String("Play on")) ||
         drive->maximumWidth() > 180 || analog->parentWidget() != audio ||
@@ -1088,9 +1086,6 @@ int shellReady(MainWindow& window) {
         radeTx->parentWidget()->parentWidget() != keySlot ||
         radeHalt->parentWidget() != radeTx->parentWidget())
       return fail("RADE TX is still at the bottom");
-    if (!digu->toolTip().contains(QLatin1String("DIGL")) ||
-        !digu->toolTip().contains(QLatin1String("20 m")))
-      return fail("RADE helper still forces every band");
     auto* radeBar = window.findChild<QWidget*>(QStringLiteral("mshvProfile"));
     if (!radeBar || radeBar->isHidden())
       return fail("RADE band bar is hidden");
@@ -1164,9 +1159,6 @@ int shellReady(MainWindow& window) {
     band7->click();
     if (radeProfile->dialHz() != 7177000 || radeProfile->sideband() != QLatin1String("DIGL"))
       return fail("RADE 40 m dial is wrong");
-    digu->click();
-    if (digu->isChecked() || digu->text() != QLatin1String("Off"))
-      return fail("RADE helper flipped 40 m");
     band7->click();
     if (radeProfile->dialHz() != 7197000)
       return fail("RADE 40 m did not cycle");
@@ -1176,12 +1168,6 @@ int shellReady(MainWindow& window) {
     band14->click();
     if (radeProfile->dialHz() != 14236000 || radeProfile->sideband() != QLatin1String("DIGU"))
       return fail("RADE 20 m dial is wrong");
-    digu->click();
-    if (!digu->isChecked() || digu->text() != QLatin1String("On"))
-      return fail("RADE helper did not latch on 20 m");
-    digu->click();
-    if (digu->isChecked() || digu->text() != QLatin1String("Off"))
-      return fail("RADE helper did not release");
     band14->click();
     if (radeProfile->dialHz() != 14240000)
       return fail("RADE 20 m did not cycle");

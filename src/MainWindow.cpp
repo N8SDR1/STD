@@ -2200,7 +2200,6 @@ void MainWindow::qsyDial(qint64 hz) {
   tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
   tci_->setDialHz(hz);
   showDial(hz);
-  holdRadeDigu();
 }
 
 void MainWindow::maybeWsprHop() {
@@ -2724,7 +2723,6 @@ QWidget* MainWindow::makeReceivePanel() {
     if (!txRade_)
       ensureRadeCodec();
   });
-  connect(rade, &RadeScreen::diguHelper, this, [this](bool on) { applyRadeDigu(on); });
   layout->addWidget(echo, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
@@ -3934,12 +3932,13 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
       tci_->setSideband(QStringLiteral("DIGU"));
   }
   applyChannelWidth();
-  if (radeHere)
+  if (radeHere) {
+    // The modem is always centered on 1500 Hz in the audio.
+    if (waterfall_)
+      waterfall_->setRxHz(1500);
     ensureRadeCodec();
-  else {
+  } else {
     closeRadeCodec();
-    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
-      screen->setDiguOn(false);
   }
   refreshTxChrome();
   applyMacroBar();
@@ -3971,59 +3970,6 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
                           "40 m starts at 7.177 and 80 m at 3.643, both DIGL. "
                           "15 m is 21.313, DIGU. Click the band again to cycle. Extra stores another dial. "
                           "Mic and speaker stay the Speech devices. This does not key. START was not sent."));
-}
-
-void MainWindow::applyRadeDigu(bool on) {
-  const bool upper = profile_ && profile_->sideband() == QLatin1String("DIGU");
-  if (on && !upper) {
-    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
-      screen->setDiguOn(false);
-    if (tci_ && tci_->isOpen())
-      tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGL"));
-    setTxStatus(QStringLiteral(
-        "160 m, 80 m, and 40 m stay DIGL. The helper does not switch them to DIGU. "
-        "This does not key. START was not sent."));
-    return;
-  }
-  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
-    screen->setDiguOn(on);
-  const bool open = tci_ && tci_->isOpen();
-  if (on) {
-    if (open)
-      tci_->setSideband(QStringLiteral("DIGU"));
-    if (waterfall_)
-      waterfall_->setRxHz(1500);
-    setTxStatus(open ? QStringLiteral(
-                           "RADE helper is on. DIGU was sent. 160 m, 80 m, and 40 m are left on DIGL. "
-                           "The radio filter was not changed. "
-                           "A useful passband is about 750 to 2250 Hz. Leave NR and compression off. "
-                           "The VFO was not moved. This does not key. START was not sent.")
-                     : QStringLiteral(
-                           "RADE helper is on. The radio is not connected, so DIGU was not sent. "
-                           "This does not key. START was not sent."));
-    return;
-  }
-  if (open)
-    tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
-  setTxStatus(open ? QStringLiteral(
-                         "RADE helper is off. The band sideband was sent. The VFO was not moved. "
-                         "This does not key. START was not sent.")
-                   : QStringLiteral(
-                         "RADE helper is off. The radio is not connected. "
-                         "This does not key. START was not sent."));
-}
-
-void MainWindow::holdRadeDigu() {
-  auto* button = findChild<QPushButton*>(QStringLiteral("radeDigu"));
-  if (!button || !button->isChecked() || !profile_ || !radeMode(profile_->digitalMode()))
-    return;
-  if (profile_->sideband() != QLatin1String("DIGU")) {
-    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
-      screen->setDiguOn(false);
-    return;
-  }
-  if (tci_ && tci_->isOpen())
-    tci_->setSideband(QStringLiteral("DIGU"));
 }
 
 void MainWindow::showKeyboardReceive(const QString& mode) {
@@ -4145,7 +4091,6 @@ void MainWindow::tuneActiveBand() {
   // This is not START and it does not key.
   tci_->setSideband(profile_->sideband());
   tci_->setDialHz(hz);
-  holdRadeDigu();
 }
 
 void MainWindow::showGuide() {
@@ -4170,12 +4115,18 @@ void MainWindow::showGuide() {
        "after Tune or TX is pressed. Connect does not send START, and it does not key."},
       {"RADE",
        "Mode, RADE V1 is HF digital voice. RADE V2 is experimental and does not talk to V1. "
-       "The RADE screen replaces the FT8 sequence and the Hell tape. Waveform and the radio helper "
-       "sit side by side. BPF is the tick box after the radio button. The helper lights On only "
-       "on 20 m and above, where it holds DIGU. 160 m, 80 m, and 40 m stay DIGL, and the helper "
-       "does not switch them to DIGU. Off sends the band sideband. It does not set the radio filter. "
+       "The RADE screen replaces the FT8 sequence and the Hell tape. Waveform and BPF "
+       "sit side by side. BPF is the tick box after Waveform; it is the V2 modem band-pass and is "
+       "greyed out on V1, which sends without one, as FreeDV does. The end-of-over carries your "
+       "callsign from Options, User, coded the way the FreeDV app codes it, so FreeDV stations and "
+       "FreeDV Reporter show your call. TX fills a quarter-second buffer first so the modem frames go "
+       "out without gaps. The band buttons set the sideband over TCI: DIGL on 160, 80, and 40 m, "
+       "DIGU on 30 m and up, the FreeDV convention. The waterfall cursor goes to 1500 Hz, where the "
+       "modem sits. Analog passthrough is the separate voice mix. STD does not set the radio filter. "
        "Under the band chips the row is Mic, a short Drive, Speaker, Volume, then Analog. "
-       "Drive 0 is silent and 100 multiplies the modem by one half. Volume is the Speech playback "
+       "Drive 0 is silent and 100 is the FreeDV app's level; set it so ALC barely moves. The "
+       "microphone is levelled before the encoder, as FreeDV does, so speak normally. "
+       "Heard shows the callsign from the other station's end-of-over. Volume is the Speech playback "
        "level, from 0 to 100. Analog off plays decoded speech only and stays silent until sync. "
        "TX and Halt sit on the Waveform row. The transmit dock stays closed in RADE. Identity stays in "
        "Options, User. The band buttons use the FreeDV Reporter list. 20 m starts at 14.236 and also "

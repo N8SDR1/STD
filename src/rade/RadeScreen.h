@@ -8,7 +8,6 @@
 class QCheckBox;
 class QComboBox;
 class QLabel;
-class QPushButton;
 
 // RADE operating screen. It is not the Hell tape and not the FT8 sequence.
 // Mic and speaker are the devices already chosen for Speech. Identity stays
@@ -23,12 +22,11 @@ public:
   void showMode(const QString& modeName);
   void setLinkReady(bool ready);
   void setSync(bool on, float snrDb);
-  // Does not emit diguHelper.
-  void setDiguOn(bool on);
+  // Callsign read from the last end-of-over, and when.
+  void setHeard(const QString& call, const QString& utc);
 
 signals:
   void variantChosen(const QString& modeName);
-  void diguHelper(bool on);
   void optionsChanged();
 
 private:
@@ -37,9 +35,9 @@ private:
 
   QComboBox* variant_ = nullptr;
   QCheckBox* bpf_ = nullptr;
-  QPushButton* digu_ = nullptr;
   QLabel* sync_ = nullptr;
   QLabel* snr_ = nullptr;
+  QLabel* heard_ = nullptr;
   QLabel* link_ = nullptr;
   bool showingV2_ = false;
 };

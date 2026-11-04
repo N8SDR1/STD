@@ -137,8 +137,6 @@ private:
   void placeDockTitle(QDockWidget* dock, const QString& title, std::initializer_list<const char*> buttons);
   void applyMacroBar();
   void showKeyboardReceive(const QString& mode);
-  void applyRadeDigu(bool on);
-  void holdRadeDigu();
   void applyRadePlaybackVolume(int percent);
   void applyRadeCapture(const QString& id);
   void applyRadeOutput(const QString& id);
@@ -368,8 +366,11 @@ private:
   RadeLink rade_;
   RateConvert radeRxConv_;
   RateConvert radeAnalogConv_;
+  SincTable radeTxKernel_;
   std::vector<float> radeModem_;
   double radeRead_ = 0;
+  bool radePrimed_ = false;
+  int radeHeardSeq_ = 0;
   bool txRade_ = false;
   bool radeStopping_ = false;
   bool radeFinished_ = false;

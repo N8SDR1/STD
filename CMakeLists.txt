@@ -255,6 +255,7 @@ if(WIN32)
             "${CMAKE_SOURCE_DIR}/src/rade/std_rade_shim.c"
     DEPENDS
       "${CMAKE_SOURCE_DIR}/src/rade/std_rade_shim.c"
+      "${CMAKE_SOURCE_DIR}/src/rade/std_rade_hra.h"
       "${CMAKE_SOURCE_DIR}/scripts/build_rade_shim.sh"
       "${CMAKE_SOURCE_DIR}/scripts/rade_shim_check.c"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"

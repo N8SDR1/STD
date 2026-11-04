@@ -53,6 +53,8 @@ bool RadeLink::load() {
   snr_ = reinterpret_cast<SnrFn>(GetProcAddress(mod, "std_rade_snr"));
   selftest_ = reinterpret_cast<TestFn>(GetProcAddress(mod, "std_rade_selftest"));
   errorFn_ = reinterpret_cast<ErrFn>(GetProcAddress(mod, "std_rade_error"));
+  call_ = reinterpret_cast<CallFn>(GetProcAddress(mod, "std_rade_set_callsign"));
+  heard_ = reinterpret_cast<HeardFn>(GetProcAddress(mod, "std_rade_heard"));
   if (!open_ || !close_ || !tx_ || !finish_ || !rx_ || !sync_ || !snr_ || !selftest_) {
     error_ = QStringLiteral("std_rade.dll is missing an export. TX stays off. START was not sent.");
     open_ = nullptr;
@@ -115,6 +117,21 @@ int RadeLink::rx(const float* modem, int n, float* speech, int cap) {
 
 int RadeLink::sync() {
   return opened_ && sync_ ? sync_() : 0;
+}
+
+void RadeLink::setCallsign(const QString& call) {
+  if (call_)
+    call_(call.trimmed().toUpper().toLatin1().constData());
+}
+
+int RadeLink::heard(QString* call) {
+  if (!heard_)
+    return 0;
+  char buf[32] = {0};
+  const int seq = heard_(buf, int(sizeof buf));
+  if (call)
+    *call = QString::fromLatin1(buf);
+  return seq;
 }
 
 float RadeLink::snr() {

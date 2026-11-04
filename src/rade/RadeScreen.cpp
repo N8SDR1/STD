@@ -47,7 +47,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   auto* intro = new QLabel(QStringLiteral(
       "V1 is the default waveform, about 1500 Hz wide. V2 is experimental, "
       "about 860 Hz, and will not decode V1. Drive is between Mic and Speaker. "
-      "Analog is after Volume. BPF is next to the radio button. TX and Halt are on this row. "
+      "Analog is after Volume. BPF is after Waveform. TX and Halt are on this row. The band buttons set DIGU or DIGL. "
       "Speech is 16 kHz. The modem is 8 kHz."),
       this);
   intro->setObjectName(QStringLiteral("radeIntro"));
@@ -72,30 +72,13 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   bpf_->setFont(uiFont());
   bpf_->setFocusPolicy(Qt::NoFocus);
   bpf_->setToolTip(QStringLiteral(
-      "TX band-pass inside the modem. V1 has no band-pass switch in this build, "
-      "so the box is remembered and starts off. V2 is about 860 Hz and starts on. "
+      "TX band-pass inside the modem, V2 only. V1 sends without one, the same as the "
+      "FreeDV app, so the box is greyed out on V1. V2 is about 860 Hz and starts on. "
       "Turning V2 off sends the modem without that band-pass. "
       "This does not change the radio filter. This does not key. START is never sent."));
 
-  digu_ = new QPushButton(QStringLiteral("Off"), this);
-  digu_->setObjectName(QStringLiteral("radeDigu"));
-  digu_->setFont(uiFont());
-  digu_->setFocusPolicy(Qt::NoFocus);
-  digu_->setCheckable(true);
-  digu_->setChecked(false);
-  digu_->setFixedWidth(64);
-  digu_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-  digu_->setToolTip(QStringLiteral(
-      "Radio helper for 20 m and above. On sends DIGU and stays lit. "
-      "160 m, 80 m, and 40 m stay DIGL. Turning it on there does not switch the radio to DIGU. "
-      "Off sends the band sideband. "
-      "It does not set the radio filter and it does not move the VFO. "
-      "A useful passband is about 750 to 2250 Hz. Leave radio NR and compression off. "
-      "On also moves the waterfall cursor to 1500 Hz. This does not key. START is never sent."));
   auto* waveLabel = new QLabel(QStringLiteral("Waveform"), this);
   waveLabel->setFont(uiFont());
-  auto* radioLabel = new QLabel(QStringLiteral("Radio"), this);
-  radioLabel->setFont(uiFont());
   auto* pair = new QHBoxLayout;
   pair->setContentsMargins(0, 0, 0, 0);
   pair->setSpacing(8);
@@ -106,9 +89,6 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   keyLayout->setSpacing(6);
   pair->addWidget(waveLabel);
   pair->addWidget(variant_);
-  pair->addSpacing(16);
-  pair->addWidget(radioLabel);
-  pair->addWidget(digu_);
   pair->addSpacing(12);
   pair->addWidget(bpf_);
   pair->addSpacing(16);
@@ -128,9 +108,17 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   snr_->setFont(uiFont());
   snr_->setToolTip(QStringLiteral(
       "SNR estimate, shown only. It does not mute. This does not key. START is never sent."));
+  heard_ = new QLabel(QStringLiteral("Heard  —"), this);
+  heard_->setObjectName(QStringLiteral("radeHeard"));
+  heard_->setFont(uiFont());
+  heard_->setToolTip(QStringLiteral(
+      "The callsign in the last end-of-over that decoded, with the UTC time. FreeDV stations "
+      "send it when they un-key. This does not key. START is never sent."));
   meters->addWidget(sync_);
   meters->addSpacing(16);
   meters->addWidget(snr_);
+  meters->addSpacing(16);
+  meters->addWidget(heard_);
   meters->addStretch(1);
   layout->addLayout(meters);
 
@@ -149,16 +137,15 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
 
   connect(variant_, &QComboBox::currentIndexChanged, this, [this](int) {
     const QString mode = variant_->currentData().toString();
-    rememberBpf(bpf_->isChecked());
+    if (showingV2_)
+      rememberBpf(bpf_->isChecked());
     emit variantChosen(mode);
   });
   connect(bpf_, &QCheckBox::toggled, this, [this](bool on) {
+    if (!showingV2_)
+      return;
     rememberBpf(on);
     emit optionsChanged();
-  });
-  connect(digu_, &QPushButton::toggled, this, [this](bool on) {
-    digu_->setText(on ? QStringLiteral("On") : QStringLiteral("Off"));
-    emit diguHelper(on);
   });
 
   showMode(radeV1Name());
@@ -167,7 +154,9 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
 void RadeScreen::loadBpf(bool v2) {
   const QSignalBlocker block(bpf_);
   const QString key = v2 ? QStringLiteral("rade/bpfV2") : QStringLiteral("rade/bpfV1");
-  bpf_->setChecked(QSettings().value(key, v2).toBool());
+  // FreeDV's V1 transmitter has no band-pass switch, so the box is only live on V2.
+  bpf_->setChecked(v2 && QSettings().value(key, true).toBool());
+  bpf_->setEnabled(v2);
 }
 
 void RadeScreen::rememberBpf(bool on) {
@@ -196,12 +185,10 @@ void RadeScreen::setSync(bool on, float snrDb) {
     snr_->setText(QStringLiteral("SNR  —"));
 }
 
-void RadeScreen::setDiguOn(bool on) {
-  if (!digu_)
-    return;
-  const QSignalBlocker block(digu_);
-  digu_->setChecked(on);
-  digu_->setText(on ? QStringLiteral("On") : QStringLiteral("Off"));
+void RadeScreen::setHeard(const QString& call, const QString& utc) {
+  if (heard_)
+    heard_->setText(call.isEmpty() ? QStringLiteral("Heard  —")
+                                   : QStringLiteral("Heard  %1  %2").arg(call, utc));
 }
 
 void RadeScreen::showMode(const QString& modeName) {

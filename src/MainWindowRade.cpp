@@ -3,7 +3,7 @@
 //
 // RADE voice. librade modulates 8 kHz real SSB. FARGAN speaks at 16 kHz.
 // The microphone and speaker are the Speech devices. End-of-over bits
-// are left unset.
+// carry the Options -> User callsign the way FreeDV sends it.
 
 #include "MainWindow.h"
 
@@ -147,6 +147,8 @@ void MainWindow::beginRadeTx() {
   }
   if (txTune_)
     stopTune(true);
+  // FreeDV stations and FreeDV Reporter read the call from the end-of-over.
+  rade_.setCallsign(stationCall());
   if (!radeMic_)
     radeMic_ = new SpeechInput(this);
   const QString micId = QSettings().value(QStringLiteral("speech/mic")).toString();
@@ -157,6 +159,7 @@ void MainWindow::beginRadeTx() {
   }
   radeModem_.clear();
   radeRead_ = 0;
+  radePrimed_ = false;
   radeStopping_ = false;
   radeFinished_ = false;
   radeTailMs_ = 0;
@@ -213,7 +216,9 @@ void MainWindow::pumpRadeTx() {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (radeTailMs_ == 0)
       radeTailMs_ = now;
-    if (now - radeTailMs_ >= 120) {
+    // 200 ms of silence after the end-of-over, as the FreeDV app sends, so
+    // the radio does not drop TX before the last frame is on the air.
+    if (now - radeTailMs_ >= 200) {
       stopUserTx(true);
       setTxStatus(QStringLiteral("RADE ended. TRX is off. START was not sent."));
       return;
@@ -248,22 +253,33 @@ void MainWindow::fillRadeTx(float* dst, int frames, int rate) {
   if (rate < 1000)
     rate = 48000;
   const double step = 8000.0 / double(rate);
-  const float scale = 0.5f * (float(radeDrivePercent(this)) / 100.0f);
-  for (int i = 0; i < frames; ++i) {
-    const int idx = int(radeRead_);
-    const double frac = radeRead_ - double(idx);
-    float sample = 0.0f;
-    if (idx >= 0 && idx + 1 < int(radeModem_.size())) {
-      const float a = radeModem_[static_cast<size_t>(idx)];
-      const float b = radeModem_[static_cast<size_t>(idx + 1)];
-      sample = float((1.0 - frac) * a + frac * b);
-    } else if (idx >= 0 && idx < int(radeModem_.size())) {
-      sample = radeModem_[static_cast<size_t>(idx)];
+  radeTxKernel_.build(8000, rate);
+  // Drive 100 is the FreeDV app's level: the modem's nominal amplitude of 1.
+  const float scale = float(radeDrivePercent(this)) / 100.0f;
+  // OFDM cannot take a gap inside a frame. librade hands over 120 ms at a
+  // time, so play nothing until 240 ms is queued, and start over cleanly
+  // if the queue runs dry. The tail after TX is released always plays.
+  constexpr int kPrime = 1920;
+  if (!radePrimed_) {
+    if (int(radeModem_.size()) - int(radeRead_) < kPrime && !radeFinished_) {
+      std::fill(dst, dst + frames, 0.0f);
+      return;
     }
-    dst[i] = sample * scale;
+    radePrimed_ = true;
+  }
+  for (int i = 0; i < frames; ++i) {
+    if (radeRead_ + double(radeTxKernel_.hw) >= double(radeModem_.size()) && !radeFinished_) {
+      // Ran dry mid-over: hold silence and prime again instead of
+      // cutting zeros into the middle of a modem frame.
+      std::fill(dst + i, dst + frames, 0.0f);
+      radePrimed_ = false;
+      break;
+    }
+    dst[i] = radeTxKernel_.at(radeModem_.data(), int(radeModem_.size()), radeRead_) * scale;
     radeRead_ += step;
   }
-  const int drop = int(radeRead_);
+  // Keep the filter's history behind the read position.
+  const int drop = int(radeRead_) - radeTxKernel_.hw;
   if (drop > 0) {
     if (drop >= int(radeModem_.size())) {
       radeModem_.clear();
@@ -305,6 +321,17 @@ void MainWindow::pushRadeRx(const float* samples, int count, int rate) {
       speechN = 0;
   }
   const bool sync = rade_.sync() != 0;
+  QString heardCall;
+  const int heardSeq = rade_.heard(&heardCall);
+  if (heardSeq != radeHeardSeq_) {
+    radeHeardSeq_ = heardSeq;
+    const QString utc = QDateTime::currentDateTimeUtc().toString(QStringLiteral("HH:mm"));
+    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+      screen->setHeard(heardCall, utc);
+    if (!heardCall.isEmpty())
+      setTxStatus(QStringLiteral("RADE heard %1 at %2 UTC. This does not key. START was not sent.")
+                      .arg(heardCall, utc));
+  }
   if (now - radeMeterMs_ > 100) {
     radeMeterMs_ = now;
     if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
