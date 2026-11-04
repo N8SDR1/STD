@@ -1160,9 +1160,10 @@ int shellReady(MainWindow& window) {
       if (scan->isChecked())
         return fail("RADE Scan started without a radio");
       // Scan can be limited to chosen bands.
-      const auto all = radeProfile->radeScanDials();
-      const auto only40 = radeProfile->radeScanDials({QStringLiteral("40")});
-      const auto two = radeProfile->radeScanDials({QStringLiteral("20"), QStringLiteral("40")});
+      // Reporter dials only; the operator's own extras would change the counts.
+      const auto all = radeProfile->radeScanDials({}, false);
+      const auto only40 = radeProfile->radeScanDials({QStringLiteral("40")}, false);
+      const auto two = radeProfile->radeScanDials({QStringLiteral("20"), QStringLiteral("40")}, false);
       bool only40ok = only40.size() == 4;
       for (const auto& dial : only40)
         only40ok = only40ok && dial.second >= 7000000 && dial.second < 7300000;
@@ -1285,6 +1286,21 @@ int shellReady(MainWindow& window) {
     }
     if (!sawExtra)
       return fail("RADE extra dial was not kept");
+    {
+      // Scan covers that extra too, after the band's reporter dials.
+      const auto scan20 = radeProfile->radeScanDials({QStringLiteral("20")});
+      QList<qint64> hz;
+      for (const auto& dial : scan20)
+        hz << dial.second;
+      if (hz.size() < 3 || hz.at(0) != 14236000 || hz.at(1) != 14240000 || !hz.contains(14111000))
+        return fail("RADE Scan does not cover the Extra dials");
+      // Editing: replace, drop a stock dial, then delete all.
+      radeProfile->setExtraDials({14112000, 14236000, 14111000});
+      const QList<qint64> edited = radeProfile->extraDials();
+      radeProfile->setExtraDials({});
+      if (edited != QList<qint64>{14112000, 14111000} || !radeProfile->extraDials().isEmpty())
+        return fail("RADE Extra dials did not edit or delete");
+    }
     if (originalBand)
       originalBand->click();
     v2->trigger();

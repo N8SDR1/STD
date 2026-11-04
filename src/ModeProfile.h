@@ -60,11 +60,18 @@ public:
   // (band index, Hz).
   // meters limits it to those bands ("160", "80", "60", "40", "20", "17",
   // "15", "12", "10"); empty means every band.
-  QList<QPair<int, qint64>> radeScanDials(const QStringList& meters = QStringList()) const;
+  // extras adds the dials typed into Extra for each band, after the
+  // reporter dials of that band.
+  QList<QPair<int, qint64>> radeScanDials(const QStringList& meters = QStringList(), bool extras = true) const;
   // The bands Scan can use, in order.
   static QStringList radeScanBands();
   // Moves to that band and dial and emits tuneRequested, as a band click does.
   void selectDial(int band, qint64 hz);
+  // Right-click Extra: list, edit, delete, or add this band's extra dials.
+  void editExtras();
+  // The extra dials for the current mode and band, and setting them.
+  QList<qint64> extraDials() const { return extras_; }
+  void setExtraDials(const QList<qint64>& dials);
 
 signals:
   void tuneRequested(qint64 dialHz, const QString& sideband);

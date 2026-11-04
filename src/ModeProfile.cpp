@@ -13,8 +13,12 @@
 #include <algorithm>
 
 #include <QButtonGroup>
+
+#include <cmath>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QListWidget>
 #include <QDateTime>
 #include <QFont>
 #include <QFontMetrics>
@@ -27,6 +31,7 @@
 #include <QSettings>
 #include <QStringList>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSlider>
@@ -396,7 +401,7 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   extra_->setToolTip(QStringLiteral(
       "Type a dial in Hz and press Enter to insert it for this mode and band. "
       "Click the mode or the band button to cycle the WSJT-X default and those extras. "
-      "Right-click clears them. DIGU. Does not key."));
+      "Right-click lists them to edit or delete. DIGU. Does not key."));
   extra_->setContextMenuPolicy(Qt::CustomContextMenu);
 
   row->addWidget(autoDec);
@@ -662,13 +667,7 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
     emit radeVolumeChanged(value);
   });
   refreshRadeDevices();
-  connect(extra_, &QWidget::customContextMenuRequested, this, [this] {
-    extras_.clear();
-    cycle_ = 0;
-    saveExtras();
-    refreshBands();
-    emit tuneRequested(dialHz(), QStringLiteral("DIGU"));
-  });
+  connect(extra_, &QWidget::customContextMenuRequested, this, [this] { editExtras(); });
   refreshBands();
 }
 
@@ -803,12 +802,12 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     extra_->setToolTip(rade ? QStringLiteral(
                                   "Type a dial in Hz and press Enter to insert it for this mode and band. "
                                   "Click the band button to cycle the FreeDV Reporter dials and those extras. "
-                                  "Right-click clears the extras. 160, 80, and 40 use DIGL. The other bands use DIGU. "
+                                  "Right-click lists the extras to edit or delete. 160, 80, and 40 use DIGL. The other bands use DIGU. "
                                   "Does not key. START is never sent.")
                             : QStringLiteral(
                                   "Type a dial in Hz and press Enter to insert it for this mode and band. "
                                   "Click the mode or the band button to cycle the WSJT-X default and those extras. "
-                                  "Right-click clears them. DIGU. Does not key."));
+                                  "Right-click lists them to edit or delete. DIGU. Does not key."));
     if (auto* extraLabel = findChild<QLabel*>(QStringLiteral("profileExtraLabel")))
       extraLabel->setToolTip(extra_->toolTip());
   }
@@ -1087,6 +1086,111 @@ void ModeProfile::reloadExtras() {
   extra_->setValue(0);
 }
 
+namespace {
+
+// "7.160" is MHz, "7160" is kHz, "7160000" is Hz. 0 when it is not a dial.
+qint64 parseDial(const QString& text) {
+  QString t = text.trimmed().toLower();
+  t.remove(QStringLiteral("mhz"));
+  t.remove(QStringLiteral("khz"));
+  t.remove(QStringLiteral("hz"));
+  t.remove(QLatin1Char(','));
+  t = t.trimmed();
+  bool ok = false;
+  const double v = t.toDouble(&ok);
+  if (!ok || v <= 0)
+    return 0;
+  double hz = v;
+  if (v < 1000.0)
+    hz = v * 1e6;
+  else if (v < 1e6)
+    hz = v * 1e3;
+  return (hz >= 100000.0 && hz <= 250000000.0) ? qint64(std::llround(hz)) : 0;
+}
+
+QString dialText(qint64 hz) {
+  return QString::number(double(hz) / 1e6, 'f', 4) + QStringLiteral(" MHz");
+}
+
+}  // namespace
+
+void ModeProfile::setExtraDials(const QList<qint64>& dials) {
+  const qint64 before = dialHz();
+  extras_.clear();
+  for (qint64 hz : dials)
+    if (hz > 0 && !stockDial(band_, hz) && !extras_.contains(hz))
+      extras_.append(hz);
+  saveExtras();
+  if (cycle_ >= cycleDials(band_).size())
+    cycle_ = 0;
+  refreshBands();
+  // Only move the radio when the dial it was on is gone.
+  if (dialHz() != before && !cycleDials(band_).contains(before)) {
+    cycle_ = 0;
+    refreshBands();
+    emit tuneRequested(dialHz(), sideband());
+  }
+}
+
+void ModeProfile::editExtras() {
+  QDialog dialog(this);
+  dialog.setWindowTitle(QStringLiteral("Extra dials, %1, %2 MHz band").arg(mode_, QString::fromLatin1(kBands[band_].label)));
+  dialog.setMinimumWidth(380);
+  auto* note = new QLabel(QStringLiteral(
+      "Extra dials for this mode and band. They join the band button's cycle, and RADE Scan "
+      "listens on them too. Double-click a dial to edit it. Type 7.160 for MHz, 7160 for kHz, "
+      "or 7160000 for Hz. This does not key. START is never sent."), &dialog);
+  note->setWordWrap(true);
+  auto* list = new QListWidget(&dialog);
+  list->setObjectName(QStringLiteral("extraDialList"));
+  for (qint64 hz : extras_) {
+    auto* item = new QListWidgetItem(dialText(hz), list);
+    item->setFlags(item->flags() | Qt::ItemIsEditable);
+  }
+  auto* add = new QPushButton(QStringLiteral("Add"), &dialog);
+  auto* remove = new QPushButton(QStringLiteral("Delete"), &dialog);
+  auto* clear = new QPushButton(QStringLiteral("Clear all"), &dialog);
+  auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
+  auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
+  ok->setDefault(true);
+  connect(add, &QPushButton::clicked, &dialog, [list] {
+    const qint64 base = list->count() > 0 ? parseDial(list->item(list->count() - 1)->text()) : 0;
+    auto* item = new QListWidgetItem(base > 0 ? dialText(base) : QStringLiteral("0.0000 MHz"), list);
+    item->setFlags(item->flags() | Qt::ItemIsEditable);
+    list->setCurrentItem(item);
+    list->editItem(item);
+  });
+  connect(remove, &QPushButton::clicked, &dialog, [list] { delete list->currentItem(); });
+  connect(clear, &QPushButton::clicked, &dialog, [list] { list->clear(); });
+  connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
+  connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
+  auto* side = new QVBoxLayout;
+  side->addWidget(add);
+  side->addWidget(remove);
+  side->addWidget(clear);
+  side->addStretch(1);
+  auto* middle = new QHBoxLayout;
+  middle->addWidget(list, 1);
+  middle->addLayout(side);
+  auto* buttons = new QHBoxLayout;
+  buttons->addStretch(1);
+  buttons->addWidget(ok);
+  buttons->addWidget(cancel);
+  auto* layout = new QVBoxLayout(&dialog);
+  layout->addWidget(note);
+  layout->addLayout(middle);
+  layout->addLayout(buttons);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  QList<qint64> dials;
+  for (int i = 0; i < list->count(); ++i) {
+    const qint64 hz = parseDial(list->item(i)->text());
+    if (hz > 0)
+      dials.append(hz);
+  }
+  setExtraDials(dials);
+}
+
 void ModeProfile::saveExtras() const {
   QSettings settings;
   const QString key =
@@ -1120,12 +1224,19 @@ QStringList ModeProfile::radeScanBands() {
   return out;
 }
 
-QList<QPair<int, qint64>> ModeProfile::radeScanDials(const QStringList& meters) const {
+QList<QPair<int, qint64>> ModeProfile::radeScanDials(const QStringList& meters, bool extras) const {
   QList<QPair<int, qint64>> out;
   for (const ScanBand& scanBand : kScanBands) {
     if (!meters.isEmpty() && !meters.contains(QString::fromLatin1(scanBand.meters)))
       continue;
     const int band = scanBand.index;
+    if (extras && radeMode(mode_)) {
+      // The band's cycle: reporter dials first, then the operator's extras.
+      for (qint64 hz : cycleDials(band))
+        if (hz > 0)
+          out.append(qMakePair(band, hz));
+      continue;
+    }
     const qint64* rows = nullptr;
     int count = 0;
     radePublished(band, rows, count);

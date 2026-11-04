@@ -127,7 +127,8 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
       "Scan the FreeDV Reporter calling dials, 160 m through 10 m, for RADE activity. Each dial "
       "is held for the Dwell time. When a station syncs, Stay on sync stops the scan there; with it "
       "off STD listens while the signal is in sync and then moves on. Click again to stop, or to "
-      "start again from the next dial. Right-click picks the bands to scan, one or several. "
+      "start again from the next dial. Right-click picks the bands to scan, one or several. Dials "
+      "you add with Extra are scanned too, after that band's reporter dials. "
       "Clicking a band button, TX, or changing mode also stops it. "
       "Scanning only moves the dial over TCI. It does not key. START is never sent."));
   scanDwell_ = new QSpinBox(this);
