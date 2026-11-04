@@ -1069,9 +1069,12 @@ void MainWindow::buildBrandBar() {
   top->addWidget(side);
   auto* freq = new QLabel(dialText_, dial);
   freq->setObjectName(QStringLiteral("dialFreq"));
-  freq->setFont(monoFont(28));
-  freq->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-  freq->setStyleSheet(QStringLiteral("color: #ffb000; background: transparent; border: none;"));
+  QFont freqFont = monoFont(28);
+  freqFont.setWeight(QFont::Bold);
+  freq->setFont(freqFont);
+  freq->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+  freq->setStyleSheet(QStringLiteral(
+      "color: #ffb000; background: transparent; border: none; font-weight: 700;"));
   dialCol->addLayout(top);
   dialCol->addWidget(freq, 1);
 

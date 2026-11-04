@@ -2867,7 +2867,8 @@ int shellReady(MainWindow& window) {
         !dialBox->toolTip().contains(QLatin1String("red")) ||
         !dialBox->toolTip().contains(QLatin1String("DIGU")) ||
         !dialBox->styleSheet().contains(QLatin1String("#3a4250")) ||
-        (dialSide->text() != QLatin1String("DIGU") && dialSide->text() != QLatin1String("DIGL"))) {
+        (dialSide->text() != QLatin1String("DIGU") && dialSide->text() != QLatin1String("DIGL")) ||
+        !(dialFreq->alignment() & Qt::AlignHCenter) || dialFreq->font().weight() < QFont::Bold) {
       restore();
       return fail("the dial box is missing");
     }
