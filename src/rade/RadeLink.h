@@ -39,6 +39,8 @@ public:
   // Last callsign read from an end-of-over; seq goes up with each new one.
   int heard(QString* call);
   float snr();
+  // Frequency offset of the received station in Hz, 0 when not in sync.
+  float freqOffset();
   int selftest();
   QString error() const { return error_; }
 
@@ -69,6 +71,7 @@ private:
   RxFn rx_ = nullptr;
   SyncFn sync_ = nullptr;
   SnrFn snr_ = nullptr;
+  SnrFn foff_ = nullptr;
   TestFn selftest_ = nullptr;
   ErrFn errorFn_ = nullptr;
   CallFn call_ = nullptr;

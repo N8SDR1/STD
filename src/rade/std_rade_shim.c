@@ -53,6 +53,7 @@ int RADE_API rade_rx(struct rade* r, float features_out[], int* has_eoo_out, flo
                      RADE_COMP rx_in[]);
 int RADE_API rade_sync(struct rade* r);
 float RADE_API rade_snrdB_3k_est(struct rade* r);
+float RADE_API rade_freq_offset(struct rade* r);
 
 #define RADE_VERBOSE_0 0x8
 #define RADE_MODE_V2 0x10
@@ -100,6 +101,7 @@ static int g_rx_cap;
 static float g_cont[5 * NB_TOTAL_FEATURES];
 static int g_sync;
 static float g_snr;
+static float g_foff;
 
 /* ---- Microphone leveller ----------------------------------------------
  * FreeDV levels the microphone before the encoder: momentary loudness
@@ -1040,8 +1042,10 @@ __declspec(dllexport) int std_rade_rx(const float* modem, int n, float* speech, 
     g_rx_n -= nin;
     n_out = rade_rx(g_r, g_feat_out, &has_eoo, g_eoo_bits, g_rx_scratch);
     g_sync = rade_sync(g_r);
-    if (g_sync)
+    if (g_sync) {
       g_snr = rade_snrdB_3k_est(g_r);
+      g_foff = rade_freq_offset(g_r);
+    }
     if (has_eoo) {
       /* The end-of-over holds the callsign, not speech. */
       char call[16];
@@ -1161,6 +1165,16 @@ static int check_dsp(void) {
     return -1;
   }
   return 0;
+}
+
+/* Frequency offset of the station being received, in Hz, as FreeDV shows
+ * it. Positive means the signal is above where it should be. 0 out of sync. */
+__declspec(dllexport) float std_rade_freq_offset(void) {
+  float foff;
+  EnterCriticalSection(&g_lock);
+  foff = g_r && g_sync ? g_foff : 0.0f;
+  LeaveCriticalSection(&g_lock);
+  return foff;
 }
 
 __declspec(dllexport) int std_rade_selftest(void) {

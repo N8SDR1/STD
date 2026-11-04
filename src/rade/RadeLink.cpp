@@ -51,6 +51,7 @@ bool RadeLink::load() {
   rx_ = reinterpret_cast<RxFn>(GetProcAddress(mod, "std_rade_rx"));
   sync_ = reinterpret_cast<SyncFn>(GetProcAddress(mod, "std_rade_sync"));
   snr_ = reinterpret_cast<SnrFn>(GetProcAddress(mod, "std_rade_snr"));
+  foff_ = reinterpret_cast<SnrFn>(GetProcAddress(mod, "std_rade_freq_offset"));
   selftest_ = reinterpret_cast<TestFn>(GetProcAddress(mod, "std_rade_selftest"));
   errorFn_ = reinterpret_cast<ErrFn>(GetProcAddress(mod, "std_rade_error"));
   call_ = reinterpret_cast<CallFn>(GetProcAddress(mod, "std_rade_set_callsign"));
@@ -146,6 +147,10 @@ int RadeLink::heard(QString* call) {
   if (call)
     *call = QString::fromLatin1(buf);
   return seq;
+}
+
+float RadeLink::freqOffset() {
+  return opened_ && foff_ ? foff_() : 0.0f;
 }
 
 float RadeLink::snr() {

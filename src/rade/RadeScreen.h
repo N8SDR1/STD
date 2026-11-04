@@ -22,7 +22,8 @@ public:
   // Match the Mode menu. Does not emit variantChosen.
   void showMode(const QString& modeName);
   void setLinkReady(bool ready);
-  void setSync(bool on, float snrDb);
+  // offsetHz: the received station's frequency offset, as FreeDV shows it.
+  void setSync(bool on, float snrDb, float offsetHz = 0.0f);
   // Callsign read from the last end-of-over, and when.
   void setHeard(const QString& call, const QString& utc);
   // Reloads the FreeDV Reporter message from settings.
@@ -59,6 +60,7 @@ private:
   QLabel* sync_ = nullptr;
   QLabel* snr_ = nullptr;
   QLabel* heard_ = nullptr;
+  QLabel* offset_ = nullptr;
   class QLineEdit* message_ = nullptr;
   class QPushButton* scan_ = nullptr;
   class QPushButton* rx_ = nullptr;

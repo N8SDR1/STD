@@ -644,7 +644,7 @@ void MainWindow::pushRadeRx(const float* samples, int count, int rate) {
   if (now - radeMeterMs_ > 100) {
     radeMeterMs_ = now;
     if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
-      screen->setSync(sync, rade_.snr());
+      screen->setSync(sync, rade_.snr(), rade_.freqOffset());
   }
   if (sync != syncBefore) {
     radeWasSync_ = sync;

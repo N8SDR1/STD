@@ -188,6 +188,17 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   meters->addSpacing(16);
   meters->addWidget(snr_);
   meters->addSpacing(16);
+  offset_ = new QLabel(QStringLiteral("Offset  —"), this);
+  offset_->setObjectName(QStringLiteral("radeOffset"));
+  offset_->setFont(uiFont());
+  offset_->setToolTip(QStringLiteral(
+      "How far the station you are receiving is from where it should be, in Hz, the same "
+      "Freq offset the FreeDV app shows. Plus means it is above, minus below. RADE tracks only "
+      "about 50 Hz either way, so keep it small: if every station reads the same offset, your "
+      "own radio is off by that much in the other direction. This does not key. "
+      "START is never sent."));
+  meters->addWidget(offset_);
+  meters->addSpacing(16);
   meters->addWidget(heard_);
   meters->addStretch(1);
   layout->addLayout(meters);
@@ -269,9 +280,14 @@ void RadeScreen::setLinkReady(bool ready) {
                              "Connect still sends AUDIO_START:0. START is never sent."));
 }
 
-void RadeScreen::setSync(bool on, float snrDb) {
+void RadeScreen::setSync(bool on, float snrDb, float offsetHz) {
   if (sync_)
     sync_->setText(on ? QStringLiteral("Sync  yes") : QStringLiteral("Sync  idle"));
+  if (offset_)
+    offset_->setText(on ? QStringLiteral("Offset  %1%2 Hz")
+                              .arg(offsetHz >= 0.0f ? QStringLiteral("+") : QString())
+                              .arg(QString::number(double(offsetHz), 'f', 0))
+                        : QStringLiteral("Offset  —"));
   if (!snr_)
     return;
   if (on)
