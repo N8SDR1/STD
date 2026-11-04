@@ -215,6 +215,9 @@ void FreeDvReporter::sendState() {
   sendEvent(QStringLiteral("tx_report"),
             QJsonDocument(QJsonObject{{QStringLiteral("mode"), mode_}, {QStringLiteral("transmitting"), tx_}})
                 .toJson(QJsonDocument::Compact));
+  // The FreeDV app sends its message on every connect, empty or not.
+  sendEvent(QStringLiteral("message_update"),
+            QJsonDocument(QJsonObject{{QStringLiteral("message"), message_}}).toJson(QJsonDocument::Compact));
 }
 
 void FreeDvReporter::setFrequency(qint64 hz) {
@@ -236,6 +239,16 @@ void FreeDvReporter::setTransmit(const QString& mode, bool tx) {
     sendEvent(QStringLiteral("tx_report"),
               QJsonDocument(QJsonObject{{QStringLiteral("mode"), mode_}, {QStringLiteral("transmitting"), tx_}})
                   .toJson(QJsonDocument::Compact));
+}
+
+void FreeDvReporter::setMessage(const QString& text) {
+  const QString t = text.trimmed();
+  if (t == message_)
+    return;
+  message_ = t;
+  if (ready_)
+    sendEvent(QStringLiteral("message_update"),
+              QJsonDocument(QJsonObject{{QStringLiteral("message"), message_}}).toJson(QJsonDocument::Compact));
 }
 
 void FreeDvReporter::reportReceive(const QString& call, const QString& mode, int snrDb) {

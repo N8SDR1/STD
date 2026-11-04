@@ -504,6 +504,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             [this](qint64 hz, const QString&) {
               if (!profile_ || !profile_->mshvFamily())
                 return;
+              // A band click by the operator takes over from Scan.
+              if (radeScanOn_ && !radeScanTuning_)
+                stopRadeScan(QStringLiteral("Scan stopped: a band was chosen."));
               // FT8 and FT4 stay DIGU. RADE follows FreeDV Reporter:
               // DIGL on 160, 80, and 40, DIGU on the rest.
               qsyDial(hz);
@@ -1121,6 +1124,28 @@ void MainWindow::buildDocks() {
   statusDock_->setObjectName("statusDock");
   statusStrip_ = new StatusStrip(statusDock_);
   statusDock_->setWidget(statusStrip_);
+  connect(statusStrip_, &StatusStrip::spotToggled, this, [this](const QString& key, bool on) {
+    QString what = QStringLiteral("PSK Reporter spots");
+    if (key == QLatin1String("dx/wsprnetEnabled"))
+      what = QStringLiteral("WSPRnet posts");
+    else if (key == QLatin1String("dx/freedvReporterEnabled"))
+      what = QStringLiteral("FreeDV Reporter");
+    if (key == QLatin1String("dx/freedvReporterEnabled"))
+      updateFreedvReporter(true);
+    QString note;
+    if (on && (stationCall().isEmpty() || stationGrid().isEmpty()))
+      note = QStringLiteral(" Set your callsign and locator under Options → User first.");
+    setTxStatus(QStringLiteral("%1 %2.%3 This does not key. START was not sent.")
+                    .arg(what, on ? QStringLiteral("on") : QStringLiteral("off"), note));
+  });
+  connect(statusStrip_, &StatusStrip::spotMapRequested, this, [this](const QString& service) {
+    if (service == QLatin1String("wsprnet"))
+      openWsprnetReports();
+    else if (service == QLatin1String("freedv"))
+      QDesktopServices::openUrl(QUrl(QStringLiteral("https://qso.freedv.org/")));
+    else
+      openPskReporterMap();
+  });
   statusDock_->setAllowedAreas(Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea);
   statusDock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
   statusDock_->setMinimumHeight(40);
@@ -2719,6 +2744,13 @@ QWidget* MainWindow::makeReceivePanel() {
   rade->hide();
   layout->addWidget(rade, 1);
   connect(rade, &RadeScreen::variantChosen, this, [this](const QString& mode) { activateDigitalMode(mode); });
+  connect(rade, &RadeScreen::rxRequested, this, [this] { radeRxClicked(); });
+  connect(rade, &RadeScreen::scanToggled, this, [this](bool on) {
+    if (on)
+      startRadeScan();
+    else
+      stopRadeScan(QStringLiteral("Scan stopped."));
+  });
   connect(rade, &RadeScreen::optionsChanged, this, [this] {
     if (!txRade_)
       ensureRadeCodec();
@@ -4130,12 +4162,15 @@ void MainWindow::showGuide() {
        "microphone is levelled before the encoder, as FreeDV does, so speak normally. "
        "Heard shows the callsign from the other station's end-of-over. Volume is the Speech playback "
        "level, from 0 to 100. Analog off plays decoded speech only and stays silent until sync. "
-       "TX and Halt sit on the Waveform row. The transmit dock stays closed in RADE. Identity stays in "
+       "RX and TX sit on the Waveform row. RX and TX work like the radio's switch: RX is green while receiving, TX shows ON AIR while transmitting, and clicking RX (or TX again) ends the over with the end-of-over and your callsign, with RX amber for that moment. Halt is not shown in RADE, because it would drop without your callsign. "
+       "Scan, after RX and TX, steps the FreeDV Reporter calling dials from 160 m to 10 m and listens for RADE on each. Dwell sets how long each dial is held, 5 to 30 seconds. With Stay on sync on, Scan stops on the first dial where a station syncs; with it off, Scan stays while the station is in sync and moves on a few seconds after it drops. Click Scan again to stop, or to start from the next dial. A band click, TX, or a mode change stops it. Scan only moves the dial. "
+       "The transmit dock stays closed in RADE. Identity stays in "
        "Options, User. The band buttons use the FreeDV Reporter list. 20 m starts at 14.236 and also "
        "has 14.240, both DIGU. Those are digital voice. SSTV calling is 14.230 and digital SSTV is 14.233. "
        "40 m starts at 7.177, DIGL, and also 7.197, 7.045, and 7.1815. "
        "80 m starts at 3.643, DIGL. 15 m is 21.313, DIGU. 17 m is 18.118. 12 m is 24.933. "
-       "10 m starts at 28.330 and also 28.720. 160 m is 1.870, DIGL. 80 m also has 3.625, 3.693, "
+       "10 m starts at 28.330 and also 28.720. 60 m (the 5.3 chip, after 3.5) is 5.3685 and 5.4035, DIGU. "
+       "160 m is 1.870, DIGL. 80 m also has 3.625, 3.693, "
        "3.697, 3.803, and the 3.640 net. Click the same band button to cycle those dials. "
        "Type a dial in Extra and press Enter to keep it for this mode and band. Right-click Extra "
        "clears those extras. 30 m and 6 m have no reporter dial. librade and FARGAN are linked. "
@@ -4520,7 +4555,13 @@ void MainWindow::showGuide() {
        "Reporter only when Also send WSPR spots is checked. WSPRnet stays off until On "
        "is selected. FreeDV Reporter, also in that dialog, is Off until On is chosen; then it "
        "connects to qso.freedv.org only while RADE is the mode, shows your call, locator, dial and "
-       "TX, and reports each RADE station heard with its SNR. View FreeDV Reporter opens the map "
+       "TX, and reports each RADE station heard with its SNR. The box beside On is the Message column "
+       "text, such as your name, QTH and rig; the RADE screen has the same box as Reporter message. "
+       "The status strip at the bottom also has a spot chip for the reporter the current mode feeds: "
+       "PSK RPT in FT8, FT4, FT2, JT65, Q65 and JS8, WSPRNET in WSPR, and FREEDV RPT in RADE. "
+       "Click the name to open that service's live page in your web browser; click On/Off to turn "
+       "that reporter on or off, the same switch as this dialog. Other modes show no chip. "
+       "View FreeDV Reporter opens the map "
        "and does not connect. A UDP option under Log Options also sends live decode packets "
        "for GridTracker. Decode List Options "
        "show or hide Time, Dist, and Freq, and can clear the list each period. QSY TX to the clicked "
@@ -6522,8 +6563,10 @@ void MainWindow::refreshTxChrome() {
       tune->setVisible(false);
     if (auto* send = findChild<QWidget*>(QStringLiteral("txSend")))
       send->setVisible(radeLinked);
+    // RADE ends an over with RX, which sends the end-of-over and callsign.
+    // Halt would drop without them, so it is not shown here.
     if (auto* halt = findChild<QWidget*>(QStringLiteral("txHalt")))
-      halt->setVisible(radeLinked);
+      halt->setVisible(false);
   }
   if (auto* keyPair = findChild<QWidget*>(QStringLiteral("txKeyPair"))) {
     QWidget* target = rade ? findChild<QWidget*>(QStringLiteral("radeKeySlot"))
@@ -6535,7 +6578,8 @@ void MainWindow::refreshTxChrome() {
   }
   if (auto* send = findChild<QPushButton*>(QStringLiteral("txSend"))) {
     send->setToolTip(rade ? QStringLiteral(
-                                "Send the Speech microphone. TRX uses tci. Halt stops at once. "
+                                "Send the Speech microphone. Red ON AIR while transmitting. Click RX, or "
+                                "TX again, to end the over with your callsign. TRX uses tci. "
                                 "START is never sent.")
                           : QStringLiteral(
                                 "Send the selected line on its slot and hold TRX until that slot ends. "
@@ -8118,8 +8162,10 @@ void MainWindow::stopUserTx(bool uncheck) {
     radeMic_->stop();
   const bool wasRade = txRade_;
   txRade_ = false;
-  if (wasRade)
+  if (wasRade) {
     updateFreedvReporter(true);
+    refreshRadeRxChip();
+  }
   radeStopping_ = false;
   radeFinished_ = false;
   radeTailMs_ = 0;
@@ -9447,7 +9493,15 @@ void MainWindow::openNetworkDialog() {
   fdvRow->addWidget(fdvLabel);
   fdvRow->addWidget(fdvOff);
   fdvRow->addWidget(fdvOn);
-  fdvRow->addStretch(1);
+  auto* fdvMessage = new QLineEdit(settings.value(QStringLiteral("dx/freedvReporterMessage")).toString(), fdvChoice);
+  fdvMessage->setObjectName(QStringLiteral("freedvReporterMessage"));
+  fdvMessage->setMaxLength(80);
+  fdvMessage->setPlaceholderText(QStringLiteral("Message, e.g. Rick, Ohio, IC-7300 dipole"));
+  fdvMessage->setToolTip(QStringLiteral(
+      "The free-text Message column on FreeDV Reporter. Sent when STD connects and whenever it "
+      "changes. Leave it empty to show nothing. This is not a callsign or a locator. "
+      "Does not key. START is never sent."));
+  fdvRow->addWidget(fdvMessage, 1);
   auto* fdvNote = new QLabel(
       QStringLiteral("FreeDV Reporter is the live map the FreeDV app reports to. STD connects only while "
                      "RADE V1 or V2 is the mode and the radio is connected, and leaves when you change mode. "
@@ -9502,6 +9556,7 @@ void MainWindow::openNetworkDialog() {
   store.setValue(QStringLiteral("dx/reportWspr"), reportWspr->isChecked());
   store.setValue(QStringLiteral("dx/wsprnetEnabled"), wsprOn->isChecked());
   store.setValue(QStringLiteral("dx/freedvReporterEnabled"), fdvOn->isChecked());
+  store.setValue(QStringLiteral("dx/freedvReporterMessage"), fdvMessage->text().trimmed());
   store.setValue(QStringLiteral("dx/reportHost"), host->text().trimmed());
   store.setValue(QStringLiteral("dx/reportPort"), port->value());
   store.setValue(QStringLiteral("dx/reportAntenna"), antenna->text().trimmed());
@@ -9513,6 +9568,10 @@ void MainWindow::openNetworkDialog() {
   applyStationLock();
   refreshTxFields();
   updateFreedvReporter(true);
+  if (statusStrip_)
+    statusStrip_->refreshSpot();
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+    screen->refreshMessage();
 }
 
 void MainWindow::rememberQso(const QString& call, const QString& grid, const QString& theirReport,

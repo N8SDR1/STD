@@ -10,11 +10,15 @@
 #include <QFont>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
+#include <QSpinBox>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace {
 
@@ -47,7 +51,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   auto* intro = new QLabel(QStringLiteral(
       "V1 is the default waveform, about 1500 Hz wide. V2 is experimental, "
       "about 860 Hz, and will not decode V1. Drive is between Mic and Speaker. "
-      "Analog is after Volume. BPF is after Waveform. TX and Halt are on this row. The band buttons set DIGU or DIGL. "
+      "Analog is after Volume. BPF is after Waveform. RX and TX are on this row; click RX to end your over. The band buttons set DIGU or DIGL. "
       "The mic is 16 kHz, speech plays at 48 kHz. The modem is 8 kHz."),
       this);
   intro->setObjectName(QStringLiteral("radeIntro"));
@@ -87,13 +91,70 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   auto* keyLayout = new QHBoxLayout(keySlot);
   keyLayout->setContentsMargins(0, 0, 0, 0);
   keyLayout->setSpacing(6);
+  // RX and TX work like the radio's switch. TX is added after this from
+  // the transmit panel.
+  rx_ = new QPushButton(QStringLiteral("RX"), keySlot);
+  rx_->setObjectName(QStringLiteral("radeRx"));
+  rx_->setFont(uiFont());
+  rx_->setFocusPolicy(Qt::NoFocus);
+  rx_->setToolTip(QStringLiteral(
+      "Green while receiving. While you transmit, click RX to end your over: the end-of-over with "
+      "your callsign goes out first, the way FreeDV stations and FreeDV Reporter expect, RX shows "
+      "amber for that moment, then turns green. Clicking TX again does the same. "
+      "This does not key. START is never sent."));
+  keyLayout->addWidget(rx_);
+  connect(rx_, &QPushButton::clicked, this, [this] { emit rxRequested(); });
   pair->addWidget(waveLabel);
   pair->addWidget(variant_);
   pair->addSpacing(12);
   pair->addWidget(bpf_);
   pair->addSpacing(16);
   pair->addWidget(keySlot);
+  pair->addSpacing(24);
+
+  // Activity scan: steps the FreeDV Reporter calling dials, low band to
+  // high, and listens for a RADE signal to sync on each one.
+  scan_ = new QPushButton(QStringLiteral("Scan"), this);
+  scan_->setObjectName(QStringLiteral("radeScan"));
+  scan_->setFont(uiFont());
+  scan_->setCheckable(true);
+  scan_->setFocusPolicy(Qt::NoFocus);
+  scan_->setToolTip(QStringLiteral(
+      "Scan the FreeDV Reporter calling dials, 160 m through 10 m, for RADE activity. Each dial "
+      "is held for the Dwell time. When a station syncs, Stay on sync stops the scan there; with it "
+      "off STD listens while the signal is in sync and then moves on. Click again to stop, or to "
+      "start again from the next dial. Clicking a band button, TX, or changing mode also stops it. "
+      "Scanning only moves the dial over TCI. It does not key. START is never sent."));
+  scanDwell_ = new QSpinBox(this);
+  scanDwell_->setObjectName(QStringLiteral("radeScanDwell"));
+  scanDwell_->setFont(uiFont());
+  scanDwell_->setRange(5, 30);
+  scanDwell_->setSingleStep(5);
+  scanDwell_->setPrefix(QStringLiteral("Dwell "));
+  scanDwell_->setSuffix(QStringLiteral(" s"));
+  scanDwell_->setFocusPolicy(Qt::ClickFocus);
+  scanDwell_->setValue(std::clamp(QSettings().value(QStringLiteral("rade/scanDwell"), 15).toInt() / 5 * 5, 5, 30));
+  scanDwell_->setToolTip(QStringLiteral(
+      "How long Scan listens on each dial: 5 to 30 seconds in 5 second steps. RADE takes a second "
+      "or two to sync, and stations pause between overs, so 15 s is a good start. Does not key."));
+  scanStay_ = new QCheckBox(QStringLiteral("Stay on sync"), this);
+  scanStay_->setObjectName(QStringLiteral("radeScanStay"));
+  scanStay_->setFont(uiFont());
+  scanStay_->setFocusPolicy(Qt::NoFocus);
+  scanStay_->setChecked(QSettings().value(QStringLiteral("rade/scanStay"), true).toBool());
+  scanStay_->setToolTip(QStringLiteral(
+      "On: Scan stops on the first dial where a RADE station syncs, so you can listen and call. "
+      "Off: Scan keeps looping; it stays while the station is in sync and moves on a few seconds "
+      "after the signal drops. Does not key."));
+  pair->addWidget(scan_);
+  pair->addWidget(scanDwell_);
+  pair->addWidget(scanStay_);
   pair->addStretch(1);
+  connect(scan_, &QPushButton::toggled, this, [this](bool on) { emit scanToggled(on); });
+  connect(scanDwell_, qOverload<int>(&QSpinBox::valueChanged), this,
+          [](int value) { QSettings().setValue(QStringLiteral("rade/scanDwell"), value); });
+  connect(scanStay_, &QCheckBox::toggled, this,
+          [](bool on) { QSettings().setValue(QStringLiteral("rade/scanStay"), on); });
   layout->insertLayout(2, pair);
 
   auto* meters = new QHBoxLayout();
@@ -122,6 +183,29 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   meters->addStretch(1);
   layout->addLayout(meters);
 
+  auto* messageRow = new QHBoxLayout();
+  auto* messageLabel = new QLabel(QStringLiteral("Reporter message"), this);
+  messageLabel->setFont(uiFont());
+  message_ = new QLineEdit(this);
+  message_->setObjectName(QStringLiteral("radeReporterMessage"));
+  message_->setFont(uiFont());
+  message_->setMaxLength(80);
+  message_->setMaximumWidth(420);
+  message_->setPlaceholderText(QStringLiteral("e.g. Rick, Ohio, IC-7300 dipole"));
+  message_->setToolTip(QStringLiteral(
+      "The Message column on FreeDV Reporter, the same text as Options → Network Configuration. "
+      "Press Enter or leave the box to send it; it goes out within a second while FreeDV Reporter "
+      "is on. This does not key. START is never sent."));
+  messageLabel->setToolTip(message_->toolTip());
+  refreshMessage();
+  connect(message_, &QLineEdit::editingFinished, this, [this] {
+    QSettings().setValue(QStringLiteral("dx/freedvReporterMessage"), message_->text().trimmed());
+  });
+  messageRow->addWidget(messageLabel);
+  messageRow->addWidget(message_, 1);
+  messageRow->addStretch(1);
+  layout->addLayout(messageRow);
+
   link_ = new QLabel(QStringLiteral(
       "librade is not loaded yet. Sync stays idle and SNR stays blank. "
       "Connect still sends AUDIO_START:0. TX uses trx with tci. START is never sent."),
@@ -149,6 +233,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   });
 
   showMode(radeV1Name());
+  setTxState(0);
 }
 
 void RadeScreen::loadBpf(bool v2) {
@@ -184,6 +269,49 @@ void RadeScreen::setSync(bool on, float snrDb) {
     snr_->setText(QStringLiteral("SNR  %1 dB").arg(QString::number(double(snrDb), 'f', 1)));
   else
     snr_->setText(QStringLiteral("SNR  —"));
+}
+
+void RadeScreen::setTxState(int state) {
+  if (!rx_)
+    return;
+  if (rx_->property("txState").toInt() == state && !rx_->styleSheet().isEmpty())
+    return;
+  rx_->setProperty("txState", state);
+  if (state == 0)
+    rx_->setStyleSheet(QStringLiteral(
+        "QPushButton#radeRx { background: #0f5132; color: #d1ffe0; border: 1px solid #2ecc71; "
+        "border-radius: 4px; padding: 3px 12px; font-weight: bold; }"));
+  else if (state == 2)
+    rx_->setStyleSheet(QStringLiteral(
+        "QPushButton#radeRx { background: #5c4400; color: #ffe08a; border: 1px solid #f0b400; "
+        "border-radius: 4px; padding: 3px 12px; font-weight: bold; }"));
+  else
+    rx_->setStyleSheet(QStringLiteral(
+        "QPushButton#radeRx { background: transparent; color: #8aa0a8; border: 1px solid #33464d; "
+        "border-radius: 4px; padding: 3px 12px; }"));
+  rx_->setText(state == 2 ? QStringLiteral("RX…") : QStringLiteral("RX"));
+}
+
+void RadeScreen::setScanning(bool on) {
+  if (!scan_)
+    return;
+  const QSignalBlocker block(scan_);
+  scan_->setChecked(on);
+  scan_->setText(on ? QStringLiteral("Scanning") : QStringLiteral("Scan"));
+}
+
+int RadeScreen::scanDwellSeconds() const {
+  return scanDwell_ ? scanDwell_->value() : 15;
+}
+
+bool RadeScreen::scanStay() const {
+  return !scanStay_ || scanStay_->isChecked();
+}
+
+void RadeScreen::refreshMessage() {
+  if (!message_ || message_->hasFocus())
+    return;
+  message_->setText(QSettings().value(QStringLiteral("dx/freedvReporterMessage")).toString());
 }
 
 void RadeScreen::setHeard(const QString& call, const QString& utc) {

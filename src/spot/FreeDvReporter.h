@@ -44,6 +44,8 @@ public:
 
   void setFrequency(qint64 hz);
   void setTransmit(const QString& mode, bool tx);
+  // The free-text line in the Message column, such as "Rick, Ohio, IC-7300".
+  void setMessage(const QString& text);
   // An empty call reports a RADE signal in sync with no callsign yet.
   void reportReceive(const QString& call, const QString& mode, int snrDb);
 
@@ -67,6 +69,7 @@ private:
   qint64 freqHz_ = 0;
   QString mode_ = QStringLiteral("RADEV1");
   bool tx_ = false;
+  QString message_;
   int pingMs_ = 25000 + 20000;
   int retryMs_ = 5000;
 };

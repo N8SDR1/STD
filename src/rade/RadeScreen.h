@@ -24,10 +24,24 @@ public:
   void setSync(bool on, float snrDb);
   // Callsign read from the last end-of-over, and when.
   void setHeard(const QString& call, const QString& utc);
+  // Reloads the FreeDV Reporter message from settings.
+  void refreshMessage();
+  // RX chip: 0 receiving (green), 1 transmitting (unlit), 2 ending the
+  // over (amber). Does not emit rxRequested.
+  void setTxState(int state);
+  // Lights the Scan chip. Does not emit scanToggled.
+  void setScanning(bool on);
+  int scanDwellSeconds() const;
+  // True: stop on the first dial that syncs. False: listen while it is in
+  // sync, then move on.
+  bool scanStay() const;
 
 signals:
   void variantChosen(const QString& modeName);
   void optionsChanged();
+  void scanToggled(bool on);
+  // RX clicked: end the over properly, with the end-of-over and callsign.
+  void rxRequested();
 
 private:
   void loadBpf(bool v2);
@@ -38,6 +52,11 @@ private:
   QLabel* sync_ = nullptr;
   QLabel* snr_ = nullptr;
   QLabel* heard_ = nullptr;
+  class QLineEdit* message_ = nullptr;
+  class QPushButton* scan_ = nullptr;
+  class QPushButton* rx_ = nullptr;
+  class QSpinBox* scanDwell_ = nullptr;
+  QCheckBox* scanStay_ = nullptr;
   QLabel* link_ = nullptr;
   bool showingV2_ = false;
 };

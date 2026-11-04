@@ -143,6 +143,14 @@ private:
   // FreeDV Reporter follows RADE mode, the dial and TX. now skips the
   // half-second throttle.
   void updateFreedvReporter(bool now);
+  // RADE activity scan over the FreeDV Reporter calling dials.
+  void startRadeScan();
+  void stopRadeScan(const QString& why);
+  void radeScanTick();
+  void radeScanTune();
+  // Green RX while receiving, amber while the over ends.
+  void refreshRadeRxChip();
+  void radeRxClicked();
   void applyRadeCapture(const QString& id);
   void applyRadeOutput(const QString& id);
 
@@ -380,6 +388,13 @@ private:
   class FreeDvReporter* freedvReporter_ = nullptr;
   qint64 freedvReporterMs_ = 0;
   qint64 radeSyncReportMs_ = 0;
+  class QTimer* radeScanTimer_ = nullptr;
+  bool radeScanOn_ = false;
+  bool radeScanTuning_ = false;
+  int radeScanIndex_ = -1;
+  qint64 radeScanTuneMs_ = 0;
+  qint64 radeScanSyncMs_ = 0;
+  int radeRxState_ = -1;
   bool txRade_ = false;
   bool radeStopping_ = false;
   bool radeFinished_ = false;

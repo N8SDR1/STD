@@ -4,6 +4,7 @@
 #pragma once
 
 #include <QList>
+#include <QPair>
 #include <QString>
 #include <QWidget>
 
@@ -54,6 +55,11 @@ public:
   void refreshStation();
   // Fills the Mic, speaker, and volume row from the Speech settings.
   void refreshRadeDevices();
+  // RADE scan: every FreeDV Reporter calling dial, low band to high, as
+  // (band index, Hz).
+  QList<QPair<int, qint64>> radeScanDials() const;
+  // Moves to that band and dial and emits tuneRequested, as a band click does.
+  void selectDial(int band, qint64 hz);
 
 signals:
   void tuneRequested(qint64 dialHz, const QString& sideband);

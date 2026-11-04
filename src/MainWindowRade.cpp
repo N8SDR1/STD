@@ -22,6 +22,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QTimer>
 
 #include <algorithm>
 #include <cmath>
@@ -77,8 +78,149 @@ void MainWindow::updateFreedvReporter(bool now) {
   if (on) {
     freedvReporter_->setFrequency(liveDialHz_);
     freedvReporter_->setTransmit(freedvReporterModeName(radeV2(profile_->digitalMode())), txRade_);
+    freedvReporter_->setMessage(QSettings().value(QStringLiteral("dx/freedvReporterMessage")).toString());
   }
   freedvReporter_->setActive(on, stationCall(), stationGrid());
+}
+
+namespace {
+
+QString scanDialText(qint64 hz) {
+  return QString::number(double(hz) / 1e6, 'f', hz % 1000 ? 4 : 3);
+}
+
+}  // namespace
+
+void MainWindow::refreshRadeRxChip() {
+  const int state = !txRade_ ? 0 : (radeStopping_ ? 2 : 1);
+  if (state == radeRxState_)
+    return;
+  radeRxState_ = state;
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+    screen->setTxState(state);
+}
+
+void MainWindow::radeRxClicked() {
+  // RX always ends the over the proper way. While it is already ending, or
+  // nothing is on the air, it only keeps the chip lit.
+  if (txRade_ && txKeySent_ && !radeStopping_) {
+    if (auto* tx = findChild<QPushButton*>(QStringLiteral("txSend")))
+      tx->setChecked(false);
+  }
+  radeRxState_ = -1;
+  refreshRadeRxChip();
+}
+
+void MainWindow::startRadeScan() {
+  auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+  QString why;
+  if (!profile_ || !radeMode(profile_->digitalMode()))
+    why = QStringLiteral("Scan works in RADE V1 and V2.");
+  else if (!tci_ || !tci_->isOpen())
+    why = QStringLiteral("Connect the radio before Scan.");
+  else if (txRade_ || txKeySent_)
+    why = QStringLiteral("Scan waits until TX is off.");
+  if (!why.isEmpty()) {
+    if (screen)
+      screen->setScanning(false);
+    setTxStatus(why + QStringLiteral(" This does not key. START was not sent."));
+    return;
+  }
+  const auto dials = profile_->radeScanDials();
+  if (dials.isEmpty()) {
+    if (screen)
+      screen->setScanning(false);
+    return;
+  }
+  // Start on the dial after the one the radio is on, so a stopped scan
+  // continues instead of repeating.
+  int next = 0;
+  for (int i = 0; i < dials.size(); ++i) {
+    if (dials.at(i).second == liveDialHz_) {
+      next = (i + 1) % int(dials.size());
+      break;
+    }
+  }
+  radeScanIndex_ = next;
+  radeScanOn_ = true;
+  if (screen)
+    screen->setScanning(true);
+  if (!radeScanTimer_) {
+    radeScanTimer_ = new QTimer(this);
+    connect(radeScanTimer_, &QTimer::timeout, this, [this] { radeScanTick(); });
+  }
+  radeScanTune();
+  radeScanTimer_->start(250);
+}
+
+void MainWindow::stopRadeScan(const QString& why) {
+  if (!radeScanOn_)
+    return;
+  radeScanOn_ = false;
+  if (radeScanTimer_)
+    radeScanTimer_->stop();
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+    screen->setScanning(false);
+  if (!why.isEmpty())
+    setTxStatus(why + QStringLiteral(" This does not key. START was not sent."));
+}
+
+void MainWindow::radeScanTune() {
+  const auto dials = profile_->radeScanDials();
+  if (dials.isEmpty())
+    return;
+  radeScanIndex_ = ((radeScanIndex_ % int(dials.size())) + int(dials.size())) % int(dials.size());
+  const auto& dial = dials.at(radeScanIndex_);
+  radeScanTuning_ = true;
+  profile_->selectDial(dial.first, dial.second);
+  radeScanTuning_ = false;
+  radeScanTuneMs_ = QDateTime::currentMSecsSinceEpoch();
+  radeScanSyncMs_ = 0;
+  setTxStatus(QStringLiteral("Scanning %1 MHz %2 (%3 of %4). This does not key. START was not sent.")
+                  .arg(scanDialText(dial.second), profile_->sideband())
+                  .arg(radeScanIndex_ + 1)
+                  .arg(dials.size()));
+}
+
+void MainWindow::radeScanTick() {
+  if (!radeScanOn_)
+    return;
+  if (!profile_ || !radeMode(profile_->digitalMode())) {
+    stopRadeScan(QStringLiteral("Scan stopped: the mode changed."));
+    return;
+  }
+  if (!tci_ || !tci_->isOpen()) {
+    stopRadeScan(QStringLiteral("Scan stopped: the radio disconnected."));
+    return;
+  }
+  if (txRade_ || txKeySent_) {
+    stopRadeScan(QStringLiteral("Scan stopped for TX."));
+    return;
+  }
+  auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+  const qint64 now = QDateTime::currentMSecsSinceEpoch();
+  // Sync left over from the last dial needs a moment to drop.
+  constexpr qint64 kSettleMs = 1500;
+  if (now - radeScanTuneMs_ < kSettleMs)
+    return;
+  if (radeWasSync_) {
+    radeScanSyncMs_ = now;
+    if (!screen || screen->scanStay()) {
+      stopRadeScan(QStringLiteral("Scan stopped on %1 MHz: a RADE station is in sync.")
+                       .arg(scanDialText(profile_->dialHz())));
+      return;
+    }
+  }
+  const qint64 dwellMs = qint64(screen ? screen->scanDwellSeconds() : 15) * 1000;
+  qint64 leave = radeScanTuneMs_ + dwellMs;
+  // Continue mode stays while the station is in sync and a few seconds
+  // after, so a pause between overs does not move the dial.
+  if (radeScanSyncMs_ > 0)
+    leave = std::max(leave, radeScanSyncMs_ + 4000);
+  if (now < leave)
+    return;
+  ++radeScanIndex_;
+  radeScanTune();
 }
 
 void MainWindow::applyRadePlaybackVolume(int percent) {
@@ -189,6 +331,7 @@ void MainWindow::beginRadeTx() {
   }
   if (txTune_)
     stopTune(true);
+  stopRadeScan(QStringLiteral("Scan stopped for TX."));
   // FreeDV stations and FreeDV Reporter read the call from the end-of-over.
   rade_.setCallsign(stationCall());
   applyRadeOptions();
@@ -220,6 +363,7 @@ void MainWindow::beginRadeTx() {
   txRade_ = true;
   txKeySent_ = true;
   updateFreedvReporter(true);
+  refreshRadeRxChip();
   markWaterfallTx();
   if (button)
     button->setText(QStringLiteral("ON AIR"));
@@ -230,6 +374,7 @@ void MainWindow::beginRadeTx() {
 
 void MainWindow::pumpRadeTx() {
   updateFreedvReporter(false);
+  refreshRadeRxChip();
   if (!tci_ || !tci_->isTransmitting()) {
     stopUserTx(true);
     setTxStatus(QStringLiteral("RADE stopped. TRX is off. START was not sent."));

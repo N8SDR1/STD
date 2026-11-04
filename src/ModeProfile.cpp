@@ -73,10 +73,16 @@ constexpr Ft8Band kBands[] = {
     {"24", 24915000, 24919000, 0, 24923000, 24922500, 0, 24917000, 24917000},
     {"28", 28074000, 28180000, 0, 28184000, 28061500, 0, 28076000, 28076000},
     {"50", 50313000, 50318000, 0, 50320000, 50284500, 0, 50276000, 50305000},
+    // 60 m is channelized. FT8 is the WSJT-X 5.357 MHz dial; RADE has the
+    // two FreeDV Reporter dials. The other modes have none, so the chip is
+    // hidden for them. It is last in this table so saved band numbers keep
+    // their meaning, and sits between 3.5 and 7 on screen.
+    {"5.3", 5357000, 0, 0, 0, 0, 0, 0, 0},
 };
 
 constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
 constexpr int kDefaultBand = 4;  // 14 MHz
+constexpr int k60mBand = 10;
 
 // FreeDV Reporter calling dials (qso.freedv.org) and the regional nets
 // named on freedv.org. 20 m stays 14.236 then 14.240, both USB. Those are
@@ -94,6 +100,7 @@ void radePublished(int index, const qint64*& rows, int& count) {
   static constexpr qint64 k15[] = {21313000};
   static constexpr qint64 k12[] = {24933000};
   static constexpr qint64 k10[] = {28330000, 28720000};
+  static constexpr qint64 k60[] = {5368500, 5403500};
   rows = nullptr;
   count = 0;
   switch (index) {
@@ -105,6 +112,7 @@ void radePublished(int index, const qint64*& rows, int& count) {
   case 6: rows = k15; count = 1; break;
   case 7: rows = k12; count = 1; break;
   case 8: rows = k10; count = 2; break;
+  case k60mBand: rows = k60; count = 2; break;
   default: break;
   }
 }
@@ -416,7 +424,21 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
     button->setCheckable(true);
     button->setChecked(i == band_);
     bands->addButton(button, i);
-    row->addWidget(button);
+    if (i == k60mBand) {
+      // On screen 60 m goes after 3.5.
+      QWidget* before = nullptr;
+      for (QAbstractButton* other : bands->buttons()) {
+        if (other->text() == QLatin1String("3.5"))
+          before = other;
+      }
+      const int at = before ? row->indexOf(before) : -1;
+      if (at >= 0)
+        row->insertWidget(at + 1, button);
+      else
+        row->addWidget(button);
+    } else {
+      row->addWidget(button);
+    }
     connect(button, &QPushButton::clicked, this, [this, i] {
       if (band_ == i)
         advanceCycle();
@@ -843,6 +865,18 @@ void ModeProfile::refreshBands() {
     region_->setToolTip(tip);
   const auto buttons = bar_->findChildren<QPushButton*>(QStringLiteral("profileBand"),
                                                         Qt::FindDirectChildrenOnly);
+  if (buttons.size() > k60mBand) {
+    // 60 m only shows for modes that have a dial there.
+    const bool has60 = tableHz(k60mBand) > 0;
+    buttons[k60mBand]->setVisible(has60);
+    if (!has60 && band_ == k60mBand && kDefaultBand < buttons.size()) {
+      band_ = kDefaultBand;
+      cycle_ = 0;
+      const QSignalBlocker block(buttons[kDefaultBand]);
+      buttons[kDefaultBand]->setChecked(true);
+      reloadExtras();
+    }
+  }
   for (int i = 0; i < buttons.size() && i < kBandCount; ++i) {
     const bool here = i == band_;
     const QList<qint64> dials = cycleDials(i);
@@ -1065,6 +1099,40 @@ void ModeProfile::saveExtras() const {
   for (qint64 hz : extras_)
     texts.append(QString::number(hz));
   settings.setValue(key, texts);
+}
+
+QList<QPair<int, qint64>> ModeProfile::radeScanDials() const {
+  QList<QPair<int, qint64>> out;
+  // 160, 80, 60, 40, then 30 m and up, the order the band row shows.
+  static constexpr int kOrder[] = {0, 1, k60mBand, 2, 3, 4, 5, 6, 7, 8, 9};
+  for (int band : kOrder) {
+    const qint64* rows = nullptr;
+    int count = 0;
+    radePublished(band, rows, count);
+    for (int i = 0; i < count; ++i)
+      out.append(qMakePair(band, rows[i]));
+  }
+  return out;
+}
+
+void ModeProfile::selectDial(int band, qint64 hz) {
+  if (band < 0 || band >= kBandCount)
+    return;
+  if (band != band_) {
+    band_ = band;
+    reloadExtras();
+  }
+  const QList<qint64> dials = cycleDials(band_);
+  cycle_ = std::max(0, static_cast<int>(dials.indexOf(hz)));
+  const auto buttons = bar_->findChildren<QPushButton*>(QStringLiteral("profileBand"),
+                                                        Qt::FindDirectChildrenOnly);
+  if (band_ < buttons.size()) {
+    const QSignalBlocker block(buttons[band_]);
+    buttons[band_]->setChecked(true);
+  }
+  remember();
+  refreshBands();
+  emit tuneRequested(dialHz(), sideband());
 }
 
 void ModeProfile::advanceCycle() {
