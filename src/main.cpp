@@ -1244,6 +1244,10 @@ int shellReady(MainWindow& window) {
           return fail("RADE columns did not line up");
         if (keySlot->y() > 0 && scan->y() > 0 && scan->y() + 4 < keySlot->y())
           return fail("RADE RX sits below Scan");
+        if (dwell->y() > 0 && stay->y() > 0 && qAbs(dwell->y() - stay->y()) > 8)
+          return fail("RADE Dwell left the Stay row");
+        if (dwell->width() < 72)
+          return fail("RADE Dwell box is clipped");
         if (layoutPick->text() != QLatin1String("Show rows"))
           return fail("RADE layout switch is missing");
         page->setColumns(hadLayout && previous == QLatin1String("rows") ? false : true);

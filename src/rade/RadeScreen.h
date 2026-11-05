@@ -11,6 +11,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPushButton;
+class QResizeEvent;
 
 // RADE operating screen. It is not the Hell tape and not the FT8 sequence.
 // Mic and speaker are the devices already chosen for Speech. Identity stays
@@ -23,7 +24,8 @@ public:
 
   // Match the Mode menu. Does not emit variantChosen.
   void showMode(const QString& modeName);
-  // Moves the audio strip into this screen. Columns stacks it; rows keeps it wide.
+  // Moves the audio strip into this screen. Columns stacks it. Rows keep one
+  // line and wrap it when the panel is narrow.
   void placeAudio(QWidget* bar, ModeProfile* profile);
   // True: audio, status, and waveform side by side. False: waveform and meters
   // on top, audio underneath.
@@ -67,6 +69,9 @@ private:
   void refreshHeardClock();
   void applyArrangement();
   void refreshLayoutButton();
+  void resizeEvent(QResizeEvent* event) override;
+  // Rows only: status drops under the waveform when the two no longer fit.
+  void fitRows();
 
   QComboBox* variant_ = nullptr;
   QCheckBox* bpf_ = nullptr;
@@ -80,6 +85,7 @@ private:
   class QPushButton* scan_ = nullptr;
   class QPushButton* rx_ = nullptr;
   class QSpinBox* scanDwell_ = nullptr;
+  QLabel* dwellLabel_ = nullptr;
   QCheckBox* scanStay_ = nullptr;
   QLabel* link_ = nullptr;
   QLabel* waveLabel_ = nullptr;
@@ -97,5 +103,6 @@ private:
   QWidget* audioBar_ = nullptr;
   ModeProfile* audioProfile_ = nullptr;
   bool columns_ = true;
+  bool rowsStacked_ = false;
   bool showingV2_ = false;
 };

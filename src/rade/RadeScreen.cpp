@@ -23,6 +23,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
+#include <QResizeEvent>
 #include <QSpinBox>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -85,6 +86,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   layoutPick_->setToolTip(QStringLiteral(
       "Switch between three columns and two rows. Columns puts audio, status, and waveform "
       "side by side, audio on the left. Rows puts waveform and meters on top, with audio underneath. "
+      "A narrow window moves status onto the next line and wraps the audio strip. "
       "This does not key. START is never sent."));
   auto* header = new QHBoxLayout();
   header->setContentsMargins(0, 0, 0, 0);
@@ -163,13 +165,26 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   scanDwell_->setFont(uiFont());
   scanDwell_->setRange(5, 30);
   scanDwell_->setSingleStep(5);
-  scanDwell_->setPrefix(QStringLiteral("Dwell "));
   scanDwell_->setSuffix(QStringLiteral(" s"));
+  scanDwell_->setAlignment(Qt::AlignCenter);
+  scanDwell_->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+  scanDwell_->setMinimumWidth(96);
+  scanDwell_->setFixedHeight(28);
+  scanDwell_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   scanDwell_->setFocusPolicy(Qt::ClickFocus);
+  scanDwell_->setStyleSheet(QStringLiteral(
+      "QSpinBox#radeScanDwell { background: #162230; color: #e8eef4; "
+      "border: 1px solid #4d8ab0; border-radius: 4px; padding: 1px 4px 1px 8px; }"
+      "QSpinBox#radeScanDwell::up-button, QSpinBox#radeScanDwell::down-button {"
+      " width: 18px; background: #1e3348; border-left: 1px solid #4d8ab0; }"));
+  dwellLabel_ = new QLabel(QStringLiteral("Dwell"), this);
+  dwellLabel_->setObjectName(QStringLiteral("radeDwellLabel"));
+  dwellLabel_->setFont(uiFont());
   scanDwell_->setValue(std::clamp(QSettings().value(QStringLiteral("rade/scanDwell"), 15).toInt() / 5 * 5, 5, 30));
   scanDwell_->setToolTip(QStringLiteral(
       "How long Scan listens on each dial: 5 to 30 seconds in 5 second steps. RADE takes a second "
       "or two to sync, and stations pause between overs, so 15 s is a good start. Does not key."));
+  dwellLabel_->setToolTip(scanDwell_->toolTip());
   scanStay_ = new QCheckBox(QStringLiteral("Stay on sync"), this);
   scanStay_->setObjectName(QStringLiteral("radeScanStay"));
   scanStay_->setFont(uiFont());
@@ -392,13 +407,19 @@ void RadeScreen::applyArrangement() {
     wave->addWidget(bpf_);
     operateLay->addLayout(wave);
     operateLay->addWidget(scan_);
-    operateLay->addWidget(scanDwell_);
-    operateLay->addWidget(scanStay_);
+    auto* dwellRow = new QHBoxLayout();
+    dwellRow->setSpacing(8);
+    dwellRow->addWidget(dwellLabel_);
+    dwellRow->addWidget(scanDwell_);
+    dwellRow->addWidget(scanStay_);
+    dwellRow->addStretch(1);
+    operateLay->addLayout(dwellRow);
   } else {
     operateLay->addWidget(waveLabel_);
     operateLay->addWidget(variant_);
     operateLay->addWidget(bpf_);
     operateLay->addWidget(scan_);
+    operateLay->addWidget(dwellLabel_);
     operateLay->addWidget(scanDwell_);
     operateLay->addWidget(scanStay_);
   }
@@ -478,7 +499,54 @@ void RadeScreen::applyArrangement() {
     top->addWidget(meterCol_, 1);
     col->addLayout(top);
     col->addWidget(audioHost_);
+    rowsStacked_ = false;
+    fitRows();
   }
+}
+
+void RadeScreen::resizeEvent(QResizeEvent* event) {
+  QWidget::resizeEvent(event);
+  fitRows();
+}
+
+void RadeScreen::fitRows() {
+  if (columns_ || !body_ || !operate_ || !meterCol_)
+    return;
+  auto* outer = qobject_cast<QVBoxLayout*>(body_->layout());
+  if (!outer || outer->count() < 2)
+    return;
+  const int width = body_->width();
+  if (width < 80)
+    return;
+  const int need = operate_->minimumSizeHint().width() + meterCol_->minimumSizeHint().width() + 24;
+  const bool stack = rowsStacked_ ? width < need + 48 : width < need;
+  if (stack == rowsStacked_)
+    return;
+  QLayoutItem* top = outer->takeAt(0);
+  if (!top)
+    return;
+  // The item owns its child layout. Empty that layout, then delete the item once.
+  if (QLayout* lay = top->layout())
+    detachLayout(lay);
+  delete top;
+  rowsStacked_ = stack;
+  if (stack) {
+    auto* col = new QVBoxLayout();
+    col->setSpacing(8);
+    col->addWidget(operate_);
+    col->addWidget(meterCol_);
+    outer->insertLayout(0, col);
+  } else {
+    auto* row = new QHBoxLayout();
+    row->setSpacing(8);
+    row->addWidget(operate_, 1);
+    row->addWidget(meterCol_, 1);
+    outer->insertLayout(0, row);
+  }
+  operate_->setVisible(true);
+  meterCol_->setVisible(true);
+  if (audioHost_)
+    audioHost_->setVisible(true);
 }
 
 void RadeScreen::loadBpf(bool v2) {

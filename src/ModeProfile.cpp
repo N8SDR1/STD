@@ -25,6 +25,7 @@
 #include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QLayout>
 #include <QLabel>
 #include <QMetaType>
 #include <QPushButton>
@@ -713,8 +714,72 @@ void ModeProfile::setMshvFamily(bool mshv) {
     radeAudio_->setVisible(mshv && radeMode(mode_));
 }
 
+namespace {
+
+// One horizontal strip that starts another line when the panel is too narrow.
+class FlowLayout : public QLayout {
+ public:
+  explicit FlowLayout(QWidget* parent = nullptr) : QLayout(parent) {}
+  ~FlowLayout() override {
+    while (QLayoutItem* item = takeAt(0))
+      delete item;
+  }
+  void addItem(QLayoutItem* item) override { items_.append(item); }
+  int count() const override { return items_.size(); }
+  QLayoutItem* itemAt(int index) const override { return items_.value(index); }
+  QLayoutItem* takeAt(int index) override {
+    return index >= 0 && index < items_.size() ? items_.takeAt(index) : nullptr;
+  }
+  Qt::Orientations expandingDirections() const override { return {}; }
+  bool hasHeightForWidth() const override { return true; }
+  int heightForWidth(int width) const override { return doLayout(QRect(0, 0, width, 0), true); }
+  QSize sizeHint() const override { return minimumSize(); }
+  QSize minimumSize() const override {
+    QSize size;
+    for (const QLayoutItem* item : items_)
+      size = size.expandedTo(item->minimumSize());
+    const QMargins margins = contentsMargins();
+    size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom());
+    return size;
+  }
+  void setGeometry(const QRect& rect) override {
+    QLayout::setGeometry(rect);
+    doLayout(rect, false);
+  }
+
+ private:
+  int doLayout(const QRect& rect, bool test) const {
+    const QMargins margins = contentsMargins();
+    const QRect area = rect.marginsRemoved(margins);
+    int x = area.x();
+    int y = area.y();
+    int lineHeight = 0;
+    const int spaceX = spacing();
+    const int spaceY = spacing();
+    for (const QLayoutItem* item : items_) {
+      const QSize hint = item->sizeHint().boundedTo(item->maximumSize());
+      const int itemWidth = std::max(item->minimumSize().width(), hint.width());
+      const int itemHeight = std::max(item->minimumSize().height(), hint.height());
+      if (x > area.x() && x + itemWidth > area.right() + 1) {
+        x = area.x();
+        y += lineHeight + spaceY;
+        lineHeight = 0;
+      }
+      if (!test)
+        const_cast<QLayoutItem*>(item)->setGeometry(QRect(x, y, itemWidth, itemHeight));
+      x += itemWidth + spaceX;
+      lineHeight = std::max(lineHeight, itemHeight);
+    }
+    return y + lineHeight - rect.y() + margins.bottom();
+  }
+  QList<QLayoutItem*> items_;
+};
+
+}  // namespace
+
 void ModeProfile::setRadeAudioStacked(bool stacked) {
-  if (!radeAudio_ || (radeAudioStacked_ == stacked && radeAudio_->layout() != nullptr))
+  const bool flowing = radeAudio_ && dynamic_cast<FlowLayout*>(radeAudio_->layout()) != nullptr;
+  if (!radeAudio_ || (radeAudioStacked_ == stacked && radeAudio_->layout() != nullptr && (stacked || flowing)))
     return;
   auto* micLabel = radeAudio_->findChild<QLabel*>(QStringLiteral("radeMicLabel"));
   auto* gainLabel = radeAudio_->findChild<QLabel*>(QStringLiteral("radeGainLabel"));
@@ -742,13 +807,13 @@ void ModeProfile::setRadeAudioStacked(bool stacked) {
   const QList<QWidget*> line{micLabel,        radeMicBox_, gainLabel, gain,           gainValue, meter,
                             driveLabel,       drive,       driveValue, speakerLabel, radeSpeakerBox_,
                             volumeLabel,      radeVolume_, radeVolumeValue_, analog,  denoise,    wide};
+  radeAudio_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
   if (!stacked) {
-    auto* row = new QHBoxLayout(radeAudio_);
+    auto* row = new FlowLayout(radeAudio_);
     row->setContentsMargins(8, 2, 8, 4);
     row->setSpacing(8);
     for (QWidget* widget : line)
       row->addWidget(widget);
-    row->addStretch(1);
     return;
   }
   auto* grid = new QGridLayout(radeAudio_);
