@@ -1243,13 +1243,16 @@ int shellReady(MainWindow& window) {
     {
       auto* table = window.findChild<QTableWidget*>(QStringLiteral("radeReporterTable"));
       auto* filter = window.findChild<QLineEdit*>(QStringLiteral("radeReporterFilter"));
+      auto* filterLabel = window.findChild<QLabel*>(QStringLiteral("radeReporterFilterLabel"));
       auto* qsyButton = window.findChild<QPushButton*>(QStringLiteral("radeRequestQsy"));
       auto* ignore = window.findChild<QCheckBox*>(QStringLiteral("radeIgnoreQsy"));
       auto* logButton = window.findChild<QPushButton*>(QStringLiteral("radeLogContact"));
       auto* limit = window.findChild<QSpinBox*>(QStringLiteral("radeTxLimit"));
       auto* saved = window.findChild<QComboBox*>(QStringLiteral("radeSavedMessages"));
       auto* page = window.findChild<RadeScreen*>(QStringLiteral("radeScreen"));
-      if (!table || !filter || !qsyButton || !ignore || !logButton || !limit || !saved || !page ||
+      if (!table || !filter || !filterLabel || filterLabel->text() != QLatin1String("Filter") ||
+          filter->placeholderText().isEmpty() || !qsyButton || !ignore || !logButton || !limit || !saved ||
+          !page ||
           limit->maximum() != 180 || limit->minimum() != 0 || table->columnCount() != 6 ||
           !table->horizontalHeaderItem(0) ||
           table->horizontalHeaderItem(0)->text() != QLatin1String("Station") ||

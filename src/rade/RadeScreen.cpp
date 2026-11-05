@@ -422,16 +422,21 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   reporterLay->setSpacing(4);
   auto* tools = new QHBoxLayout();
   tools->setSpacing(8);
+  auto* filterLabel = new QLabel(QStringLiteral("Filter"), reporter);
+  filterLabel->setObjectName(QStringLiteral("radeReporterFilterLabel"));
+  filterLabel->setFont(uiFont());
   reporterFilter_ = new QLineEdit(reporter);
   reporterFilter_->setObjectName(QStringLiteral("radeReporterFilter"));
   reporterFilter_->setFont(uiFont());
-  reporterFilter_->setPlaceholderText(QStringLiteral("Filter stations"));
+  reporterFilter_->setPlaceholderText(QStringLiteral("station, grid, mode, message"));
   reporterFilter_->setClearButtonEnabled(true);
-  reporterFilter_->setMaximumWidth(220);
+  reporterFilter_->setMaximumWidth(260);
   reporterFilter_->setToolTip(QStringLiteral(
       "Show only rows whose station, grid, mode, or message contains this text. "
+      "The caption stays when the cursor is in the box. "
       "This band keeps the dial's band. All shows every station. "
       "Double-click a row to tune there. This does not key. START is never sent."));
+  filterLabel->setToolTip(reporterFilter_->toolTip());
   reporterScope_ = new QComboBox(reporter);
   reporterScope_->setObjectName(QStringLiteral("radeReporterScope"));
   reporterScope_->setFont(uiFont());
@@ -502,6 +507,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   reporterCount_ = new QLabel(QStringLiteral("No stations yet"), reporter);
   reporterCount_->setObjectName(QStringLiteral("radeReporterCount"));
   reporterCount_->setFont(uiFont());
+  tools->addWidget(filterLabel);
   tools->addWidget(reporterFilter_, 1);
   tools->addWidget(reporterScope_);
   tools->addWidget(requestQsy_);
