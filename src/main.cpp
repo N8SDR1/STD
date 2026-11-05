@@ -1263,8 +1263,8 @@ int shellReady(MainWindow& window) {
           table->horizontalHeaderItem(4)->text() != QLatin1String("SNR") ||
           !table->horizontalHeaderItem(5) ||
           table->horizontalHeaderItem(5)->text() != QLatin1String("Message") ||
-          table->columnWidth(0) < 150 || table->columnWidth(1) < 100 || table->columnWidth(2) < 100 ||
-          table->columnWidth(3) < 100 ||
+          table->columnWidth(0) < 200 || table->columnWidth(1) < 150 || table->columnWidth(2) < 140 ||
+          table->columnWidth(3) < 140 || table->columnWidth(4) < 100 ||
           !table->toolTip().contains(QLatin1String("Double-click")))
         return fail("RADE reporter table is missing");
       QVector<FreeDvReporter::Station> rows(2);
@@ -1328,8 +1328,8 @@ int shellReady(MainWindow& window) {
         const QColor txColor = table->item(txRow, 0)->background().color();
         const QColor rxColor = table->item(rxRow, 0)->background().color();
         const QColor oldColor = table->item(oldRow, 0)->background().color();
-        if (txColor != QColor(QStringLiteral("#8d1d18")) || rxColor != QColor(QStringLiteral("#0f5132")) ||
-            oldColor == QColor(QStringLiteral("#0f5132")) || oldColor == QColor(QStringLiteral("#8d1d18")))
+        if (txColor != QColor(QStringLiteral("#2c181c")) || rxColor != QColor(QStringLiteral("#142820")) ||
+            oldColor == QColor(QStringLiteral("#142820")) || oldColor == QColor(QStringLiteral("#2c181c")))
           return fail("RADE reporter row colors are wrong");
         QSettings scopeStore;
         const bool hadScope = scopeStore.contains(QStringLiteral("rade/reporterScope"));

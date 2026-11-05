@@ -9,6 +9,8 @@
 
 #include <QBrush>
 #include <QColor>
+#include <QPainter>
+#include <QStyledItemDelegate>
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
@@ -57,6 +59,18 @@ public:
   }
 };
 
+// Leaves the table background showing between columns and between rows,
+// so a tint does not run together into one solid bar.
+class ReporterGapDelegate : public QStyledItemDelegate {
+public:
+  using QStyledItemDelegate::QStyledItemDelegate;
+  void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    QStyleOptionViewItem spaced = option;
+    spaced.rect.adjust(0, 0, -14, -3);
+    QStyledItemDelegate::paint(painter, spaced, index);
+  }
+};
+
 constexpr int kSavedMessages = 15;
 constexpr int kRxHighlightMs = 10000;
 constexpr int kRoleRxAt = Qt::UserRole + 1;
@@ -74,11 +88,11 @@ void paintReporterRow(QTableWidget* table, int row) {
   QColor background;
   QColor foreground;
   if (tx) {
-    background = QColor(QStringLiteral("#8d1d18"));
-    foreground = QColor(QStringLiteral("#ffffff"));
+    background = QColor(QStringLiteral("#2c181c"));
+    foreground = QColor(QStringLiteral("#e8eef4"));
   } else if (rx) {
-    background = QColor(QStringLiteral("#0f5132"));
-    foreground = QColor(QStringLiteral("#d1ffe0"));
+    background = QColor(QStringLiteral("#142820"));
+    foreground = QColor(QStringLiteral("#e8eef4"));
   }
   for (int col = 0; col < table->columnCount(); ++col) {
     auto* item = table->item(row, col);
@@ -426,7 +440,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   reporterScope_->addItem(QStringLiteral("This band"), QStringLiteral("band"));
   reporterScope_->setToolTip(QStringLiteral(
       "All lists every station. This band keeps only the band the dial is on. "
-      "A transmitting row uses the TX red. A receiving row uses the RX green for about 10 seconds. "
+      "A transmitting row gets a soft red tint. A receiving row gets a soft green tint for about 10 seconds. "
       "This does not key. START is never sent."));
   requestQsy_ = new QPushButton(QStringLiteral("Request QSY"), reporter);
   requestQsy_->setObjectName(QStringLiteral("radeRequestQsy"));
@@ -513,8 +527,8 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   reporterTable_->verticalHeader()->setVisible(false);
   reporterTable_->setMinimumHeight(140);
   reporterTable_->setToolTip(QStringLiteral(
-      "Stations on FreeDV Reporter. A transmitting row uses the on-air TX red. "
-      "A receiving row uses the RX green for about 10 seconds. "
+      "Stations on FreeDV Reporter. A transmitting row gets a soft red tint. "
+      "A receiving row gets a soft green tint for about 10 seconds. "
       "Double-click tunes to that dial and sets DIGL on 160, 80, and 40. "
       "Right-click mutes QSY requests from that station. This does not key. START is never sent."));
   reporterTable_->setStyleSheet(QStringLiteral(
@@ -525,14 +539,17 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
       "padding-left: 3px; padding-top: 0px; padding-right: 0px; padding-bottom: 0px; }"));
   reporterTable_->setTextElideMode(Qt::ElideRight);
   {
-    // Fixed widths keep Station, Grid, kHz, and Mode apart. The 3px header
-    // inset matches the cell text, so each label sits on the text under it.
+    // Wide fixed columns, plus the gap delegate, keep Station, Grid, kHz,
+    // Mode, SNR, and Message from sitting on each other. The 3px header
+    // inset matches the cell text.
     auto* columns = reporterTable_->horizontalHeader();
     columns->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     columns->setHighlightSections(false);
     columns->setStretchLastSection(true);
-    columns->setMinimumSectionSize(64);
-    const int widths[] = {156, 108, 112, 112, 72};
+    columns->setMinimumSectionSize(72);
+    reporterTable_->verticalHeader()->setDefaultSectionSize(30);
+    reporterTable_->setItemDelegate(new ReporterGapDelegate(reporterTable_));
+    const int widths[] = {210, 156, 148, 148, 104};
     for (int col = 0; col < 5; ++col) {
       columns->setSectionResizeMode(col, QHeaderView::Fixed);
       reporterTable_->setColumnWidth(col, widths[col]);
