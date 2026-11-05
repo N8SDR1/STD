@@ -499,12 +499,12 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   tools->addStretch(1);
   tools->addWidget(reporterCount_);
   reporterLay->addLayout(tools);
-  reporterTable_ = new QTableWidget(0, 7, reporter);
+  reporterTable_ = new QTableWidget(0, 6, reporter);
   reporterTable_->setObjectName(QStringLiteral("radeReporterTable"));
   reporterTable_->setFont(uiFont());
   reporterTable_->setHorizontalHeaderLabels(
       {QStringLiteral("Station"), QStringLiteral("Grid"), QStringLiteral("kHz"), QStringLiteral("Mode"),
-       QStringLiteral("SNR"), QStringLiteral("TX"), QStringLiteral("Message")});
+       QStringLiteral("SNR"), QStringLiteral("Message")});
   reporterTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
   reporterTable_->setSelectionMode(QAbstractItemView::SingleSelection);
   reporterTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -521,11 +521,28 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
       "QTableWidget#radeReporterTable { background: #0e141c; color: #e8eef4; "
       "alternate-background-color: #121a24; selection-background-color: #1d4e89; "
       "selection-color: #ffffff; border: 1px solid #243240; }"
-      "QHeaderView::section { background: #162230; color: #c5d4e0; border: 0; padding: 4px; }"));
-  reporterTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-  reporterTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-  reporterTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-  reporterTable_->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+      "QHeaderView::section { background: #162230; color: #c5d4e0; border: none; "
+      "padding-left: 3px; padding-top: 0px; padding-right: 0px; padding-bottom: 0px; }"));
+  reporterTable_->setTextElideMode(Qt::ElideRight);
+  {
+    // Fixed widths keep Station, Grid, kHz, and Mode apart. The 3px header
+    // inset matches the cell text, so each label sits on the text under it.
+    auto* columns = reporterTable_->horizontalHeader();
+    columns->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    columns->setHighlightSections(false);
+    columns->setStretchLastSection(true);
+    columns->setMinimumSectionSize(64);
+    const int widths[] = {156, 108, 112, 112, 72};
+    for (int col = 0; col < 5; ++col) {
+      columns->setSectionResizeMode(col, QHeaderView::Fixed);
+      reporterTable_->setColumnWidth(col, widths[col]);
+      if (auto* item = reporterTable_->horizontalHeaderItem(col))
+        item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    }
+    columns->setSectionResizeMode(5, QHeaderView::Stretch);
+    if (auto* item = reporterTable_->horizontalHeaderItem(5))
+      item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+  }
   reporterTable_->viewport()->setContextMenuPolicy(Qt::CustomContextMenu);
   reporterLay->addWidget(reporterTable_, 1);
   layout->addWidget(reporter, 1);
@@ -1098,7 +1115,7 @@ void RadeScreen::applyReporterFilter() {
   for (int row = 0; row < reporterTable_->rowCount(); ++row) {
     bool match = needle.isEmpty();
     if (!match) {
-      for (int col : {0, 1, 3, 6}) {
+      for (int col : {0, 1, 3, 5}) {
         const auto* item = reporterTable_->item(row, col);
         if (item && item->text().contains(needle, Qt::CaseInsensitive)) {
           match = true;
@@ -1137,16 +1154,16 @@ void RadeScreen::showReporter(const QVector<FreeDvReporter::Station>& rows) {
     auto* freq = new RadeFreqItem;
     freq->setData(Qt::UserRole, row.freqHz);
     freq->setText(row.freqHz > 0 ? QString::number(double(row.freqHz) / 1000.0, 'f', 1) : QString());
-    freq->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    freq->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     auto* mode = new QTableWidgetItem(row.mode);
     auto* snr = new RadeSnrItem;
     snr->setData(Qt::UserRole, row.snrKnown ? row.snr : -999);
     snr->setText(row.snrKnown ? QString::number(row.snr) : QStringLiteral("—"));
-    snr->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    auto* tx = new QTableWidgetItem(row.transmitting ? QStringLiteral("TX") : QString());
+    snr->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     auto* message = new QTableWidgetItem(row.message);
-    QTableWidgetItem* cells[] = {station, grid, freq, mode, snr, tx, message};
-    for (int col = 0; col < 7; ++col) {
+    QTableWidgetItem* cells[] = {station, grid, freq, mode, snr, message};
+    for (int col = 0; col < 6; ++col) {
+      cells[col]->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
       cells[col]->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
       reporterTable_->setItem(i, col, cells[col]);
     }

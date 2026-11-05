@@ -1250,9 +1250,21 @@ int shellReady(MainWindow& window) {
       auto* saved = window.findChild<QComboBox*>(QStringLiteral("radeSavedMessages"));
       auto* page = window.findChild<RadeScreen*>(QStringLiteral("radeScreen"));
       if (!table || !filter || !qsyButton || !ignore || !logButton || !limit || !saved || !page ||
-          limit->maximum() != 180 || limit->minimum() != 0 || table->columnCount() != 7 ||
+          limit->maximum() != 180 || limit->minimum() != 0 || table->columnCount() != 6 ||
           !table->horizontalHeaderItem(0) ||
           table->horizontalHeaderItem(0)->text() != QLatin1String("Station") ||
+          !table->horizontalHeaderItem(1) ||
+          table->horizontalHeaderItem(1)->text() != QLatin1String("Grid") ||
+          !table->horizontalHeaderItem(2) ||
+          table->horizontalHeaderItem(2)->text() != QLatin1String("kHz") ||
+          !table->horizontalHeaderItem(3) ||
+          table->horizontalHeaderItem(3)->text() != QLatin1String("Mode") ||
+          !table->horizontalHeaderItem(4) ||
+          table->horizontalHeaderItem(4)->text() != QLatin1String("SNR") ||
+          !table->horizontalHeaderItem(5) ||
+          table->horizontalHeaderItem(5)->text() != QLatin1String("Message") ||
+          table->columnWidth(0) < 150 || table->columnWidth(1) < 100 || table->columnWidth(2) < 100 ||
+          table->columnWidth(3) < 100 ||
           !table->toolTip().contains(QLatin1String("Double-click")))
         return fail("RADE reporter table is missing");
       QVector<FreeDvReporter::Station> rows(2);
@@ -1270,6 +1282,9 @@ int shellReady(MainWindow& window) {
       page->showReporter(rows);
       if (table->rowCount() != 2)
         return fail("RADE reporter table did not fill");
+      if (!table->item(0, 2) ||
+          (table->item(0, 2)->textAlignment() & Qt::AlignHorizontal_Mask) != Qt::AlignLeft)
+        return fail("RADE reporter columns are not left aligned");
       filter->setText(QStringLiteral("zzzz-only"));
       int shown = 0;
       for (int row = 0; row < table->rowCount(); ++row)
