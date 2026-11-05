@@ -1211,7 +1211,11 @@ int shellReady(MainWindow& window) {
                        {QStringLiteral("callsign"), QStringLiteral("ONE")},
                        {QStringLiteral("grid_square"), QStringLiteral("AA00")},
                        {QStringLiteral("last_update"), QStringLiteral("t")}};
-      const QJsonArray bulk{QJsonArray{QStringLiteral("freq_change"), freq}};
+      QJsonArray pair;
+      pair.append(QStringLiteral("freq_change"));
+      pair.append(QJsonValue(freq));
+      QJsonArray bulk;
+      bulk.append(QJsonValue(pair));
       reporter.ingestPacket(freedvReporterEvent(
           QStringLiteral("bulk_update"), QJsonDocument(bulk).toJson(QJsonDocument::Compact)));
       if (reporter.stations().size() != 1 || reporter.stations().at(0).freqHz != 14236000)
