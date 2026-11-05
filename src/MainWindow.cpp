@@ -4231,8 +4231,9 @@ void MainWindow::showGuide() {
        "after Tune or TX is pressed. Connect does not send START, and it does not key."},
       {"RADE",
        "Mode, RADE V1 is HF digital voice. RADE V2 is experimental and does not talk to V1. "
-       "The RADE screen replaces the FT8 sequence and the Hell tape. Waveform and BPF "
-       "sit side by side. BPF is the tick box after Waveform; it is the V2 modem band-pass and is "
+       "The RADE screen replaces the FT8 sequence and the Hell tape. Show columns places "
+       "Audio, Status, and Waveform side by side. Show rows stacks them, and a narrow window "
+       "wraps the status row and the audio row. The choice is remembered. BPF is the tick box after Waveform; it is the V2 modem band-pass and is "
        "greyed out on V1, which sends without one, as FreeDV does. The end-of-over carries your "
        "callsign from Options, User, coded the way the FreeDV app codes it, so FreeDV stations and "
        "FreeDV Reporter show your call. TX fills a quarter-second buffer first so the modem frames go "
@@ -4265,6 +4266,13 @@ void MainWindow::showGuide() {
        "Speech microphone and trx with tci. FreeDV Reporter, under Options → Network Configuration, "
        "is Off until you choose On; then while RADE is the mode it shows your call, locator, dial, "
        "and TX on qso.freedv.org and reports each RADE station you hear. "
+       "The reporter list is on this screen. Filter keeps rows whose station, grid, mode, or message "
+       "contains the text, and the Filter caption stays while the cursor is in the box. All lists every "
+       "station. This band keeps the dial's band. A transmitting row is a soft red tint and a receiving "
+       "row is a soft green tint for about 10 seconds, so there is no TX column. Double-click a row to "
+       "tune there. Request QSY asks the selected station to move to this dial. Ignore requests drops "
+       "inbound QSY requests. Log contact writes the selected row. Saved messages keeps up to 15 reporter "
+       "messages. TX limit stops a transmit at 3 minutes. The waterfall shows sync, SNR, the RX level, and CLIP. "
        "Connect still sends AUDIO_START for receiver 0. A useful passband is "
        "about 750 to 2250 Hz, with radio NR off. START is never sent."},
       {"FT8, FT4, and FT2",
