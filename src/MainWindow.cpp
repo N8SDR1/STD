@@ -2809,6 +2809,25 @@ QWidget* MainWindow::makeReceivePanel() {
     if (!txRade_)
       ensureRadeCodec();
   });
+  connect(rade, &RadeScreen::stationTune, this, [this](qint64 hz) { tuneRadeStation(hz); });
+  connect(rade, &RadeScreen::stationQsy, this, [this](const QString& sid) {
+    auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+    if (!freedvReporter_ || !freedvReporter_->connected() || liveDialHz_ < 100000) {
+      if (screen)
+        screen->releaseQsyRequest();
+      setTxStatus(QStringLiteral(
+          "FreeDV Reporter is not connected, so the request was not sent. START was not sent."));
+      return;
+    }
+    freedvReporter_->requestQsy(sid, liveDialHz_,
+                                QSettings().value(QStringLiteral("dx/freedvReporterMessage")).toString());
+    setTxStatus(QStringLiteral("Asked the selected station to move here. START was not sent."));
+  });
+  connect(rade, &RadeScreen::stationLog, this,
+          [this](const QString& station, const QString& grid, int snr, qint64 hz) {
+            logRadeContact(station, grid, snr, hz);
+          });
+  connect(rade, &RadeScreen::reporterMessageChanged, this, [this] { updateFreedvReporter(true); });
   layout->addWidget(echo, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
@@ -4110,6 +4129,8 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
         screen->placeAudio(profile_->radeAudioBar(), profile_);
     }
   }
+  if (waterfall_)
+    waterfall_->setRadeReadout(rade ? QStringLiteral("RADE   idle") : QString());
   if (auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"))) {
     bar->setVisible(text && !js8Mode(mode) && !rade);
     applyContestRow();

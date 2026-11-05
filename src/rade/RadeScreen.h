@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "spot/FreeDvReporter.h"
+
 #include <QStringList>
 #include <QWidget>
 
@@ -40,6 +42,17 @@ public:
   void setHeard(const QString& call, const QString& utc);
   // Reloads the FreeDV Reporter message from settings.
   void refreshMessage();
+  // Replaces the station table. The filter and the selected row stay.
+  void showReporter(const QVector<FreeDvReporter::Station>& rows);
+  // How many reporter messages are saved. Never more than 15.
+  int savedMessageCount() const;
+  // Saves one message and drops the oldest past 15. Empty text is ignored.
+  void storeReporterMessage(const QString& text);
+  void reloadSavedMessages();
+  // Lets Request QSY be pressed again after a send that did not go out.
+  void releaseQsyRequest();
+  bool ignoreQsy() const;
+  int txLimitSeconds() const;
   // RX chip: 0 receiving (green), 1 transmitting (unlit), 2 ending the
   // over (amber). Does not emit rxRequested.
   void setTxState(int state);
@@ -59,6 +72,13 @@ signals:
   // RX clicked: end the over properly, with the end-of-over and callsign.
   void rxRequested();
   void scanBandsChanged();
+  // Double-click a station: move the dial there. Does not key.
+  void stationTune(qint64 hz);
+  // Ask the selected station to move to this dial.
+  void stationQsy(const QString& sid);
+  // Log the selected station, or the last one heard when none is selected.
+  void stationLog(const QString& station, const QString& grid, int snr, qint64 hz);
+  void reporterMessageChanged();
 
 private:
   void showScanBandMenu();
@@ -67,6 +87,10 @@ private:
   void loadBpf(bool v2);
   void rememberBpf(bool on);
   void refreshHeardClock();
+  void applyReporterFilter();
+  void requestSelectedQsy();
+  void logSelectedStation();
+  QString selectedSid() const;
   void applyArrangement();
   void refreshLayoutButton();
   void resizeEvent(QResizeEvent* event) override;
@@ -82,6 +106,15 @@ private:
   QLabel* offset_ = nullptr;
   qint64 heardAtMs_ = 0;
   class QLineEdit* message_ = nullptr;
+  class QLineEdit* reporterFilter_ = nullptr;
+  class QComboBox* savedMessages_ = nullptr;
+  class QTableWidget* reporterTable_ = nullptr;
+  class QLabel* reporterCount_ = nullptr;
+  class QPushButton* requestQsy_ = nullptr;
+  class QCheckBox* ignoreQsy_ = nullptr;
+  class QSpinBox* txLimit_ = nullptr;
+  QString lastHeard_;
+  QString qsySentSid_;
   class QPushButton* scan_ = nullptr;
   class QPushButton* rx_ = nullptr;
   class QSpinBox* scanDwell_ = nullptr;

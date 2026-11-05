@@ -1406,6 +1406,56 @@ QList<QPair<int, qint64>> ModeProfile::radeScanDials(const QStringList& meters, 
   return out;
 }
 
+int ModeProfile::radeBandForHz(qint64 hz) {
+  struct Span {
+    qint64 low;
+    qint64 high;
+    int band;
+  };
+  static constexpr Span kSpans[] = {
+      {1800000, 2000000, 0},   {3500000, 4000000, 1},   {5330000, 5410000, 10},
+      {7000000, 7300000, 2},   {10100000, 10150000, 3}, {14000000, 14350000, 4},
+      {18068000, 18168000, 5}, {21000000, 21450000, 6}, {24890000, 24990000, 7},
+      {28000000, 29700000, 8}, {50000000, 54000000, 9},
+  };
+  for (const Span& span : kSpans)
+    if (hz >= span.low && hz <= span.high)
+      return span.band;
+  return -1;
+}
+
+QString ModeProfile::radeSidebandForHz(qint64 hz) {
+  const int band = radeBandForHz(hz);
+  if (band >= 0 && band <= 2)
+    return QStringLiteral("DIGL");
+  return QStringLiteral("DIGU");
+}
+
+bool ModeProfile::followRadeDial(qint64 hz) {
+  const int band = radeBandForHz(hz);
+  if (band < 0 || band >= kBandCount)
+    return false;
+  if (band != band_) {
+    band_ = band;
+    reloadExtras();
+  }
+  const QList<qint64> dials = cycleDials(band_);
+  const int at = dials.indexOf(hz);
+  if (at >= 0)
+    cycle_ = at;
+  if (bar_) {
+    const auto buttons = bar_->findChildren<QPushButton*>(QStringLiteral("profileBand"),
+                                                          Qt::FindDirectChildrenOnly);
+    if (band_ < buttons.size()) {
+      const QSignalBlocker block(buttons[band_]);
+      buttons[band_]->setChecked(true);
+    }
+  }
+  remember();
+  refreshBands();
+  return true;
+}
+
 void ModeProfile::selectDial(int band, qint64 hz) {
   if (band < 0 || band >= kBandCount)
     return;

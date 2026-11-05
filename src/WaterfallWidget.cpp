@@ -1519,8 +1519,39 @@ void WaterfallWidget::paintOverlays(QPainter& painter) const {
   paintMarkers(painter);
   paintTxHot(painter);
   paintRuler(painter);
+  paintRadeReadout(painter);
   if (rowCount_ <= 0)
     paintStandbyPlate(painter);
+}
+
+void WaterfallWidget::setRadeReadout(const QString& text) {
+  if (text == radeReadout_)
+    return;
+  radeReadout_ = text;
+  if (chrome_)
+    chrome_->update();
+  else
+    update();
+}
+
+void WaterfallWidget::paintRadeReadout(QPainter& painter) const {
+  if (radeReadout_.isEmpty())
+    return;
+  const QRect plot = plotRect();
+  if (plot.width() < 40 || plot.height() < 24)
+    return;
+  QFont font(QStringLiteral("Segoe UI"));
+  font.setPixelSize(12);
+  font.setBold(true);
+  painter.setFont(font);
+  const QFontMetrics metrics(font);
+  const int width = std::min(metrics.horizontalAdvance(radeReadout_) + 16, plot.width() - 16);
+  const QRect box(plot.left() + 8, plot.top() + 6, std::max(40, width), metrics.height() + 8);
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(QColor(8, 16, 24, 210));
+  painter.drawRoundedRect(box, 4, 4);
+  painter.setPen(QColor(QStringLiteral("#d6f5ff")));
+  painter.drawText(box.adjusted(6, 0, -6, 0), Qt::AlignVCenter | Qt::AlignLeft, radeReadout_);
 }
 
 void WaterfallWidget::scheduleRebuild() {

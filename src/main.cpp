@@ -91,6 +91,7 @@
 #include <QHash>
 #include <QCheckBox>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -1041,10 +1042,15 @@ int shellReady(MainWindow& window) {
           for (QLineEdit* edit : screen->findChildren<QLineEdit*>())
             if (!qobject_cast<QAbstractSpinBox*>(edit->parentWidget()))
               edits.append(edit);
-          return edits.size() != 1 || edits.first()->objectName() != QLatin1String("radeReporterMessage");
+          QStringList names;
+          for (QLineEdit* edit : edits)
+            names << edit->objectName();
+          names.sort();
+          return names != QStringList{QStringLiteral("radeReporterFilter"),
+                                      QStringLiteral("radeReporterMessage")};
         }())
-      // Identity stays in Options → User; the only text box here is the
-      // FreeDV Reporter message.
+      // Identity stays in Options → User. The text boxes here are the
+      // reporter message and the station filter.
       return fail("RADE screen is missing");
     {
       const QString loop = window.radeTxLoopback();
@@ -1185,6 +1191,124 @@ int shellReady(MainWindow& window) {
       radeScreen->setHeard(QString(), QString());
       if (heardClock->text() != QStringLiteral("—"))
         return fail("RADE heard clock did not clear");
+    }
+    {
+      FreeDvReporter reporter;
+      QJsonObject hello{{QStringLiteral("sid"), QStringLiteral("s1")},
+                        {QStringLiteral("callsign"), QStringLiteral("ONE")},
+                        {QStringLiteral("grid_square"), QStringLiteral("AA00")},
+                        {QStringLiteral("version"), QStringLiteral("test")},
+                        {QStringLiteral("rx_only"), false},
+                        {QStringLiteral("last_update"), QStringLiteral("t")},
+                        {QStringLiteral("connect_time"), QStringLiteral("t")}};
+      reporter.ingestPacket(freedvReporterEvent(
+          QStringLiteral("new_connection"), QJsonDocument(hello).toJson(QJsonDocument::Compact)));
+      if (reporter.stations().size() != 1 || reporter.stations().at(0).station != QLatin1String("ONE") ||
+          reporter.stations().at(0).grid != QLatin1String("AA00"))
+        return fail("FreeDV Reporter station list missed a connect");
+      QJsonObject freq{{QStringLiteral("sid"), QStringLiteral("s1")},
+                       {QStringLiteral("freq"), QJsonValue(qint64(14236000))},
+                       {QStringLiteral("callsign"), QStringLiteral("ONE")},
+                       {QStringLiteral("grid_square"), QStringLiteral("AA00")},
+                       {QStringLiteral("last_update"), QStringLiteral("t")}};
+      const QJsonArray bulk{QJsonArray{QStringLiteral("freq_change"), freq}};
+      reporter.ingestPacket(freedvReporterEvent(
+          QStringLiteral("bulk_update"), QJsonDocument(bulk).toJson(QJsonDocument::Compact)));
+      if (reporter.stations().size() != 1 || reporter.stations().at(0).freqHz != 14236000)
+        return fail("FreeDV Reporter bulk update missed a frequency");
+      qint64 askedHz = 0;
+      QObject::connect(&reporter, &FreeDvReporter::qsyAsked, &reporter,
+                       [&askedHz](const QString&, qint64 hz, const QString&) { askedHz = hz; });
+      QJsonObject ask{{QStringLiteral("callsign"), QStringLiteral("TWO")},
+                      {QStringLiteral("frequency"), QJsonValue(qint64(7177000))},
+                      {QStringLiteral("message"), QStringLiteral("move")}};
+      reporter.ingestPacket(freedvReporterEvent(QStringLiteral("qsy_request"),
+                                               QJsonDocument(ask).toJson(QJsonDocument::Compact)));
+      const QJsonObject payload =
+          QJsonDocument::fromJson(freedvReporterQsyPayload(QStringLiteral("s1"), 7177000, QStringLiteral("move")))
+              .object();
+      if (askedHz != 7177000 || payload.value(QStringLiteral("dest_sid")).toString() != QLatin1String("s1") ||
+          qint64(payload.value(QStringLiteral("frequency")).toDouble()) != 7177000)
+        return fail("FreeDV Reporter QSY request was not read");
+      reporter.ingestPacket(freedvReporterEvent(
+          QStringLiteral("remove_connection"),
+          QJsonDocument(QJsonObject{{QStringLiteral("sid"), QStringLiteral("s1")}}).toJson(QJsonDocument::Compact)));
+      if (!reporter.stations().isEmpty())
+        return fail("FreeDV Reporter kept a station that left");
+    }
+    {
+      auto* table = window.findChild<QTableWidget*>(QStringLiteral("radeReporterTable"));
+      auto* filter = window.findChild<QLineEdit*>(QStringLiteral("radeReporterFilter"));
+      auto* qsyButton = window.findChild<QPushButton*>(QStringLiteral("radeRequestQsy"));
+      auto* ignore = window.findChild<QCheckBox*>(QStringLiteral("radeIgnoreQsy"));
+      auto* logButton = window.findChild<QPushButton*>(QStringLiteral("radeLogContact"));
+      auto* limit = window.findChild<QSpinBox*>(QStringLiteral("radeTxLimit"));
+      auto* saved = window.findChild<QComboBox*>(QStringLiteral("radeSavedMessages"));
+      auto* page = window.findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+      if (!table || !filter || !qsyButton || !ignore || !logButton || !limit || !saved || !page ||
+          limit->maximum() != 180 || limit->minimum() != 0 || table->columnCount() != 7 ||
+          !table->horizontalHeaderItem(0) ||
+          table->horizontalHeaderItem(0)->text() != QLatin1String("Station") ||
+          !table->toolTip().contains(QLatin1String("Double-click")))
+        return fail("RADE reporter table is missing");
+      QVector<FreeDvReporter::Station> rows(2);
+      rows[0].sid = QStringLiteral("a");
+      rows[0].station = QStringLiteral("ONE");
+      rows[0].grid = QStringLiteral("AA00");
+      rows[0].freqHz = 7177000;
+      rows[0].mode = QStringLiteral("RADEV1");
+      rows[1].sid = QStringLiteral("b");
+      rows[1].station = QStringLiteral("TWO");
+      rows[1].grid = QStringLiteral("BB11");
+      rows[1].freqHz = 14236000;
+      rows[1].mode = QStringLiteral("RADEV1");
+      rows[1].message = QStringLiteral("zzzz-only");
+      page->showReporter(rows);
+      if (table->rowCount() != 2)
+        return fail("RADE reporter table did not fill");
+      filter->setText(QStringLiteral("zzzz-only"));
+      int shown = 0;
+      for (int row = 0; row < table->rowCount(); ++row)
+        if (!table->isRowHidden(row))
+          ++shown;
+      if (shown != 1)
+        return fail("RADE reporter filter did not narrow the list");
+      filter->clear();
+      QSettings messageStore;
+      const bool hadMessages = messageStore.contains(QStringLiteral("dx/freedvReporterMessages"));
+      const QVariant previousMessages = messageStore.value(QStringLiteral("dx/freedvReporterMessages"));
+      struct MessageRestore {
+        bool had = false;
+        QVariant previous;
+        RadeScreen* page = nullptr;
+        ~MessageRestore() {
+          QSettings again;
+          if (had)
+            again.setValue(QStringLiteral("dx/freedvReporterMessages"), previous);
+          else
+            again.remove(QStringLiteral("dx/freedvReporterMessages"));
+          if (page)
+            page->reloadSavedMessages();
+        }
+      } messageRestore{hadMessages, previousMessages, page};
+      for (int i = 0; i < 20; ++i)
+        page->storeReporterMessage(QStringLiteral("note-%1").arg(i));
+      if (page->savedMessageCount() != 15)
+        return fail("RADE saved messages did not stop at 15");
+      if (ModeProfile::radeSidebandForHz(7177000) != QLatin1String("DIGL") ||
+          ModeProfile::radeSidebandForHz(14236000) != QLatin1String("DIGU") ||
+          ModeProfile::radeSidebandForHz(5368500) != QLatin1String("DIGU") ||
+          ModeProfile::radeSidebandForHz(10136000) != QLatin1String("DIGU"))
+        return fail("RADE QSY sideband is wrong");
+      if (auto* wf = window.findChild<WaterfallWidget*>(QStringLiteral("waterfall"))) {
+        const QString previous = wf->radeReadout();
+        wf->setRadeReadout(QStringLiteral("RADE   Sync   SNR 7"));
+        if (!wf->radeReadout().contains(QLatin1String("SNR 7")))
+          return fail("RADE waterfall readout did not stick");
+        wf->setRadeReadout(previous);
+      } else {
+        return fail("RADE waterfall readout is missing");
+      }
     }
     auto* offset = window.findChild<QLabel*>(QStringLiteral("radeOffset"));
     if (!snrTrace || !screen->isAncestorOf(snrTrace) || snrTrace->height() < 32 ||

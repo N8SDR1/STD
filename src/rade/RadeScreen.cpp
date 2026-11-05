@@ -7,15 +7,18 @@
 #include "DigitalMode.h"
 #include "ModeProfile.h"
 
+#include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
 #include <QTimeZone>
 #include <QFont>
 #include <QBoxLayout>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QTableWidget>
 #include <QCursor>
 #include <QMenu>
 #include <QWidgetAction>
@@ -37,6 +40,22 @@ QFont uiFont() {
   font.setPixelSize(13);
   return font;
 }
+
+class RadeFreqItem : public QTableWidgetItem {
+public:
+  bool operator<(const QTableWidgetItem& other) const override {
+    return data(Qt::UserRole).toLongLong() < other.data(Qt::UserRole).toLongLong();
+  }
+};
+
+class RadeSnrItem : public QTableWidgetItem {
+public:
+  bool operator<(const QTableWidgetItem& other) const override {
+    return data(Qt::UserRole).toInt() < other.data(Qt::UserRole).toInt();
+  }
+};
+
+constexpr int kSavedMessages = 15;
 
 void detachLayout(QLayout* layout) {
   if (!layout)
@@ -288,11 +307,223 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   refreshMessage();
   connect(message_, &QLineEdit::editingFinished, this, [this] {
     QSettings().setValue(QStringLiteral("dx/freedvReporterMessage"), message_->text().trimmed());
+    emit reporterMessageChanged();
   });
+  auto* saveMessage = new QPushButton(QStringLiteral("Save"), this);
+  saveMessage->setObjectName(QStringLiteral("radeMessageSave"));
+  saveMessage->setFont(uiFont());
+  saveMessage->setFocusPolicy(Qt::NoFocus);
+  saveMessage->setToolTip(QStringLiteral(
+      "Keep this reporter message. Up to 15 are saved, newest first. "
+      "This does not key. START is never sent."));
+  auto* dropMessage = new QPushButton(QStringLiteral("Remove"), this);
+  dropMessage->setObjectName(QStringLiteral("radeMessageDrop"));
+  dropMessage->setFont(uiFont());
+  dropMessage->setFocusPolicy(Qt::NoFocus);
+  dropMessage->setToolTip(QStringLiteral(
+      "Drop the saved message shown in the list. The line above stays. "
+      "This does not key. START is never sent."));
+  savedMessages_ = new QComboBox(this);
+  savedMessages_->setObjectName(QStringLiteral("radeSavedMessages"));
+  savedMessages_->setFont(uiFont());
+  savedMessages_->setFocusPolicy(Qt::NoFocus);
+  savedMessages_->setMinimumWidth(180);
+  savedMessages_->setMaximumWidth(280);
+  savedMessages_->setToolTip(QStringLiteral(
+      "Saved reporter messages, up to 15. Pick one to put it in the line. "
+      "This does not key. START is never sent."));
   messageRow->addWidget(messageLabel);
   messageRow->addWidget(message_, 1);
-  messageRow->addStretch(1);
+  messageRow->addWidget(saveMessage);
+  messageRow->addWidget(savedMessages_);
+  messageRow->addWidget(dropMessage);
   layout->addLayout(messageRow);
+  connect(saveMessage, &QPushButton::clicked, this, [this] {
+    if (message_)
+      storeReporterMessage(message_->text());
+  });
+  connect(dropMessage, &QPushButton::clicked, this, [this] {
+    if (!savedMessages_ || savedMessages_->currentIndex() <= 0)
+      return;
+    QStringList saved = QSettings().value(QStringLiteral("dx/freedvReporterMessages")).toStringList();
+    const int at = savedMessages_->currentIndex() - 1;
+    if (at >= 0 && at < saved.size())
+      saved.removeAt(at);
+    QSettings().setValue(QStringLiteral("dx/freedvReporterMessages"), saved);
+    reloadSavedMessages();
+  });
+  connect(savedMessages_, qOverload<int>(&QComboBox::activated), this, [this](int index) {
+    if (!message_ || !savedMessages_ || index <= 0)
+      return;
+    message_->setText(savedMessages_->itemText(index));
+    QSettings().setValue(QStringLiteral("dx/freedvReporterMessage"), message_->text().trimmed());
+    emit reporterMessageChanged();
+  });
+  reloadSavedMessages();
+
+  auto* reporter = new QWidget(this);
+  reporter->setObjectName(QStringLiteral("radeReporter"));
+  auto* reporterLay = new QVBoxLayout(reporter);
+  reporterLay->setContentsMargins(0, 0, 0, 0);
+  reporterLay->setSpacing(4);
+  auto* tools = new QHBoxLayout();
+  tools->setSpacing(8);
+  reporterFilter_ = new QLineEdit(reporter);
+  reporterFilter_->setObjectName(QStringLiteral("radeReporterFilter"));
+  reporterFilter_->setFont(uiFont());
+  reporterFilter_->setPlaceholderText(QStringLiteral("Filter stations"));
+  reporterFilter_->setClearButtonEnabled(true);
+  reporterFilter_->setMaximumWidth(220);
+  reporterFilter_->setToolTip(QStringLiteral(
+      "Show only rows whose station, grid, mode, or message contains this text. "
+      "Double-click a row to tune there. This does not key. START is never sent."));
+  requestQsy_ = new QPushButton(QStringLiteral("Request QSY"), reporter);
+  requestQsy_->setObjectName(QStringLiteral("radeRequestQsy"));
+  requestQsy_->setFont(uiFont());
+  requestQsy_->setFocusPolicy(Qt::NoFocus);
+  requestQsy_->setEnabled(false);
+  requestQsy_->setToolTip(QStringLiteral(
+      "Ask the selected station to move to your dial. One request until you pick another row. "
+      "FreeDV Reporter has to be on. This does not key. START is never sent."));
+  ignoreQsy_ = new QCheckBox(QStringLiteral("Ignore requests"), reporter);
+  ignoreQsy_->setObjectName(QStringLiteral("radeIgnoreQsy"));
+  ignoreQsy_->setFont(uiFont());
+  ignoreQsy_->setFocusPolicy(Qt::NoFocus);
+  ignoreQsy_->setChecked(QSettings().value(QStringLiteral("dx/freedvReporterIgnoreQsy"), false).toBool());
+  ignoreQsy_->setToolTip(QStringLiteral(
+      "On: inbound QSY requests are dropped, including ones from a station you have not muted. "
+      "Off: a request asks whether to tune there. Right-click a row to mute just that station. "
+      "This does not key. START is never sent."));
+  auto* logContact = new QPushButton(QStringLiteral("Log contact"), reporter);
+  logContact->setObjectName(QStringLiteral("radeLogContact"));
+  logContact->setFont(uiFont());
+  logContact->setFocusPolicy(Qt::NoFocus);
+  logContact->setToolTip(QStringLiteral(
+      "Log the selected station. With no row selected, logs the last one heard. "
+      "This does not key. START is never sent."));
+  auto* limitLabel = new QLabel(QStringLiteral("TX limit"), reporter);
+  limitLabel->setObjectName(QStringLiteral("radeTxLimitLabel"));
+  limitLabel->setFont(uiFont());
+  txLimit_ = new QSpinBox(reporter);
+  txLimit_->setObjectName(QStringLiteral("radeTxLimit"));
+  txLimit_->setFont(uiFont());
+  txLimit_->setRange(0, 180);
+  txLimit_->setSingleStep(15);
+  txLimit_->setSuffix(QStringLiteral(" s"));
+  txLimit_->setSpecialValueText(QStringLiteral("off"));
+  txLimit_->setAlignment(Qt::AlignCenter);
+  txLimit_->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+  txLimit_->setMinimumWidth(96);
+  txLimit_->setFixedHeight(28);
+  txLimit_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+  txLimit_->setFocusPolicy(Qt::ClickFocus);
+  txLimit_->setStyleSheet(QStringLiteral(
+      "QSpinBox#radeTxLimit { background: #162230; color: #e8eef4; "
+      "border: 1px solid #4d8ab0; border-radius: 4px; padding: 1px 4px 1px 8px; }"
+      "QSpinBox#radeTxLimit::up-button, QSpinBox#radeTxLimit::down-button {"
+      " width: 18px; background: #1e3348; border-left: 1px solid #4d8ab0; }"));
+  {
+    const int saved = QSettings().value(QStringLiteral("rade/txLimitSec"), 180).toInt();
+    const int clamped = std::clamp(saved, 0, 180);
+    txLimit_->setValue(clamped);
+    if (clamped != saved)
+      QSettings().setValue(QStringLiteral("rade/txLimitSec"), clamped);
+  }
+  txLimit_->setToolTip(QStringLiteral(
+      "Longest RADE transmit, at most 3 minutes. Off leaves it unlimited. "
+      "About 15 seconds before the end, a note appears, then RX ends the over. "
+      "This does not send START."));
+  limitLabel->setToolTip(txLimit_->toolTip());
+  reporterCount_ = new QLabel(QStringLiteral("No stations yet"), reporter);
+  reporterCount_->setObjectName(QStringLiteral("radeReporterCount"));
+  reporterCount_->setFont(uiFont());
+  tools->addWidget(reporterFilter_, 1);
+  tools->addWidget(requestQsy_);
+  tools->addWidget(ignoreQsy_);
+  tools->addWidget(logContact);
+  tools->addSpacing(8);
+  tools->addWidget(limitLabel);
+  tools->addWidget(txLimit_);
+  tools->addStretch(1);
+  tools->addWidget(reporterCount_);
+  reporterLay->addLayout(tools);
+  reporterTable_ = new QTableWidget(0, 7, reporter);
+  reporterTable_->setObjectName(QStringLiteral("radeReporterTable"));
+  reporterTable_->setFont(uiFont());
+  reporterTable_->setHorizontalHeaderLabels(
+      {QStringLiteral("Station"), QStringLiteral("Grid"), QStringLiteral("kHz"), QStringLiteral("Mode"),
+       QStringLiteral("SNR"), QStringLiteral("TX"), QStringLiteral("Message")});
+  reporterTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+  reporterTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+  reporterTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  reporterTable_->setAlternatingRowColors(true);
+  reporterTable_->setShowGrid(false);
+  reporterTable_->verticalHeader()->setVisible(false);
+  reporterTable_->setMinimumHeight(140);
+  reporterTable_->setToolTip(QStringLiteral(
+      "Stations on FreeDV Reporter. Double-click tunes to that dial and sets DIGL on 160, 80, and 40. "
+      "Right-click mutes QSY requests from that station. This does not key. START is never sent."));
+  reporterTable_->setStyleSheet(QStringLiteral(
+      "QTableWidget#radeReporterTable { background: #0e141c; color: #e8eef4; "
+      "alternate-background-color: #121a24; selection-background-color: #1d4e89; "
+      "selection-color: #ffffff; border: 1px solid #243240; }"
+      "QHeaderView::section { background: #162230; color: #c5d4e0; border: 0; padding: 4px; }"));
+  reporterTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+  reporterTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+  reporterTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+  reporterTable_->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+  reporterTable_->viewport()->setContextMenuPolicy(Qt::CustomContextMenu);
+  reporterLay->addWidget(reporterTable_, 1);
+  layout->addWidget(reporter, 1);
+  connect(reporterFilter_, &QLineEdit::textChanged, this, [this] { applyReporterFilter(); });
+  connect(ignoreQsy_, &QCheckBox::toggled, this, [](bool on) {
+    QSettings().setValue(QStringLiteral("dx/freedvReporterIgnoreQsy"), on);
+  });
+  connect(txLimit_, qOverload<int>(&QSpinBox::valueChanged), this,
+          [](int value) { QSettings().setValue(QStringLiteral("rade/txLimitSec"), value); });
+  connect(requestQsy_, &QPushButton::clicked, this, &RadeScreen::requestSelectedQsy);
+  connect(logContact, &QPushButton::clicked, this, &RadeScreen::logSelectedStation);
+  connect(reporterTable_, &QTableWidget::itemSelectionChanged, this, [this] {
+    const QString sid = selectedSid();
+    if (requestQsy_)
+      requestQsy_->setEnabled(!sid.isEmpty() && sid != qsySentSid_);
+  });
+  connect(reporterTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+    if (!reporterTable_ || row < 0)
+      return;
+    auto* freq = reporterTable_->item(row, 2);
+    const qint64 hz = freq ? freq->data(Qt::UserRole).toLongLong() : 0;
+    if (hz > 0)
+      emit stationTune(hz);
+  });
+  connect(reporterTable_->viewport(), &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+    if (!reporterTable_)
+      return;
+    const int row = reporterTable_->rowAt(pos.y());
+    if (row < 0)
+      return;
+    auto* stationItem = reporterTable_->item(row, 0);
+    if (!stationItem)
+      return;
+    const QString station = stationItem->text().trimmed();
+    if (station.isEmpty())
+      return;
+    QStringList muted = QSettings().value(QStringLiteral("dx/freedvReporterMuteQsy")).toStringList();
+    const bool mutedNow = muted.contains(station, Qt::CaseInsensitive);
+    QMenu menu(this);
+    QAction* action = menu.addAction(mutedNow ? QStringLiteral("Hear QSY from this station")
+                                              : QStringLiteral("Ignore QSY from this station"));
+    if (menu.exec(reporterTable_->viewport()->mapToGlobal(pos)) != action)
+      return;
+    if (mutedNow) {
+      for (int i = muted.size() - 1; i >= 0; --i)
+        if (muted.at(i).compare(station, Qt::CaseInsensitive) == 0)
+          muted.removeAt(i);
+    } else if (!muted.contains(station, Qt::CaseInsensitive)) {
+      muted.append(station);
+    }
+    QSettings().setValue(QStringLiteral("dx/freedvReporterMuteQsy"), muted);
+  });
 
   link_ = new QLabel(QStringLiteral("Not linked"), this);
   link_->setObjectName(QStringLiteral("radeLink"));
@@ -334,7 +565,6 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   body_ = new QWidget(this);
   body_->setObjectName(QStringLiteral("radeBody"));
   layout->insertWidget(1, body_);
-  layout->addStretch(1);
   applyArrangement();
   refreshLayoutButton();
 
@@ -729,11 +959,162 @@ void RadeScreen::refreshMessage() {
 }
 
 void RadeScreen::setHeard(const QString& call, const QString& utc) {
+  lastHeard_ = call.trimmed();
   if (heard_)
     heard_->setText(call.isEmpty() ? QStringLiteral("Heard  —")
                                    : QStringLiteral("Heard  %1  %2").arg(call, utc));
   heardAtMs_ = call.isEmpty() ? 0 : QDateTime::currentMSecsSinceEpoch();
   refreshHeardClock();
+}
+
+int RadeScreen::savedMessageCount() const {
+  return QSettings().value(QStringLiteral("dx/freedvReporterMessages")).toStringList().size();
+}
+
+void RadeScreen::storeReporterMessage(const QString& text) {
+  const QString trimmed = text.trimmed();
+  if (trimmed.isEmpty())
+    return;
+  QStringList saved = QSettings().value(QStringLiteral("dx/freedvReporterMessages")).toStringList();
+  saved.removeAll(trimmed);
+  saved.prepend(trimmed);
+  while (saved.size() > kSavedMessages)
+    saved.removeLast();
+  QSettings().setValue(QStringLiteral("dx/freedvReporterMessages"), saved);
+  reloadSavedMessages();
+}
+
+void RadeScreen::reloadSavedMessages() {
+  if (!savedMessages_)
+    return;
+  const QString current = savedMessages_->currentIndex() > 0 ? savedMessages_->currentText() : QString();
+  const QSignalBlocker block(savedMessages_);
+  savedMessages_->clear();
+  savedMessages_->addItem(QStringLiteral("Saved messages"));
+  const QStringList saved = QSettings().value(QStringLiteral("dx/freedvReporterMessages")).toStringList();
+  for (int i = 0; i < saved.size() && i < kSavedMessages; ++i)
+    savedMessages_->addItem(saved.at(i));
+  const int at = savedMessages_->findText(current);
+  savedMessages_->setCurrentIndex(at > 0 ? at : 0);
+}
+
+void RadeScreen::releaseQsyRequest() {
+  qsySentSid_.clear();
+  if (requestQsy_)
+    requestQsy_->setEnabled(!selectedSid().isEmpty());
+}
+
+bool RadeScreen::ignoreQsy() const {
+  return ignoreQsy_ && ignoreQsy_->isChecked();
+}
+
+int RadeScreen::txLimitSeconds() const {
+  return txLimit_ ? txLimit_->value() : 180;
+}
+
+QString RadeScreen::selectedSid() const {
+  if (!reporterTable_)
+    return QString();
+  const int row = reporterTable_->currentRow();
+  if (row < 0)
+    return QString();
+  const auto* item = reporterTable_->item(row, 0);
+  return item ? item->data(Qt::UserRole).toString() : QString();
+}
+
+void RadeScreen::applyReporterFilter() {
+  if (!reporterTable_ || !reporterFilter_)
+    return;
+  const QString needle = reporterFilter_->text().trimmed();
+  int shown = 0;
+  for (int row = 0; row < reporterTable_->rowCount(); ++row) {
+    bool match = needle.isEmpty();
+    if (!match) {
+      for (int col : {0, 1, 3, 6}) {
+        const auto* item = reporterTable_->item(row, col);
+        if (item && item->text().contains(needle, Qt::CaseInsensitive)) {
+          match = true;
+          break;
+        }
+      }
+    }
+    reporterTable_->setRowHidden(row, !match);
+    if (match)
+      ++shown;
+  }
+  if (reporterCount_)
+    reporterCount_->setText(reporterTable_->rowCount() == 0
+                                ? QStringLiteral("No stations yet")
+                                : QStringLiteral("%1 shown").arg(shown));
+}
+
+void RadeScreen::showReporter(const QVector<FreeDvReporter::Station>& rows) {
+  if (!reporterTable_)
+    return;
+  const QString keep = selectedSid();
+  reporterTable_->setSortingEnabled(false);
+  reporterTable_->setRowCount(rows.size());
+  for (int i = 0; i < rows.size(); ++i) {
+    const FreeDvReporter::Station& row = rows.at(i);
+    auto* station = new QTableWidgetItem(row.station);
+    station->setData(Qt::UserRole, row.sid);
+    auto* grid = new QTableWidgetItem(row.grid);
+    auto* freq = new RadeFreqItem;
+    freq->setData(Qt::UserRole, row.freqHz);
+    freq->setText(row.freqHz > 0 ? QString::number(double(row.freqHz) / 1000.0, 'f', 1) : QString());
+    freq->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    auto* mode = new QTableWidgetItem(row.mode);
+    auto* snr = new RadeSnrItem;
+    snr->setData(Qt::UserRole, row.snrKnown ? row.snr : -999);
+    snr->setText(row.snrKnown ? QString::number(row.snr) : QStringLiteral("—"));
+    snr->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    auto* tx = new QTableWidgetItem(row.transmitting ? QStringLiteral("TX") : QString());
+    auto* message = new QTableWidgetItem(row.message);
+    QTableWidgetItem* cells[] = {station, grid, freq, mode, snr, tx, message};
+    for (int col = 0; col < 7; ++col) {
+      cells[col]->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+      reporterTable_->setItem(i, col, cells[col]);
+    }
+    if (!keep.isEmpty() && row.sid == keep)
+      reporterTable_->setCurrentCell(i, 0);
+  }
+  reporterTable_->setSortingEnabled(true);
+  applyReporterFilter();
+  if (requestQsy_)
+    requestQsy_->setEnabled(!selectedSid().isEmpty() && selectedSid() != qsySentSid_);
+}
+
+void RadeScreen::requestSelectedQsy() {
+  const QString sid = selectedSid();
+  if (sid.isEmpty())
+    return;
+  qsySentSid_ = sid;
+  if (requestQsy_)
+    requestQsy_->setEnabled(false);
+  emit stationQsy(sid);
+}
+
+void RadeScreen::logSelectedStation() {
+  QString station = lastHeard_;
+  QString grid;
+  int snr = -999;
+  qint64 hz = 0;
+  if (reporterTable_ && reporterTable_->currentRow() >= 0) {
+    const int row = reporterTable_->currentRow();
+    auto text = [this, row](int col) {
+      const auto* item = reporterTable_->item(row, col);
+      return item ? item->text().trimmed() : QString();
+    };
+    if (!text(0).isEmpty())
+      station = text(0);
+    grid = text(1);
+    const auto* freq = reporterTable_->item(row, 2);
+    hz = freq ? freq->data(Qt::UserRole).toLongLong() : 0;
+    const auto* snrItem = reporterTable_->item(row, 4);
+    if (snrItem && snrItem->text() != QLatin1String("—"))
+      snr = snrItem->data(Qt::UserRole).toInt();
+  }
+  emit stationLog(station, grid, snr, hz);
 }
 
 void RadeScreen::refreshHeardClock() {

@@ -16,13 +16,17 @@
 #include "rade/RadeSpeaker.h"
 #include "spot/FreeDvReporter.h"
 #include "speech/SpeechInput.h"
+#include "WaterfallWidget.h"
 
 #include <QCheckBox>
 #include <QDateTime>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QSpinBox>
+#include <QStringList>
 #include <QTimer>
 
 #include <algorithm>
@@ -58,6 +62,12 @@ bool radeBox(QWidget* window, const char* name, const char* key) {
   return QSettings().value(QString::fromLatin1(key), true).toBool();
 }
 
+int radeTxLimitSeconds(QWidget* window) {
+  if (auto* box = window->findChild<QSpinBox*>(QStringLiteral("radeTxLimit")))
+    return std::clamp(box->value(), 0, 180);
+  return std::clamp(QSettings().value(QStringLiteral("rade/txLimitSec"), 180).toInt(), 0, 180);
+}
+
 bool radeAnalogOn(QWidget* window) {
   if (auto* box = window->findChild<QCheckBox*>(QStringLiteral("radeAnalog")))
     return box->isChecked();
@@ -91,6 +101,9 @@ void MainWindow::updateFreedvReporter(bool now) {
       if (profile_ && radeMode(profile_->digitalMode()))
         setTxStatus(text);
     });
+    connect(freedvReporter_, &FreeDvReporter::stationsChanged, this, [this] { showFreedvStations(); });
+    connect(freedvReporter_, &FreeDvReporter::qsyAsked, this,
+            [this](const QString& station, qint64 hz, const QString& note) { onFreedvQsy(station, hz, note); });
   }
   if (on) {
     freedvReporter_->setFrequency(liveDialHz_);
@@ -217,6 +230,80 @@ void MainWindow::refreshRadeRxChip() {
   radeRxState_ = state;
   if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
     screen->setTxState(state);
+}
+
+void MainWindow::tuneRadeStation(qint64 hz) {
+  if (hz < 100000)
+    return;
+  if (radeScanOn_ && !radeScanTuning_)
+    stopRadeScan(QStringLiteral("Scan stopped: a station was chosen."));
+  if (profile_)
+    profile_->followRadeDial(hz);
+  qsyDial(hz);
+  setTxStatus(QStringLiteral("Tuned to %1. START was not sent.")
+                  .arg(QString::number(double(hz) / 1e6, 'f', hz % 1000 ? 6 : 3)));
+}
+
+void MainWindow::showFreedvStations() {
+  auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+  if (!screen || !freedvReporter_)
+    return;
+  screen->showReporter(freedvReporter_->stations());
+}
+
+void MainWindow::onFreedvQsy(const QString& station, qint64 hz, const QString& note) {
+  if (qEnvironmentVariableIsSet("STD_SELFTEST") || hz < 100000)
+    return;
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")); screen && screen->ignoreQsy())
+    return;
+  const QStringList muted = QSettings().value(QStringLiteral("dx/freedvReporterMuteQsy")).toStringList();
+  if (muted.contains(station, Qt::CaseInsensitive))
+    return;
+  QMessageBox box(this);
+  box.setWindowTitle(QStringLiteral("Request QSY"));
+  QString body = QStringLiteral("%1 asks you to move to %2.")
+                     .arg(station, QString::number(double(hz) / 1e6, 'f', 3));
+  const QString extra = note.trimmed();
+  if (!extra.isEmpty())
+    body += QLatin1Char('\n') + extra;
+  box.setText(body);
+  QPushButton* go = box.addButton(QStringLiteral("Tune there"), QMessageBox::AcceptRole);
+  box.addButton(QStringLiteral("Stay"), QMessageBox::RejectRole);
+  box.exec();
+  if (box.clickedButton() == go)
+    tuneRadeStation(hz);
+}
+
+void MainWindow::logRadeContact(const QString& station, const QString& grid, int snr, qint64 hz) {
+  const QString who = station.trimmed().toUpper();
+  if (who.isEmpty()) {
+    setTxStatus(QStringLiteral(
+        "Nothing logged: pick a station first. Nothing was keyed. START was not sent."));
+    return;
+  }
+  QsoLog::Record record;
+  record.call = who;
+  record.grid = grid.trimmed().toUpper();
+  record.mode = profile_ ? profile_->digitalMode() : QString();
+  record.rstSent = QStringLiteral("59");
+  record.rstRcvd = QStringLiteral("59");
+  record.myCall = stationCall();
+  record.myGrid = stationGrid();
+  if (snr > -900)
+    record.comment = QStringLiteral("SNR %1").arg(snr);
+  record.freqHz = hz > 0 ? hz : liveDialHz_;
+  record.timeOff = QDateTime::currentDateTimeUtc();
+  record.timeOn = record.timeOff;
+  if (qEnvironmentVariableIsSet("STD_SELFTEST")) {
+    setTxStatus(QStringLiteral("Logged %1. Nothing was keyed. START was not sent.").arg(who));
+    return;
+  }
+  const QsoLog::Result result = qsoLog_ ? qsoLog_->store(record) : QsoLog::Result{};
+  if (!result.wrote)
+    setTxStatus(QStringLiteral("%1 was not logged. %2 Nothing was keyed. START was not sent.")
+                    .arg(who, result.detail));
+  else
+    setTxStatus(QStringLiteral("Logged %1 to %2. Nothing was keyed. START was not sent.").arg(who, result.path));
 }
 
 void MainWindow::radeRxClicked() {
@@ -483,6 +570,8 @@ void MainWindow::beginRadeTx() {
   }
   txRade_ = true;
   txKeySent_ = true;
+  radeTxBeganMs_ = QDateTime::currentMSecsSinceEpoch();
+  radeTxLimitWarned_ = false;
   updateFreedvReporter(true);
   refreshRadeRxChip();
   markWaterfallTx();
@@ -496,6 +585,21 @@ void MainWindow::beginRadeTx() {
 void MainWindow::pumpRadeTx() {
   updateFreedvReporter(false);
   refreshRadeRxChip();
+  if (txRade_ && !radeStopping_ && radeTxBeganMs_ > 0) {
+    const int limit = radeTxLimitSeconds(this);
+    if (limit > 0) {
+      const qint64 left = limit * 1000LL - (QDateTime::currentMSecsSinceEpoch() - radeTxBeganMs_);
+      if (left <= 15000 && left > 0 && !radeTxLimitWarned_) {
+        radeTxLimitWarned_ = true;
+        setTxStatus(QStringLiteral(
+            "TX limit in 15 seconds. The over will end. START was not sent."));
+      }
+      if (left <= 0) {
+        radeRxClicked();
+        setTxStatus(QStringLiteral("TX limit reached. The over is ending. START was not sent."));
+      }
+    }
+  }
   if (!tci_ || !tci_->isTransmitting()) {
     stopUserTx(true);
     setTxStatus(QStringLiteral("RADE stopped. TRX is off. START was not sent."));
@@ -708,6 +812,15 @@ void MainWindow::pushRadeRx(const float* samples, int count, int rate) {
     if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"))) {
       screen->setSync(sync, rade_.snr(), rade_.freqOffset());
       screen->setRxLevel(radeRxShownDb_, radeRxShownClip_, int(std::lround(radeRxAutoDb_)));
+    }
+    if (waterfall_) {
+      const QString chip =
+          sync ? QStringLiteral("RADE   Sync   SNR %1   RX %2 dB%3")
+                     .arg(qRound(rade_.snr()))
+                     .arg(qRound(radeRxShownDb_))
+                     .arg(radeRxShownClip_ ? QStringLiteral("   CLIP") : QString())
+               : QStringLiteral("RADE   idle");
+      waterfall_->setRadeReadout(chip);
     }
   }
   if (sync != syncBefore) {

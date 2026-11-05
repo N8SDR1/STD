@@ -101,6 +101,10 @@ public:
   int txHz() const { return txHz_; }
   void setRxHz(int hz);
   void setTxHz(int hz);
+  // Short RADE line drawn on the trace: sync, SNR, RX level, CLIP.
+  // Empty removes it. Does not decode and does not key.
+  void setRadeReadout(const QString& text);
+  QString radeReadout() const { return radeReadout_; }
   // Move TX to hz. RX moves too while Lock is on.
   void qsyAudio(int hz);
   // Floor is the dB level drawn as the bottom of the palette; Range is how
@@ -170,6 +174,7 @@ private:
   void gpuFallback(const QString& why);
   void paintMarkers(QPainter& painter) const;
   void paintRuler(QPainter& painter) const;
+  void paintRadeReadout(QPainter& painter) const;
   void pushTrace(qint64 endSample);
   void analyze(qint64 endSample, TraceRow* row);
   void noteTxSpill(bool spilling);
@@ -270,6 +275,7 @@ private:
   // Display trim on the TX mix. Never raises the mix above full scale.
   float txTrim_ = 1.0f;
   bool txHot_ = false;
+  QString radeReadout_;
   int txHotStreak_ = 0;
   int txCoolStreak_ = 0;
 };

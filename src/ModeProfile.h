@@ -71,6 +71,13 @@ public:
   static QStringList radeScanBands();
   // Moves to that band and dial and emits tuneRequested, as a band click does.
   void selectDial(int band, qint64 hz);
+  // Band index for a RADE dial, or -1 when it is outside every HF band.
+  static int radeBandForHz(qint64 hz);
+  // DIGL on 160, 80, and 40. DIGU everywhere else, including 60 m.
+  static QString radeSidebandForHz(qint64 hz);
+  // Lights the band chip for hz so the sideband follows. Does not emit
+  // tuneRequested and does not move the dial by itself.
+  bool followRadeDial(qint64 hz);
   // Right-click Extra: list, edit, delete, or add this band's extra dials.
   void editExtras();
   // The extra dials for the current mode and band, and setting them.

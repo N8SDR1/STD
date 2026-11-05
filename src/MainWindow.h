@@ -156,6 +156,10 @@ private:
   // Green RX while receiving, amber while the over ends.
   void refreshRadeRxChip();
   void radeRxClicked();
+  void tuneRadeStation(qint64 hz);
+  void showFreedvStations();
+  void onFreedvQsy(const QString& station, qint64 hz, const QString& note);
+  void logRadeContact(const QString& station, const QString& grid, int snr, qint64 hz);
   void applyRadeCapture(const QString& id);
   void applyRadeOutput(const QString& id);
 
@@ -412,6 +416,8 @@ private:
   qint64 radeTailMs_ = 0;
   qint64 radeOriginMs_ = 0;
   qint64 radeMeterMs_ = 0;
+  qint64 radeTxBeganMs_ = 0;
+  bool radeTxLimitWarned_ = false;
   qint64 radeOpenTryMs_ = 0;
   // Auto RX offset on the decoder input, from -30 to 0 dB. 0 leaves it alone.
   double radeRxAutoDb_ = 0;
