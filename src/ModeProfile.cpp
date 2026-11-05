@@ -560,12 +560,13 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   gainLabel->setFont(barFont());
   auto* micGain = new QSlider(Qt::Horizontal, radeAudio_);
   micGain->setObjectName(QStringLiteral("radeMicGain"));
-  micGain->setRange(0, 30);
+  micGain->setRange(-10, 30);
   micGain->setFixedWidth(96);
   micGain->setFocusPolicy(Qt::NoFocus);
-  micGain->setValue(std::clamp(QSettings().value(QStringLiteral("rade/micGain"), 0).toInt(), 0, 30));
+  micGain->setValue(std::clamp(QSettings().value(QStringLiteral("rade/micGain"), 0).toInt(), -10, 30));
   micGain->setToolTip(QStringLiteral(
-      "Microphone gain before the leveler, in dB. 0 leaves the microphone as Windows set it. "
+      "Microphone gain before the leveler, in dB, from -10 to 30. "
+      "0 leaves the microphone as Windows set it. A negative value cuts it. "
       "The bar after it shows the speech peaks after the leveler. "
       "Options, Speech has no microphone gain; its Volume is playback. "
       "Drive is the modem level and does not move the bar. "
@@ -573,7 +574,7 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   auto* micGainValue = new QLabel(QString::number(micGain->value()), radeAudio_);
   micGainValue->setObjectName(QStringLiteral("radeMicGainValue"));
   micGainValue->setFont(barFont());
-  micGainValue->setMinimumWidth(22);
+  micGainValue->setMinimumWidth(28);
   connect(micGain, &QSlider::valueChanged, this, [micGainValue](int value) {
     micGainValue->setText(QString::number(value));
     QSettings().setValue(QStringLiteral("rade/micGain"), value);

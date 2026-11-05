@@ -413,6 +413,12 @@ private:
   qint64 radeOriginMs_ = 0;
   qint64 radeMeterMs_ = 0;
   qint64 radeOpenTryMs_ = 0;
+  // Auto RX offset on the decoder input, from -30 to 0 dB. 0 leaves it alone.
+  double radeRxAutoDb_ = 0;
+  float radeRxPeakDb_ = -120.0f;
+  float radeRxShownDb_ = -120.0f;
+  bool radeRxShownClip_ = false;
+  qint64 radeRxAutoAt_ = 0;
   QString radeSpeakerId_;
   SpeechModelDownload* modelDl_ = nullptr;
   SpeechRecognizer* recognizer_ = nullptr;

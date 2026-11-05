@@ -32,6 +32,7 @@
 #include "js8/Js8Modem.h"
 #include "modem/ToneClock.h"
 #include "rade/RadeLink.h"
+#include "rade/RadeScreen.h"
 #include "wspr/WsprModem.h"
 #include "spot/FreeDvReporter.h"
 #include "spot/PskReporter.h"
@@ -1139,13 +1140,49 @@ int shellReady(MainWindow& window) {
         !micBar->toolTip().contains(QLatin1String("Drive")))
       return fail("RADE mic bar is missing");
     auto* micGain = window.findChild<QSlider*>(QStringLiteral("radeMicGain"));
-    if (!micGain || micGain->parentWidget() != audio || micGain->minimum() != 0 ||
+    if (!micGain || micGain->parentWidget() != audio || micGain->minimum() != -10 ||
         micGain->maximum() != 30 || micGain->width() > 120 ||
         !micGain->toolTip().contains(QLatin1String("leveler")) ||
         !micGain->toolTip().contains(QLatin1String("Drive")) ||
         (micBox->x() > 0 && micGain->x() > 0 && micBar->x() > 0 && drive->x() > 0 &&
          (micGain->x() < micBox->x() || micGain->x() > micBar->x() || micBar->x() > drive->x())))
       return fail("RADE mic gain is missing");
+    auto* rxLevel = window.findChild<QWidget*>(QStringLiteral("radeRxLevel"));
+    auto* autoRx = window.findChild<QCheckBox*>(QStringLiteral("radeAutoRx"));
+    auto* lamp = window.findChild<QWidget*>(QStringLiteral("radeSyncLamp"));
+    auto* snrBar = window.findChild<QWidget*>(QStringLiteral("radeSnrBar"));
+    auto* heardClock = window.findChild<QLabel*>(QStringLiteral("radeHeardClock"));
+    if (!rxLevel || rxLevel->parentWidget() != screen ||
+        !rxLevel->toolTip().contains(QLatin1String("dBFS")) ||
+        !rxLevel->toolTip().contains(QLatin1String("CLIP")))
+      return fail("RADE RX meter is missing");
+    if (!autoRx || autoRx->parentWidget() != screen ||
+        !autoRx->toolTip().contains(QLatin1String("clip")))
+      return fail("RADE Auto RX is missing");
+    if (!lamp || lamp->parentWidget() != screen)
+      return fail("RADE sync lamp is missing");
+    if (!snrBar || snrBar->parentWidget() != screen ||
+        !snrBar->toolTip().contains(QLatin1String("-10")) ||
+        !snrBar->toolTip().contains(QLatin1String("40")))
+      return fail("RADE SNR bar is missing");
+    if (!heardClock || heardClock->parentWidget() != screen ||
+        !heardClock->toolTip().contains(QLatin1String("how long ago")))
+      return fail("RADE heard clock is missing");
+    if (auto* radeScreen = window.findChild<RadeScreen*>(QStringLiteral("radeScreen"))) {
+      radeScreen->setSync(true, 6.6f, 1.2f);
+      if (snr->text() != QLatin1String("SNR  7") || sync->text() != QLatin1String("Sync  yes"))
+        return fail("RADE SNR is not a whole number");
+      radeScreen->setSync(false, 0.0f, 0.0f);
+      if (sync->text() != QLatin1String("Sync  idle") || snr->text() != QStringLiteral("SNR  —"))
+        return fail("RADE sync idle text changed");
+      radeScreen->setHeard(QStringLiteral("ok"), QStringLiteral("12:00"));
+      if (!heardClock->text().contains(QLatin1String("just now")) ||
+          !heardClock->text().contains(QLatin1String("UTC")))
+        return fail("RADE heard clock did not start");
+      radeScreen->setHeard(QString(), QString());
+      if (heardClock->text() != QStringLiteral("—"))
+        return fail("RADE heard clock did not clear");
+    }
     auto* offset = window.findChild<QLabel*>(QStringLiteral("radeOffset"));
     if (!snrTrace || snrTrace->parentWidget() != screen || snrTrace->height() < 32 ||
         snrTrace->height() > 48 || snrTrace->width() > 200 ||

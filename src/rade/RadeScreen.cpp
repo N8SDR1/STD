@@ -9,6 +9,8 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
+#include <QTimeZone>
 #include <QFont>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -21,6 +23,7 @@
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -55,7 +58,8 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
 
   auto* intro = new QLabel(QStringLiteral(
       "V1 is the default waveform, about 1500 Hz wide. V2 is experimental, "
-      "about 860 Hz, and will not decode V1. Gain is after the microphone and before the speech-level bar. "
+      "about 860 Hz, and will not decode V1. Gain is after the microphone, from -10 to 30 dB, and before the speech-level bar. "
+      "The RX bar is the decoder level, and Auto RX cuts it when it clips. SNR is a whole number with a live bar. The clock is how long since the last decode. "
       "Drive is between Mic and Speaker. "
       "Analog is after Volume. BPF is after Waveform. RX and TX are on this row; click RX to end your over. The band buttons set DIGU or DIGL. "
       "The mic is 16 kHz, speech plays at 48 kHz. The modem is 8 kHz."),
@@ -169,28 +173,43 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   layout->insertLayout(2, pair);
 
   auto* meters = new QHBoxLayout();
+  auto* lamp = new RadeSyncLamp(this);
   sync_ = new QLabel(QStringLiteral("Sync  idle"), this);
   sync_->setObjectName(QStringLiteral("radeSync"));
   sync_->setFont(uiFont());
   sync_->setToolTip(QStringLiteral(
       "Frame sync. Audio opens when sync is likely. There is no SNR squelch slider. "
+      "The lamp is green while synced and dark red while not. "
       "This does not key. START is never sent."));
   snr_ = new QLabel(QStringLiteral("SNR  —"), this);
   snr_->setObjectName(QStringLiteral("radeSnr"));
-  snr_->setFont(uiFont());
+  QFont snrFont = uiFont();
+  snrFont.setPixelSize(22);
+  snrFont.setBold(true);
+  snr_->setFont(snrFont);
+  snr_->setMinimumWidth(78);
   snr_->setToolTip(QStringLiteral(
-      "SNR estimate, shown only. It does not mute. This does not key. START is never sent."));
+      "SNR estimate, a whole number of dB. It does not mute. This does not key. START is never sent."));
   heard_ = new QLabel(QStringLiteral("Heard  —"), this);
   heard_->setObjectName(QStringLiteral("radeHeard"));
   heard_->setFont(uiFont());
   heard_->setToolTip(QStringLiteral(
       "The callsign in the last end-of-over that decoded, with the UTC time. FreeDV stations "
       "send it when they un-key. This does not key. START is never sent."));
-  meters->addWidget(sync_);
-  meters->addSpacing(16);
-  meters->addWidget(snr_);
+  heardClock_ = new QLabel(QStringLiteral("—"), this);
+  heardClock_->setObjectName(QStringLiteral("radeHeardClock"));
+  heardClock_->setFont(uiFont());
+  heardClock_->setToolTip(QStringLiteral(
+      "When the last decode arrived, and how long ago. "
+      "This does not key. START is never sent."));
+  meters->addWidget(lamp, 0, Qt::AlignVCenter);
+  meters->addSpacing(6);
+  meters->addWidget(sync_, 0, Qt::AlignVCenter);
+  meters->addSpacing(14);
+  meters->addWidget(snr_, 0, Qt::AlignVCenter);
+  meters->addWidget(new RadeSnrBar(this), 0, Qt::AlignVCenter);
   meters->addWidget(new RadeSnrTrace(this), 0, Qt::AlignVCenter);
-  meters->addSpacing(16);
+  meters->addSpacing(12);
   offset_ = new QLabel(QStringLiteral("Offset  —"), this);
   offset_->setObjectName(QStringLiteral("radeOffset"));
   offset_->setFont(uiFont());
@@ -200,11 +219,41 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
       "about 50 Hz either way, so keep it small: if every station reads the same offset, your "
       "own radio is off by that much in the other direction. This does not key. "
       "START is never sent."));
-  meters->addWidget(offset_);
-  meters->addSpacing(16);
-  meters->addWidget(heard_);
+  auto* autoRx = new QCheckBox(QStringLiteral("Auto RX"), this);
+  autoRx->setObjectName(QStringLiteral("radeAutoRx"));
+  autoRx->setFont(uiFont());
+  autoRx->setFocusPolicy(Qt::NoFocus);
+  autoRx->setToolTip(QStringLiteral(
+      "Lowers the decoder input by 2 dB when the RX bar clips or its peaks go above -3 dBFS, "
+      "and raises it by 1 dB when the peaks stay under -12. It stops at -30 dB. "
+      "Off leaves the input alone. This does not key. START is never sent."));
+  {
+    const QSignalBlocker block(autoRx);
+    autoRx->setChecked(QSettings().value(QStringLiteral("rade/autoRx"), true).toBool());
+  }
+  auto* autoValue = new QLabel(autoRx->isChecked() ? QStringLiteral("0") : QStringLiteral("off"), this);
+  autoValue->setObjectName(QStringLiteral("radeAutoRxValue"));
+  autoValue->setFont(uiFont());
+  autoValue->setMinimumWidth(28);
+  autoValue->setToolTip(autoRx->toolTip());
+  connect(autoRx, &QCheckBox::toggled, this, [autoValue](bool on) {
+    QSettings().setValue(QStringLiteral("rade/autoRx"), on);
+    autoValue->setText(on ? QStringLiteral("0") : QStringLiteral("off"));
+  });
+  meters->addWidget(offset_, 0, Qt::AlignVCenter);
+  meters->addSpacing(12);
+  meters->addWidget(new RadeRxBar(this), 0, Qt::AlignVCenter);
+  meters->addWidget(autoRx, 0, Qt::AlignVCenter);
+  meters->addWidget(autoValue, 0, Qt::AlignVCenter);
+  meters->addSpacing(12);
+  meters->addWidget(heard_, 0, Qt::AlignVCenter);
+  meters->addWidget(heardClock_, 0, Qt::AlignVCenter);
   meters->addStretch(1);
   layout->addLayout(meters);
+  auto* heardTimer = new QTimer(this);
+  heardTimer->setInterval(1000);
+  connect(heardTimer, &QTimer::timeout, this, &RadeScreen::refreshHeardClock);
+  heardTimer->start();
 
   auto* messageRow = new QHBoxLayout();
   auto* messageLabel = new QLabel(QStringLiteral("Reporter message"), this);
@@ -286,19 +335,28 @@ void RadeScreen::setLinkReady(bool ready) {
 void RadeScreen::setSync(bool on, float snrDb, float offsetHz) {
   if (sync_)
     sync_->setText(on ? QStringLiteral("Sync  yes") : QStringLiteral("Sync  idle"));
+  if (auto* lamp = findChild<RadeSyncLamp*>(QStringLiteral("radeSyncLamp")))
+    lamp->setSynced(on);
   if (offset_)
     offset_->setText(on ? QStringLiteral("Offset  %1%2 Hz")
                               .arg(offsetHz >= 0.0f ? QStringLiteral("+") : QString())
                               .arg(QString::number(double(offsetHz), 'f', 0))
                         : QStringLiteral("Offset  —"));
-  if (!snr_)
-    return;
-  if (on)
-    snr_->setText(QStringLiteral("SNR  %1 dB").arg(QString::number(double(snrDb), 'f', 1)));
-  else
-    snr_->setText(QStringLiteral("SNR  —"));
+  if (snr_)
+    snr_->setText(on ? QStringLiteral("SNR  %1").arg(qRound(snrDb)) : QStringLiteral("SNR  —"));
+  if (auto* bar = findChild<RadeSnrBar*>(QStringLiteral("radeSnrBar")))
+    bar->setSnr(on, snrDb);
   if (auto* trace = findChild<RadeSnrTrace*>(QStringLiteral("radeSnrTrace")))
     trace->push(on, snrDb);
+}
+
+void RadeScreen::setRxLevel(float db, bool clip, int autoDb) {
+  if (auto* bar = findChild<RadeRxBar*>(QStringLiteral("radeRxLevel")))
+    bar->setLevel(db, clip);
+  if (auto* value = findChild<QLabel*>(QStringLiteral("radeAutoRxValue"))) {
+    auto* box = findChild<QCheckBox*>(QStringLiteral("radeAutoRx"));
+    value->setText(box && box->isChecked() ? QString::number(autoDb) : QStringLiteral("off"));
+  }
 }
 
 void RadeScreen::setTxState(int state) {
@@ -439,6 +497,25 @@ void RadeScreen::setHeard(const QString& call, const QString& utc) {
   if (heard_)
     heard_->setText(call.isEmpty() ? QStringLiteral("Heard  —")
                                    : QStringLiteral("Heard  %1  %2").arg(call, utc));
+  heardAtMs_ = call.isEmpty() ? 0 : QDateTime::currentMSecsSinceEpoch();
+  refreshHeardClock();
+}
+
+void RadeScreen::refreshHeardClock() {
+  if (!heardClock_)
+    return;
+  if (heardAtMs_ <= 0) {
+    heardClock_->setText(QStringLiteral("—"));
+    return;
+  }
+  const QDateTime at = QDateTime::fromMSecsSinceEpoch(heardAtMs_, QTimeZone::UTC);
+  const qint64 secs = std::max(qint64(0), at.secsTo(QDateTime::currentDateTimeUtc()));
+  QString age = QStringLiteral("just now");
+  if (secs >= 3600)
+    age = QStringLiteral("%1 h ago").arg(secs / 3600);
+  else if (secs >= 45)
+    age = QStringLiteral("%1 min ago").arg(std::max(qint64(1), secs / 60));
+  heardClock_->setText(QStringLiteral("%1 UTC  %2").arg(at.toString(QStringLiteral("HH:mm")), age));
 }
 
 void RadeScreen::showMode(const QString& modeName) {

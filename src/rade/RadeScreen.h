@@ -24,6 +24,8 @@ public:
   void setLinkReady(bool ready);
   // offsetHz: the received station's frequency offset, as FreeDV shows it.
   void setSync(bool on, float snrDb, float offsetHz = 0.0f);
+  // Decoder input in dBFS, whether it clipped, and the Auto RX offset in dB.
+  void setRxLevel(float db, bool clip, int autoDb);
   // Callsign read from the last end-of-over, and when.
   void setHeard(const QString& call, const QString& utc);
   // Reloads the FreeDV Reporter message from settings.
@@ -54,13 +56,16 @@ private:
 
   void loadBpf(bool v2);
   void rememberBpf(bool on);
+  void refreshHeardClock();
 
   QComboBox* variant_ = nullptr;
   QCheckBox* bpf_ = nullptr;
   QLabel* sync_ = nullptr;
   QLabel* snr_ = nullptr;
   QLabel* heard_ = nullptr;
+  QLabel* heardClock_ = nullptr;
   QLabel* offset_ = nullptr;
+  qint64 heardAtMs_ = 0;
   class QLineEdit* message_ = nullptr;
   class QPushButton* scan_ = nullptr;
   class QPushButton* rx_ = nullptr;

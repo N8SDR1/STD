@@ -25,6 +25,55 @@ private:
   class QTimer* decay_ = nullptr;
 };
 
+// Decoder input, from -60 to 0 dBFS. CLIP means the modem audio reached full scale.
+class RadeRxBar : public QWidget {
+  Q_OBJECT
+
+public:
+  explicit RadeRxBar(QWidget* parent = nullptr);
+  void setLevel(float db, bool clip);
+
+protected:
+  void paintEvent(QPaintEvent* event) override;
+
+private:
+  float db_ = -120.0f;
+  float peak_ = -120.0f;
+  bool clip_ = false;
+  class QTimer* decay_ = nullptr;
+};
+
+// Live SNR from -10 to 40 dB. Red below 0, amber below 6, green from 6 up.
+class RadeSnrBar : public QWidget {
+  Q_OBJECT
+
+public:
+  explicit RadeSnrBar(QWidget* parent = nullptr);
+  void setSnr(bool sync, float db);
+
+protected:
+  void paintEvent(QPaintEvent* event) override;
+
+private:
+  bool sync_ = false;
+  float db_ = -10.0f;
+};
+
+// Green while the modem is locked, dark red while it is not.
+class RadeSyncLamp : public QWidget {
+  Q_OBJECT
+
+public:
+  explicit RadeSyncLamp(QWidget* parent = nullptr);
+  void setSynced(bool on);
+
+protected:
+  void paintEvent(QPaintEvent* event) override;
+
+private:
+  bool on_ = false;
+};
+
 // Last three minutes of SNR, from -10 to 35 dB, as the FreeDV SNR plot.
 class RadeSnrTrace : public QWidget {
   Q_OBJECT

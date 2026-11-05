@@ -39,10 +39,17 @@ int radeDrivePercent(QWidget* window) {
 // Extra microphone gain, in dB, before RNNoise and the leveler. The leveler
 // itself adds at most 12 dB and stays frozen below -33 LUFS, so a quiet
 // Windows level never reaches the speech bar. 0 leaves the mic unchanged.
+// Down to -10 cuts it.
 int radeMicGainDb(QWidget* window) {
   if (auto* slider = window->findChild<QSlider*>(QStringLiteral("radeMicGain")))
-    return std::clamp(slider->value(), 0, 30);
-  return std::clamp(QSettings().value(QStringLiteral("rade/micGain"), 0).toInt(), 0, 30);
+    return std::clamp(slider->value(), -10, 30);
+  return std::clamp(QSettings().value(QStringLiteral("rade/micGain"), 0).toInt(), -10, 30);
+}
+
+bool radeAutoRxOn(QWidget* window) {
+  if (auto* box = window->findChild<QCheckBox*>(QStringLiteral("radeAutoRx")))
+    return box->isChecked();
+  return QSettings().value(QStringLiteral("rade/autoRx"), true).toBool();
 }
 
 bool radeBox(QWidget* window, const char* name, const char* key) {
@@ -623,8 +630,45 @@ void MainWindow::pushRadeRx(const float* samples, int count, int rate) {
   updateFreedvReporter(false);
   std::vector<float> modem;
   radeRxConv_.process(samples, count, rate, 8000, modem);
-  for (float& sample : modem)
-    sample *= 4.0f;
+  if (!radeAutoRxOn(this))
+    radeRxAutoDb_ = 0.0;
+  if (!modem.empty()) {
+    const float pre = 4.0f * static_cast<float>(std::pow(10.0, radeRxAutoDb_ / 20.0));
+    float peak = 0.0f;
+    for (float& sample : modem) {
+      sample *= pre;
+      peak = std::max(peak, std::fabs(sample));
+    }
+    const bool clip = peak >= 0.98f;
+    const float db = peak > 1.0e-6f ? 20.0f * std::log10(peak) : -120.0f;
+    radeRxShownDb_ = db;
+    radeRxShownClip_ = clip;
+    if (db > radeRxPeakDb_)
+      radeRxPeakDb_ = db;
+    if (radeAutoRxOn(this)) {
+      if (radeRxAutoAt_ == 0)
+        radeRxAutoAt_ = now;
+      const double elapsed = double(now - radeRxAutoAt_) / 1000.0;
+      bool stepped = false;
+      if (clip || radeRxPeakDb_ > -3.0f) {
+        if (elapsed >= 0.8 && radeRxAutoDb_ > -30.0) {
+          radeRxAutoDb_ = std::max(-30.0, radeRxAutoDb_ - 2.0);
+          stepped = true;
+        }
+      } else if (elapsed >= 3.0 && radeRxPeakDb_ < -12.0f && radeRxPeakDb_ > -100.0f &&
+                 radeRxAutoDb_ < 0.0) {
+        radeRxAutoDb_ = std::min(0.0, radeRxAutoDb_ + 1.0);
+        stepped = true;
+      }
+      if (stepped || elapsed >= 3.0) {
+        radeRxAutoAt_ = now;
+        radeRxPeakDb_ = -120.0f;
+      }
+    } else {
+      radeRxAutoAt_ = now;
+      radeRxPeakDb_ = -120.0f;
+    }
+  }
   const bool syncBefore = radeWasSync_;
   int speechN = 0;
   std::vector<float> speech;
@@ -661,8 +705,10 @@ void MainWindow::pushRadeRx(const float* samples, int count, int rate) {
   }
   if (now - radeMeterMs_ > 100) {
     radeMeterMs_ = now;
-    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"))) {
       screen->setSync(sync, rade_.snr(), rade_.freqOffset());
+      screen->setRxLevel(radeRxShownDb_, radeRxShownClip_, int(std::lround(radeRxAutoDb_)));
+    }
   }
   if (sync != syncBefore) {
     radeWasSync_ = sync;
