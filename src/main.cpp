@@ -32,6 +32,7 @@
 #include "js8/Js8Modem.h"
 #include "modem/ToneClock.h"
 #include "rade/RadeLink.h"
+#include "rade/RadeScreen.h"
 #include "wspr/WsprModem.h"
 #include "spot/FreeDvReporter.h"
 #include "spot/PskReporter.h"
@@ -68,6 +69,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFrame>
+#include <QToolBar>
 #include <QImage>
 #include <QSettings>
 #include <QCoreApplication>
@@ -88,6 +91,7 @@
 #include <QHash>
 #include <QCheckBox>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -1038,10 +1042,15 @@ int shellReady(MainWindow& window) {
           for (QLineEdit* edit : screen->findChildren<QLineEdit*>())
             if (!qobject_cast<QAbstractSpinBox*>(edit->parentWidget()))
               edits.append(edit);
-          return edits.size() != 1 || edits.first()->objectName() != QLatin1String("radeReporterMessage");
+          QStringList names;
+          for (QLineEdit* edit : edits)
+            names << edit->objectName();
+          names.sort();
+          return names != QStringList{QStringLiteral("radeReporterFilter"),
+                                      QStringLiteral("radeReporterMessage")};
         }())
-      // Identity stays in Options → User; the only text box here is the
-      // FreeDV Reporter message.
+      // Identity stays in Options → User. The text boxes here are the
+      // reporter message and the station filter.
       return fail("RADE screen is missing");
     {
       const QString loop = window.radeTxLoopback();
@@ -1117,18 +1126,280 @@ int shellReady(MainWindow& window) {
           return fail("spot chip shows the wrong reporter for a mode");
       }
     }
-    if (!variant || !analog || !bpf || !drive || !sync || !snr || !micBox || !spkBox ||
-        !radeVol || !audio || !rx || !radeHellBox || !tx1 || !screen->isVisible() || audio->isHidden() ||
-        variant->currentText() != QLatin1String("RADE V1") || bpf->isChecked() || !rx->isHidden() ||
-        !radeHellBox->isHidden() || !tx1->isHidden() ||
-        !analog->toolTip().contains(QLatin1String("silent")) ||
-        variant->maximumWidth() > 280 || bpf->isEnabled() ||
+    if (!variant || !analog || !bpf || !drive || !sync || !snr || !micBox || !spkBox || !radeVol ||
+        !audio || !rx || !radeHellBox || !tx1)
+      return fail("RADE V1 screen is missing a control");
+    if (!screen->isVisible())
+      return fail("RADE screen is hidden");
+    if (audio->isHidden())
+      return fail("RADE audio row is hidden");
+    if (variant->currentText() != QLatin1String("RADE V1") || bpf->isChecked() || bpf->isEnabled())
+      return fail("RADE V1 waveform is wrong");
+    if (!rx->isHidden() || !radeHellBox->isHidden() || !tx1->isHidden())
+      return fail("RADE still shows the text panes");
+    if (!analog->toolTip().contains(QLatin1String("silent")) || variant->maximumWidth() > 280 ||
         micBox->count() < 1 || spkBox->count() < 1 || radeVol->maximum() != 100 ||
-        !spkBox->toolTip().contains(QLatin1String("Play on")) ||
-        drive->maximumWidth() > 180 || analog->parentWidget() != audio ||
-        drive->parentWidget() != audio || bpf->parentWidget() != screen ||
+        !spkBox->toolTip().contains(QLatin1String("Play on")) || drive->maximumWidth() > 180 ||
+        analog->parentWidget() != audio || drive->parentWidget() != audio || !screen->isAncestorOf(bpf) ||
         radeProfile->digitalMode() != QLatin1String("RADE V1"))
       return fail("RADE V1 screen is wrong");
+    auto* micBar = window.findChild<QWidget*>(QStringLiteral("radeMicLevel"));
+    auto* snrTrace = window.findChild<QWidget*>(QStringLiteral("radeSnrTrace"));
+    if (!micBar || micBar->parentWidget() != audio || micBar->width() > 140 ||
+        !micBar->toolTip().contains(QLatin1String("0.5")) ||
+        !micBar->toolTip().contains(QLatin1String("clip")) ||
+        !micBar->toolTip().contains(QLatin1String("Drive")))
+      return fail("RADE mic bar is missing");
+    auto* micGain = window.findChild<QSlider*>(QStringLiteral("radeMicGain"));
+    if (!micGain || micGain->parentWidget() != audio || micGain->minimum() != -10 ||
+        micGain->maximum() != 30 || micGain->width() > 120 ||
+        !micGain->toolTip().contains(QLatin1String("leveler")) ||
+        !micGain->toolTip().contains(QLatin1String("Drive")))
+      return fail("RADE mic gain is missing");
+    auto* rxLevel = window.findChild<QWidget*>(QStringLiteral("radeRxLevel"));
+    auto* autoRx = window.findChild<QCheckBox*>(QStringLiteral("radeAutoRx"));
+    auto* lamp = window.findChild<QWidget*>(QStringLiteral("radeSyncLamp"));
+    auto* snrBar = window.findChild<QWidget*>(QStringLiteral("radeSnrBar"));
+    auto* heardClock = window.findChild<QLabel*>(QStringLiteral("radeHeardClock"));
+    if (!rxLevel || !screen->isAncestorOf(rxLevel) ||
+        !rxLevel->toolTip().contains(QLatin1String("dBFS")) ||
+        !rxLevel->toolTip().contains(QLatin1String("CLIP")))
+      return fail("RADE RX meter is missing");
+    if (!autoRx || !screen->isAncestorOf(autoRx) ||
+        !autoRx->toolTip().contains(QLatin1String("clip")))
+      return fail("RADE Auto RX is missing");
+    if (!lamp || !screen->isAncestorOf(lamp))
+      return fail("RADE sync lamp is missing");
+    if (!snrBar || !screen->isAncestorOf(snrBar) ||
+        !snrBar->toolTip().contains(QLatin1String("-10")) ||
+        !snrBar->toolTip().contains(QLatin1String("40")))
+      return fail("RADE SNR bar is missing");
+    if (!heardClock || !screen->isAncestorOf(heardClock) ||
+        !heardClock->toolTip().contains(QLatin1String("how long ago")))
+      return fail("RADE heard clock is missing");
+    if (auto* radeScreen = window.findChild<RadeScreen*>(QStringLiteral("radeScreen"))) {
+      radeScreen->setSync(true, 6.6f, 1.2f);
+      if (snr->text() != QLatin1String("SNR  7") || sync->text() != QLatin1String("Sync  yes"))
+        return fail("RADE SNR is not a whole number");
+      radeScreen->setSync(false, 0.0f, 0.0f);
+      if (sync->text() != QLatin1String("Sync  idle") || snr->text() != QStringLiteral("SNR  —"))
+        return fail("RADE sync idle text changed");
+      radeScreen->setHeard(QStringLiteral("ok"), QStringLiteral("12:00"));
+      if (!heardClock->text().contains(QLatin1String("just now")) ||
+          !heardClock->text().contains(QLatin1String("UTC")))
+        return fail("RADE heard clock did not start");
+      radeScreen->setHeard(QString(), QString());
+      if (heardClock->text() != QStringLiteral("—"))
+        return fail("RADE heard clock did not clear");
+    }
+    {
+      FreeDvReporter reporter;
+      QJsonObject hello{{QStringLiteral("sid"), QStringLiteral("s1")},
+                        {QStringLiteral("callsign"), QStringLiteral("ONE")},
+                        {QStringLiteral("grid_square"), QStringLiteral("AA00")},
+                        {QStringLiteral("version"), QStringLiteral("test")},
+                        {QStringLiteral("rx_only"), false},
+                        {QStringLiteral("last_update"), QStringLiteral("t")},
+                        {QStringLiteral("connect_time"), QStringLiteral("t")}};
+      reporter.ingestPacket(freedvReporterEvent(
+          QStringLiteral("new_connection"), QJsonDocument(hello).toJson(QJsonDocument::Compact)));
+      if (reporter.stations().size() != 1 || reporter.stations().at(0).station != QLatin1String("ONE") ||
+          reporter.stations().at(0).grid != QLatin1String("AA00"))
+        return fail("FreeDV Reporter station list missed a connect");
+      QJsonObject freq{{QStringLiteral("sid"), QStringLiteral("s1")},
+                       {QStringLiteral("freq"), QJsonValue(qint64(14236000))},
+                       {QStringLiteral("callsign"), QStringLiteral("ONE")},
+                       {QStringLiteral("grid_square"), QStringLiteral("AA00")},
+                       {QStringLiteral("last_update"), QStringLiteral("t")}};
+      QJsonArray pair;
+      pair.append(QStringLiteral("freq_change"));
+      pair.append(QJsonValue(freq));
+      QJsonArray bulk;
+      bulk.append(QJsonValue(pair));
+      reporter.ingestPacket(freedvReporterEvent(
+          QStringLiteral("bulk_update"), QJsonDocument(bulk).toJson(QJsonDocument::Compact)));
+      if (reporter.stations().size() != 1 || reporter.stations().at(0).freqHz != 14236000)
+        return fail("FreeDV Reporter bulk update missed a frequency");
+      qint64 askedHz = 0;
+      QObject::connect(&reporter, &FreeDvReporter::qsyAsked, &reporter,
+                       [&askedHz](const QString&, qint64 hz, const QString&) { askedHz = hz; });
+      QJsonObject ask{{QStringLiteral("callsign"), QStringLiteral("TWO")},
+                      {QStringLiteral("frequency"), QJsonValue(qint64(7177000))},
+                      {QStringLiteral("message"), QStringLiteral("move")}};
+      reporter.ingestPacket(freedvReporterEvent(QStringLiteral("qsy_request"),
+                                               QJsonDocument(ask).toJson(QJsonDocument::Compact)));
+      const QJsonObject payload =
+          QJsonDocument::fromJson(freedvReporterQsyPayload(QStringLiteral("s1"), 7177000, QStringLiteral("move")))
+              .object();
+      if (askedHz != 7177000 || payload.value(QStringLiteral("dest_sid")).toString() != QLatin1String("s1") ||
+          qint64(payload.value(QStringLiteral("frequency")).toDouble()) != 7177000)
+        return fail("FreeDV Reporter QSY request was not read");
+      reporter.ingestPacket(freedvReporterEvent(
+          QStringLiteral("remove_connection"),
+          QJsonDocument(QJsonObject{{QStringLiteral("sid"), QStringLiteral("s1")}}).toJson(QJsonDocument::Compact)));
+      if (!reporter.stations().isEmpty())
+        return fail("FreeDV Reporter kept a station that left");
+    }
+    {
+      auto* table = window.findChild<QTableWidget*>(QStringLiteral("radeReporterTable"));
+      auto* filter = window.findChild<QLineEdit*>(QStringLiteral("radeReporterFilter"));
+      auto* filterLabel = window.findChild<QLabel*>(QStringLiteral("radeReporterFilterLabel"));
+      auto* qsyButton = window.findChild<QPushButton*>(QStringLiteral("radeRequestQsy"));
+      auto* ignore = window.findChild<QCheckBox*>(QStringLiteral("radeIgnoreQsy"));
+      auto* logButton = window.findChild<QPushButton*>(QStringLiteral("radeLogContact"));
+      auto* limit = window.findChild<QSpinBox*>(QStringLiteral("radeTxLimit"));
+      auto* saved = window.findChild<QComboBox*>(QStringLiteral("radeSavedMessages"));
+      auto* page = window.findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+      if (!table || !filter || !filterLabel || filterLabel->text() != QLatin1String("Filter") ||
+          filter->placeholderText().isEmpty() || !qsyButton || !ignore || !logButton || !limit || !saved ||
+          !page ||
+          limit->maximum() != 180 || limit->minimum() != 0 || table->columnCount() != 6 ||
+          !table->horizontalHeaderItem(0) ||
+          table->horizontalHeaderItem(0)->text() != QLatin1String("Station") ||
+          !table->horizontalHeaderItem(1) ||
+          table->horizontalHeaderItem(1)->text() != QLatin1String("Grid") ||
+          !table->horizontalHeaderItem(2) ||
+          table->horizontalHeaderItem(2)->text() != QLatin1String("kHz") ||
+          !table->horizontalHeaderItem(3) ||
+          table->horizontalHeaderItem(3)->text() != QLatin1String("Mode") ||
+          !table->horizontalHeaderItem(4) ||
+          table->horizontalHeaderItem(4)->text() != QLatin1String("SNR") ||
+          !table->horizontalHeaderItem(5) ||
+          table->horizontalHeaderItem(5)->text() != QLatin1String("Message") ||
+          table->columnWidth(0) < 200 || table->columnWidth(1) < 150 || table->columnWidth(2) < 140 ||
+          table->columnWidth(3) < 140 || table->columnWidth(4) < 100 ||
+          !table->toolTip().contains(QLatin1String("Double-click")))
+        return fail("RADE reporter table is missing");
+      QVector<FreeDvReporter::Station> rows(2);
+      rows[0].sid = QStringLiteral("a");
+      rows[0].station = QStringLiteral("ONE");
+      rows[0].grid = QStringLiteral("AA00");
+      rows[0].freqHz = 7177000;
+      rows[0].mode = QStringLiteral("RADEV1");
+      rows[1].sid = QStringLiteral("b");
+      rows[1].station = QStringLiteral("TWO");
+      rows[1].grid = QStringLiteral("BB11");
+      rows[1].freqHz = 14236000;
+      rows[1].mode = QStringLiteral("RADEV1");
+      rows[1].message = QStringLiteral("zzzz-only");
+      page->showReporter(rows);
+      if (table->rowCount() != 2)
+        return fail("RADE reporter table did not fill");
+      if (!table->item(0, 2) ||
+          (table->item(0, 2)->textAlignment() & Qt::AlignHorizontal_Mask) != Qt::AlignLeft)
+        return fail("RADE reporter columns are not left aligned");
+      filter->setText(QStringLiteral("zzzz-only"));
+      int shown = 0;
+      for (int row = 0; row < table->rowCount(); ++row)
+        if (!table->isRowHidden(row))
+          ++shown;
+      if (shown != 1)
+        return fail("RADE reporter filter did not narrow the list");
+      filter->clear();
+      auto* scope = window.findChild<QComboBox*>(QStringLiteral("radeReporterScope"));
+      if (!scope || scope->count() != 2 || scope->itemText(0) != QLatin1String("All") ||
+          scope->itemText(1) != QLatin1String("This band"))
+        return fail("RADE reporter band choice is missing");
+      {
+        QVector<FreeDvReporter::Station> colored(3);
+        colored[0].sid = QStringLiteral("tx");
+        colored[0].station = QStringLiteral("TXROW");
+        colored[0].freqHz = 7177000;
+        colored[0].transmitting = true;
+        colored[1].sid = QStringLiteral("rx");
+        colored[1].station = QStringLiteral("RXROW");
+        colored[1].freqHz = 7177000;
+        colored[1].rxAtMs = QDateTime::currentMSecsSinceEpoch();
+        colored[2].sid = QStringLiteral("old");
+        colored[2].station = QStringLiteral("OLDROW");
+        colored[2].freqHz = 14236000;
+        colored[2].rxAtMs = QDateTime::currentMSecsSinceEpoch() - 30000;
+        page->showReporter(colored);
+        auto rowOf = [table](const QString& name) {
+          for (int row = 0; row < table->rowCount(); ++row) {
+            const auto* item = table->item(row, 0);
+            if (item && item->text() == name)
+              return row;
+          }
+          return -1;
+        };
+        const int txRow = rowOf(QStringLiteral("TXROW"));
+        const int rxRow = rowOf(QStringLiteral("RXROW"));
+        const int oldRow = rowOf(QStringLiteral("OLDROW"));
+        if (txRow < 0 || rxRow < 0 || oldRow < 0)
+          return fail("RADE reporter color rows are missing");
+        const QColor txColor = table->item(txRow, 0)->background().color();
+        const QColor rxColor = table->item(rxRow, 0)->background().color();
+        const QColor oldColor = table->item(oldRow, 0)->background().color();
+        if (txColor != QColor(QStringLiteral("#3d2226")) || rxColor != QColor(QStringLiteral("#1e4036")) ||
+            oldColor == QColor(QStringLiteral("#1e4036")) || oldColor == QColor(QStringLiteral("#3d2226")))
+          return fail("RADE reporter row colors are wrong");
+        QSettings scopeStore;
+        const bool hadScope = scopeStore.contains(QStringLiteral("rade/reporterScope"));
+        const QVariant previousScope = scopeStore.value(QStringLiteral("rade/reporterScope"));
+        page->setReporterDial(7177000);
+        scope->setCurrentIndex(1);
+        int onBand = 0;
+        int allRows = 0;
+        for (int row = 0; row < table->rowCount(); ++row)
+          if (!table->isRowHidden(row))
+            ++onBand;
+        scope->setCurrentIndex(0);
+        for (int row = 0; row < table->rowCount(); ++row)
+          if (!table->isRowHidden(row))
+            ++allRows;
+        if (hadScope)
+          scopeStore.setValue(QStringLiteral("rade/reporterScope"), previousScope);
+        else
+          scopeStore.remove(QStringLiteral("rade/reporterScope"));
+        const QSignalBlocker block(scope);
+        const int at = scope->findData(hadScope ? previousScope : QVariant(QStringLiteral("all")));
+        scope->setCurrentIndex(at < 0 ? 0 : at);
+        if (onBand != 2 || allRows != 3)
+          return fail("RADE reporter band filter is wrong");
+      }
+      QSettings messageStore;
+      const bool hadMessages = messageStore.contains(QStringLiteral("dx/freedvReporterMessages"));
+      const QVariant previousMessages = messageStore.value(QStringLiteral("dx/freedvReporterMessages"));
+      struct MessageRestore {
+        bool had = false;
+        QVariant previous;
+        RadeScreen* page = nullptr;
+        ~MessageRestore() {
+          QSettings again;
+          if (had)
+            again.setValue(QStringLiteral("dx/freedvReporterMessages"), previous);
+          else
+            again.remove(QStringLiteral("dx/freedvReporterMessages"));
+          if (page)
+            page->reloadSavedMessages();
+        }
+      } messageRestore{hadMessages, previousMessages, page};
+      for (int i = 0; i < 20; ++i)
+        page->storeReporterMessage(QStringLiteral("note-%1").arg(i));
+      if (page->savedMessageCount() != 15)
+        return fail("RADE saved messages did not stop at 15");
+      if (ModeProfile::radeSidebandForHz(7177000) != QLatin1String("DIGL") ||
+          ModeProfile::radeSidebandForHz(14236000) != QLatin1String("DIGU") ||
+          ModeProfile::radeSidebandForHz(5368500) != QLatin1String("DIGU") ||
+          ModeProfile::radeSidebandForHz(10136000) != QLatin1String("DIGU"))
+        return fail("RADE QSY sideband is wrong");
+      if (auto* wf = window.findChild<WaterfallWidget*>(QStringLiteral("waterfall"))) {
+        const QString previous = wf->radeReadout();
+        wf->setRadeReadout(QStringLiteral("RADE   Sync   SNR 7"));
+        if (!wf->radeReadout().contains(QLatin1String("SNR 7")))
+          return fail("RADE waterfall readout did not stick");
+        wf->setRadeReadout(previous);
+      } else {
+        return fail("RADE waterfall readout is missing");
+      }
+    }
+    auto* offset = window.findChild<QLabel*>(QStringLiteral("radeOffset"));
+    if (!snrTrace || !screen->isAncestorOf(snrTrace) || snrTrace->height() < 32 ||
+        snrTrace->height() > 48 || snrTrace->width() > 200 ||
+        !snrTrace->toolTip().contains(QLatin1String("-10")) ||
+        !snrTrace->toolTip().contains(QLatin1String("35")) || !offset || !snr)
+      return fail("RADE SNR trace is missing");
     auto* radeTx = window.findChild<QPushButton*>(QStringLiteral("txSend"));
     auto* radeHalt = window.findChild<QPushButton*>(QStringLiteral("txHalt"));
     auto* keySlot = window.findChild<QWidget*>(QStringLiteral("radeKeySlot"));
@@ -1149,19 +1420,48 @@ int shellReady(MainWindow& window) {
       auto* scan = window.findChild<QPushButton*>(QStringLiteral("radeScan"));
       auto* dwell = window.findChild<QSpinBox*>(QStringLiteral("radeScanDwell"));
       auto* stay = window.findChild<QCheckBox*>(QStringLiteral("radeScanStay"));
-      auto* waveRow = scan ? qobject_cast<QBoxLayout*>(scan->parentWidget()->layout()) : nullptr;
-      QHBoxLayout* pairRow = nullptr;
-      if (waveRow) {
-        for (int i = 0; i < waveRow->count() && !pairRow; ++i)
-          if (auto* inner = qobject_cast<QHBoxLayout*>(waveRow->itemAt(i)->layout()))
-            if (inner->indexOf(keySlot) >= 0)
-              pairRow = inner;
-      }
-      if (!scan || !dwell || !stay || !pairRow || pairRow->indexOf(scan) <= pairRow->indexOf(keySlot) ||
-          pairRow->indexOf(dwell) != pairRow->indexOf(scan) + 1 ||
-          pairRow->indexOf(stay) != pairRow->indexOf(dwell) + 1 || dwell->minimum() != 5 ||
+      auto* operate = window.findChild<QWidget*>(QStringLiteral("radeOperate"));
+      auto* meterCol = window.findChild<QWidget*>(QStringLiteral("radeMeterCol"));
+      auto* audioHost = window.findChild<QWidget*>(QStringLiteral("radeAudioHost"));
+      auto* layoutPick = window.findChild<QPushButton*>(QStringLiteral("radeLayoutPick"));
+      if (!scan || !dwell || !stay || !operate || !meterCol || !audioHost || !layoutPick ||
+          !operate->isAncestorOf(scan) || !operate->isAncestorOf(keySlot) ||
+          !operate->isAncestorOf(dwell) || !operate->isAncestorOf(stay) || dwell->minimum() != 5 ||
           dwell->maximum() != 30 || dwell->singleStep() != 5 || !scan->isCheckable())
         return fail("RADE Scan controls are missing or out of place");
+      {
+        QSettings store;
+        const bool hadLayout = store.contains(QStringLiteral("rade/layout"));
+        const QString previous = store.value(QStringLiteral("rade/layout")).toString();
+        auto* page = window.findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+        if (!page)
+          return fail("RADE layout switch is missing");
+        page->setColumns(false);
+        QApplication::processEvents();
+        if (micBox->x() > 0 && micGain->x() > 0 && micBar->x() > 0 && drive->x() > 0 &&
+            (micGain->x() < micBox->x() || micGain->x() > micBar->x() || micBar->x() > drive->x()))
+          return fail("RADE row order is wrong");
+        if (snrTrace->x() > 0 && (snrTrace->x() < snr->x() || snrTrace->x() > offset->x()))
+          return fail("RADE SNR trace left the status row");
+        if (audioHost->y() > 0 && operate->y() > 0 && audioHost->y() + 4 < operate->y())
+          return fail("RADE rows did not stack");
+        page->setColumns(true);
+        QApplication::processEvents();
+        if (operate->x() > 0 && meterCol->x() > 0 && audioHost->x() > 0 &&
+            (audioHost->x() >= meterCol->x() || meterCol->x() >= operate->x()))
+          return fail("RADE columns did not line up");
+        if (keySlot->y() > 0 && scan->y() > 0 && scan->y() + 4 < keySlot->y())
+          return fail("RADE RX sits below Scan");
+        if (dwell->y() > 0 && stay->y() > 0 && qAbs(dwell->y() - stay->y()) > 8)
+          return fail("RADE Dwell left the Stay row");
+        if (dwell->width() < 72)
+          return fail("RADE Dwell box is clipped");
+        if (layoutPick->text() != QLatin1String("Show rows"))
+          return fail("RADE layout switch is missing");
+        page->setColumns(hadLayout && previous == QLatin1String("rows") ? false : true);
+        if (!hadLayout)
+          store.remove(QStringLiteral("rade/layout"));
+      }
       // No radio in the self-test: Scan must refuse and stay off.
       scan->click();
       if (scan->isChecked())
@@ -2833,14 +3133,45 @@ int shellReady(MainWindow& window) {
       restore();
       return fail("the JS8 screen is missing");
     }
+    auto* dialBox = window.findChild<QFrame*>(QStringLiteral("dialBox"));
+    auto* dialFreq = window.findChild<QLabel*>(QStringLiteral("dialFreq"));
+    auto* dialRole = window.findChild<QLabel*>(QStringLiteral("dialRole"));
+    auto* dialSide = window.findChild<QLabel*>(QStringLiteral("dialSide"));
+    auto* brand = window.findChild<QToolBar*>(QStringLiteral("brandBar"));
+    if (!dialBox || !dialFreq || !dialRole || !dialSide || !brand || dialBox->parentWidget() == nullptr ||
+        !brand->isAncestorOf(dialBox) || !dialBox->toolTip().contains(QLatin1String("green")) ||
+        !dialBox->toolTip().contains(QLatin1String("red")) ||
+        !dialBox->toolTip().contains(QLatin1String("DIGU")) ||
+        !dialBox->styleSheet().contains(QLatin1String("#3a4250")) ||
+        (dialSide->text() != QLatin1String("DIGU") && dialSide->text() != QLatin1String("DIGL")) ||
+        !(dialFreq->alignment() & Qt::AlignHCenter) || dialFreq->font().weight() < QFont::Bold) {
+      restore();
+      return fail("the dial box is missing");
+    }
     ft8Action->trigger();
-    if (strip->isVisibleTo(&window) || actions->isVisibleTo(&window) || screen->isVisibleTo(&window)) {
+    if (auto* host = dialBox->parentWidget()) {
+      if (host->layout())
+        host->layout()->activate();
+      if (host->width() > 640 && dialBox->width() > 0) {
+        const int center = dialBox->x() + dialBox->width() / 2;
+        if (qAbs(center - host->width() / 2) > 140) {
+          restore();
+          return fail("the dial box is not centered");
+        }
+      }
+    }
+    if (strip->isVisibleTo(&window) || actions->isVisibleTo(&window) || screen->isVisibleTo(&window) ||
+        !dialBox->isVisibleTo(&window) || dialSide->text() != QLatin1String("DIGU")) {
       restore();
       return fail("the JS8 screen shows outside JS8");
     }
     js8Action->trigger();
     const auto* echo = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+    if (auto* host = dialBox->parentWidget(); host && host->layout())
+      host->layout()->activate();
     if (!strip->isVisibleTo(&window) || !actions->isVisibleTo(&window) || !screen->isVisibleTo(&window) ||
+        !dialBox->isVisibleTo(&window) ||
+        (dialBox->x() > 0 && strip->x() > 0 && dialBox->x() >= strip->x()) ||
         (echo && echo->isVisibleTo(&window))) {
       restore();
       return fail("the JS8 screen does not replace the plain receive pane in JS8");

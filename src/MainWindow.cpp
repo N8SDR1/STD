@@ -20,6 +20,7 @@
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
 #include "rade/RadeScreen.h"
+#include "rade/RadeMeters.h"
 #include "speech/SpeechReader.h"
 #include "speech/SpeechInput.h"
 #include "speech/SpeechModel.h"
@@ -537,10 +538,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   });
   connect(tci_, &TciClient::dialChanged, this, [this](qint64 hz) { showDial(hz); });
   connect(tci_, &TciClient::modeChanged, this, [this](const QString& mode) {
+    radioSide_ = mode.trimmed().toUpper();
     if (statusStrip_)
       statusStrip_->setMode(mode);
+    refreshDialBox();
   });
   connect(tci_, &TciClient::pttChanged, this, [this](bool on) {
+    refreshDialBox();
     if (statusStrip_)
       statusStrip_->setPtt(on, tci_->isOpen());
     // The lamp follows the radio. The waterfall TX trace follows only
@@ -1010,17 +1014,21 @@ void MainWindow::buildBrandBar() {
   brandBar_->setAllowedAreas(Qt::TopToolBarArea);
 
   auto* host = new QWidget(brandBar_);
+  host->setObjectName(QStringLiteral("brandHost"));
   host->setFixedHeight(110);
+  host->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   auto* layout = new QHBoxLayout(host);
   layout->setContentsMargins(10, 8, 16, 8);
   layout->setSpacing(14);
 
   auto* mark = new QLabel(host);
+  mark->setObjectName(QStringLiteral("brandMark"));
   const QPixmap icon(":/std/std-icon.png");
   mark->setPixmap(icon.scaled(72, 72, Qt::KeepAspectRatio, Qt::SmoothTransformation));
   mark->setFixedSize(72, 72);
 
   auto* words = new QWidget(host);
+  words->setObjectName(QStringLiteral("brandWords"));
   auto* wordLayout = new QVBoxLayout(words);
   wordLayout->setContentsMargins(0, 0, 0, 0);
   wordLayout->setSpacing(4);
@@ -1035,10 +1043,55 @@ void MainWindow::buildBrandBar() {
   wordLayout->addWidget(name);
   wordLayout->addWidget(subtitle);
 
+  auto* dial = new QFrame(host);
+  dial->setObjectName(QStringLiteral("dialBox"));
+  dial->setFixedSize(268, 78);
+  dial->setToolTip(QStringLiteral(
+      "Radio dial. DIGU or DIGL is the sideband. The border is green while receiving and red while "
+      "transmitting. This does not key. START is never sent."));
+  auto* dialCol = new QVBoxLayout(dial);
+  dialCol->setContentsMargins(12, 6, 12, 8);
+  dialCol->setSpacing(0);
+  auto* top = new QHBoxLayout();
+  top->setContentsMargins(0, 0, 0, 0);
+  top->setSpacing(8);
+  auto* role = new QLabel(QStringLiteral("RX"), dial);
+  role->setObjectName(QStringLiteral("dialRole"));
+  role->setFont(interfaceFont(12, QFont::Bold));
+  role->setStyleSheet(QStringLiteral("color: #efb340; background: transparent; border: none;"));
+  auto* side = new QLabel(dial);
+  side->setObjectName(QStringLiteral("dialSide"));
+  side->setFont(interfaceFont(13, QFont::Bold));
+  side->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+  side->setStyleSheet(QStringLiteral("color: #d7e2ea; background: transparent; border: none;"));
+  top->addWidget(role);
+  top->addStretch(1);
+  top->addWidget(side);
+  auto* freq = new QLabel(dialText_, dial);
+  freq->setObjectName(QStringLiteral("dialFreq"));
+  QFont freqFont = monoFont(28);
+  freqFont.setWeight(QFont::Bold);
+  freq->setFont(freqFont);
+  freq->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+  freq->setStyleSheet(QStringLiteral(
+      "color: #ffb000; background: transparent; border: none; font-weight: 700;"));
+  dialCol->addLayout(top);
+  dialCol->addWidget(freq, 1);
+
+  auto* balance = new QWidget(host);
+  balance->setObjectName(QStringLiteral("dialBalance"));
+  balance->setAttribute(Qt::WA_TransparentForMouseEvents);
+
   layout->addWidget(mark);
   layout->addWidget(words);
-  layout->addWidget(makeJs8Strip(host));
   layout->addStretch(1);
+  layout->addWidget(dial, 0, Qt::AlignVCenter);
+  layout->addStretch(1);
+  layout->addWidget(balance);
+  layout->addWidget(makeJs8Strip(host));
+  layout->addStretch(0);
+  placeDialBox(false);
+  refreshDialBox();
 
   brandBar_->addWidget(host);
   updateAction_ = brandBar_->addAction(QStringLiteral("\u2B06  Update"));
@@ -2218,10 +2271,13 @@ void MainWindow::qsyDial(qint64 hz) {
   if (ft8_ && liveDialHz_ > 0 && std::llabs(hz - liveDialHz_) > 1000)
     ft8_->clearAverages();
   liveDialHz_ = hz;
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+    screen->setReporterDial(hz);
   if (!tci_ || !tci_->isOpen())
     return;
   // Band buttons and WSPR hopping. Connect already sent AUDIO_START:0.
   // This writes the dial only. START is never sent, and this does not key.
+  radioSide_.clear();
   tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
   tci_->setDialHz(hz);
   showDial(hz);
@@ -2755,6 +2811,25 @@ QWidget* MainWindow::makeReceivePanel() {
     if (!txRade_)
       ensureRadeCodec();
   });
+  connect(rade, &RadeScreen::stationTune, this, [this](qint64 hz) { tuneRadeStation(hz); });
+  connect(rade, &RadeScreen::stationQsy, this, [this](const QString& sid) {
+    auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+    if (!freedvReporter_ || !freedvReporter_->connected() || liveDialHz_ < 100000) {
+      if (screen)
+        screen->releaseQsyRequest();
+      setTxStatus(QStringLiteral(
+          "FreeDV Reporter is not connected, so the request was not sent. START was not sent."));
+      return;
+    }
+    freedvReporter_->requestQsy(sid, liveDialHz_,
+                                QSettings().value(QStringLiteral("dx/freedvReporterMessage")).toString());
+    setTxStatus(QStringLiteral("Asked the selected station to move here. START was not sent."));
+  });
+  connect(rade, &RadeScreen::stationLog, this,
+          [this](const QString& station, const QString& grid, int snr, qint64 hz) {
+            logRadeContact(station, grid, snr, hz);
+          });
+  connect(rade, &RadeScreen::reporterMessageChanged, this, [this] { updateFreedvReporter(true); });
   layout->addWidget(echo, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
@@ -3958,10 +4033,12 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     wefax_->setArmed(autoMonitor_ && fax);
   }
   if (tci_ && tci_->isOpen()) {
+    radioSide_.clear();
     if (radeHere)
       tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
     else if (rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax)
       tci_->setSideband(QStringLiteral("DIGU"));
+    refreshDialBox();
   }
   applyChannelWidth();
   if (radeHere) {
@@ -4048,9 +4125,14 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"))) {
     screen->setVisible(rade);
-    if (rade)
+    if (rade) {
       screen->showMode(mode);
+      if (profile_)
+        screen->placeAudio(profile_->radeAudioBar(), profile_);
+    }
   }
+  if (waterfall_)
+    waterfall_->setRadeReadout(rade ? QStringLiteral("RADE   idle") : QString());
   if (auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"))) {
     bar->setVisible(text && !js8Mode(mode) && !rade);
     applyContestRow();
@@ -4121,8 +4203,10 @@ void MainWindow::tuneActiveBand() {
     return;
   // FT8 and FT4 stay DIGU. RADE uses the reporter sideband for this band.
   // This is not START and it does not key.
+  radioSide_.clear();
   tci_->setSideband(profile_->sideband());
   tci_->setDialHz(hz);
+  refreshDialBox();
 }
 
 void MainWindow::showGuide() {
@@ -4147,19 +4231,22 @@ void MainWindow::showGuide() {
        "after Tune or TX is pressed. Connect does not send START, and it does not key."},
       {"RADE",
        "Mode, RADE V1 is HF digital voice. RADE V2 is experimental and does not talk to V1. "
-       "The RADE screen replaces the FT8 sequence and the Hell tape. Waveform and BPF "
-       "sit side by side. BPF is the tick box after Waveform; it is the V2 modem band-pass and is "
+       "The RADE screen replaces the FT8 sequence and the Hell tape. Show columns places "
+       "Audio, Status, and Waveform side by side. Show rows stacks them, and a narrow window "
+       "wraps the status row and the audio row. The choice is remembered. BPF is the tick box after Waveform; it is the V2 modem band-pass and is "
        "greyed out on V1, which sends without one, as FreeDV does. The end-of-over carries your "
        "callsign from Options, User, coded the way the FreeDV app codes it, so FreeDV stations and "
        "FreeDV Reporter show your call. TX fills a quarter-second buffer first so the modem frames go "
        "out without gaps. The band buttons set the sideband over TCI: DIGL on 160, 80, and 40 m, "
        "DIGU on 30 m and up, the FreeDV convention. The waterfall cursor goes to 1500 Hz, where the "
        "modem sits. Analog passthrough is the separate voice mix. STD does not set the radio filter. "
-       "Under the band chips the row is Mic, a short Drive, Mic NR, Speaker, Volume, BW expand, "
+       "The top bar shows the radio dial in every mode, including JS8. The border is green while receiving, red while transmitting, and gray when the radio is not connected. DIGU or DIGL is in that box. The digits are centered. The box does not tune and does not key. "
+       "Under the band chips the row is Mic, a short Gain, the speech-level bar, a short Drive, Mic NR, Speaker, Volume, BW expand, "
        "then Analog. Mic NR is RNNoise noise suppression on your microphone and BW expand fills in "
        "the band above 8 kHz on decoded speech, both on by default as in the FreeDV app. "
        "Drive 0 is silent and 100 is the FreeDV app's level; set it so ALC barely moves. The "
        "microphone is levelled before the encoder, as FreeDV does, so speak normally. "
+       "The bar after Gain shows those speech peaks from 0 to 1. The mark is half scale, where the FreeDV manual says the level should average, and the top of the bar is clipping. Gain, before the bar, runs from -10 to 30 dB before the leveler. Options, Speech has no microphone gain, and 0 leaves the microphone as Windows set it. The RX bar is the decoder input in dBFS and reads CLIP at full scale. Auto RX lowers that input when it clips. Sync has a lamp. SNR is a whole number with a live bar from -10 to 40 dB. The trace beside SNR is still the last 3 minutes, from -10 to 35 dB. The clock beside Heard is how long since the last decode. "
        "Heard shows the callsign from the other station's end-of-over. Offset shows how far the station you receive is from where it should be, in Hz, as the FreeDV app shows it: plus is above, minus below, and RADE tracks only about 50 Hz either way. Volume is the Speech playback "
        "level, from 0 to 100. Analog off plays decoded speech only and stays silent until sync. "
        "RX and TX sit on the Waveform row. RX and TX work like the radio's switch: RX is green while receiving, TX shows ON AIR while transmitting, and clicking RX (or TX again) ends the over with the end-of-over and your callsign, with RX amber for that moment. Halt is not shown in RADE, because it would drop without your callsign. "
@@ -4179,6 +4266,13 @@ void MainWindow::showGuide() {
        "Speech microphone and trx with tci. FreeDV Reporter, under Options → Network Configuration, "
        "is Off until you choose On; then while RADE is the mode it shows your call, locator, dial, "
        "and TX on qso.freedv.org and reports each RADE station you hear. "
+       "The reporter list is on this screen. Filter keeps rows whose station, grid, mode, or message "
+       "contains the text, and the Filter caption stays while the cursor is in the box. All lists every "
+       "station. This band keeps the dial's band. A transmitting row is a soft red tint and a receiving "
+       "row is a soft green tint for about 10 seconds, so there is no TX column. Double-click a row to "
+       "tune there. Request QSY asks the selected station to move to this dial. Ignore requests drops "
+       "inbound QSY requests. Log contact writes the selected row. Saved messages keeps up to 15 reporter "
+       "messages. TX limit stops a transmit at 3 minutes. The waterfall shows sync, SNR, the RX level, and CLIP. "
        "Connect still sends AUDIO_START for receiver 0. A useful passband is "
        "about 750 to 2250 Hz, with radio NR off. START is never sent."},
       {"FT8, FT4, and FT2",
@@ -6568,6 +6662,16 @@ void MainWindow::refreshTxChrome() {
     // Halt would drop without them, so it is not shown here.
     if (auto* halt = findChild<QWidget*>(QStringLiteral("txHalt")))
       halt->setVisible(false);
+    if (auto* sendBtn = findChild<QPushButton*>(QStringLiteral("txSend"))) {
+      sendBtn->setMinimumSize(104, 44);
+      sendBtn->setStyleSheet(QStringLiteral(
+          "QPushButton#txSend { background: #3a1214; color: #ffd0cc; border: 1px solid #ff4136; "
+          "border-radius: 4px; padding: 8px 22px; font-weight: bold; font-size: 15px; } "
+          "QPushButton#txSend:checked { background: #8d1d18; color: #fff; }"));
+    }
+  } else if (auto* sendBtn = findChild<QPushButton*>(QStringLiteral("txSend"))) {
+    sendBtn->setMinimumSize(0, 0);
+    sendBtn->setStyleSheet(QString());
   }
   if (auto* keyPair = findChild<QWidget*>(QStringLiteral("txKeyPair"))) {
     QWidget* target = rade ? findChild<QWidget*>(QStringLiteral("radeKeySlot"))
@@ -8166,6 +8270,8 @@ void MainWindow::stopUserTx(bool uncheck) {
   if (wasRade) {
     updateFreedvReporter(true);
     refreshRadeRxChip();
+    if (auto* bar = findChild<RadeMicBar*>(QStringLiteral("radeMicLevel")))
+      bar->clear();
   }
   radeStopping_ = false;
   radeFinished_ = false;
@@ -10216,7 +10322,10 @@ void MainWindow::setReceivePlaceholder(bool connected) {
 void MainWindow::showRadioDown(const QString& error) {
   const QString dash = QString::fromUtf8("—");
   liveDialHz_ = 0;
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+    screen->setReporterDial(0);
   dialText_ = dash;
+  radioSide_.clear();
   setReceivePlaceholder(false);
   const QString line = error.isEmpty() ? QStringLiteral("Radio not connected")
                                         : QStringLiteral("Radio not connected: %1").arg(error);
@@ -10232,6 +10341,7 @@ void MainWindow::showRadioDown(const QString& error) {
     waterfall_->clearAudio();
     waterfall_->setRadio(false, dash);
   }
+  refreshDialBox();
   if (ft8_)
     ft8_->clear();
 }
@@ -10250,6 +10360,7 @@ void MainWindow::showRadioUp(const QString& host, quint16 port) {
     waterfall_->clearAudio();
     waterfall_->setRadio(true, dialText_);
   }
+  refreshDialBox();
 }
 
 void MainWindow::showDial(qint64 hz) {
@@ -10261,12 +10372,61 @@ void MainWindow::showDial(qint64 hz) {
     if (ft8_ && liveDialHz_ > 0 && std::llabs(hz - liveDialHz_) > 1000)
       ft8_->clearAverages();
     liveDialHz_ = hz;
+    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+      screen->setReporterDial(hz);
   }
   dialText_ = formatDial(hz);
   if (statusStrip_)
     statusStrip_->setDial(dialText_);
   if (waterfall_)
     waterfall_->setRadio(true, dialText_);
+  refreshDialBox();
+}
+
+void MainWindow::refreshDialBox() {
+  auto* box = findChild<QFrame*>(QStringLiteral("dialBox"));
+  auto* role = findChild<QLabel*>(QStringLiteral("dialRole"));
+  auto* freq = findChild<QLabel*>(QStringLiteral("dialFreq"));
+  if (!box || !role || !freq)
+    return;
+  const bool open = tci_ && tci_->isOpen();
+  const bool tx = open && tci_->isTransmitting();
+  const QString border = !open ? QStringLiteral("#3a4250") : tx ? QStringLiteral("#ff4136") : QStringLiteral("#34c759");
+  box->setStyleSheet(QStringLiteral(
+                         "QFrame#dialBox { background-color: #0a0e12; border: 2px solid %1; border-radius: 6px; }")
+                         .arg(border));
+  role->setText(tx ? QStringLiteral("TX") : QStringLiteral("RX"));
+  freq->setText(dialText_);
+  if (auto* side = findChild<QLabel*>(QStringLiteral("dialSide"))) {
+    QString band = radioSide_;
+    if (band.isEmpty())
+      band = profile_ ? profile_->sideband() : QStringLiteral("DIGU");
+    side->setText(band);
+  }
+}
+
+void MainWindow::placeDialBox(bool js8) {
+  auto* host = findChild<QWidget*>(QStringLiteral("brandHost"));
+  auto* layout = host ? qobject_cast<QHBoxLayout*>(host->layout()) : nullptr;
+  auto* balance = findChild<QWidget*>(QStringLiteral("dialBalance"));
+  auto* mark = findChild<QLabel*>(QStringLiteral("brandMark"));
+  auto* words = findChild<QWidget*>(QStringLiteral("brandWords"));
+  if (!layout || !balance || !mark || !words)
+    return;
+  // 0 logo, 1 title, 2 lead, 3 dial, 4 tail, 5 balance, 6 JS8 row, 7 end.
+  if (js8) {
+    balance->hide();
+    layout->setStretch(2, 0);
+    layout->setStretch(4, 0);
+    layout->setStretch(7, 1);
+  } else {
+    balance->setFixedWidth(mark->width() + layout->spacing() + words->sizeHint().width());
+    balance->show();
+    layout->setStretch(2, 1);
+    layout->setStretch(4, 1);
+    layout->setStretch(7, 0);
+  }
+  layout->invalidate();
 }
 
 void MainWindow::showAbout() {

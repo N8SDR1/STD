@@ -56,6 +56,10 @@ public:
   void refreshStation();
   // Fills the Mic, speaker, and volume row from the Speech settings.
   void refreshRadeDevices();
+  QWidget* radeAudioBar() const { return radeAudio_; }
+  // Columns stack the microphone controls. Rows keep one line and wrap it
+  // when the panel is narrow.
+  void setRadeAudioStacked(bool stacked);
   // RADE scan: every FreeDV Reporter calling dial, low band to high, as
   // (band index, Hz).
   // meters limits it to those bands ("160", "80", "60", "40", "20", "17",
@@ -67,6 +71,13 @@ public:
   static QStringList radeScanBands();
   // Moves to that band and dial and emits tuneRequested, as a band click does.
   void selectDial(int band, qint64 hz);
+  // Band index for a RADE dial, or -1 when it is outside every HF band.
+  static int radeBandForHz(qint64 hz);
+  // DIGL on 160, 80, and 40. DIGU everywhere else, including 60 m.
+  static QString radeSidebandForHz(qint64 hz);
+  // Lights the band chip for hz so the sideband follows. Does not emit
+  // tuneRequested and does not move the dial by itself.
+  bool followRadeDial(qint64 hz);
   // Right-click Extra: list, edit, delete, or add this band's extra dials.
   void editExtras();
   // The extra dials for the current mode and band, and setting them.
@@ -101,6 +112,7 @@ private:
 
   QWidget* bar_ = nullptr;
   QWidget* radeAudio_ = nullptr;
+  bool radeAudioStacked_ = false;
   QWidget* keyboard_ = nullptr;
   QComboBox* radeMicBox_ = nullptr;
   QComboBox* radeSpeakerBox_ = nullptr;

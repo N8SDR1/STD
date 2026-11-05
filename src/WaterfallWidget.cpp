@@ -1519,11 +1519,39 @@ void WaterfallWidget::paintOverlays(QPainter& painter) const {
   paintMarkers(painter);
   paintTxHot(painter);
   paintRuler(painter);
-  const QRect plot = plotRect();
-  painter.fillRect(QRect(8, plot.top() + 4, 248, 18), QColor(0, 2, 12, 210));
-  paintDial(painter, plot.top() + 5);
+  paintRadeReadout(painter);
   if (rowCount_ <= 0)
     paintStandbyPlate(painter);
+}
+
+void WaterfallWidget::setRadeReadout(const QString& text) {
+  if (text == radeReadout_)
+    return;
+  radeReadout_ = text;
+  if (chrome_)
+    chrome_->update();
+  else
+    update();
+}
+
+void WaterfallWidget::paintRadeReadout(QPainter& painter) const {
+  if (radeReadout_.isEmpty())
+    return;
+  const QRect plot = plotRect();
+  if (plot.width() < 40 || plot.height() < 24)
+    return;
+  QFont font(QStringLiteral("Segoe UI"));
+  font.setPixelSize(12);
+  font.setBold(true);
+  painter.setFont(font);
+  const QFontMetrics metrics(font);
+  const int width = std::min(metrics.horizontalAdvance(radeReadout_) + 16, plot.width() - 16);
+  const QRect box(plot.left() + 8, plot.top() + 6, std::max(40, width), metrics.height() + 8);
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(QColor(8, 16, 24, 210));
+  painter.drawRoundedRect(box, 4, 4);
+  painter.setPen(QColor(QStringLiteral("#d6f5ff")));
+  painter.drawText(box.adjusted(6, 0, -6, 0), Qt::AlignVCenter | Qt::AlignLeft, radeReadout_);
 }
 
 void WaterfallWidget::scheduleRebuild() {
@@ -1665,8 +1693,6 @@ void WaterfallWidget::paintPlaceholder(QPainter& painter) const {
   mono.setPixelSize(12);
   painter.setFont(mono);
 
-  paintDial(painter, 8);
-
   painter.setPen(QColor("#8399ac"));
   const QStringList ticks = {
       QString::fromUtf8("−2"),
@@ -1708,17 +1734,6 @@ void WaterfallWidget::paintStandbyPlate(QPainter& painter) const {
   painter.drawText(plate.adjusted(0, 36, 0, 0), Qt::AlignHCenter | Qt::AlignTop,
                    radioConnected_ ? QStringLiteral("Waiting for audio")
                                    : QStringLiteral("Radio not connected"));
-}
-
-void WaterfallWidget::paintDial(QPainter& painter, int y) const {
-  QFont mono("JetBrains Mono");
-  mono.setStyleHint(QFont::Monospace);
-  mono.setPixelSize(12);
-  painter.setFont(mono);
-  painter.setPen(QColor("#6d8496"));
-  painter.drawText(QRect(12, y, 42, 16), Qt::AlignLeft | Qt::AlignVCenter, "DIAL");
-  painter.setPen(QColor("#00e5ff"));
-  painter.drawText(QRect(54, y, 220, 16), Qt::AlignLeft | Qt::AlignVCenter, dialText_);
 }
 
 void WaterfallWidget::paintRuler(QPainter& painter) const {

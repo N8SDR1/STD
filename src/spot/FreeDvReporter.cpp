@@ -3,16 +3,18 @@
 
 #include "spot/FreeDvReporter.h"
 
+#include <QDateTime>
 #include <QJsonArray>
-#include <QJsonValue>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QSettings>
 #include <QTimer>
 #include <QUrl>
 #include <QWebSocket>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -64,6 +66,26 @@ QString freedvReporterModeName(bool v2) {
   return v2 ? QStringLiteral("RADEV2") : QStringLiteral("RADEV1");
 }
 
+QByteArray freedvReporterQsyPayload(const QString& sid, qint64 hz, const QString& message) {
+  return QJsonDocument(QJsonObject{{QStringLiteral("dest_sid"), sid},
+                                   {QStringLiteral("frequency"), QJsonValue(hz)},
+                                   {QStringLiteral("message"), message}})
+      .toJson(QJsonDocument::Compact);
+}
+
+static QString jsonText(const QJsonObject& object, const char* key) {
+  const QJsonValue value = object.value(QLatin1String(key));
+  return value.isString() ? value.toString() : QString();
+}
+
+static bool jsonNumber(const QJsonObject& object, const char* key, qint64* out) {
+  const QJsonValue value = object.value(QLatin1String(key));
+  if (!value.isDouble() || !out)
+    return false;
+  *out = qint64(value.toDouble());
+  return true;
+}
+
 FreeDvReporter::FreeDvReporter(QObject* parent)
     : QObject(parent), retry_(new QTimer(this)), watchdog_(new QTimer(this)) {
   retry_->setSingleShot(true);
@@ -106,6 +128,10 @@ void FreeDvReporter::setActive(bool on, const QString& call, const QString& grid
       socket_->close();
     }
     ready_ = false;
+    if (!stations_.isEmpty()) {
+      stations_.clear();
+      emit stationsChanged();
+    }
     emit status(QStringLiteral("FreeDV Reporter is off. This does not key. START was not sent."));
     return;
   }
@@ -183,20 +209,141 @@ void FreeDvReporter::onText(const QString& text) {
   }
   if (packet != QLatin1Char('2'))
     return;
-  // The server streams every station's reports to every client. STD only
-  // needs to know it was accepted, so the rest is not parsed. The FreeDV app
-  // also takes the event inside a bulk_update.
-  // A quote inside chat text arrives escaped, so ["connection_successful"
-  // only matches the event itself.
-  if (!text.contains(QLatin1String("[\"connection_successful\"")))
+  ingestPacket(text.toUtf8());
+}
+
+void FreeDvReporter::ingestPacket(const QByteArray& packet) {
+  if (!packet.startsWith("42"))
     return;
-  if (!ready_) {
-    ready_ = true;
-    retryMs_ = 5000;
-    sendState();
-    emit status(QStringLiteral("FreeDV Reporter connected as %1. This does not key. START was not sent.")
-                    .arg(call_));
+  const QJsonDocument doc = QJsonDocument::fromJson(packet.mid(2));
+  if (!doc.isArray() || doc.array().isEmpty() || !doc.array().at(0).isString())
+    return;
+  const QJsonArray frame = doc.array();
+  const QJsonValue arg = frame.size() > 1 ? frame.at(1) : QJsonValue();
+  bool dirty = false;
+  applyEvent(frame.at(0).toString(), arg, &dirty);
+  if (dirty)
+    emit stationsChanged();
+}
+
+FreeDvReporter::Station* FreeDvReporter::stationFor(const QString& sid) {
+  if (sid.isEmpty())
+    return nullptr;
+  for (Station& row : stations_)
+    if (row.sid == sid)
+      return &row;
+  return nullptr;
+}
+
+void FreeDvReporter::applyEvent(const QString& name, const QJsonValue& arg, bool* dirty) {
+  if (name == QLatin1String("connection_successful")) {
+    if (!ready_) {
+      ready_ = true;
+      retryMs_ = 5000;
+      stations_.clear();
+      if (dirty)
+        *dirty = true;
+      sendState();
+      emit status(QStringLiteral("FreeDV Reporter connected as %1. This does not key. START was not sent.")
+                      .arg(call_));
+    }
+    return;
   }
+  if (name == QLatin1String("bulk_update")) {
+    if (!arg.isArray())
+      return;
+    for (const QJsonValue& item : arg.toArray()) {
+      if (!item.isArray())
+        continue;
+      const QJsonArray pair = item.toArray();
+      if (pair.size() < 1 || !pair.at(0).isString())
+        continue;
+      const QJsonValue inner = pair.size() > 1 ? pair.at(1) : QJsonValue();
+      applyEvent(pair.at(0).toString(), inner, dirty);
+    }
+    return;
+  }
+  if (name == QLatin1String("qsy_request")) {
+    if (!arg.isObject())
+      return;
+    const QJsonObject object = arg.toObject();
+    const QString station = jsonText(object, "callsign");
+    qint64 hz = 0;
+    if (station.isEmpty() || !jsonNumber(object, "frequency", &hz) || hz <= 0)
+      return;
+    emit qsyAsked(station, hz, jsonText(object, "message"));
+    return;
+  }
+  if (!arg.isObject())
+    return;
+  const QJsonObject object = arg.toObject();
+  const QString sid = jsonText(object, "sid");
+  if (sid.isEmpty())
+    return;
+  if (name == QLatin1String("remove_connection")) {
+    const auto at = std::remove_if(stations_.begin(), stations_.end(),
+                                   [&sid](const Station& row) { return row.sid == sid; });
+    if (at == stations_.end())
+      return;
+    stations_.erase(at, stations_.end());
+    if (dirty)
+      *dirty = true;
+    return;
+  }
+  Station* row = stationFor(sid);
+  if (!row) {
+    if (name != QLatin1String("new_connection") && name != QLatin1String("freq_change") &&
+        name != QLatin1String("tx_report") && name != QLatin1String("rx_report") &&
+        name != QLatin1String("message_update"))
+      return;
+    Station fresh;
+    fresh.sid = sid;
+    stations_.append(fresh);
+    row = &stations_.last();
+  }
+  auto takeText = [&](const char* key, QString* field) {
+    const QJsonValue value = object.value(QLatin1String(key));
+    if (!value.isString() || !field)
+      return;
+    *field = value.toString();
+  };
+  if (name == QLatin1String("new_connection")) {
+    takeText("callsign", &row->station);
+    takeText("grid_square", &row->grid);
+    takeText("version", &row->version);
+    const QJsonValue rxOnly = object.value(QStringLiteral("rx_only"));
+    if (rxOnly.isBool())
+      row->rxOnly = rxOnly.toBool();
+  } else if (name == QLatin1String("freq_change")) {
+    takeText("callsign", &row->station);
+    takeText("grid_square", &row->grid);
+    qint64 hz = 0;
+    if (jsonNumber(object, "freq", &hz) && hz > 0)
+      row->freqHz = hz;
+  } else if (name == QLatin1String("tx_report")) {
+    takeText("callsign", &row->station);
+    takeText("grid_square", &row->grid);
+    takeText("mode", &row->mode);
+    takeText("last_tx", &row->lastTx);
+    const QJsonValue tx = object.value(QStringLiteral("transmitting"));
+    if (tx.isBool())
+      row->transmitting = tx.toBool();
+  } else if (name == QLatin1String("rx_report")) {
+    takeText("callsign", &row->heard);
+    takeText("mode", &row->mode);
+    const QJsonValue snr = object.value(QStringLiteral("snr"));
+    if (snr.isDouble()) {
+      row->snr = int(std::lround(snr.toDouble()));
+      row->snrKnown = true;
+      row->rxAtMs = QDateTime::currentMSecsSinceEpoch();
+    }
+  } else if (name == QLatin1String("message_update")) {
+    takeText("message", &row->message);
+  } else {
+    return;
+  }
+  if (dirty)
+    *dirty = true;
 }
 
 void FreeDvReporter::sendEvent(const QString& name, const QByteArray& payload) {
@@ -249,6 +396,12 @@ void FreeDvReporter::setMessage(const QString& text) {
   if (ready_)
     sendEvent(QStringLiteral("message_update"),
               QJsonDocument(QJsonObject{{QStringLiteral("message"), message_}}).toJson(QJsonDocument::Compact));
+}
+
+void FreeDvReporter::requestQsy(const QString& sid, qint64 hz, const QString& message) {
+  if (!ready_ || sid.isEmpty() || hz <= 0)
+    return;
+  sendEvent(QStringLiteral("qsy_request"), freedvReporterQsyPayload(sid, hz, message));
 }
 
 void FreeDvReporter::reportReceive(const QString& call, const QString& mode, int snrDb) {

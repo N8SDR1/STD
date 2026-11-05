@@ -7,7 +7,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(STD
-  VERSION 0.1.6
+  VERSION 0.1.8
   DESCRIPTION "STD — Shift, Tone, Decode"
   LANGUAGES CXX)
 
@@ -140,6 +140,8 @@ qt_add_executable(std
   src/wspr/WsprModem.h
   src/rade/RadeScreen.cpp
   src/rade/RadeScreen.h
+  src/rade/RadeMeters.cpp
+  src/rade/RadeMeters.h
   src/rade/RadeLink.cpp
   src/rade/RadeLink.h
   src/rade/RadeSpeaker.cpp

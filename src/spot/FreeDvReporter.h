@@ -4,8 +4,10 @@
 #pragma once
 
 #include <QByteArray>
+#include <QJsonValue>
 #include <QObject>
 #include <QString>
+#include <QVector>
 
 class QTimer;
 class QWebSocket;
@@ -29,6 +31,9 @@ QByteArray freedvReporterEvent(const QString& name, const QByteArray& jsonPayloa
 // "RADEV1" or "RADEV2", the mode names FreeDV Reporter shows.
 QString freedvReporterModeName(bool v2);
 
+// qsy_request payload: dest_sid, frequency, message.
+QByteArray freedvReporterQsyPayload(const QString& sid, qint64 hz, const QString& message);
+
 class FreeDvReporter : public QObject {
   Q_OBJECT
 
@@ -48,9 +53,37 @@ public:
   void setMessage(const QString& text);
   // An empty call reports a RADE signal in sync with no callsign yet.
   void reportReceive(const QString& call, const QString& mode, int snrDb);
+  // Ask one connected station to move to hz. Nothing is sent until the
+  // reporter is up. This does not key and does not send START.
+  void requestQsy(const QString& sid, qint64 hz, const QString& message);
+
+  // One row on the in-app station list. sid is the server's session id.
+  struct Station {
+    QString sid;
+    QString station;
+    QString grid;
+    QString version;
+    QString mode;
+    QString message;
+    QString heard;
+    QString lastTx;
+    qint64 freqHz = 0;
+    qint64 rxAtMs = 0;
+    int snr = 0;
+    bool snrKnown = false;
+    bool transmitting = false;
+    bool rxOnly = false;
+  };
+  QVector<Station> stations() const { return stations_; }
+  // Applies one socket.io event packet ("42[...]") with no socket. The
+  // self-test uses this. A live connection uses the same parser.
+  void ingestPacket(const QByteArray& packet);
 
 signals:
   void status(const QString& text);
+  void stationsChanged();
+  // Someone asked this station to move. hz is the dial they named.
+  void qsyAsked(const QString& station, qint64 hz, const QString& note);
 
 private:
   void open();
@@ -58,6 +91,8 @@ private:
   void onText(const QString& text);
   void sendEvent(const QString& name, const QByteArray& payload = QByteArray());
   void sendState();
+  void applyEvent(const QString& name, const QJsonValue& arg, bool* dirty);
+  Station* stationFor(const QString& sid);
 
   QWebSocket* socket_ = nullptr;
   QTimer* retry_ = nullptr;
@@ -70,6 +105,7 @@ private:
   QString mode_ = QStringLiteral("RADEV1");
   bool tx_ = false;
   QString message_;
+  QVector<Station> stations_;
   int pingMs_ = 25000 + 20000;
   int retryMs_ = 5000;
 };

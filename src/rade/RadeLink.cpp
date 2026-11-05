@@ -51,6 +51,7 @@ bool RadeLink::load() {
   rx_ = reinterpret_cast<RxFn>(GetProcAddress(mod, "std_rade_rx"));
   sync_ = reinterpret_cast<SyncFn>(GetProcAddress(mod, "std_rade_sync"));
   snr_ = reinterpret_cast<SnrFn>(GetProcAddress(mod, "std_rade_snr"));
+  micPeak_ = reinterpret_cast<SnrFn>(GetProcAddress(mod, "std_rade_mic_peak"));
   foff_ = reinterpret_cast<SnrFn>(GetProcAddress(mod, "std_rade_freq_offset"));
   selftest_ = reinterpret_cast<TestFn>(GetProcAddress(mod, "std_rade_selftest"));
   errorFn_ = reinterpret_cast<ErrFn>(GetProcAddress(mod, "std_rade_error"));
@@ -155,6 +156,10 @@ float RadeLink::freqOffset() {
 
 float RadeLink::snr() {
   return opened_ && snr_ ? snr_() : 0.0f;
+}
+
+float RadeLink::micPeak() {
+  return opened_ && micPeak_ ? micPeak_() : 0.0f;
 }
 
 int RadeLink::selftest() {

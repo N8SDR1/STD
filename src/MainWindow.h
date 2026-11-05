@@ -133,6 +133,8 @@ private:
   void showRadioDown(const QString& error);
   void showRadioUp(const QString& host, quint16 port);
   void showDial(qint64 hz);
+  void refreshDialBox();
+  void placeDialBox(bool js8);
 
   QWidget* makeTextPanel(const QString& editName, const QString& placeholder,
                          bool readOnly, const QString& note);
@@ -154,6 +156,10 @@ private:
   // Green RX while receiving, amber while the over ends.
   void refreshRadeRxChip();
   void radeRxClicked();
+  void tuneRadeStation(qint64 hz);
+  void showFreedvStations();
+  void onFreedvQsy(const QString& station, qint64 hz, const QString& note);
+  void logRadeContact(const QString& station, const QString& grid, int snr, qint64 hz);
   void applyRadeCapture(const QString& id);
   void applyRadeOutput(const QString& id);
 
@@ -410,7 +416,15 @@ private:
   qint64 radeTailMs_ = 0;
   qint64 radeOriginMs_ = 0;
   qint64 radeMeterMs_ = 0;
+  qint64 radeTxBeganMs_ = 0;
+  bool radeTxLimitWarned_ = false;
   qint64 radeOpenTryMs_ = 0;
+  // Auto RX offset on the decoder input, from -30 to 0 dB. 0 leaves it alone.
+  double radeRxAutoDb_ = 0;
+  float radeRxPeakDb_ = -120.0f;
+  float radeRxShownDb_ = -120.0f;
+  bool radeRxShownClip_ = false;
+  qint64 radeRxAutoAt_ = 0;
   QString radeSpeakerId_;
   SpeechModelDownload* modelDl_ = nullptr;
   SpeechRecognizer* recognizer_ = nullptr;
@@ -464,6 +478,7 @@ private:
   bool layoutGuard_ = false;
   QVector<DecodeRow> decodes_;
   QString dialText_ = QString::fromUtf8("—");
+  QString radioSide_;
   qint64 liveDialHz_ = 0;
   MaEngine ma_;
   QDockWidget* waterfallDock_ = nullptr;
