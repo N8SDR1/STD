@@ -7,6 +7,8 @@
 #include "DigitalMode.h"
 #include "ModeProfile.h"
 
+#include <QBrush>
+#include <QColor>
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
@@ -56,6 +58,41 @@ public:
 };
 
 constexpr int kSavedMessages = 15;
+constexpr int kRxHighlightMs = 10000;
+constexpr int kRoleRxAt = Qt::UserRole + 1;
+constexpr int kRoleTx = Qt::UserRole + 2;
+
+void paintReporterRow(QTableWidget* table, int row) {
+  if (!table)
+    return;
+  auto* head = table->item(row, 0);
+  if (!head)
+    return;
+  const bool tx = head->data(kRoleTx).toBool();
+  const qint64 rxAt = head->data(kRoleRxAt).toLongLong();
+  const bool rx = !tx && rxAt > 0 && QDateTime::currentMSecsSinceEpoch() - rxAt < kRxHighlightMs;
+  QColor background;
+  QColor foreground;
+  if (tx) {
+    background = QColor(QStringLiteral("#8d1d18"));
+    foreground = QColor(QStringLiteral("#ffffff"));
+  } else if (rx) {
+    background = QColor(QStringLiteral("#0f5132"));
+    foreground = QColor(QStringLiteral("#d1ffe0"));
+  }
+  for (int col = 0; col < table->columnCount(); ++col) {
+    auto* item = table->item(row, col);
+    if (!item)
+      continue;
+    if (!background.isValid()) {
+      item->setBackground(QBrush());
+      item->setForeground(QBrush());
+      continue;
+    }
+    item->setBackground(background);
+    item->setForeground(foreground);
+  }
+}
 
 void detachLayout(QLayout* layout) {
   if (!layout)
@@ -287,7 +324,10 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   rxBar_ = new RadeRxBar(this);
   auto* heardTimer = new QTimer(this);
   heardTimer->setInterval(1000);
-  connect(heardTimer, &QTimer::timeout, this, &RadeScreen::refreshHeardClock);
+  connect(heardTimer, &QTimer::timeout, this, [this] {
+    refreshHeardClock();
+    refreshReporterColors();
+  });
   heardTimer->start();
 
   auto* messageRow = new QHBoxLayout();
@@ -376,7 +416,18 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   reporterFilter_->setMaximumWidth(220);
   reporterFilter_->setToolTip(QStringLiteral(
       "Show only rows whose station, grid, mode, or message contains this text. "
+      "This band keeps the dial's band. All shows every station. "
       "Double-click a row to tune there. This does not key. START is never sent."));
+  reporterScope_ = new QComboBox(reporter);
+  reporterScope_->setObjectName(QStringLiteral("radeReporterScope"));
+  reporterScope_->setFont(uiFont());
+  reporterScope_->setFocusPolicy(Qt::NoFocus);
+  reporterScope_->addItem(QStringLiteral("All"), QStringLiteral("all"));
+  reporterScope_->addItem(QStringLiteral("This band"), QStringLiteral("band"));
+  reporterScope_->setToolTip(QStringLiteral(
+      "All lists every station. This band keeps only the band the dial is on. "
+      "A transmitting row uses the TX red. A receiving row uses the RX green for about 10 seconds. "
+      "This does not key. START is never sent."));
   requestQsy_ = new QPushButton(QStringLiteral("Request QSY"), reporter);
   requestQsy_->setObjectName(QStringLiteral("radeRequestQsy"));
   requestQsy_->setFont(uiFont());
@@ -438,6 +489,7 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   reporterCount_->setObjectName(QStringLiteral("radeReporterCount"));
   reporterCount_->setFont(uiFont());
   tools->addWidget(reporterFilter_, 1);
+  tools->addWidget(reporterScope_);
   tools->addWidget(requestQsy_);
   tools->addWidget(ignoreQsy_);
   tools->addWidget(logContact);
@@ -461,7 +513,9 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   reporterTable_->verticalHeader()->setVisible(false);
   reporterTable_->setMinimumHeight(140);
   reporterTable_->setToolTip(QStringLiteral(
-      "Stations on FreeDV Reporter. Double-click tunes to that dial and sets DIGL on 160, 80, and 40. "
+      "Stations on FreeDV Reporter. A transmitting row uses the on-air TX red. "
+      "A receiving row uses the RX green for about 10 seconds. "
+      "Double-click tunes to that dial and sets DIGL on 160, 80, and 40. "
       "Right-click mutes QSY requests from that station. This does not key. START is never sent."));
   reporterTable_->setStyleSheet(QStringLiteral(
       "QTableWidget#radeReporterTable { background: #0e141c; color: #e8eef4; "
@@ -476,6 +530,18 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   reporterLay->addWidget(reporterTable_, 1);
   layout->addWidget(reporter, 1);
   connect(reporterFilter_, &QLineEdit::textChanged, this, [this] { applyReporterFilter(); });
+  {
+    const QString saved = QSettings().value(QStringLiteral("rade/reporterScope"), QStringLiteral("all")).toString();
+    const QSignalBlocker block(reporterScope_);
+    const int at = reporterScope_->findData(saved);
+    reporterScope_->setCurrentIndex(at < 0 ? 0 : at);
+  }
+  connect(reporterScope_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+    if (!reporterScope_)
+      return;
+    QSettings().setValue(QStringLiteral("rade/reporterScope"), reporterScope_->currentData().toString());
+    applyReporterFilter();
+  });
   connect(ignoreQsy_, &QCheckBox::toggled, this, [](bool on) {
     QSettings().setValue(QStringLiteral("dx/freedvReporterIgnoreQsy"), on);
   });
@@ -1026,6 +1092,8 @@ void RadeScreen::applyReporterFilter() {
   if (!reporterTable_ || !reporterFilter_)
     return;
   const QString needle = reporterFilter_->text().trimmed();
+  const bool thisBand = reporterScope_ && reporterScope_->currentData().toString() == QLatin1String("band");
+  const int wantBand = thisBand ? ModeProfile::radeBandForHz(reporterDialHz_) : -1;
   int shown = 0;
   for (int row = 0; row < reporterTable_->rowCount(); ++row) {
     bool match = needle.isEmpty();
@@ -1037,6 +1105,11 @@ void RadeScreen::applyReporterFilter() {
           break;
         }
       }
+    }
+    if (match && thisBand && wantBand >= 0) {
+      const auto* freq = reporterTable_->item(row, 2);
+      const qint64 hz = freq ? freq->data(Qt::UserRole).toLongLong() : 0;
+      match = hz > 0 && ModeProfile::radeBandForHz(hz) == wantBand;
     }
     reporterTable_->setRowHidden(row, !match);
     if (match)
@@ -1058,6 +1131,8 @@ void RadeScreen::showReporter(const QVector<FreeDvReporter::Station>& rows) {
     const FreeDvReporter::Station& row = rows.at(i);
     auto* station = new QTableWidgetItem(row.station);
     station->setData(Qt::UserRole, row.sid);
+    station->setData(kRoleRxAt, row.rxAtMs);
+    station->setData(kRoleTx, row.transmitting);
     auto* grid = new QTableWidgetItem(row.grid);
     auto* freq = new RadeFreqItem;
     freq->setData(Qt::UserRole, row.freqHz);
@@ -1077,11 +1152,26 @@ void RadeScreen::showReporter(const QVector<FreeDvReporter::Station>& rows) {
     }
     if (!keep.isEmpty() && row.sid == keep)
       reporterTable_->setCurrentCell(i, 0);
+    paintReporterRow(reporterTable_, i);
   }
   reporterTable_->setSortingEnabled(true);
   applyReporterFilter();
   if (requestQsy_)
     requestQsy_->setEnabled(!selectedSid().isEmpty() && selectedSid() != qsySentSid_);
+}
+
+void RadeScreen::setReporterDial(qint64 hz) {
+  if (hz == reporterDialHz_)
+    return;
+  reporterDialHz_ = hz;
+  applyReporterFilter();
+}
+
+void RadeScreen::refreshReporterColors() {
+  if (!reporterTable_)
+    return;
+  for (int row = 0; row < reporterTable_->rowCount(); ++row)
+    paintReporterRow(reporterTable_, row);
 }
 
 void RadeScreen::requestSelectedQsy() {

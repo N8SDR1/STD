@@ -1278,6 +1278,68 @@ int shellReady(MainWindow& window) {
       if (shown != 1)
         return fail("RADE reporter filter did not narrow the list");
       filter->clear();
+      auto* scope = window.findChild<QComboBox*>(QStringLiteral("radeReporterScope"));
+      if (!scope || scope->count() != 2 || scope->itemText(0) != QLatin1String("All") ||
+          scope->itemText(1) != QLatin1String("This band"))
+        return fail("RADE reporter band choice is missing");
+      {
+        QVector<FreeDvReporter::Station> colored(3);
+        colored[0].sid = QStringLiteral("tx");
+        colored[0].station = QStringLiteral("TXROW");
+        colored[0].freqHz = 7177000;
+        colored[0].transmitting = true;
+        colored[1].sid = QStringLiteral("rx");
+        colored[1].station = QStringLiteral("RXROW");
+        colored[1].freqHz = 7177000;
+        colored[1].rxAtMs = QDateTime::currentMSecsSinceEpoch();
+        colored[2].sid = QStringLiteral("old");
+        colored[2].station = QStringLiteral("OLDROW");
+        colored[2].freqHz = 14236000;
+        colored[2].rxAtMs = QDateTime::currentMSecsSinceEpoch() - 30000;
+        page->showReporter(colored);
+        auto rowOf = [table](const QString& name) {
+          for (int row = 0; row < table->rowCount(); ++row) {
+            const auto* item = table->item(row, 0);
+            if (item && item->text() == name)
+              return row;
+          }
+          return -1;
+        };
+        const int txRow = rowOf(QStringLiteral("TXROW"));
+        const int rxRow = rowOf(QStringLiteral("RXROW"));
+        const int oldRow = rowOf(QStringLiteral("OLDROW"));
+        if (txRow < 0 || rxRow < 0 || oldRow < 0)
+          return fail("RADE reporter color rows are missing");
+        const QColor txColor = table->item(txRow, 0)->background().color();
+        const QColor rxColor = table->item(rxRow, 0)->background().color();
+        const QColor oldColor = table->item(oldRow, 0)->background().color();
+        if (txColor != QColor(QStringLiteral("#8d1d18")) || rxColor != QColor(QStringLiteral("#0f5132")) ||
+            oldColor == QColor(QStringLiteral("#0f5132")) || oldColor == QColor(QStringLiteral("#8d1d18")))
+          return fail("RADE reporter row colors are wrong");
+        QSettings scopeStore;
+        const bool hadScope = scopeStore.contains(QStringLiteral("rade/reporterScope"));
+        const QVariant previousScope = scopeStore.value(QStringLiteral("rade/reporterScope"));
+        page->setReporterDial(7177000);
+        scope->setCurrentIndex(1);
+        int onBand = 0;
+        int allRows = 0;
+        for (int row = 0; row < table->rowCount(); ++row)
+          if (!table->isRowHidden(row))
+            ++onBand;
+        scope->setCurrentIndex(0);
+        for (int row = 0; row < table->rowCount(); ++row)
+          if (!table->isRowHidden(row))
+            ++allRows;
+        if (hadScope)
+          scopeStore.setValue(QStringLiteral("rade/reporterScope"), previousScope);
+        else
+          scopeStore.remove(QStringLiteral("rade/reporterScope"));
+        const QSignalBlocker block(scope);
+        const int at = scope->findData(hadScope ? previousScope : QVariant(QStringLiteral("all")));
+        scope->setCurrentIndex(at < 0 ? 0 : at);
+        if (onBand != 2 || allRows != 3)
+          return fail("RADE reporter band filter is wrong");
+      }
       QSettings messageStore;
       const bool hadMessages = messageStore.contains(QStringLiteral("dx/freedvReporterMessages"));
       const QVariant previousMessages = messageStore.value(QStringLiteral("dx/freedvReporterMessages"));

@@ -2271,6 +2271,8 @@ void MainWindow::qsyDial(qint64 hz) {
   if (ft8_ && liveDialHz_ > 0 && std::llabs(hz - liveDialHz_) > 1000)
     ft8_->clearAverages();
   liveDialHz_ = hz;
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+    screen->setReporterDial(hz);
   if (!tci_ || !tci_->isOpen())
     return;
   // Band buttons and WSPR hopping. Connect already sent AUDIO_START:0.
@@ -10312,6 +10314,8 @@ void MainWindow::setReceivePlaceholder(bool connected) {
 void MainWindow::showRadioDown(const QString& error) {
   const QString dash = QString::fromUtf8("—");
   liveDialHz_ = 0;
+  if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+    screen->setReporterDial(0);
   dialText_ = dash;
   radioSide_.clear();
   setReceivePlaceholder(false);
@@ -10360,6 +10364,8 @@ void MainWindow::showDial(qint64 hz) {
     if (ft8_ && liveDialHz_ > 0 && std::llabs(hz - liveDialHz_) > 1000)
       ft8_->clearAverages();
     liveDialHz_ = hz;
+    if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
+      screen->setReporterDial(hz);
   }
   dialText_ = formatDial(hz);
   if (statusStrip_)

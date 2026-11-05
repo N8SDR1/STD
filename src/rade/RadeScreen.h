@@ -53,6 +53,8 @@ public:
   void releaseQsyRequest();
   bool ignoreQsy() const;
   int txLimitSeconds() const;
+  // Dial used by the "This band" reporter filter. Does not tune.
+  void setReporterDial(qint64 hz);
   // RX chip: 0 receiving (green), 1 transmitting (unlit), 2 ending the
   // over (amber). Does not emit rxRequested.
   void setTxState(int state);
@@ -88,6 +90,7 @@ private:
   void rememberBpf(bool on);
   void refreshHeardClock();
   void applyReporterFilter();
+  void refreshReporterColors();
   void requestSelectedQsy();
   void logSelectedStation();
   QString selectedSid() const;
@@ -108,6 +111,8 @@ private:
   class QLineEdit* message_ = nullptr;
   class QLineEdit* reporterFilter_ = nullptr;
   class QComboBox* savedMessages_ = nullptr;
+  class QComboBox* reporterScope_ = nullptr;
+  qint64 reporterDialHz_ = 0;
   class QTableWidget* reporterTable_ = nullptr;
   class QLabel* reporterCount_ = nullptr;
   class QPushButton* requestQsy_ = nullptr;

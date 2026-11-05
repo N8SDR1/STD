@@ -68,6 +68,7 @@ public:
     QString heard;
     QString lastTx;
     qint64 freqHz = 0;
+    qint64 rxAtMs = 0;
     int snr = 0;
     bool snrKnown = false;
     bool transmitting = false;

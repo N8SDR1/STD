@@ -3,6 +3,7 @@
 
 #include "spot/FreeDvReporter.h"
 
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -334,6 +335,7 @@ void FreeDvReporter::applyEvent(const QString& name, const QJsonValue& arg, bool
     if (snr.isDouble()) {
       row->snr = int(std::lround(snr.toDouble()));
       row->snrKnown = true;
+      row->rxAtMs = QDateTime::currentMSecsSinceEpoch();
     }
   } else if (name == QLatin1String("message_update")) {
     takeText("message", &row->message);
