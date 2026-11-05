@@ -25,7 +25,7 @@ public:
   void showMode(const QString& modeName);
   // Moves the audio strip into this screen. Columns stacks it; rows keeps it wide.
   void placeAudio(QWidget* bar, ModeProfile* profile);
-  // True: waveform, meters, and audio side by side. False: waveform and meters
+  // True: audio, status, and waveform side by side. False: waveform and meters
   // on top, audio underneath.
   void setColumns(bool columns);
   bool columns() const { return columns_; }

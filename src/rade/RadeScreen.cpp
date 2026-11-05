@@ -83,8 +83,8 @@ RadeScreen::RadeScreen(QWidget* parent) : QWidget(parent) {
   layoutPick_->setFont(uiFont());
   layoutPick_->setFocusPolicy(Qt::NoFocus);
   layoutPick_->setToolTip(QStringLiteral(
-      "Switch between three columns and two rows. Columns puts waveform, meters, and audio "
-      "side by side. Rows puts waveform and meters on top, with audio underneath. "
+      "Switch between three columns and two rows. Columns puts audio, status, and waveform "
+      "side by side, audio on the left. Rows puts waveform and meters on top, with audio underneath. "
       "This does not key. START is never sent."));
   auto* header = new QHBoxLayout();
   header->setContentsMargins(0, 0, 0, 0);
@@ -465,9 +465,9 @@ void RadeScreen::applyArrangement() {
     auto* row = new QHBoxLayout(body_);
     row->setContentsMargins(0, 0, 0, 0);
     row->setSpacing(8);
-    row->addWidget(operate_, 3);
-    row->addWidget(meterCol_, 4);
     row->addWidget(audioHost_, 3);
+    row->addWidget(meterCol_, 4);
+    row->addWidget(operate_, 3);
   } else {
     auto* col = new QVBoxLayout(body_);
     col->setContentsMargins(0, 0, 0, 0);

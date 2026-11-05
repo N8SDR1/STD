@@ -1240,7 +1240,7 @@ int shellReady(MainWindow& window) {
         page->setColumns(true);
         QApplication::processEvents();
         if (operate->x() > 0 && meterCol->x() > 0 && audioHost->x() > 0 &&
-            (meterCol->x() <= operate->x() || audioHost->x() <= meterCol->x()))
+            (audioHost->x() >= meterCol->x() || meterCol->x() >= operate->x()))
           return fail("RADE columns did not line up");
         if (keySlot->y() > 0 && scan->y() > 0 && scan->y() + 4 < keySlot->y())
           return fail("RADE RX sits below Scan");
