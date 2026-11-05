@@ -4104,8 +4104,11 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen"))) {
     screen->setVisible(rade);
-    if (rade)
+    if (rade) {
       screen->showMode(mode);
+      if (profile_)
+        screen->placeAudio(profile_->radeAudioBar(), profile_);
+    }
   }
   if (auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"))) {
     bar->setVisible(text && !js8Mode(mode) && !rade);
@@ -6628,6 +6631,16 @@ void MainWindow::refreshTxChrome() {
     // Halt would drop without them, so it is not shown here.
     if (auto* halt = findChild<QWidget*>(QStringLiteral("txHalt")))
       halt->setVisible(false);
+    if (auto* sendBtn = findChild<QPushButton*>(QStringLiteral("txSend"))) {
+      sendBtn->setMinimumSize(104, 44);
+      sendBtn->setStyleSheet(QStringLiteral(
+          "QPushButton#txSend { background: #3a1214; color: #ffd0cc; border: 1px solid #ff4136; "
+          "border-radius: 4px; padding: 8px 22px; font-weight: bold; font-size: 15px; } "
+          "QPushButton#txSend:checked { background: #8d1d18; color: #fff; }"));
+    }
+  } else if (auto* sendBtn = findChild<QPushButton*>(QStringLiteral("txSend"))) {
+    sendBtn->setMinimumSize(0, 0);
+    sendBtn->setStyleSheet(QString());
   }
   if (auto* keyPair = findChild<QWidget*>(QStringLiteral("txKeyPair"))) {
     QWidget* target = rade ? findChild<QWidget*>(QStringLiteral("radeKeySlot"))

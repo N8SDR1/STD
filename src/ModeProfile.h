@@ -56,6 +56,9 @@ public:
   void refreshStation();
   // Fills the Mic, speaker, and volume row from the Speech settings.
   void refreshRadeDevices();
+  QWidget* radeAudioBar() const { return radeAudio_; }
+  // Columns stack the microphone controls. Rows keep them on one line.
+  void setRadeAudioStacked(bool stacked);
   // RADE scan: every FreeDV Reporter calling dial, low band to high, as
   // (band index, Hz).
   // meters limits it to those bands ("160", "80", "60", "40", "20", "17",
@@ -101,6 +104,7 @@ private:
 
   QWidget* bar_ = nullptr;
   QWidget* radeAudio_ = nullptr;
+  bool radeAudioStacked_ = false;
   QWidget* keyboard_ = nullptr;
   QComboBox* radeMicBox_ = nullptr;
   QComboBox* radeSpeakerBox_ = nullptr;

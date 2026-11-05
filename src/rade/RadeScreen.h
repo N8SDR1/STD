@@ -6,9 +6,11 @@
 #include <QStringList>
 #include <QWidget>
 
+class ModeProfile;
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QPushButton;
 
 // RADE operating screen. It is not the Hell tape and not the FT8 sequence.
 // Mic and speaker are the devices already chosen for Speech. Identity stays
@@ -21,6 +23,12 @@ public:
 
   // Match the Mode menu. Does not emit variantChosen.
   void showMode(const QString& modeName);
+  // Moves the audio strip into this screen. Columns stacks it; rows keeps it wide.
+  void placeAudio(QWidget* bar, ModeProfile* profile);
+  // True: waveform, meters, and audio side by side. False: waveform and meters
+  // on top, audio underneath.
+  void setColumns(bool columns);
+  bool columns() const { return columns_; }
   void setLinkReady(bool ready);
   // offsetHz: the received station's frequency offset, as FreeDV shows it.
   void setSync(bool on, float snrDb, float offsetHz = 0.0f);
@@ -57,6 +65,8 @@ private:
   void loadBpf(bool v2);
   void rememberBpf(bool on);
   void refreshHeardClock();
+  void applyArrangement();
+  void refreshLayoutButton();
 
   QComboBox* variant_ = nullptr;
   QCheckBox* bpf_ = nullptr;
@@ -72,5 +82,20 @@ private:
   class QSpinBox* scanDwell_ = nullptr;
   QCheckBox* scanStay_ = nullptr;
   QLabel* link_ = nullptr;
+  QLabel* waveLabel_ = nullptr;
+  QWidget* lamp_ = nullptr;
+  QWidget* snrBar_ = nullptr;
+  QWidget* snrTrace_ = nullptr;
+  QWidget* rxBar_ = nullptr;
+  QCheckBox* autoRx_ = nullptr;
+  QLabel* autoValue_ = nullptr;
+  QWidget* operate_ = nullptr;
+  QWidget* meterCol_ = nullptr;
+  QWidget* audioHost_ = nullptr;
+  QWidget* body_ = nullptr;
+  QPushButton* layoutPick_ = nullptr;
+  QWidget* audioBar_ = nullptr;
+  ModeProfile* audioProfile_ = nullptr;
+  bool columns_ = true;
   bool showingV2_ = false;
 };

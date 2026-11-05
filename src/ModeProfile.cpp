@@ -23,6 +23,7 @@
 #include <QDateTime>
 #include <QFont>
 #include <QFontMetrics>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMetaType>
@@ -466,16 +467,18 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   audio->setContentsMargins(8, 0, 8, 6);
   audio->setSpacing(8);
   auto* micLabel = new QLabel(QStringLiteral("Mic"), radeAudio_);
+  micLabel->setObjectName(QStringLiteral("radeMicLabel"));
   micLabel->setFont(barFont());
   radeMicBox_ = new QComboBox(radeAudio_);
   radeMicBox_->setObjectName(QStringLiteral("radeMicDevice"));
   radeMicBox_->setFont(barFont());
-  radeMicBox_->setMinimumWidth(160);
-  radeMicBox_->setMaximumWidth(280);
+  radeMicBox_->setMinimumWidth(140);
+  radeMicBox_->setMaximumWidth(220);
   radeMicBox_->setToolTip(QStringLiteral(
       "Speech microphone. Same list as Options, Speech. TX uses this device. "
       "This does not key. START is never sent."));
   auto* driveLabel = new QLabel(QStringLiteral("Drive"), radeAudio_);
+  driveLabel->setObjectName(QStringLiteral("radeDriveLabel"));
   driveLabel->setFont(barFont());
   auto* drive = new QSlider(Qt::Horizontal, radeAudio_);
   drive->setObjectName(QStringLiteral("radeDrive"));
@@ -496,16 +499,18 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
     QSettings().setValue(QStringLiteral("rade/drive"), value);
   });
   auto* speakerLabel = new QLabel(QStringLiteral("Speaker"), radeAudio_);
+  speakerLabel->setObjectName(QStringLiteral("radeSpeakerLabel"));
   speakerLabel->setFont(barFont());
   radeSpeakerBox_ = new QComboBox(radeAudio_);
   radeSpeakerBox_->setObjectName(QStringLiteral("radeSpeakerDevice"));
   radeSpeakerBox_->setFont(barFont());
-  radeSpeakerBox_->setMinimumWidth(160);
-  radeSpeakerBox_->setMaximumWidth(280);
+  radeSpeakerBox_->setMinimumWidth(140);
+  radeSpeakerBox_->setMaximumWidth(220);
   radeSpeakerBox_->setToolTip(QStringLiteral(
       "Speech Play on device. Decoded speech and analog SSB play here, not on the radio. "
       "This does not key. START is never sent."));
   auto* volumeLabel = new QLabel(QStringLiteral("Volume"), radeAudio_);
+  volumeLabel->setObjectName(QStringLiteral("radeVolumeLabel"));
   volumeLabel->setFont(barFont());
   radeVolume_ = new QSlider(Qt::Horizontal, radeAudio_);
   radeVolume_->setObjectName(QStringLiteral("radeVolume"));
@@ -518,7 +523,7 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   radeVolumeValue_->setObjectName(QStringLiteral("radeVolumeValue"));
   radeVolumeValue_->setFont(barFont());
   radeVolumeValue_->setMinimumWidth(28);
-  auto* analog = new QCheckBox(QStringLiteral("Analog passthrough"), radeAudio_);
+  auto* analog = new QCheckBox(QStringLiteral("Analog"), radeAudio_);
   analog->setObjectName(QStringLiteral("radeAnalog"));
   analog->setFont(barFont());
   analog->setFocusPolicy(Qt::NoFocus);
@@ -557,6 +562,7 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
     QSettings().setValue(QStringLiteral("rade/wide"), on);
   });
   auto* gainLabel = new QLabel(QStringLiteral("Gain"), radeAudio_);
+  gainLabel->setObjectName(QStringLiteral("radeGainLabel"));
   gainLabel->setFont(barFont());
   auto* micGain = new QSlider(Qt::Horizontal, radeAudio_);
   micGain->setObjectName(QStringLiteral("radeMicGain"));
@@ -588,14 +594,14 @@ ModeProfile::ModeProfile(QWidget* parent) : QWidget(parent) {
   audio->addWidget(driveLabel);
   audio->addWidget(drive);
   audio->addWidget(driveValue);
-  audio->addWidget(denoise);
   audio->addWidget(speakerLabel);
   audio->addWidget(radeSpeakerBox_);
   audio->addWidget(volumeLabel);
   audio->addWidget(radeVolume_);
   audio->addWidget(radeVolumeValue_);
-  audio->addWidget(wide);
   audio->addWidget(analog);
+  audio->addWidget(denoise);
+  audio->addWidget(wide);
   audio->addStretch(1);
   radeAudio_->hide();
 
@@ -705,6 +711,67 @@ void ModeProfile::setMshvFamily(bool mshv) {
   keyboard_->setVisible(!mshv && !wsprMode(mode_));
   if (radeAudio_)
     radeAudio_->setVisible(mshv && radeMode(mode_));
+}
+
+void ModeProfile::setRadeAudioStacked(bool stacked) {
+  if (!radeAudio_ || (radeAudioStacked_ == stacked && radeAudio_->layout() != nullptr))
+    return;
+  auto* micLabel = radeAudio_->findChild<QLabel*>(QStringLiteral("radeMicLabel"));
+  auto* gainLabel = radeAudio_->findChild<QLabel*>(QStringLiteral("radeGainLabel"));
+  auto* driveLabel = radeAudio_->findChild<QLabel*>(QStringLiteral("radeDriveLabel"));
+  auto* speakerLabel = radeAudio_->findChild<QLabel*>(QStringLiteral("radeSpeakerLabel"));
+  auto* volumeLabel = radeAudio_->findChild<QLabel*>(QStringLiteral("radeVolumeLabel"));
+  auto* gain = radeAudio_->findChild<QSlider*>(QStringLiteral("radeMicGain"));
+  auto* gainValue = radeAudio_->findChild<QLabel*>(QStringLiteral("radeMicGainValue"));
+  auto* drive = radeAudio_->findChild<QSlider*>(QStringLiteral("radeDrive"));
+  auto* driveValue = radeAudio_->findChild<QLabel*>(QStringLiteral("radeDriveValue"));
+  auto* meter = radeAudio_->findChild<QWidget*>(QStringLiteral("radeMicLevel"));
+  auto* analog = radeAudio_->findChild<QCheckBox*>(QStringLiteral("radeAnalog"));
+  auto* denoise = radeAudio_->findChild<QCheckBox*>(QStringLiteral("radeDenoise"));
+  auto* wide = radeAudio_->findChild<QCheckBox*>(QStringLiteral("radeWide"));
+  if (!micLabel || !gainLabel || !driveLabel || !speakerLabel || !volumeLabel || !gain || !gainValue ||
+      !drive || !driveValue || !meter || !analog || !denoise || !wide || !radeMicBox_ || !radeSpeakerBox_ ||
+      !radeVolume_ || !radeVolumeValue_)
+    return;
+  radeAudioStacked_ = stacked;
+  if (QLayout* old = radeAudio_->layout()) {
+    while (old->count() > 0)
+      delete old->takeAt(0);
+    delete old;
+  }
+  const QList<QWidget*> line{micLabel,        radeMicBox_, gainLabel, gain,           gainValue, meter,
+                            driveLabel,       drive,       driveValue, speakerLabel, radeSpeakerBox_,
+                            volumeLabel,      radeVolume_, radeVolumeValue_, analog,  denoise,    wide};
+  if (!stacked) {
+    auto* row = new QHBoxLayout(radeAudio_);
+    row->setContentsMargins(8, 2, 8, 4);
+    row->setSpacing(8);
+    for (QWidget* widget : line)
+      row->addWidget(widget);
+    row->addStretch(1);
+    return;
+  }
+  auto* grid = new QGridLayout(radeAudio_);
+  grid->setContentsMargins(4, 2, 4, 4);
+  grid->setHorizontalSpacing(8);
+  grid->setVerticalSpacing(6);
+  grid->addWidget(micLabel, 0, 0);
+  grid->addWidget(radeMicBox_, 0, 1, 1, 2);
+  grid->addWidget(gainLabel, 1, 0);
+  grid->addWidget(gain, 1, 1);
+  grid->addWidget(gainValue, 1, 2);
+  grid->addWidget(meter, 2, 0, 1, 3);
+  grid->addWidget(driveLabel, 3, 0);
+  grid->addWidget(drive, 3, 1);
+  grid->addWidget(driveValue, 3, 2);
+  grid->addWidget(speakerLabel, 4, 0);
+  grid->addWidget(radeSpeakerBox_, 4, 1, 1, 2);
+  grid->addWidget(volumeLabel, 5, 0);
+  grid->addWidget(radeVolume_, 5, 1);
+  grid->addWidget(radeVolumeValue_, 5, 2);
+  grid->addWidget(analog, 6, 0);
+  grid->addWidget(denoise, 6, 1);
+  grid->addWidget(wide, 6, 2);
 }
 
 namespace {

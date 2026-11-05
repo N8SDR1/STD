@@ -1120,16 +1120,21 @@ int shellReady(MainWindow& window) {
           return fail("spot chip shows the wrong reporter for a mode");
       }
     }
-    if (!variant || !analog || !bpf || !drive || !sync || !snr || !micBox || !spkBox ||
-        !radeVol || !audio || !rx || !radeHellBox || !tx1 || !screen->isVisible() || audio->isHidden() ||
-        variant->currentText() != QLatin1String("RADE V1") || bpf->isChecked() || !rx->isHidden() ||
-        !radeHellBox->isHidden() || !tx1->isHidden() ||
-        !analog->toolTip().contains(QLatin1String("silent")) ||
-        variant->maximumWidth() > 280 || bpf->isEnabled() ||
+    if (!variant || !analog || !bpf || !drive || !sync || !snr || !micBox || !spkBox || !radeVol ||
+        !audio || !rx || !radeHellBox || !tx1)
+      return fail("RADE V1 screen is missing a control");
+    if (!screen->isVisible())
+      return fail("RADE screen is hidden");
+    if (audio->isHidden())
+      return fail("RADE audio row is hidden");
+    if (variant->currentText() != QLatin1String("RADE V1") || bpf->isChecked() || bpf->isEnabled())
+      return fail("RADE V1 waveform is wrong");
+    if (!rx->isHidden() || !radeHellBox->isHidden() || !tx1->isHidden())
+      return fail("RADE still shows the text panes");
+    if (!analog->toolTip().contains(QLatin1String("silent")) || variant->maximumWidth() > 280 ||
         micBox->count() < 1 || spkBox->count() < 1 || radeVol->maximum() != 100 ||
-        !spkBox->toolTip().contains(QLatin1String("Play on")) ||
-        drive->maximumWidth() > 180 || analog->parentWidget() != audio ||
-        drive->parentWidget() != audio || bpf->parentWidget() != screen ||
+        !spkBox->toolTip().contains(QLatin1String("Play on")) || drive->maximumWidth() > 180 ||
+        analog->parentWidget() != audio || drive->parentWidget() != audio || !screen->isAncestorOf(bpf) ||
         radeProfile->digitalMode() != QLatin1String("RADE V1"))
       return fail("RADE V1 screen is wrong");
     auto* micBar = window.findChild<QWidget*>(QStringLiteral("radeMicLevel"));
@@ -1143,29 +1148,27 @@ int shellReady(MainWindow& window) {
     if (!micGain || micGain->parentWidget() != audio || micGain->minimum() != -10 ||
         micGain->maximum() != 30 || micGain->width() > 120 ||
         !micGain->toolTip().contains(QLatin1String("leveler")) ||
-        !micGain->toolTip().contains(QLatin1String("Drive")) ||
-        (micBox->x() > 0 && micGain->x() > 0 && micBar->x() > 0 && drive->x() > 0 &&
-         (micGain->x() < micBox->x() || micGain->x() > micBar->x() || micBar->x() > drive->x())))
+        !micGain->toolTip().contains(QLatin1String("Drive")))
       return fail("RADE mic gain is missing");
     auto* rxLevel = window.findChild<QWidget*>(QStringLiteral("radeRxLevel"));
     auto* autoRx = window.findChild<QCheckBox*>(QStringLiteral("radeAutoRx"));
     auto* lamp = window.findChild<QWidget*>(QStringLiteral("radeSyncLamp"));
     auto* snrBar = window.findChild<QWidget*>(QStringLiteral("radeSnrBar"));
     auto* heardClock = window.findChild<QLabel*>(QStringLiteral("radeHeardClock"));
-    if (!rxLevel || rxLevel->parentWidget() != screen ||
+    if (!rxLevel || !screen->isAncestorOf(rxLevel) ||
         !rxLevel->toolTip().contains(QLatin1String("dBFS")) ||
         !rxLevel->toolTip().contains(QLatin1String("CLIP")))
       return fail("RADE RX meter is missing");
-    if (!autoRx || autoRx->parentWidget() != screen ||
+    if (!autoRx || !screen->isAncestorOf(autoRx) ||
         !autoRx->toolTip().contains(QLatin1String("clip")))
       return fail("RADE Auto RX is missing");
-    if (!lamp || lamp->parentWidget() != screen)
+    if (!lamp || !screen->isAncestorOf(lamp))
       return fail("RADE sync lamp is missing");
-    if (!snrBar || snrBar->parentWidget() != screen ||
+    if (!snrBar || !screen->isAncestorOf(snrBar) ||
         !snrBar->toolTip().contains(QLatin1String("-10")) ||
         !snrBar->toolTip().contains(QLatin1String("40")))
       return fail("RADE SNR bar is missing");
-    if (!heardClock || heardClock->parentWidget() != screen ||
+    if (!heardClock || !screen->isAncestorOf(heardClock) ||
         !heardClock->toolTip().contains(QLatin1String("how long ago")))
       return fail("RADE heard clock is missing");
     if (auto* radeScreen = window.findChild<RadeScreen*>(QStringLiteral("radeScreen"))) {
@@ -1184,11 +1187,10 @@ int shellReady(MainWindow& window) {
         return fail("RADE heard clock did not clear");
     }
     auto* offset = window.findChild<QLabel*>(QStringLiteral("radeOffset"));
-    if (!snrTrace || snrTrace->parentWidget() != screen || snrTrace->height() < 32 ||
+    if (!snrTrace || !screen->isAncestorOf(snrTrace) || snrTrace->height() < 32 ||
         snrTrace->height() > 48 || snrTrace->width() > 200 ||
         !snrTrace->toolTip().contains(QLatin1String("-10")) ||
-        !snrTrace->toolTip().contains(QLatin1String("35")) || !offset || !snr ||
-        (snrTrace->x() > 0 && (snrTrace->x() < snr->x() || snrTrace->x() > offset->x())))
+        !snrTrace->toolTip().contains(QLatin1String("35")) || !offset || !snr)
       return fail("RADE SNR trace is missing");
     auto* radeTx = window.findChild<QPushButton*>(QStringLiteral("txSend"));
     auto* radeHalt = window.findChild<QPushButton*>(QStringLiteral("txHalt"));
@@ -1210,19 +1212,44 @@ int shellReady(MainWindow& window) {
       auto* scan = window.findChild<QPushButton*>(QStringLiteral("radeScan"));
       auto* dwell = window.findChild<QSpinBox*>(QStringLiteral("radeScanDwell"));
       auto* stay = window.findChild<QCheckBox*>(QStringLiteral("radeScanStay"));
-      auto* waveRow = scan ? qobject_cast<QBoxLayout*>(scan->parentWidget()->layout()) : nullptr;
-      QHBoxLayout* pairRow = nullptr;
-      if (waveRow) {
-        for (int i = 0; i < waveRow->count() && !pairRow; ++i)
-          if (auto* inner = qobject_cast<QHBoxLayout*>(waveRow->itemAt(i)->layout()))
-            if (inner->indexOf(keySlot) >= 0)
-              pairRow = inner;
-      }
-      if (!scan || !dwell || !stay || !pairRow || pairRow->indexOf(scan) <= pairRow->indexOf(keySlot) ||
-          pairRow->indexOf(dwell) != pairRow->indexOf(scan) + 1 ||
-          pairRow->indexOf(stay) != pairRow->indexOf(dwell) + 1 || dwell->minimum() != 5 ||
+      auto* operate = window.findChild<QWidget*>(QStringLiteral("radeOperate"));
+      auto* meterCol = window.findChild<QWidget*>(QStringLiteral("radeMeterCol"));
+      auto* audioHost = window.findChild<QWidget*>(QStringLiteral("radeAudioHost"));
+      auto* layoutPick = window.findChild<QPushButton*>(QStringLiteral("radeLayoutPick"));
+      if (!scan || !dwell || !stay || !operate || !meterCol || !audioHost || !layoutPick ||
+          !operate->isAncestorOf(scan) || !operate->isAncestorOf(keySlot) ||
+          !operate->isAncestorOf(dwell) || !operate->isAncestorOf(stay) || dwell->minimum() != 5 ||
           dwell->maximum() != 30 || dwell->singleStep() != 5 || !scan->isCheckable())
         return fail("RADE Scan controls are missing or out of place");
+      {
+        QSettings store;
+        const bool hadLayout = store.contains(QStringLiteral("rade/layout"));
+        const QString previous = store.value(QStringLiteral("rade/layout")).toString();
+        auto* page = window.findChild<RadeScreen*>(QStringLiteral("radeScreen"));
+        if (!page)
+          return fail("RADE layout switch is missing");
+        page->setColumns(false);
+        QApplication::processEvents();
+        if (micBox->x() > 0 && micGain->x() > 0 && micBar->x() > 0 && drive->x() > 0 &&
+            (micGain->x() < micBox->x() || micGain->x() > micBar->x() || micBar->x() > drive->x()))
+          return fail("RADE row order is wrong");
+        if (snrTrace->x() > 0 && (snrTrace->x() < snr->x() || snrTrace->x() > offset->x()))
+          return fail("RADE SNR trace left the status row");
+        if (audioHost->y() > 0 && operate->y() > 0 && audioHost->y() + 4 < operate->y())
+          return fail("RADE rows did not stack");
+        page->setColumns(true);
+        QApplication::processEvents();
+        if (operate->x() > 0 && meterCol->x() > 0 && audioHost->x() > 0 &&
+            (meterCol->x() <= operate->x() || audioHost->x() <= meterCol->x()))
+          return fail("RADE columns did not line up");
+        if (keySlot->y() > 0 && scan->y() > 0 && scan->y() + 4 < keySlot->y())
+          return fail("RADE RX sits below Scan");
+        if (layoutPick->text() != QLatin1String("Show rows"))
+          return fail("RADE layout switch is missing");
+        page->setColumns(hadLayout && previous == QLatin1String("rows") ? false : true);
+        if (!hadLayout)
+          store.remove(QStringLiteral("rade/layout"));
+      }
       // No radio in the self-test: Scan must refuse and stay off.
       scan->click();
       if (scan->isChecked())
