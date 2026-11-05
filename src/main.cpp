@@ -1328,8 +1328,8 @@ int shellReady(MainWindow& window) {
         const QColor txColor = table->item(txRow, 0)->background().color();
         const QColor rxColor = table->item(rxRow, 0)->background().color();
         const QColor oldColor = table->item(oldRow, 0)->background().color();
-        if (txColor != QColor(QStringLiteral("#2c181c")) || rxColor != QColor(QStringLiteral("#142820")) ||
-            oldColor == QColor(QStringLiteral("#142820")) || oldColor == QColor(QStringLiteral("#2c181c")))
+        if (txColor != QColor(QStringLiteral("#3d2226")) || rxColor != QColor(QStringLiteral("#1e4036")) ||
+            oldColor == QColor(QStringLiteral("#1e4036")) || oldColor == QColor(QStringLiteral("#3d2226")))
           return fail("RADE reporter row colors are wrong");
         QSettings scopeStore;
         const bool hadScope = scopeStore.contains(QStringLiteral("rade/reporterScope"));

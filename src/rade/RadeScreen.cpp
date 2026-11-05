@@ -88,10 +88,10 @@ void paintReporterRow(QTableWidget* table, int row) {
   QColor background;
   QColor foreground;
   if (tx) {
-    background = QColor(QStringLiteral("#2c181c"));
+    background = QColor(QStringLiteral("#3d2226"));
     foreground = QColor(QStringLiteral("#e8eef4"));
   } else if (rx) {
-    background = QColor(QStringLiteral("#142820"));
+    background = QColor(QStringLiteral("#1e4036"));
     foreground = QColor(QStringLiteral("#e8eef4"));
   }
   for (int col = 0; col < table->columnCount(); ++col) {
