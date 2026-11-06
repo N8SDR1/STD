@@ -91,6 +91,7 @@
 #include <QHash>
 #include <QCheckBox>
 #include <QHBoxLayout>
+#include <QSplitter>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -3243,8 +3244,17 @@ int shellReady(MainWindow& window) {
     auto* profile = window.findChild<ModeProfile*>();
     if (!faxAction || !ft8Back || !profile)
       return fail("WEFAX mode action is missing");
-    if (hellAction)
+    if (hellAction) {
       hellAction->trigger();
+      // Hell: the tape sits over the receive log in a splitter the operator
+      // can drag, so a long QSO has room.
+      auto* split = window.findChild<QSplitter*>(QStringLiteral("hellSplit"));
+      auto* tape = window.findChild<HellRaster*>(QStringLiteral("hellReceive"));
+      auto* log = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+      if (!split || !tape || !log || split->indexOf(tape) != 0 || split->indexOf(log) != 1 ||
+          !tape->isVisibleTo(&window) || split->childrenCollapsible())
+        return fail("Hell tape is not in its resizable pane");
+    }
     faxAction->trigger();
     if (profile->digitalMode() != QLatin1String("WEFAX-576")) {
       qCritical("WEFAX profile mode [%s]", qPrintable(profile->digitalMode()));

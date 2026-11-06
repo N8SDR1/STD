@@ -2756,7 +2756,6 @@ QWidget* MainWindow::makeReceivePanel() {
 
   auto* raster = new HellRaster(panel);
   raster->hide();
-  layout->addWidget(raster, 1);
 
   auto* echo = new QTextEdit(panel);
   echo->setObjectName(QStringLiteral("rxEcho"));
@@ -2830,7 +2829,40 @@ QWidget* MainWindow::makeReceivePanel() {
             logRadeContact(station, grid, snr, hz);
           });
   connect(rade, &RadeScreen::reporterMessageChanged, this, [this] { updateFreedvReporter(true); });
-  layout->addWidget(echo, 1);
+  // Hell tape over the receive log, with a bar to drag between them as in
+  // Fldigi. The tape gets most of the height so several rows of copy show
+  // at once. Other modes hide the tape and the log takes the whole space.
+  auto* hellSplit = new QSplitter(Qt::Vertical, panel);
+  hellSplit->setObjectName(QStringLiteral("hellSplit"));
+  hellSplit->setChildrenCollapsible(false);
+  hellSplit->setHandleWidth(6);
+  hellSplit->setStyleSheet(QStringLiteral(
+      "QSplitter#hellSplit::handle { background: #1f3a46; }"
+      "QSplitter#hellSplit::handle:hover { background: #00e5ff; }"));
+  hellSplit->addWidget(raster);
+  hellSplit->addWidget(echo);
+  hellSplit->setStretchFactor(0, 3);
+  hellSplit->setStretchFactor(1, 1);
+  hellSplit->setToolTip(QStringLiteral(
+      "Drag the bar between the Hell tape and the text below to give the tape more room. "
+      "The size is remembered. This does not key and does not send START."));
+  {
+    const QList<int> saved = [] {
+      QList<int> sizes;
+      for (const QVariant& v : QSettings().value(QStringLiteral("hell/split")).toList())
+        sizes << v.toInt();
+      return sizes;
+    }();
+    hellSplit->setSizes(saved.size() == 2 && saved.at(0) > 0 && saved.at(1) > 0 ? saved
+                                                                              : QList<int>{600, 200});
+  }
+  connect(hellSplit, &QSplitter::splitterMoved, this, [hellSplit](int, int) {
+    // Remember only while both panes show, which is Hell.
+    const QList<int> sizes = hellSplit->sizes();
+    if (sizes.size() == 2 && sizes.at(0) > 0 && sizes.at(1) > 0)
+      QSettings().setValue(QStringLiteral("hell/split"), QVariantList{sizes.at(0), sizes.at(1)});
+  });
+  layout->addWidget(hellSplit, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
   auto* faxScroll = new QScrollArea(panel);
@@ -4342,6 +4374,9 @@ void MainWindow::showGuide() {
        "red as it goes out. A new transmission appends, and a finished one ends on its own line. "
        "The list follows the bottom only while you are already there. Switching from one Hell "
        "variant to another keeps that log. Leaving Hell clears it. "
+       "The tape and the log share the receive pane with a bar between them: drag it to give the "
+       "tape more room, and the size is remembered. The tape starts with about three quarters of "
+       "the height, so several rows show at once. "
        "A full tape width moves up into a scrollable history, up to 500 rows. The wheel or the "
        "scroll bar reads it back. Save tape writes the history and the live strip as a PNG under "
        "Documents\\STD\\hell. Open opens that folder. Neither one keys. "

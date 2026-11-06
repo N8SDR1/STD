@@ -32,7 +32,7 @@ The amplitude-Hell tape uses that mode's column rate, with 20-pixel receive colu
 
 The log under the tape keeps received text in the receive colour and prints sent text in red. A new transmission appends, and a finished one ends on its own line. The list follows the bottom only while you are already there. Switching from one Hell variant to another keeps that log. Leaving Hell clears it.
 
-A full tape width moves up into a scrollable history, up to 500 rows. The wheel or the scroll bar reads a long transmission back. Save tape writes the history and the live strip as a PNG under Documents\STD\hell. Open opens that folder. Neither one keys.
+The tape and the log below it share the receive pane with a bar between them: drag it to give the tape more room, and the size is remembered. By default the tape gets about three quarters of the height, so several rows show at once. A full tape width moves up into a scrollable history, up to 500 rows. The wheel or the scroll bar reads a long transmission back. Save tape writes the history and the live strip as a PNG under Documents\STD\hell. Open opens that folder. Neither one keys.
 
 ## What TX does
 

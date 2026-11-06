@@ -35,7 +35,7 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | FT2 | 3.75 s. DIGU. |
 | JT65A, JT65B, JT65C | 60 s. DIGU. Tone 0 stays near 1270 Hz. |
 | Q65A, Q65B, Q65C, Q65D | 30 s. DIGU. The tone follows the cursor. |
-| Feld Hell | 17.5 columns/s, 14 pixels per column. A 2 ms raised-cosine edge, then the envelope is limited to the 245 Hz channel. The marker is centered on the carrier. Reverse video flips the tape. |
+| Feld Hell | 17.5 columns/s, 14 pixels per column. A 2 ms raised-cosine edge, then the envelope is limited to the 245 Hz channel. The marker is centered on the carrier. Reverse video flips the tape. Drag the bar under the tape to make it taller; full rows scroll into a history you can read back with the wheel. |
 | Slow Hell | 2.1875 columns/s, same cosine. |
 | Feld Hell X5 | 87.5 columns/s, hard keyed. |
 | Feld Hell X9 | 157.5 columns/s, hard keyed. |
