@@ -1154,7 +1154,7 @@ void MainWindow::buildDocks() {
   receiveDock_->setObjectName("receiveDock");
   receiveDock_->setWidget(makeReceivePanel());
   receiveDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
-  placeDockTitle(receiveDock_, QStringLiteral("Receive"), {"decodeClear", "clrSent", "clrRx"});
+  placeDockTitle(receiveDock_, QStringLiteral("Receive"), {"decodeClear", "clrRx"});
 
   transmitDock_ = new QDockWidget("Transmit", this);
   transmitDock_->setObjectName("transmitDock");
@@ -2550,7 +2550,6 @@ QWidget* MainWindow::makeReceivePanel() {
     wefax_->setSlant(savedSlant);
   tools->addWidget(filter, 1);
   tools->addWidget(clear);
-  tools->addWidget(clrSent);
   tools->addWidget(clrRx);
   // Speech read-back: click mutes and unmutes, the number is the volume.
   // Shown only when Options -> Speech has read-back on, in a text mode.
@@ -2656,8 +2655,6 @@ QWidget* MainWindow::makeReceivePanel() {
   hellOpen->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
   hellOpen->setToolTip(QStringLiteral("Open the folder the Hell tapes are saved in. This does not key."));
   hellOpen->hide();
-  tools->addWidget(hellSave);
-  tools->addWidget(hellOpen);
   connect(hellOpen, &QPushButton::clicked, this, [] {
     QDesktopServices::openUrl(QUrl::fromLocalFile(hellSaveDirectory()));
   });
@@ -2856,8 +2853,54 @@ QWidget* MainWindow::makeReceivePanel() {
   hellSplit->setStyleSheet(QStringLiteral(
       "QSplitter#hellSplit::handle { background: #1f3a46; }"
       "QSplitter#hellSplit::handle:hover { background: #00e5ff; }"));
-  hellSplit->addWidget(raster);
-  hellSplit->addWidget(echo);
+  // Each pane carries its own buttons. Over the tape: Save tape, Open, and
+  // CLR RX for the tape. Over the log: CLR SENT for the red sent text.
+  auto* tapePane = new QWidget(panel);
+  tapePane->setObjectName(QStringLiteral("hellTapePane"));
+  {
+    auto* paneLayout = new QVBoxLayout(tapePane);
+    paneLayout->setContentsMargins(0, 0, 0, 0);
+    paneLayout->setSpacing(4);
+    auto* bar = new QHBoxLayout;
+    bar->setContentsMargins(8, 0, 8, 0);
+    bar->setSpacing(6);
+    auto* label = new QLabel(QStringLiteral("Tape"), tapePane);
+    label->setFont(interfaceFont(11));
+    auto* hellClrRx = new QPushButton(QStringLiteral("CLR RX"), tapePane);
+    hellClrRx->setObjectName(QStringLiteral("hellClrRx"));
+    hellClrRx->setFont(interfaceFont(11));
+    hellClrRx->setFocusPolicy(Qt::NoFocus);
+    hellClrRx->setToolTip(QStringLiteral(
+        "Clear the Hell tape and its history. Your sent text below stays. "
+        "This does not key and does not send START."));
+    connect(hellClrRx, &QPushButton::clicked, this, [this, raster] {
+      raster->clear();
+      setTxStatus(QStringLiteral("Hell tape cleared. Nothing was unkeyed. START was not sent."));
+    });
+    bar->addWidget(label);
+    bar->addWidget(hellSave);
+    bar->addWidget(hellOpen);
+    bar->addStretch(1);
+    bar->addWidget(hellClrRx);
+    paneLayout->addLayout(bar);
+    paneLayout->addWidget(raster, 1);
+  }
+  tapePane->hide();
+  auto* logPane = new QWidget(panel);
+  logPane->setObjectName(QStringLiteral("rxLogPane"));
+  {
+    auto* paneLayout = new QVBoxLayout(logPane);
+    paneLayout->setContentsMargins(0, 0, 0, 0);
+    paneLayout->setSpacing(2);
+    auto* bar = new QHBoxLayout;
+    bar->setContentsMargins(8, 0, 8, 0);
+    bar->addStretch(1);
+    bar->addWidget(clrSent);
+    paneLayout->addLayout(bar);
+    paneLayout->addWidget(echo, 1);
+  }
+  hellSplit->addWidget(tapePane);
+  hellSplit->addWidget(logPane);
   hellSplit->setStretchFactor(0, 3);
   hellSplit->setStretchFactor(1, 1);
   hellSplit->setToolTip(QStringLiteral(
@@ -4141,6 +4184,8 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
       raster->clear();
     raster->setVisible(hell);
   }
+  if (auto* pane = findChild<QWidget*>(QStringLiteral("hellTapePane")))
+    pane->setVisible(hell);
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
     // JS8 shows its activity lists and conversation instead.
     echo->setVisible((text || wspr) && !js8Mode(mode) && !rade);
@@ -4204,8 +4249,9 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
       QTimer::singleShot(0, this, [this] { alignWsprHeader(); });
     }
   }
+  // Hell has CLR RX over the tape instead.
   if (auto* clrRx = findChild<QPushButton*>(QStringLiteral("clrRx")))
-    clrRx->setVisible(text || fax || wspr);
+    clrRx->setVisible((text || fax || wspr) && !hell);
   if (auto* clrSent = findChild<QPushButton*>(QStringLiteral("clrSent")))
     clrSent->setVisible(hell);
   applySpeechSettings();
@@ -4402,8 +4448,9 @@ void MainWindow::showGuide() {
        "red as it goes out. A new transmission appends, and a finished one ends on its own line. "
        "The list follows the bottom only while you are already there. Switching from one Hell "
        "variant to another keeps that log. Leaving Hell clears it. "
-       "Hell has no text decode, so the log under the tape holds only your sent text, in red. CLR RX "
-       "clears the tape and CLR SENT clears the sent text. "
+       "Hell has no text decode, so the log under the tape holds only your sent text, in red. The row "
+       "above the tape has Save tape, Open, and CLR RX, which clears the tape; CLR SENT sits above the "
+       "sent text and clears only that. "
        "The tape and the log share the receive pane with a bar between them: drag it to give the "
        "tape more room, and the size is remembered. The tape starts with about three quarters of "
        "the height, so several rows show at once. "

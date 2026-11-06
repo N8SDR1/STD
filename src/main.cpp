@@ -3251,15 +3251,24 @@ int shellReady(MainWindow& window) {
       auto* split = window.findChild<QSplitter*>(QStringLiteral("hellSplit"));
       auto* tape = window.findChild<HellRaster*>(QStringLiteral("hellReceive"));
       auto* log = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
-      if (!split || !tape || !log || split->indexOf(tape) != 0 || split->indexOf(log) != 1 ||
-          !tape->isVisibleTo(&window) || split->childrenCollapsible())
+      auto* tapePane = window.findChild<QWidget*>(QStringLiteral("hellTapePane"));
+      auto* logPane = window.findChild<QWidget*>(QStringLiteral("rxLogPane"));
+      if (!split || !tape || !log || !tapePane || !logPane || split->indexOf(tapePane) != 0 ||
+          split->indexOf(logPane) != 1 || tape->parentWidget() != tapePane ||
+          log->parentWidget() != logPane || !tape->isVisibleTo(&window) || split->childrenCollapsible())
         return fail("Hell tape is not in its resizable pane");
+      // Over the tape: Save tape, Open, CLR RX. Over the log: CLR SENT.
       // CLR RX clears the tape and keeps the sent text; CLR SENT clears that.
-      auto* clrRxButton = window.findChild<QPushButton*>(QStringLiteral("clrRx"));
+      auto* clrRxButton = window.findChild<QPushButton*>(QStringLiteral("hellClrRx"));
       auto* clrSentButton = window.findChild<QPushButton*>(QStringLiteral("clrSent"));
-      if (!clrRxButton || !clrSentButton || !clrSentButton->isVisibleTo(&window) ||
+      auto* titleClrRx = window.findChild<QPushButton*>(QStringLiteral("clrRx"));
+      auto* saveTape = window.findChild<QPushButton*>(QStringLiteral("hellSave"));
+      if (!clrRxButton || !clrSentButton || !saveTape || !clrSentButton->isVisibleTo(&window) ||
+          !clrRxButton->isVisibleTo(&window) || clrRxButton->parentWidget() != tapePane ||
+          saveTape->parentWidget() != tapePane || clrSentButton->parentWidget() != logPane ||
+          (titleClrRx && titleClrRx->isVisibleTo(&window)) ||
           !log->placeholderText().contains(QLatin1String("sent")))
-        return fail("Hell has no CLR SENT or the log is not labelled as sent text");
+        return fail("Hell tape and sent-text buttons are not on their panes");
       log->setPlainText(QStringLiteral("CQ CQ de N8SDR"));
       clrRxButton->click();
       const bool kept = !log->toPlainText().isEmpty();
