@@ -90,6 +90,22 @@ QString WaterfallGpu::processBackend() {
   return gProcessBackend;
 }
 
+QString WaterfallGpu::probeAutoBackend() {
+  QVulkanInstance inst;
+  inst.setExtensions(QRhiVulkanInitParams::preferredInstanceExtensions());
+  if (inst.create()) {
+    qInfo("STD graphics auto: Vulkan");
+    return QStringLiteral("vulkan");
+  }
+#if defined(Q_OS_WIN)
+  qInfo("STD graphics auto: Vulkan unavailable, Direct3D 11");
+  return QStringLiteral("d3d11");
+#else
+  qInfo("STD graphics auto: Vulkan unavailable, Painter");
+  return QStringLiteral("painter");
+#endif
+}
+
 QString WaterfallGpu::prepareProcessBackend(bool applyEnvironment) {
   clearSoftwareRendererEnv();
   QSettings settings(QStringLiteral("N8SDR"), QStringLiteral("STD"));
@@ -109,7 +125,7 @@ QString WaterfallGpu::prepareProcessBackend(bool applyEnvironment) {
 
   QString backend = key;
   if (backend == QLatin1String("auto") || backend.isEmpty())
-    backend = QStringLiteral("vulkan");
+    backend = probeAutoBackend();
   gProcessBackend = backend;
   if (applyEnvironment && backend != QLatin1String("painter")) {
     qputenv("QT_WIDGETS_RHI", "1");
