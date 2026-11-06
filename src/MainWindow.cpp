@@ -802,10 +802,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       return;
     if (wefax_->rowCount() < 1 || wefax_->image().isNull()) {
       view->clear();
+      view->setFixedSize(0, 0);
       return;
     }
     const QImage frame = wefax_->picture();
-    // Fit the pane width and follow the newest lines while you are at the bottom.
+    // Fit the pane width. A short chart stays under the toolbar; follow the
+    // newest lines only once the picture is taller than the pane.
     auto* scroll = findChild<QScrollArea*>(QStringLiteral("wefaxScroll"));
     const int width = scroll ? std::max(320, scroll->viewport()->width() - 4) : 720;
     QScrollBar* bar = scroll ? scroll->verticalScrollBar() : nullptr;
@@ -814,9 +816,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const bool fitWidth = !fit || fit->isChecked();
     const QPixmap picture = QPixmap::fromImage(fitWidth ? frame.scaledToWidth(width, Qt::SmoothTransformation)
                                                         : frame);
+    view->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     view->setPixmap(picture);
-    view->resize(picture.size());
-    if (bar && follow)
+    view->setFixedSize(picture.size());
+    if (bar && follow && picture.height() > (scroll ? scroll->viewport()->height() : 0))
       bar->setValue(bar->maximum());
     showWefaxState();
   });
@@ -2929,15 +2932,22 @@ QWidget* MainWindow::makeReceivePanel() {
 
   auto* faxScroll = new QScrollArea(panel);
   faxScroll->setObjectName(QStringLiteral("wefaxScroll"));
-  faxScroll->setWidgetResizable(false);
+  faxScroll->setWidgetResizable(true);
   faxScroll->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
   faxScroll->setFrameShape(QFrame::NoFrame);
+  faxScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  faxScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   faxScroll->hide();
-  auto* faxView = new QLabel(faxScroll);
+  auto* faxHost = new QWidget;
+  faxHost->setObjectName(QStringLiteral("wefaxHost"));
+  auto* faxLay = new QVBoxLayout(faxHost);
+  faxLay->setContentsMargins(0, 0, 0, 0);
+  faxLay->setSpacing(0);
+  faxLay->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+  auto* faxView = new QLabel(faxHost);
   faxView->setObjectName(QStringLiteral("wefaxView"));
   faxView->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-  faxView->setMinimumHeight(72);
-  faxView->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+  faxView->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   faxView->setToolTip(QStringLiteral(
       "WEFAX-576 picture. IOC 576, 120 lines per minute. Black is 400 Hz below the cursor and white "
       "is 400 Hz above it. A 300 Hz start tone opens the picture and a 450 Hz stop tone saves it. "
@@ -2945,7 +2955,8 @@ QWidget* MainWindow::makeReceivePanel() {
       "If the chart is split, with its left edge part way across, click where the left edge should be. "
       "Right-click puts it back. This does not key and does not send START."));
   installWefaxClick(faxView);
-  faxScroll->setWidget(faxView);
+  faxLay->addWidget(faxView, 0, Qt::AlignTop | Qt::AlignHCenter);
+  faxScroll->setWidget(faxHost);
   layout->addWidget(faxScroll, 1);
 
   auto* edit = new QPlainTextEdit(panel);
@@ -3995,8 +4006,10 @@ void MainWindow::clearModePanes(const QString& previous, const QString& next) {
     box->clear();
   if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
     tape->clear();
-  if (auto* view = findChild<QLabel*>(QStringLiteral("wefaxView")))
+  if (auto* view = findChild<QLabel*>(QStringLiteral("wefaxView"))) {
     view->clear();
+    view->setFixedSize(0, 0);
+  }
   if (rtty_)
     rtty_->clear();
   if (psk_)

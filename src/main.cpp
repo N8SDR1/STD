@@ -3322,6 +3322,18 @@ int shellReady(MainWindow& window) {
         (txKey && txKey->isVisibleTo(&window)) || !stations || !stations->isVisibleTo(&window) || !faxRegion)
       return fail("WEFAX shows transmit controls or macros, or no stations pane");
     {
+      auto* faxScroll = window.findChild<QScrollArea*>(QStringLiteral("wefaxScroll"));
+      auto* faxView = window.findChild<QLabel*>(QStringLiteral("wefaxView"));
+      auto* faxHost = window.findChild<QWidget*>(QStringLiteral("wefaxHost"));
+      auto* decodeList = window.findChild<QWidget*>(QStringLiteral("decodeList"));
+      auto* split = window.findChild<QSplitter*>(QStringLiteral("hellSplit"));
+      if (!faxScroll || !faxView || !faxHost || faxScroll->widget() != faxHost ||
+          faxView->parentWidget() != faxHost || !faxScroll->isVisibleTo(&window) ||
+          !(faxScroll->alignment() & Qt::AlignTop) ||
+          (decodeList && decodeList->isVisibleTo(&window)) || (split && split->isVisibleTo(&window)))
+        return fail("WEFAX chart is not immediately under the toolbar");
+    }
+    {
       // Left-edge shift turns every line: pixel 100 of the raw picture
       // becomes pixel 0 of the shown one.
       WefaxEngine shifted;
