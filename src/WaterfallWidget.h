@@ -26,7 +26,8 @@ class QWindow;
 // inside that span and cannot cross its edges. Each pixel averages about
 // three FFT bins, or blends the two bins it sits between. The trace is
 // drawn with Qt RHI. Options → Graphics chooses the backend. Auto uses
-// Vulkan. Direct3D 11, Direct3D 12, OpenGL, and Painter are explicit.
+// Direct3D 11 on Windows and Vulkan elsewhere. Direct3D 11, Direct3D 12,
+// OpenGL, Vulkan, and Painter are explicit.
 // Changing the choice destroys the old backend and creates the new one.
 // A different graphics API restarts STD, because one window can drive
 // only one QRhi backend.
@@ -116,7 +117,7 @@ public:
   bool flatten() const { return flatten_; }
   // Puts the controls back without writing settings.
   void setTone(int floorDb, int rangeDb, bool autoFloor);
-  // vulkan, d3d11, d3d12, opengl, or painter. Auto probes Vulkan, then Direct3D 11.
+  // vulkan, d3d11, d3d12, opengl, or painter. Auto is Direct3D 11 on Windows.
   // Options shows the backend that is actually in use. A different API
   // restarts STD so the window is created on that backend.
   void setGraphicsMode(const QString& mode);

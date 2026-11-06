@@ -59,7 +59,7 @@ Options → Decode sets Fast, Normal, or Deep, and AP. Fast, Normal, Deep, and A
 
 ## Waterfall
 
-Floor is the palette bottom in dB. Range is how many dB the palette spans. A louder peak stretches that span, so the skirts of a strong trace stay colored. Auto sets the floor under the noise. Flatten levels the band slope. The picture updates once per turn, so a quiet band does not keep the CPU and the GPU busy. Options → Graphics Auto tries Vulkan, then Direct3D 11, then Painter, before the window is shown. Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, MT63, WSPR, and WEFAX center the marker on the carrier. FT8, FT4, FT2, JT65, Q65, and JS8 start at the cursor. Speed, Start, and BW on the mode bar keep their last character. The Extra caption is the word Extra. View → Save layout stores Floor, Range, and Auto with that mode. None of this keys.
+Floor is the palette bottom in dB. Range is how many dB the palette spans. A louder peak stretches that span, so the skirts of a strong trace stay colored. Auto sets the floor under the noise. Flatten levels the band slope. The picture updates once per turn, so a quiet band does not keep the CPU and the GPU busy. Options → Graphics Auto uses Direct3D 11 on Windows and Vulkan elsewhere, then Painter if that device fails. Hell, RTTY, PSK, QPSK, Olivia, Contestia, MFSK, DominoEX, Thor, MT63, WSPR, and WEFAX center the marker on the carrier. FT8, FT4, FT2, JT65, Q65, and JS8 start at the cursor. Speed, Start, and BW on the mode bar keep their last character. The Extra caption is the word Extra. View → Save layout stores Floor, Range, and Auto with that mode. None of this keys.
 
 ## Not on the menu
 
