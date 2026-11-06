@@ -91,6 +91,7 @@
 #include <QHash>
 #include <QCheckBox>
 #include <QHBoxLayout>
+#include <QSplitter>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -3243,8 +3244,38 @@ int shellReady(MainWindow& window) {
     auto* profile = window.findChild<ModeProfile*>();
     if (!faxAction || !ft8Back || !profile)
       return fail("WEFAX mode action is missing");
-    if (hellAction)
+    if (hellAction) {
       hellAction->trigger();
+      // Hell: the tape sits over the receive log in a splitter the operator
+      // can drag, so a long QSO has room.
+      auto* split = window.findChild<QSplitter*>(QStringLiteral("hellSplit"));
+      auto* tape = window.findChild<HellRaster*>(QStringLiteral("hellReceive"));
+      auto* log = window.findChild<QTextEdit*>(QStringLiteral("rxEcho"));
+      auto* tapePane = window.findChild<QWidget*>(QStringLiteral("hellTapePane"));
+      auto* logPane = window.findChild<QWidget*>(QStringLiteral("rxLogPane"));
+      if (!split || !tape || !log || !tapePane || !logPane || split->indexOf(tapePane) != 0 ||
+          split->indexOf(logPane) != 1 || tape->parentWidget() != tapePane ||
+          log->parentWidget() != logPane || !tape->isVisibleTo(&window) || split->childrenCollapsible())
+        return fail("Hell tape is not in its resizable pane");
+      // Over the tape: Save tape, Open, CLR RX. Over the log: CLR SENT.
+      // CLR RX clears the tape and keeps the sent text; CLR SENT clears that.
+      auto* clrRxButton = window.findChild<QPushButton*>(QStringLiteral("hellClrRx"));
+      auto* clrSentButton = window.findChild<QPushButton*>(QStringLiteral("clrSent"));
+      auto* titleClrRx = window.findChild<QPushButton*>(QStringLiteral("clrRx"));
+      auto* saveTape = window.findChild<QPushButton*>(QStringLiteral("hellSave"));
+      if (!clrRxButton || !clrSentButton || !saveTape || !clrSentButton->isVisibleTo(&window) ||
+          !clrRxButton->isVisibleTo(&window) || clrRxButton->parentWidget() != tapePane ||
+          saveTape->parentWidget() != tapePane || clrSentButton->parentWidget() != logPane ||
+          (titleClrRx && titleClrRx->isVisibleTo(&window)) ||
+          !log->placeholderText().contains(QLatin1String("sent")))
+        return fail("Hell tape and sent-text buttons are not on their panes");
+      log->setPlainText(QStringLiteral("CQ CQ de N8SDR"));
+      clrRxButton->click();
+      const bool kept = !log->toPlainText().isEmpty();
+      clrSentButton->click();
+      if (!kept || !log->toPlainText().isEmpty())
+        return fail("Hell CLR RX or CLR SENT cleared the wrong pane");
+    }
     faxAction->trigger();
     if (profile->digitalMode() != QLatin1String("WEFAX-576")) {
       qCritical("WEFAX profile mode [%s]", qPrintable(profile->digitalMode()));

@@ -2494,8 +2494,22 @@ QWidget* MainWindow::makeReceivePanel() {
   clrRx->setFont(interfaceFont(11));
   clrRx->setFocusPolicy(Qt::NoFocus);
   clrRx->setToolTip(QStringLiteral(
-      "Clear the receive echo and the Hell tape. This does not key and does not send START."));
+      "Clear the received copy. In Hell that is the tape; CLR SENT clears your sent text. "
+      "This does not key and does not send START."));
   clrRx->hide();
+  // Hell only: the log under the tape holds just your sent text, in red.
+  auto* clrSent = new QPushButton(QStringLiteral("CLR SENT"), panel);
+  clrSent->setObjectName(QStringLiteral("clrSent"));
+  clrSent->setFont(interfaceFont(11));
+  clrSent->setFocusPolicy(Qt::NoFocus);
+  clrSent->setToolTip(QStringLiteral(
+      "Clear the red sent text under the Hell tape. The tape stays. "
+      "This does not key and does not send START."));
+  clrSent->hide();
+  connect(clrSent, &QPushButton::clicked, this, [this] {
+    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
+      echo->clear();
+  });
   auto* faxFolder = new QPushButton(QStringLiteral("Folder"), panel);
   faxFolder->setObjectName(QStringLiteral("wefaxFolder"));
   faxFolder->setFont(interfaceFont(11));
@@ -2641,8 +2655,6 @@ QWidget* MainWindow::makeReceivePanel() {
   hellOpen->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
   hellOpen->setToolTip(QStringLiteral("Open the folder the Hell tapes are saved in. This does not key."));
   hellOpen->hide();
-  tools->addWidget(hellSave);
-  tools->addWidget(hellOpen);
   connect(hellOpen, &QPushButton::clicked, this, [] {
     QDesktopServices::openUrl(QUrl::fromLocalFile(hellSaveDirectory()));
   });
@@ -2711,7 +2723,9 @@ QWidget* MainWindow::makeReceivePanel() {
       wefax_->setSlant(value);
   });
   connect(clrRx, &QPushButton::clicked, this, [this] {
-    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
+    // In Hell the log holds only sent text, which CLR SENT clears.
+    const bool hell = profile_ && hellFamily(profile_->digitalMode());
+    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")); echo && !hell)
       echo->clear();
     clearJs8Activity();
     if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
@@ -2756,7 +2770,6 @@ QWidget* MainWindow::makeReceivePanel() {
 
   auto* raster = new HellRaster(panel);
   raster->hide();
-  layout->addWidget(raster, 1);
 
   auto* echo = new QTextEdit(panel);
   echo->setObjectName(QStringLiteral("rxEcho"));
@@ -2830,7 +2843,86 @@ QWidget* MainWindow::makeReceivePanel() {
             logRadeContact(station, grid, snr, hz);
           });
   connect(rade, &RadeScreen::reporterMessageChanged, this, [this] { updateFreedvReporter(true); });
-  layout->addWidget(echo, 1);
+  // Hell tape over the receive log, with a bar to drag between them as in
+  // Fldigi. The tape gets most of the height so several rows of copy show
+  // at once. Other modes hide the tape and the log takes the whole space.
+  auto* hellSplit = new QSplitter(Qt::Vertical, panel);
+  hellSplit->setObjectName(QStringLiteral("hellSplit"));
+  hellSplit->setChildrenCollapsible(false);
+  hellSplit->setHandleWidth(6);
+  hellSplit->setStyleSheet(QStringLiteral(
+      "QSplitter#hellSplit::handle { background: #1f3a46; }"
+      "QSplitter#hellSplit::handle:hover { background: #00e5ff; }"));
+  // Each pane carries its own buttons. Over the tape: Save tape, Open, and
+  // CLR RX for the tape. Over the log: CLR SENT for the red sent text.
+  auto* tapePane = new QWidget(panel);
+  tapePane->setObjectName(QStringLiteral("hellTapePane"));
+  {
+    auto* paneLayout = new QVBoxLayout(tapePane);
+    paneLayout->setContentsMargins(0, 0, 0, 0);
+    paneLayout->setSpacing(4);
+    auto* bar = new QHBoxLayout;
+    bar->setContentsMargins(8, 0, 8, 0);
+    bar->setSpacing(6);
+    auto* label = new QLabel(QStringLiteral("Tape"), tapePane);
+    label->setFont(interfaceFont(11));
+    auto* hellClrRx = new QPushButton(QStringLiteral("CLR RX"), tapePane);
+    hellClrRx->setObjectName(QStringLiteral("hellClrRx"));
+    hellClrRx->setFont(interfaceFont(11));
+    hellClrRx->setFocusPolicy(Qt::NoFocus);
+    hellClrRx->setToolTip(QStringLiteral(
+        "Clear the Hell tape and its history. Your sent text below stays. "
+        "This does not key and does not send START."));
+    connect(hellClrRx, &QPushButton::clicked, this, [this, raster] {
+      raster->clear();
+      setTxStatus(QStringLiteral("Hell tape cleared. Nothing was unkeyed. START was not sent."));
+    });
+    bar->addWidget(label);
+    bar->addWidget(hellSave);
+    bar->addWidget(hellOpen);
+    bar->addStretch(1);
+    bar->addWidget(hellClrRx);
+    paneLayout->addLayout(bar);
+    paneLayout->addWidget(raster, 1);
+  }
+  tapePane->hide();
+  auto* logPane = new QWidget(panel);
+  logPane->setObjectName(QStringLiteral("rxLogPane"));
+  {
+    auto* paneLayout = new QVBoxLayout(logPane);
+    paneLayout->setContentsMargins(0, 0, 0, 0);
+    paneLayout->setSpacing(2);
+    auto* bar = new QHBoxLayout;
+    bar->setContentsMargins(8, 0, 8, 0);
+    bar->addStretch(1);
+    bar->addWidget(clrSent);
+    paneLayout->addLayout(bar);
+    paneLayout->addWidget(echo, 1);
+  }
+  hellSplit->addWidget(tapePane);
+  hellSplit->addWidget(logPane);
+  hellSplit->setStretchFactor(0, 3);
+  hellSplit->setStretchFactor(1, 1);
+  hellSplit->setToolTip(QStringLiteral(
+      "Drag the bar between the Hell tape and the text below to give the tape more room. "
+      "The size is remembered. This does not key and does not send START."));
+  {
+    const QList<int> saved = [] {
+      QList<int> sizes;
+      for (const QVariant& v : QSettings().value(QStringLiteral("hell/split")).toList())
+        sizes << v.toInt();
+      return sizes;
+    }();
+    hellSplit->setSizes(saved.size() == 2 && saved.at(0) > 0 && saved.at(1) > 0 ? saved
+                                                                              : QList<int>{600, 200});
+  }
+  connect(hellSplit, &QSplitter::splitterMoved, this, [hellSplit](int, int) {
+    // Remember only while both panes show, which is Hell.
+    const QList<int> sizes = hellSplit->sizes();
+    if (sizes.size() == 2 && sizes.at(0) > 0 && sizes.at(1) > 0)
+      QSettings().setValue(QStringLiteral("hell/split"), QVariantList{sizes.at(0), sizes.at(1)});
+  });
+  layout->addWidget(hellSplit, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
   auto* faxScroll = new QScrollArea(panel);
@@ -4092,6 +4184,8 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
       raster->clear();
     raster->setVisible(hell);
   }
+  if (auto* pane = findChild<QWidget*>(QStringLiteral("hellTapePane")))
+    pane->setVisible(hell);
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
     // JS8 shows its activity lists and conversation instead.
     echo->setVisible((text || wspr) && !js8Mode(mode) && !rade);
@@ -4108,6 +4202,15 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
       echo->setToolTip(QStringLiteral(
           "WSPR rows: time, dB, DT, frequency, drift, call, locator, and the dBm report. "
           "The titles stay above this list. There is no macro bar in this mode. "
+          "This does not key and does not send START."));
+    } else if (hell) {
+      echo->setLineWrapMode(QTextEdit::WidgetWidth);
+      echo->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+      echo->setPlaceholderText(QStringLiteral(
+          "Your sent text prints here in red as it goes out. The received copy is the tape above."));
+      echo->setToolTip(QStringLiteral(
+          "Sent log. Hell has no text decode, so what you receive is the tape above; this box "
+          "holds only what you sent, in red. CLR SENT clears it and CLR RX clears the tape. "
           "This does not key and does not send START."));
     } else {
       echo->setLineWrapMode(QTextEdit::WidgetWidth);
@@ -4146,8 +4249,11 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
       QTimer::singleShot(0, this, [this] { alignWsprHeader(); });
     }
   }
+  // Hell has CLR RX over the tape instead.
   if (auto* clrRx = findChild<QPushButton*>(QStringLiteral("clrRx")))
-    clrRx->setVisible(text || fax || wspr);
+    clrRx->setVisible((text || fax || wspr) && !hell);
+  if (auto* clrSent = findChild<QPushButton*>(QStringLiteral("clrSent")))
+    clrSent->setVisible(hell);
   applySpeechSettings();
   if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
     edit->setVisible(!text && !fax && !wspr && !rade);
@@ -4316,17 +4422,19 @@ void MainWindow::showGuide() {
        "are a 60 second period. Tone 0 stays near 1270 Hz. Q65A, Q65B, Q65C, and Q65D are a "
        "30 second period and the tone follows the cursor. TX sends them. The rest of the MSHV "
        "Mode menu is not here and does not key: MSK144, MSKMS, JTMS, FSK441, FSK315, ISCAT-A, "
-       "ISCAT-B, JT6M, and PI4. That list is kept in docs/mshv-modes.md so "
+       "ISCAT-B, JT6M, and PI4. Those leftover meteor modes are not shipping. The 11025 Hz family "
+       "cannot run on TCI, which is 44100 Hz only. That list is kept in docs/mshv-modes.md so "
        "it is not forgotten. Hell, RTTY, BPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and WEFAX-576 are Fldigi modes, "
        "not that list. MT63 is a Fldigi mode on this menu. "
        "CW stays in Lyra. START is never sent."},
       {"Feld Hell",
        "Mode → Hell is the Fldigi 4.2.06 list: Feld Hell, Slow Hell, Feld Hell X5, Feld Hell X9, "
-       "FSK Hell, FSK Hell-105, and Hell 80. That screen is the receive tape, one transmit text box, "
-       "the receive echo, CLR RX, CLR TX, and the macro row. Sent characters print in red in the "
-       "receive pane as the audio goes out. The tape puts the first pixel of a column at the "
+       "FSK Hell, FSK Hell-105, and Hell 80. That screen is the receive tape over the sent log, "
+       "one transmit text box, CLR TX, and the macro row. Hell has no text decode, so the tape is "
+       "the received copy. Sent characters print in red under the tape as the audio goes out. "
+       "The tape puts the first pixel of a column at the "
        "bottom, the same way Fldigi does, so the imprint is right-side up. A tone is ink and "
-       "silence is paper. CLR RX clears the echo and the tape and does not unkey. "
+       "silence is paper. "
        "CLR TX clears the transmit box and does not key. A finished pass takes the sent text off "
        "the front of that box, as Fldigi does, so the next TX sends only new text. A stopped pass "
        "takes the characters that already went out. Text you change during the pass is left alone. "
@@ -4338,10 +4446,14 @@ void MainWindow::showGuide() {
        "Reverse video, on the Hell row, is off until you turn it on. Off prints the tape black "
        "on white. On prints white on black so an inverted image reads. The carrier does not move. "
        "The red marker is centered on the carrier. Feld Hell's marker is the 245 Hz channel. "
-       "Received text stays in the log under the tape, in the receive colour. Sent text prints in "
-       "red as it goes out. A new transmission appends, and a finished one ends on its own line. "
+       "A new transmission appends to the sent log, and a finished one ends on its own line. "
        "The list follows the bottom only while you are already there. Switching from one Hell "
        "variant to another keeps that log. Leaving Hell clears it. "
+       "The tape pane sits over the receive log. Save tape, Open, and CLR RX are on that pane and "
+       "CLR RX clears the tape only. CLR SENT sits on the sent-text pane and clears only that. "
+       "The tape and the log share the receive pane with a bar between them: drag it to give the "
+       "tape more room, and the size is remembered. The tape starts with about three quarters of "
+       "the height, so several rows show at once. "
        "A full tape width moves up into a scrollable history, up to 500 rows. The wheel or the "
        "scroll bar reads it back. Save tape writes the history and the live strip as a PNG under "
        "Documents\\STD\\hell. Open opens that folder. Neither one keys. "
