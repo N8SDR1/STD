@@ -3360,7 +3360,8 @@ void MainWindow::buildMenus() {
   auto* graphicsMenu = optionsMenu->addMenu(QStringLiteral("Graphics"));
   graphicsMenu->setObjectName(QStringLiteral("graphicsMenu"));
   graphicsMenu->setToolTip(QStringLiteral(
-      "Waterfall graphics. Auto uses Vulkan. The checked line is the backend in use. "
+      "Waterfall graphics. Auto tries Vulkan, then Direct3D 11, then Painter. "
+      "The checked line is the backend in use. "
       "Choosing a different graphics API restarts STD. This does not key."));
   const struct {
     const char* key;
@@ -4736,7 +4737,8 @@ void MainWindow::showGuide() {
        "Grayscale, and Amber. The choice recolors the trace. It does not change the frequency "
        "span, and it does not key."},
       {"Graphics",
-       "Options → Graphics chooses the waterfall backend. Auto uses Vulkan. Direct3D 11, "
+       "Options → Graphics chooses the waterfall backend. Auto tries Vulkan, then Direct3D 11, "
+       "then Painter, before the window is shown. Direct3D 11, "
        "Direct3D 12, OpenGL, and Painter are explicit. The Graphics line names the backend in "
        "use. Choosing a different graphics API restarts STD so that backend is selected. Choosing the "
        "backend already in use replaces the picture immediately. It does not key and does not send START."},

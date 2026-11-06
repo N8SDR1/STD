@@ -1384,7 +1384,7 @@ QString WaterfallWidget::graphicsMode() const {
   if (!sessionMode_.isEmpty())
     return sessionMode_;
   if (graphicsChoice_ == QLatin1String("auto") || graphicsChoice_.isEmpty())
-    return QStringLiteral("vulkan");
+    return WaterfallGpu::processBackend();
   return graphicsChoice_;
 }
 
@@ -1407,12 +1407,13 @@ void WaterfallWidget::setGraphicsMode(const QString& mode) {
   QSettings saved;
   saved.setValue(QStringLiteral("waterfall/graphics"), graphicsChoice_);
   saved.setValue(QStringLiteral("waterfall/graphicsRev"), 1);
-  const QString requested =
-      (key == QLatin1String("auto") || key.isEmpty()) ? QStringLiteral("vulkan") : key;
+  const QString previous = WaterfallGpu::processBackend();
+  const QString requested = (key == QLatin1String("auto") || key.isEmpty())
+                                ? WaterfallGpu::probeAutoBackend()
+                                : key;
   // Qt locks one RHI backend to the top-level window at creation. A
   // different choice has to start again with that backend already selected.
-  if (requested != WaterfallGpu::processBackend() &&
-      !qEnvironmentVariableIsSet("STD_SELFTEST")) {
+  if (requested != previous && !qEnvironmentVariableIsSet("STD_SELFTEST")) {
     qputenv("STD_GRAPHICS_RESTART", "1");
     const QString exe = QCoreApplication::applicationFilePath();
     QStringList args = QCoreApplication::arguments();

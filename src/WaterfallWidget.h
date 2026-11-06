@@ -116,7 +116,7 @@ public:
   bool flatten() const { return flatten_; }
   // Puts the controls back without writing settings.
   void setTone(int floorDb, int rangeDb, bool autoFloor);
-  // vulkan, d3d11, d3d12, opengl, or painter. Auto is Vulkan.
+  // vulkan, d3d11, d3d12, opengl, or painter. Auto probes Vulkan, then Direct3D 11.
   // Options shows the backend that is actually in use. A different API
   // restarts STD so the window is created on that backend.
   void setGraphicsMode(const QString& mode);
