@@ -27,7 +27,7 @@ not extra modes.
 
 ## Not in the menu yet
 
-These do not key. Do not drop them.
+These do not key. Do not drop them. They are leftover and not shipping. The 11025 Hz family cannot run on TCI (no 44100).
 
 | Mode | MSHV note |
 | --- | --- |
