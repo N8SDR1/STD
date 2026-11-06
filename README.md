@@ -111,6 +111,6 @@ A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_Q
 ## More
 
 - Web version of this page: <https://n8sdr1.github.io/STD/>
-- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.9 pre-release, testing phase · highly transmissible)
+- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.9, testing phase · highly transmissible)
 - Wiki: <https://github.com/N8SDR1/STD/wiki>
 - Longer notes: [modes](docs/modes.md), [Hell](docs/hell.md), [macros](docs/macros.md), [contest](docs/contest.md), [connect](docs/connect.md)
