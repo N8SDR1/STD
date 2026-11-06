@@ -3254,6 +3254,18 @@ int shellReady(MainWindow& window) {
       if (!split || !tape || !log || split->indexOf(tape) != 0 || split->indexOf(log) != 1 ||
           !tape->isVisibleTo(&window) || split->childrenCollapsible())
         return fail("Hell tape is not in its resizable pane");
+      // CLR RX clears the tape and keeps the sent text; CLR SENT clears that.
+      auto* clrRxButton = window.findChild<QPushButton*>(QStringLiteral("clrRx"));
+      auto* clrSentButton = window.findChild<QPushButton*>(QStringLiteral("clrSent"));
+      if (!clrRxButton || !clrSentButton || !clrSentButton->isVisibleTo(&window) ||
+          !log->placeholderText().contains(QLatin1String("sent")))
+        return fail("Hell has no CLR SENT or the log is not labelled as sent text");
+      log->setPlainText(QStringLiteral("CQ CQ de N8SDR"));
+      clrRxButton->click();
+      const bool kept = !log->toPlainText().isEmpty();
+      clrSentButton->click();
+      if (!kept || !log->toPlainText().isEmpty())
+        return fail("Hell CLR RX or CLR SENT cleared the wrong pane");
     }
     faxAction->trigger();
     if (profile->digitalMode() != QLatin1String("WEFAX-576")) {

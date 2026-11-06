@@ -1154,7 +1154,7 @@ void MainWindow::buildDocks() {
   receiveDock_->setObjectName("receiveDock");
   receiveDock_->setWidget(makeReceivePanel());
   receiveDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
-  placeDockTitle(receiveDock_, QStringLiteral("Receive"), {"decodeClear", "clrRx"});
+  placeDockTitle(receiveDock_, QStringLiteral("Receive"), {"decodeClear", "clrSent", "clrRx"});
 
   transmitDock_ = new QDockWidget("Transmit", this);
   transmitDock_->setObjectName("transmitDock");
@@ -2494,8 +2494,22 @@ QWidget* MainWindow::makeReceivePanel() {
   clrRx->setFont(interfaceFont(11));
   clrRx->setFocusPolicy(Qt::NoFocus);
   clrRx->setToolTip(QStringLiteral(
-      "Clear the receive echo and the Hell tape. This does not key and does not send START."));
+      "Clear the received copy. In Hell that is the tape; CLR SENT clears your sent text. "
+      "This does not key and does not send START."));
   clrRx->hide();
+  // Hell only: the log under the tape holds just your sent text, in red.
+  auto* clrSent = new QPushButton(QStringLiteral("CLR SENT"), panel);
+  clrSent->setObjectName(QStringLiteral("clrSent"));
+  clrSent->setFont(interfaceFont(11));
+  clrSent->setFocusPolicy(Qt::NoFocus);
+  clrSent->setToolTip(QStringLiteral(
+      "Clear the red sent text under the Hell tape. The tape stays. "
+      "This does not key and does not send START."));
+  clrSent->hide();
+  connect(clrSent, &QPushButton::clicked, this, [this] {
+    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
+      echo->clear();
+  });
   auto* faxFolder = new QPushButton(QStringLiteral("Folder"), panel);
   faxFolder->setObjectName(QStringLiteral("wefaxFolder"));
   faxFolder->setFont(interfaceFont(11));
@@ -2536,6 +2550,7 @@ QWidget* MainWindow::makeReceivePanel() {
     wefax_->setSlant(savedSlant);
   tools->addWidget(filter, 1);
   tools->addWidget(clear);
+  tools->addWidget(clrSent);
   tools->addWidget(clrRx);
   // Speech read-back: click mutes and unmutes, the number is the volume.
   // Shown only when Options -> Speech has read-back on, in a text mode.
@@ -2711,7 +2726,9 @@ QWidget* MainWindow::makeReceivePanel() {
       wefax_->setSlant(value);
   });
   connect(clrRx, &QPushButton::clicked, this, [this] {
-    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")))
+    // In Hell the log holds only sent text, which CLR SENT clears.
+    const bool hell = profile_ && hellFamily(profile_->digitalMode());
+    if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho")); echo && !hell)
       echo->clear();
     clearJs8Activity();
     if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
@@ -4141,6 +4158,15 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
           "WSPR rows: time, dB, DT, frequency, drift, call, locator, and the dBm report. "
           "The titles stay above this list. There is no macro bar in this mode. "
           "This does not key and does not send START."));
+    } else if (hell) {
+      echo->setLineWrapMode(QTextEdit::WidgetWidth);
+      echo->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+      echo->setPlaceholderText(QStringLiteral(
+          "Your sent text prints here in red as it goes out. The received copy is the tape above."));
+      echo->setToolTip(QStringLiteral(
+          "Sent log. Hell has no text decode, so what you receive is the tape above; this box "
+          "holds only what you sent, in red. CLR SENT clears it and CLR RX clears the tape. "
+          "This does not key and does not send START."));
     } else {
       echo->setLineWrapMode(QTextEdit::WidgetWidth);
       echo->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -4180,6 +4206,8 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* clrRx = findChild<QPushButton*>(QStringLiteral("clrRx")))
     clrRx->setVisible(text || fax || wspr);
+  if (auto* clrSent = findChild<QPushButton*>(QStringLiteral("clrSent")))
+    clrSent->setVisible(hell);
   applySpeechSettings();
   if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
     edit->setVisible(!text && !fax && !wspr && !rade);
@@ -4374,6 +4402,8 @@ void MainWindow::showGuide() {
        "red as it goes out. A new transmission appends, and a finished one ends on its own line. "
        "The list follows the bottom only while you are already there. Switching from one Hell "
        "variant to another keeps that log. Leaving Hell clears it. "
+       "Hell has no text decode, so the log under the tape holds only your sent text, in red. CLR RX "
+       "clears the tape and CLR SENT clears the sent text. "
        "The tape and the log share the receive pane with a bar between them: drag it to give the "
        "tape more room, and the size is remembered. The tape starts with about three quarters of "
        "the height, so several rows show at once. "

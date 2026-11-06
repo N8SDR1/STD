@@ -30,7 +30,7 @@ The font is Fldigi's `feldhell_12` (12-pixel variable width, sent as 14-row colu
 
 The amplitude-Hell tape uses that mode's column rate, with 20-pixel receive columns. FSK Hell, FSK Hell-105, and Hell 80 read the shift, so a steady tone still draws. Reverse video is on the Hell row. Off prints the tape black on white. On prints white on black. The carrier does not move, and the switch does not key.
 
-The log under the tape keeps received text in the receive colour and prints sent text in red. A new transmission appends, and a finished one ends on its own line. The list follows the bottom only while you are already there. Switching from one Hell variant to another keeps that log. Leaving Hell clears it.
+Hell has no text decode, so the received copy is the tape; the log under it holds your sent text in red. CLR RX clears the tape and CLR SENT, shown only in Hell, clears the sent text. A new transmission appends, and a finished one ends on its own line. The list follows the bottom only while you are already there. Switching from one Hell variant to another keeps that log. Leaving Hell clears it.
 
 The tape and the log below it share the receive pane with a bar between them: drag it to give the tape more room, and the size is remembered. By default the tape gets about three quarters of the height, so several rows show at once. A full tape width moves up into a scrollable history, up to 500 rows. The wheel or the scroll bar reads a long transmission back. Save tape writes the history and the live strip as a PNG under Documents\STD\hell. Open opens that folder. Neither one keys.
 
