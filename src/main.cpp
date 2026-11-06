@@ -3086,6 +3086,38 @@ int shellReady(MainWindow& window) {
     if (!cleared)
       return fail("mode change kept the previous text");
   }
+  {
+    // FT8-family rows live in the same pane as Time/dB/DT titles. The Hell
+    // splitter must not keep a second empty box under them.
+    auto* ft8Mode = window.findChild<QAction*>(QStringLiteral("modeFt8"));
+    auto* listHost = window.findChild<QWidget*>(QStringLiteral("decodeList"));
+    auto* header = window.findChild<QLabel*>(QStringLiteral("decodeHeader"));
+    auto* list = window.findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
+    auto* split = window.findChild<QSplitter*>(QStringLiteral("hellSplit"));
+    auto* filter = window.findChild<QLineEdit*>(QStringLiteral("decodeFilter"));
+    auto* clear = window.findChild<QPushButton*>(QStringLiteral("decodeClear"));
+    if (!ft8Mode || !listHost || !header || !list || !filter || !clear)
+      return fail("decode list widgets are missing");
+    const char* listModes[] = {"modeFt8", "modeFt4", "modeFt2", "modeJt65A", "modeQ65A"};
+    for (const char* name : listModes) {
+      auto* action = window.findChild<QAction*>(QLatin1String(name));
+      if (!action)
+        return fail("an FT list mode is missing");
+      action->trigger();
+      if (header->parentWidget() != listHost || list->parentWidget() != listHost ||
+          !listHost->isVisibleTo(&window) || !header->isVisibleTo(&window) ||
+          !list->isVisibleTo(&window) || !filter->isVisibleTo(&window) ||
+          !clear->isVisibleTo(&window) || (split && split->isVisibleTo(&window)))
+        return fail("FT decode rows are not under the column titles");
+    }
+    auto* rttyMode = window.findChild<QAction*>(QStringLiteral("modeRtty"));
+    if (!rttyMode)
+      return fail("RTTY mode action is missing");
+    rttyMode->trigger();
+    if (!split || !split->isVisibleTo(&window) || listHost->isVisibleTo(&window))
+      return fail("RTTY hid the receive echo");
+    ft8Mode->trigger();
+  }
   // Keyboard modes take what went out off the TX box, as Fldigi does.
   if (textAfterSent(QStringLiteral("CQ CQ de N8SDR") + QChar(u'\n') + QStringLiteral("W1AW de N8SDR"),QStringLiteral("CQ CQ de N8SDR"), true) !=
           QLatin1String("W1AW de N8SDR") ||

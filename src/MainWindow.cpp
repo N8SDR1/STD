@@ -2765,7 +2765,6 @@ QWidget* MainWindow::makeReceivePanel() {
   header->setObjectName("decodeHeader");
   header->setFont(monoFont(13));
   header->setTextInteractionFlags(Qt::NoTextInteraction);
-  layout->addWidget(header);
   layout->addWidget(makeQsoBar(panel));
 
   auto* raster = new HellRaster(panel);
@@ -2922,6 +2921,9 @@ QWidget* MainWindow::makeReceivePanel() {
     if (sizes.size() == 2 && sizes.at(0) > 0 && sizes.at(1) > 0)
       QSettings().setValue(QStringLiteral("hell/split"), QVariantList{sizes.at(0), sizes.at(1)});
   });
+  // Hidden in FT8-family list modes so decode rows sit under the titles.
+  // Keyboard, Hell, and WSPR show it for the echo log (and the Hell tape).
+  hellSplit->hide();
   layout->addWidget(hellSplit, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
@@ -2960,7 +2962,16 @@ QWidget* MainWindow::makeReceivePanel() {
   edit->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   edit->document()->setDocumentMargin(0);
   edit->viewport()->installEventFilter(this);
-  layout->addWidget(edit, 1);
+  // Titles and rows are one pane so a leftover Hell splitter cannot park
+  // the list in a separate box under a gap.
+  auto* decodeList = new QWidget(panel);
+  decodeList->setObjectName(QStringLiteral("decodeList"));
+  auto* decodeLayout = new QVBoxLayout(decodeList);
+  decodeLayout->setContentsMargins(0, 0, 0, 0);
+  decodeLayout->setSpacing(0);
+  decodeLayout->addWidget(header);
+  decodeLayout->addWidget(edit, 1);
+  layout->addWidget(decodeList, 1);
 
   connect(filter, &QLineEdit::textChanged, this, [this](const QString&) { refreshDecodes(); });
   connect(clear, &QPushButton::clicked, this, [this] {
@@ -4188,9 +4199,10 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* pane = findChild<QWidget*>(QStringLiteral("hellTapePane")))
     pane->setVisible(hell);
+  const bool echoOn = (text || wspr) && !js8Mode(mode) && !rade;
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
     // JS8 shows its activity lists and conversation instead.
-    echo->setVisible((text || wspr) && !js8Mode(mode) && !rade);
+    echo->setVisible(echoOn);
     const QString body = withoutWsprTitleLine(echo->toPlainText());
     if (body != echo->toPlainText())
       echo->setPlainText(body);
@@ -4257,14 +4269,21 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   if (auto* clrSent = findChild<QPushButton*>(QStringLiteral("clrSent")))
     clrSent->setVisible(hell);
   applySpeechSettings();
+  const bool decodeListOn = !text && !fax && !wspr && !rade;
+  if (auto* split = findChild<QSplitter*>(QStringLiteral("hellSplit")))
+    split->setVisible(hell || echoOn);
+  if (auto* logPane = findChild<QWidget*>(QStringLiteral("rxLogPane")))
+    logPane->setVisible(hell || echoOn);
+  if (auto* list = findChild<QWidget*>(QStringLiteral("decodeList")))
+    list->setVisible(decodeListOn);
   if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
-    edit->setVisible(!text && !fax && !wspr && !rade);
+    edit->setVisible(decodeListOn);
   if (auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader")))
-    header->setVisible(!text && !fax && !wspr && !rade);
+    header->setVisible(decodeListOn);
   if (auto* filter = findChild<QLineEdit*>(QStringLiteral("decodeFilter")))
-    filter->setVisible(!text && !fax && !wspr && !rade);
+    filter->setVisible(decodeListOn);
   if (auto* clear = findChild<QPushButton*>(QStringLiteral("decodeClear")))
-    clear->setVisible(!text && !fax && !wspr && !rade);
+    clear->setVisible(decodeListOn);
   if (auto* scroll = findChild<QWidget*>(QStringLiteral("wefaxScroll")))
     scroll->setVisible(fax);
   for (const char* name : {"hellSave", "hellOpen"}) {
