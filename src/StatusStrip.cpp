@@ -94,6 +94,8 @@ void showDigitalMode(QPushButton* chip, const QString& mode) {
     fill = QStringLiteral("#1f7a4d");
   else if (text.startsWith(QLatin1String("Q65")))
     fill = QStringLiteral("#7a3e6d");
+  else if (text.startsWith(QLatin1String("MSK")))
+    fill = QStringLiteral("#2f6fb0");
   else if (text.contains(QLatin1String("Hell"))) {
     fill = QStringLiteral("#c4a35a");
     ink = QStringLiteral("#2a1404");
@@ -117,7 +119,7 @@ QPushButton* digitalModeChip(QWidget* parent) {
   chip->setFont(font);
   chip->setFixedHeight(22);
   chip->setToolTip(QStringLiteral(
-      "Active digital mode. Click to cycle FT8, FT4, FT2, JT65, Q65, the Hell list, RTTY, the PSK speeds, "
+      "Active digital mode. Click to cycle FT8, FT4, FT2, JT65, Q65, MSK144, MSKMS, the Hell list, RTTY, the PSK speeds, "
       "Olivia, Contestia, MFSK, DominoEX, Thor, and WEFAX-576. This does not key."));
   showDigitalMode(chip, QStringLiteral("FT8"));
   return chip;

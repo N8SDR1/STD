@@ -15,6 +15,7 @@
 #include "RstMeter.h"
 #include "StationFiles.h"
 #include "TxWave.h"
+#include "MskPingDisplay.h"
 #include "hell/HellEngine.h"
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
@@ -1647,13 +1648,16 @@ int shellReady(MainWindow& window) {
   channelBandHz(1102, 245, true, &bandLo, &bandHi);
   if (std::fabs(bandLo - (1102.0f - 122.5f)) > 0.01f || std::fabs(bandHi - (1102.0f + 122.5f)) > 0.01f)
     return fail("Hell marker is not centered on the carrier");
+  channelBandHz(1500, mskChannelHz(QStringLiteral("MSK144")), true, &bandLo, &bandHi);
+  if (std::fabs(bandLo - 500.0f) > 0.01f || std::fabs(bandHi - 2500.0f) > 0.01f)
+    return fail("MSK144 band is not 500 to 2500 Hz");
   channelBandHz(1500, 50, false, &bandLo, &bandHi);
   if (std::fabs(bandLo - 1500.0f) > 0.01f || std::fabs(bandHi - 1550.0f) > 0.01f)
     return fail("FT8 marker does not start at the cursor");
   const char* centeredModes[] = {"Feld Hell", "Slow Hell", "Feld Hell X5", "Feld Hell X9",
                                   "FSK Hell", "FSK Hell-105", "Hell 80", "RTTY", "PSK31",
                                   "QPSK31", "MFSK16", "DominoEX 16", "Thor 16", "Olivia 8/250",
-                                  "Contestia 8/250", "MT63-500S", "WSPR", "WEFAX-576"};
+                                  "Contestia 8/250", "MT63-500S", "WSPR", "WEFAX-576", "MSK144", "MSKMS"};
   for (const char* name : centeredModes) {
     if (!carrierCenteredMode(QString::fromLatin1(name)))
       return fail("a carrier-centered mode starts at the cursor");
@@ -1942,7 +1946,7 @@ int shellReady(MainWindow& window) {
   if (!autoDec)
     return fail("auto decode is missing");
   const auto bands = window.findChildren<QPushButton*>("profileBand");
-  if (bands.size() != 11)
+  if (bands.size() != 12)
     return fail("band buttons are missing");
   int checked = 0;
   for (const QPushButton* button : bands) {
@@ -4025,6 +4029,9 @@ int shellReady(MainWindow& window) {
       {"FT2", 0, 56, false}, {"FT2", 1, 0, true},
       {"JT65A", 0, 0, true}, {"JT65A", 1, 0, false},
       {"Q65A", 0, 0, true}, {"Q65A", 0, 30, false},
+      // MSK144 and MSKMS default to MSHV's 30 s.
+      {"MSK144", 0, 0, true}, {"MSK144", 0, 30, false}, {"MSK144", 1, 0, true},
+      {"MSKMS", 0, 0, true}, {"MSKMS", 0, 30, false},
   };
   std::vector<float> jt65;
   if (!buildTxWave(QStringLiteral("JT65A"), QStringLiteral("CQ N8SDR EM79"), 1500, &jt65) ||
@@ -4063,6 +4070,155 @@ int shellReady(MainWindow& window) {
   qInfo("Q65A all options %s", qPrintable(q65All));
   if (!q65All.contains(QLatin1String("CQ N8SDR EM79")))
     return fail("Q65A did not decode with every Decode option on");
+  {
+    // MSK144 and MSKMS: menu, TX wave, and a synthetic meteor ping in noise
+    // decoded by MSHV's real-time block decoder, anywhere in the period.
+    for (const char* name : {"modeMsk144", "modeMskms"}) {
+      const auto* action = window.findChild<QAction*>(QString::fromLatin1(name));
+      if (!action || !action->toolTip().contains(QLatin1String("START")) ||
+          !action->toolTip().contains(QLatin1String("does not key")))
+        return fail("MSK144 or MSKMS is missing from the menu");
+    }
+    {
+      // MSHV's TX/RX box (5, 7.5, 10, 15, 30 s), DF Tol (default 150), Sh, SWL.
+      const auto* period = window.findChild<QComboBox*>(QStringLiteral("mskPeriod"));
+      const auto* tol = window.findChild<QComboBox*>(QStringLiteral("mskDfTol"));
+      if (!period || period->count() != 5 || period->itemData(1).toInt() != 7500 ||
+          period->itemText(1) != QLatin1String("7.5 s") || !tol || tol->findData(150) < 0 ||
+          tol->itemData(0).toInt() != 10 || tol->itemData(tol->count() - 1).toInt() != 400 ||
+          !window.findChild<QCheckBox*>(QStringLiteral("mskShort")) ||
+          !window.findChild<QCheckBox*>(QStringLiteral("mskSwl")) ||
+          !window.findChild<MskPingDisplay*>())
+        return fail("MSK row is missing");
+      if (mskDfTolerance() != 150)
+        return fail("MSK DF Tol default is not 150");
+    }
+    if (!sequencedFamily(QStringLiteral("MSK144")) || !sequencedFamily(QStringLiteral("MSKMS")) ||
+        keyboardTextMode(QStringLiteral("MSK144")) || mskChannelHz(QStringLiteral("MSK144")) != 2000 ||
+        !mskmsReportWord(QStringLiteral("26")) || mskmsReportWord(QStringLiteral("73")) ||
+        mskmsReportWord(QStringLiteral("-05")))
+      return fail("MSK144 mode helpers are wrong");
+    if (mskPeriodMs(QStringLiteral("MSK144")) != 30000 || mskPeriodMs(QStringLiteral("MSKMS")) != 30000)
+      return fail("MSK144 default period is not MSHV's 30 s");
+    if (!txStampIsFirstHalf(QStringLiteral("FT4"), 0, 0) || txStampIsFirstHalf(QStringLiteral("FT4"), 0, 7))
+      return fail("7.5 s halves are wrong");
+    {
+      // The ping display: a 1500 Hz burst 4 s into a 15 s period is bright
+      // at 4 s and 1500 Hz, dark at 10 s, and its decode leaves a mark.
+      MskPingDisplay ping;
+      ping.setPeriodMs(15000);
+      if (ping.columnsPerPeriod() != 15000 * 12 / 256)
+        return fail("ping display column count is wrong");
+      const qint64 periodStart = 1700000010000LL - (1700000010000LL % 15000);
+      std::vector<float> audio(size_t(15 * 48000), 0.0f);
+      quint32 seed = 7;
+      for (size_t i = 0; i < audio.size(); ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        audio[i] = 0.01f * (float(seed >> 8) / float(1u << 24) - 0.5f);
+        if (i >= size_t(4 * 48000) && i < size_t(4 * 48000 + 9600))
+          audio[i] += 0.3f * float(std::sin(2.0 * 3.141592653589793 * 1500.0 * double(i) / 48000.0));
+      }
+      ping.pushAudioAt(audio.data(), int(audio.size()), 48000, periodStart);
+      const int burst = ping.levelAt(4.1, 1500);
+      const int quiet = ping.levelAt(10.0, 1500);
+      // Noise paints near black (MSHV's look), the burst bright.
+      if (burst < 0 || quiet < 0 || quiet > 120 || burst < quiet + 200)
+        return fail("ping display did not show the burst");
+      const QString stamp = ping.stamp(true);
+      ping.addPing(QString(stamp).remove(QLatin1Char(':')), 4.1);
+      if (ping.pingCount(true) != 1)
+        return fail("ping display did not mark the decode");
+    }
+    if (pskReporterModeName(QStringLiteral("MSK144")) != QLatin1String("MSK144") ||
+        pskReporterModeName(QStringLiteral("MSKMS")) != QLatin1String("MSK144"))
+      return fail("MSK144 PSK Reporter mode name is wrong");
+    // A frame is 144 symbols at 2000 baud: 72 ms, 3456 samples at 48 kHz.
+    // MSK40 is 40 symbols, 20 ms.
+    if (mskFrame(QStringLiteral("MSK144"), QStringLiteral("CQ N8SDR EM79")).size() != 3456 ||
+        mskFrame(QStringLiteral("MSKMS"), QStringLiteral("K1JT N8SDR R26")).size() != 3456 ||
+        mskFrame(QStringLiteral("MSK144"), QStringLiteral("<K1JT N8SDR> R+06")).size() != 960)
+      return fail("MSK144 frame length is wrong");
+    std::vector<float> slot;
+    if (!buildTxWave(QStringLiteral("MSK144"), QStringLiteral("CQ N8SDR EM79"), 1500, &slot))
+      return fail("MSK144 encoder is missing");
+    // 250 ms lead and 370 ms guard in MSHV's 30 s slot.
+    if (slot.size() > size_t(29380 * 48) || slot.size() < size_t(29300 * 48))
+      return fail("MSK144 wave does not fill the slot");
+    // The frame is continuous phase: no step where copies join.
+    for (size_t i = 3456; i < 3456 * 4; i += 3456) {
+      if (std::fabs(slot[i] - slot[i - 1]) > 0.5f)
+        return fail("MSK144 frames do not join cleanly");
+    }
+    if (decodeMskMessage(QStringLiteral("MSK144"), slot) != QLatin1String("CQ N8SDR EM79"))
+      return fail("MSK144 TX wave did not round-trip");
+    const auto pingAt = [](const std::vector<float>& frame, double atSec, int periodSec) {
+      std::vector<float> wave(size_t(periodSec * 48000), 0.0f);
+      quint32 seed = 12345;
+      for (float& x : wave) {
+        seed = seed * 1664525u + 1013904223u;
+        x = 0.05f * (float(seed >> 8) / float(1u << 24) - 0.5f);
+      }
+      // A 250 ms meteor ping with a fast rise and an exponential decay.
+      const int start = int(atSec * 48000);
+      const int len = 12000;
+      for (int i = 0; i < len && start + i < int(wave.size()); ++i) {
+        const float env = std::min(1.0f, i / 240.0f) * std::exp(-3.0f * float(i) / len);
+        wave[size_t(start + i)] += 0.3f * env * frame[size_t(i) % frame.size()];
+      }
+      return wave;
+    };
+    const auto ping = pingAt(mskFrame(QStringLiteral("MSK144"), QStringLiteral("K1JT N8SDR R+05")), 6.3, 15);
+    const QString pingBack = decodeMskMessage(QStringLiteral("MSK144"), ping);
+    qInfo("MSK144 ping %s", qPrintable(pingBack));
+    if (pingBack != QLatin1String("K1JT N8SDR R+05"))
+      return fail("MSK144 ping did not decode");
+    const auto ms = pingAt(mskFrame(QStringLiteral("MSKMS"), QStringLiteral("K1JT N8SDR R26")), 11.0, 30);
+    QString msReport;
+    const QString msBack = decodeMskMessage(QStringLiteral("MSKMS"), ms, false, QString(), QString(), &msReport);
+    qInfo("MSKMS ping %s report %s", qPrintable(msBack), qPrintable(msReport));
+    if (msBack != QLatin1String("K1JT N8SDR R26") || !mskmsReportWord(msReport))
+      return fail("MSKMS ping did not decode with a report");
+    const auto shortPing =
+        pingAt(mskFrame(QStringLiteral("MSK144"), QStringLiteral("<K1JT N8SDR> R+06")), 2.0, 15);
+    const QString shortBack = decodeMskMessage(QStringLiteral("MSK144"), shortPing, true, QStringLiteral("N8SDR"),
+                                               QStringLiteral("K1JT"));
+    qInfo("MSK40 ping %s", qPrintable(shortBack));
+    if (shortBack != QLatin1String("<K1JT N8SDR> R+06"))
+      return fail("MSK40 short message did not decode");
+    // Band dials: 6 m and 2 m only, the regional calling frequencies.
+    auto* mskProfile = window.findChild<ModeProfile*>();
+    if (!mskProfile)
+      return fail("profile is missing");
+    const QString keepMode = mskProfile->digitalMode();
+    QPushButton* six = nullptr;
+    QPushButton* two = nullptr;
+    QPushButton* twenty = nullptr;
+    for (QPushButton* button : window.findChildren<QPushButton*>(QStringLiteral("profileBand"))) {
+      if (button->text() == QLatin1String("50"))
+        six = button;
+      else if (button->text() == QLatin1String("144"))
+        two = button;
+      else if (button->text() == QLatin1String("14"))
+        twenty = button;
+    }
+    if (!six || !two || !twenty)
+      return fail("MSK144 band buttons are missing");
+    mskProfile->setDigitalMode(QStringLiteral("FT8"));
+    if (!two->isHidden() || twenty->isHidden())
+      return fail("2 m shows outside MSK144");
+    mskProfile->setDigitalMode(QStringLiteral("MSK144"));
+    if (two->isHidden() || six->isHidden() || !twenty->isHidden())
+      return fail("MSK144 band buttons are wrong");
+    six->click();
+    if (mskProfile->dialHz() != 50260000 && mskProfile->dialHz() != 50280000)
+      return fail("MSK144 6 m dial is wrong");
+    two->click();
+    if (mskProfile->dialHz() != 144150000 && mskProfile->dialHz() != 144360000)
+      return fail("MSK144 2 m dial is wrong");
+    mskProfile->setDigitalMode(keepMode);
+    if (two->isHidden() == false && !mskMode(keepMode))
+      return fail("2 m stayed after leaving MSK144");
+  }
   for (const auto& row : halves) {
     if (txStampIsFirstHalf(QString::fromLatin1(row.mode), row.minute, row.second) != row.first)
       return fail("period half is wrong");

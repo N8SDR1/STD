@@ -68,29 +68,37 @@ struct Ft8Band {
   qint64 hellRegion1Hz;
   qint64 jt65Hz;
   qint64 q65Hz;
+  // MSK144 and MSKMS. WSJT-X lists 50.260 and 144.150 for Regions 2
+  // and 3; MSHV (Region 1) uses 50.280 and 144.360. 0 hides the band.
+  qint64 mskHz;
+  qint64 mskRegion1Hz;
 };
 
 constexpr Ft8Band kBands[] = {
-    {"1.8", 1840000, 1840000, 0, 1843000, 1841500, 0, 1838000, 1838000},
-    {"3.5", 3573000, 3575000, 3568000, 3578000, 3576500, 0, 3570000, 3570000},
-    {"7", 7074000, 7047500, 0, 7052000, 7078500, 0, 7076000, 7076000},
-    {"10", 10136000, 10140000, 0, 10144000, 10135500, 10142500, 10138000, 10138000},
-    {"14", 14074000, 14080000, 0, 14084000, 14061500, 0, 14076000, 14076000},
-    {"18", 18100000, 18104000, 0, 18108000, 18103500, 0, 18102000, 18102000},
-    {"21", 21074000, 21140000, 0, 21144000, 21061500, 0, 21076000, 21076000},
-    {"24", 24915000, 24919000, 0, 24923000, 24922500, 0, 24917000, 24917000},
-    {"28", 28074000, 28180000, 0, 28184000, 28061500, 0, 28076000, 28076000},
-    {"50", 50313000, 50318000, 0, 50320000, 50284500, 0, 50276000, 50305000},
+    {"1.8", 1840000, 1840000, 0, 1843000, 1841500, 0, 1838000, 1838000, 0, 0},
+    {"3.5", 3573000, 3575000, 3568000, 3578000, 3576500, 0, 3570000, 3570000, 0, 0},
+    {"7", 7074000, 7047500, 0, 7052000, 7078500, 0, 7076000, 7076000, 0, 0},
+    {"10", 10136000, 10140000, 0, 10144000, 10135500, 10142500, 10138000, 10138000, 0, 0},
+    {"14", 14074000, 14080000, 0, 14084000, 14061500, 0, 14076000, 14076000, 0, 0},
+    {"18", 18100000, 18104000, 0, 18108000, 18103500, 0, 18102000, 18102000, 0, 0},
+    {"21", 21074000, 21140000, 0, 21144000, 21061500, 0, 21076000, 21076000, 0, 0},
+    {"24", 24915000, 24919000, 0, 24923000, 24922500, 0, 24917000, 24917000, 0, 0},
+    {"28", 28074000, 28180000, 0, 28184000, 28061500, 0, 28076000, 28076000, 0, 0},
+    {"50", 50313000, 50318000, 0, 50320000, 50284500, 0, 50276000, 50305000, 50260000, 50280000},
     // 60 m is channelized. FT8 is the WSJT-X 5.357 MHz dial; RADE has the
     // two FreeDV Reporter dials. The other modes have none, so the chip is
     // hidden for them. It is last in this table so saved band numbers keep
     // their meaning, and sits between 3.5 and 7 on screen.
-    {"5.3", 5357000, 0, 0, 0, 0, 0, 0, 0},
+    {"5.3", 5357000, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    // 2 m holds only the MSK144 and MSKMS dials, so other modes hide it.
+    {"144", 0, 0, 0, 0, 0, 0, 0, 0, 144150000, 144360000},
 };
 
 constexpr int kBandCount = int(sizeof(kBands) / sizeof(kBands[0]));
 constexpr int kDefaultBand = 4;  // 14 MHz
 constexpr int k60mBand = 10;
+constexpr int k6mBand = 9;
+constexpr int k2mBand = 11;
 
 // FreeDV Reporter calling dials (qso.freedv.org) and the regional nets
 // named on freedv.org. 20 m stays 14.236 then 14.240, both USB. Those are
@@ -884,7 +892,7 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     next = QStringLiteral("FT4");
   else if (mode == QLatin1String("FT2"))
     next = QStringLiteral("FT2");
-  else if (jt65Mode(mode) || q65Mode(mode))
+  else if (jt65Mode(mode) || q65Mode(mode) || mskMode(mode))
     next = mode;
   else if (keyboardTextMode(mode))
     next = mode;
@@ -1024,15 +1032,22 @@ void ModeProfile::refreshBands() {
     region_->setToolTip(tip);
   const auto buttons = bar_->findChildren<QPushButton*>(QStringLiteral("profileBand"),
                                                         Qt::FindDirectChildrenOnly);
-  if (buttons.size() > k60mBand) {
-    // 60 m only shows for modes that have a dial there.
-    const bool has60 = tableHz(k60mBand) > 0;
-    buttons[k60mBand]->setVisible(has60);
-    if (!has60 && band_ == k60mBand && kDefaultBand < buttons.size()) {
-      band_ = kDefaultBand;
+  // 60 m, 2 m, and the HF bands in MSK144 or MSKMS only show when the
+  // mode has a dial there. Every other chip stays as it was.
+  const auto shown = [this](int i) {
+    if (i == k60mBand || i == k2mBand || mskMode(mode_))
+      return tableHz(i) > 0;
+    return true;
+  };
+  for (int i = 0; i < buttons.size() && i < kBandCount; ++i)
+    buttons[i]->setVisible(shown(i));
+  if (band_ >= 0 && band_ < kBandCount && !shown(band_)) {
+    const int fallback = shown(kDefaultBand) ? kDefaultBand : k6mBand;
+    if (fallback < buttons.size()) {
+      band_ = fallback;
       cycle_ = 0;
-      const QSignalBlocker block(buttons[kDefaultBand]);
-      buttons[kDefaultBand]->setChecked(true);
+      const QSignalBlocker block(buttons[fallback]);
+      buttons[fallback]->setChecked(true);
       reloadExtras();
     }
   }
@@ -1162,6 +1177,11 @@ qint64 ModeProfile::tableHz(int index) const {
     if (effectiveRegion() == 1 && band.hellRegion1Hz > 0)
       return band.hellRegion1Hz;
     return band.hellHz;
+  }
+  if (mskMode(mode_)) {
+    if (effectiveRegion() == 1 && band.mskRegion1Hz > 0)
+      return band.mskRegion1Hz;
+    return band.mskHz;
   }
   if (jt65Mode(mode_))
     return band.jt65Hz;

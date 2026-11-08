@@ -36,6 +36,7 @@
 #include "StatusStrip.h"
 #include "TciClient.h"
 #include "TxWave.h"
+#include "MskPingDisplay.h"
 #include "WaterfallWidget.h"
 
 #include <algorithm>
@@ -334,6 +335,23 @@ QString decodeColumns(const QString& time, const QString& db, const QString& dt,
   return fields.join(QStringLiteral(" | "));
 }
 
+// MSHV's MSK144 list: Time, T (seconds into the period), dB, DF from
+// 1500 Hz, Message, Navg, Bit err, Eye, Freq.
+QString mskColumns(const QString& time, const QString& t, const QString& db, const QString& df,
+                   const QString& dist, const QString& message, const QString& navg, const QString& bitErrors,
+                   const QString& eye, const QString& freq, bool showTime, bool showFreq, bool showDist) {
+  QStringList fields;
+  if (showTime)
+    fields << columnCell(time, 8);
+  fields << columnCell(t, 5) << columnCell(db, 4) << columnCell(df, 5);
+  if (showDist)
+    fields << columnCell(dist, 6);
+  fields << columnCell(message, 28) << columnCell(navg, 4) << columnCell(bitErrors, 7) << columnCell(eye, 4);
+  if (showFreq)
+    fields << columnCell(freq, 6);
+  return fields.join(QStringLiteral(" | "));
+}
+
 // Raised capsule lettering: bruise-purple face, amber tube glow.
 class RaisedBrandTitle : public QWidget {
 public:
@@ -595,6 +613,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const float* gained = rxScaled_.data();
     if (waterfall_)
       waterfall_->pushRealAudio(gained, count, rate);
+    if (mskDisplay_ && mskDisplay_->isVisible())
+      mskDisplay_->pushAudio(gained, count, rate);
     if (statusStrip_)
       statusStrip_->setRxLevel(gained, count);
     if (ft8_)
@@ -865,6 +885,28 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
   }
   ft8_ = new Ft8Decode(this);
+  connect(ft8_, &Ft8Decode::mskDecoded, this,
+          [this](const QString& time, int db, const QString& t0, const QString& message, int freqHz, int,
+                 const QString& rpt, int df, int navg, int bitErrors, const QString& eye) {
+            DecodeRow extra{time, db, t0, message, freqHz};
+            extra.msk = true;
+            extra.df = df;
+            extra.navg = navg;
+            extra.bitErrors = bitErrors;
+            extra.eye = eye;
+            mskPending_.insert(time + QLatin1Char('|') + message, extra);
+            if (mskDisplay_)
+              mskDisplay_->addPing(time, t0.toDouble());
+            // MSHV gives each MSKMS ping a duration-strength report. Keep
+            // the latest one for every call in the line; Tx2 sends it.
+            if (rpt.isEmpty())
+              return;
+            for (const QString& word : message.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+              const QString call = word.toUpper().remove(QLatin1Char('<')).remove(QLatin1Char('>'));
+              if (call.size() >= 3 && call != QLatin1String("CQ"))
+                mskmsReports_.insert(call, rpt);
+            }
+          });
   connect(ft8_, &Ft8Decode::decoded, this,
           [this](const QString& time, int db, const QString& dt, const QString& message, int freqHz) {
             if (clearEachPeriod_ && !time.isEmpty() && time != lastPeriod_)
@@ -898,7 +940,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             }
             if (decodes_.size() >= 500)
               decodes_.remove(0, decodes_.size() - 499);
-            decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
+            const QString mskKey = time + QLatin1Char('|') + message;
+            if (mskPending_.contains(mskKey))
+              decodes_.push_back(mskPending_.take(mskKey));
+            else
+              decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
+            if (mskPending_.size() > 64)
+              mskPending_.clear();
             noteTheirReply(time, db, message);
             noteDecodeSpot(profile_ ? profile_->digitalMode() : QString(), message, db, freqHz, dt, time);
             refreshDecodes();
@@ -966,6 +1014,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       period = Ft8Decode::Period::Q65D;
     else if (mode == QLatin1String("Q65A"))
       period = Ft8Decode::Period::Q65A;
+    else if (mskmsMode(mode))
+      period = Ft8Decode::Period::Mskms;
+    else if (mskMode(mode))
+      period = Ft8Decode::Period::Msk144;
+    if (mskMode(mode)) {
+      ft8_->setMskOptions(mskPeriodMs(mode), mskShortMessages(), mskSwl(), mskDfTolerance());
+      if (mskDisplay_)
+        mskDisplay_->setPeriodMs(mskPeriodMs(mode));
+    }
     ft8_->setMode(period);
     ft8_->setArmed(armed, low, high);
     maybeWsprHop();
@@ -1128,6 +1185,7 @@ void MainWindow::buildDocks() {
   auto* columnLayout = new QVBoxLayout(column);
   columnLayout->setContentsMargins(0, 0, 0, 0);
   columnLayout->setSpacing(0);
+  columnLayout->addWidget(makeMskPanel(), 2);
   columnLayout->addWidget(waterfall_, 1);
   columnLayout->addWidget(profile_);
   if (auto* tone = waterfall_->findChild<QWidget*>(QStringLiteral("waterfallTone"))) {
@@ -2994,6 +3052,105 @@ QWidget* MainWindow::makeReceivePanel() {
   return panel;
 }
 
+QWidget* MainWindow::makeMskPanel() {
+  auto* panel = new QWidget(this);
+  panel->setObjectName(QStringLiteral("mskPanel"));
+  auto* layout = new QVBoxLayout(panel);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(0);
+  auto* row = new QWidget(panel);
+  row->setObjectName(QStringLiteral("mskRow"));
+  auto* rowLayout = new QHBoxLayout(row);
+  rowLayout->setContentsMargins(8, 4, 8, 4);
+  rowLayout->setSpacing(10);
+  // MSHV's TX/RX box: 5, 7.5, 10, 15, 30 s.
+  auto* periodLabel = new QLabel(QStringLiteral("TX/RX"), row);
+  auto* period = new QComboBox(row);
+  period->setObjectName(QStringLiteral("mskPeriod"));
+  for (int ms : {5000, 7500, 10000, 15000, 30000})
+    period->addItem(ms == 7500 ? QStringLiteral("7.5 s") : QStringLiteral("%1 s").arg(ms / 1000), ms);
+  period->setToolTip(QStringLiteral(
+      "MSHV's TX/RX period for this mode: 5, 7.5, 10, 15, or 30 s, 30 s by default. Both stations must use "
+      "the same one. Saved for MSK144 and MSKMS separately. Does not key."));
+  // MSHV's DF Tol box for MSK144: 10, 20, 50, then 100 to 400 in 50 Hz steps.
+  auto* tolLabel = new QLabel(QStringLiteral("DF Tol def=150 +/-"), row);
+  auto* tol = new QComboBox(row);
+  tol->setObjectName(QStringLiteral("mskDfTol"));
+  for (int hz : {10, 20, 50, 100, 150, 200, 250, 300, 350, 400})
+    tol->addItem(QStringLiteral("%1 Hz").arg(hz), hz);
+  tol->setToolTip(QStringLiteral(
+      "How far from 1500 Hz the decoder looks for a ping. 150 Hz is MSHV's default. Saved. Does not key."));
+  auto* sh = new QCheckBox(QStringLiteral("Sh"), row);
+  sh->setObjectName(QStringLiteral("mskShort"));
+  sh->setToolTip(QStringLiteral(
+      "MSK144 only. MSK40 short messages: also decode 20 ms frames such as <K1JT N8SDR> R+06, which repeat "
+      "3.6 times as often as a full frame. Reports are -03, +00, +03, +06, +10, +13, +16, their R forms, "
+      "RRR, and 73. A Tx line in that form sends MSK40. Saved. Does not key."));
+  auto* swl = new QCheckBox(QStringLiteral("SWL"), row);
+  swl->setObjectName(QStringLiteral("mskSwl"));
+  swl->setToolTip(QStringLiteral(
+      "MSK144 only. Listen mode: also decode MSK40 short messages between other stations heard recently, "
+      "not only ones to your call. Saved. Does not key."));
+  rowLayout->addWidget(periodLabel);
+  rowLayout->addWidget(period);
+  rowLayout->addWidget(tolLabel);
+  rowLayout->addWidget(tol);
+  rowLayout->addWidget(sh);
+  rowLayout->addWidget(swl);
+  rowLayout->addStretch(1);
+  mskDisplay_ = new MskPingDisplay(panel);
+  layout->addWidget(row);
+  layout->addWidget(mskDisplay_, 1);
+  const QSignalBlocker b1(period);
+  const QSignalBlocker b2(tol);
+  const QSignalBlocker b3(sh);
+  const QSignalBlocker b4(swl);
+  tol->setCurrentIndex(std::max(0, tol->findData(mskDfTolerance())));
+  sh->setChecked(mskShortMessages());
+  swl->setChecked(mskSwl());
+  connect(period, &QComboBox::currentIndexChanged, this, [this, period](int) {
+    const QString mode = profile_ ? profile_->digitalMode() : QString();
+    if (!mskMode(mode))
+      return;
+    setMskPeriodMs(mode, period->currentData().toInt());
+    applyMskOptions();
+    setTxStatus(QStringLiteral("%1 period is %2. START was not sent.").arg(mode, period->currentText()));
+  });
+  connect(tol, &QComboBox::currentIndexChanged, this, [this, tol](int) {
+    setMskDfTolerance(tol->currentData().toInt());
+    applyMskOptions();
+  });
+  connect(sh, &QCheckBox::toggled, this, [this](bool on) {
+    QSettings().setValue(QStringLiteral("msk/shortMessages"), on);
+    applyMskOptions();
+  });
+  connect(swl, &QCheckBox::toggled, this, [this](bool on) {
+    QSettings().setValue(QStringLiteral("msk/swl"), on);
+    applyMskOptions();
+  });
+  panel->setVisible(false);
+  return panel;
+}
+
+void MainWindow::applyMskOptions() {
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  if (!mskMode(mode))
+    return;
+  if (auto* period = findChild<QComboBox*>(QStringLiteral("mskPeriod"))) {
+    const QSignalBlocker block(period);
+    period->setCurrentIndex(std::max(0, period->findData(mskPeriodMs(mode))));
+  }
+  // MSHV greys Sh and SWL out in MSKMS.
+  for (const char* name : {"mskShort", "mskSwl"}) {
+    if (auto* box = findChild<QCheckBox*>(QLatin1String(name)))
+      box->setEnabled(!mskmsMode(mode));
+  }
+  if (mskDisplay_)
+    mskDisplay_->setPeriodMs(mskPeriodMs(mode));
+  if (ft8_)
+    ft8_->setMskOptions(mskPeriodMs(mode), mskShortMessages(), mskSwl(), mskDfTolerance());
+}
+
 void MainWindow::refreshDecodes() {
   auto* edit = findChild<QPlainTextEdit*>("receiveText");
   auto* filter = findChild<QLineEdit*>("decodeFilter");
@@ -3006,6 +3163,11 @@ void MainWindow::refreshDecodes() {
     QString line;
     if (row.time.isEmpty())
       line = row.message;
+    else if (row.msk)
+      line = mskColumns(row.time, row.dt, QString::number(row.db), QString::number(row.df),
+                        distanceText(row.message), row.message, QString::number(row.navg),
+                        QString::number(row.bitErrors), row.eye, QString::number(row.freqHz), showTime_,
+                        showFreq_, showDist_);
     else
       line = decodeColumns(row.time, QString::number(row.db), row.dt, distanceText(row.message),
                            row.message, QString::number(row.freqHz), showTime_, showFreq_, showDist_);
@@ -3612,7 +3774,8 @@ void MainWindow::buildMenus() {
                   {"FT2", "modeFt2", false},     {"JT65A", "modeJt65A", false},
                   {"JT65B", "modeJt65B", false}, {"JT65C", "modeJt65C", false},
                   {"Q65A", "modeQ65A", false},   {"Q65B", "modeQ65B", false},
-                  {"Q65C", "modeQ65C", false},   {"Q65D", "modeQ65D", false}};
+                  {"Q65C", "modeQ65C", false},   {"Q65D", "modeQ65D", false},
+                  {"MSK144", "modeMsk144", false}, {"MSKMS", "modeMskms", false}};
   for (const auto& row : modeRows) {
     auto* action = modeMenu->addAction(row.label);
     action->setCheckable(true);
@@ -3627,6 +3790,19 @@ void MainWindow::buildMenus() {
     else if (q65Mode(modeName))
       tip = QStringLiteral(
           "DIGU. 30 second period. The tone follows the cursor. TX sends it. "
+          "This does not key and does not send START.");
+    else if (mskmsMode(modeName))
+      tip = QStringLiteral(
+          "DIGU. MSHV's meteor-scatter MSK144 variant: 72-bit messages and the duration-strength "
+          "report (26, R27) taken from each ping. Tones are fixed at 1000 and 2000 Hz. Pings print "
+          "as they land. TX/RX on the MSK row, 30 s by default. "
+          "This does not key and does not send START.");
+    else if (mskMode(modeName))
+      tip = QStringLiteral(
+          "DIGU. Meteor scatter: 72 ms frames at 2000 baud, tones fixed at 1000 and 2000 Hz, "
+          "repeated for the whole slot. The waterfall band is 500 to 2500 Hz around 1500 Hz. Pings print as they land, anywhere in the period. FT8-style "
+          "messages and contest exchanges, plus MSK40 short messages when that option is on. "
+          "TX/RX period, DF Tol, Sh, and SWL are on the MSK row, 30 s by default. "
           "This does not key and does not send START.");
     action->setToolTip(tip);
     modes->addAction(action);
@@ -3983,9 +4159,11 @@ void eachModeAction(QMenu* menu, const std::function<void(QAction*)>& visit) {
   if (!menu)
     return;
   for (QAction* action : menu->actions()) {
-    if (QMenu* child = action->menu())
-      eachModeAction(child, visit);
-    else if (action->isCheckable())
+    if (QMenu* child = action->menu()) {
+      // MSK144 options holds the period and Sh checks, not modes.
+      if (child->objectName() != QLatin1String("mskOptionsMenu"))
+        eachModeAction(child, visit);
+    } else if (action->isCheckable())
       visit(action);
   }
 }
@@ -4091,6 +4269,16 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   if (jt65Mode(modeName) && waterfall_) {
     waterfall_->setRxHz(1270);
     waterfall_->setTxHz(1270);
+  }
+  // MSK144's tones are fixed at 1000 and 2000 Hz; the markers sit on the
+  // 1500 Hz center the decoder searches around.
+  if (mskMode(modeName) && waterfall_) {
+    waterfall_->setRxHz(1500);
+    waterfall_->setTxHz(1500);
+  }
+  if (mskMode(modeName)) {
+    // activateDigitalMode sets the profile first; read the new mode back.
+    QTimer::singleShot(0, this, [this] { applyMskOptions(); });
   }
   if (fax && waterfall_)
     waterfall_->setRxHz(1900);
@@ -4283,6 +4471,12 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
     clrSent->setVisible(hell);
   applySpeechSettings();
   const bool decodeListOn = !text && !fax && !wspr && !rade;
+  if (auto* panel = findChild<QWidget*>(QStringLiteral("mskPanel")))
+    panel->setVisible(mskMode(mode));
+  // MSHV shows only the ping display in MSK144; the frequency waterfall goes.
+  if (waterfall_)
+    waterfall_->setVisible(!mskMode(mode));
+  refreshDecodeHeader();
   if (auto* split = findChild<QSplitter*>(QStringLiteral("hellSplit")))
     split->setVisible(hell || echoOn);
   if (auto* logPane = findChild<QWidget*>(QStringLiteral("rxLogPane")))
@@ -4452,15 +4646,37 @@ void MainWindow::showGuide() {
        "Tx6 as they are. AFC stays off: FT8, FT4, FT2, JT65, and Q65 have no AFC switch, and they "
        "have no squelch slider. The decoder searches the audio window. START is never sent."},
       {"MSHV modes still out",
-       "FT8, FT4, FT2, JT65, and Q65 are the MSHV modes in this build. JT65A, JT65B, and JT65C "
+       "FT8, FT4, FT2, JT65, Q65, MSK144, and MSKMS are the MSHV modes in this build. JT65A, JT65B, and JT65C "
        "are a 60 second period. Tone 0 stays near 1270 Hz. Q65A, Q65B, Q65C, and Q65D are a "
-       "30 second period and the tone follows the cursor. TX sends them. The rest of the MSHV "
-       "Mode menu is not here and does not key: MSK144, MSKMS, JTMS, FSK441, FSK315, ISCAT-A, "
+       "30 second period and the tone follows the cursor. TX sends them. MSK144 and MSKMS are "
+       "the meteor-scatter modes, covered in their own Help section. The rest of the MSHV "
+       "Mode menu is not here and does not key: JTMS, FSK441, FSK315, ISCAT-A, "
        "ISCAT-B, JT6M, and PI4. Those leftover meteor modes are not shipping. The 11025 Hz family "
        "cannot run on TCI, which is 44100 Hz only. That list is kept in docs/mshv-modes.md so "
        "it is not forgotten. Hell, RTTY, BPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and WEFAX-576 are Fldigi modes, "
        "not that list. MT63 is a Fldigi mode on this menu. "
        "CW stays in Lyra. START is never sent."},
+      {"MSK144 and MSKMS",
+       "Mode → MSK144 and Mode → MSKMS are meteor scatter from the MSHV generator and decoder. "
+       "A frame is 144 symbols at 2000 baud, 72 ms, with tones fixed at 1000 and 2000 Hz, so the "
+       "cursor does not move the signal. The waterfall band is 500 to 2500 Hz, centered on 1500 Hz, and RX and TX sit on 1500. TX repeats the frame from 250 ms into your slot until "
+       "370 ms before it ends. Receive runs MSHV's real-time ping decoder on overlapping 0.6 s "
+       "blocks as the audio arrives, so a ping prints about a second after it lands, anywhere in "
+       "the period. The MSK row above the waterfall is MSHV's: TX/RX period 5, 7.5, 10, 15, or "
+       "30 s (30 s by default for both modes; both stations must use the same one), DF Tol 10 to "
+       "400 Hz around 1500 (150 by default), Sh, and SWL (MSK144 only). Under it is MSHV's ping "
+       "display: time runs across the period and frequency up, the period on the air is on top "
+       "and the one before is under it with its UTC start, and a yellow mark shows where each "
+       "decode came from. The receive list uses MSHV's columns: Time, T (seconds into the "
+       "period), dB, DF from 1500 Hz, Message, Navg, Bit err, and Eye, then Freq. MSK144 sends "
+       "FT8-style messages, Tx1 through Tx6, and the contest exchanges. MSK40 short messages (Sh) "
+       "also decode 20 ms frames such as <K1JT N8SDR> R+06; a Tx line in that form sends one. "
+       "Their reports are -03, +00, +03, +06, +10, +13, +16, the R forms, RRR, and 73. MSKMS is "
+       "MSHV's MSK144 variant: 72-bit messages and the classic duration-strength report, first "
+       "digit 2 to 5 for the ping length and second 6 to 9 for its strength. Tx2 sends the report "
+       "for the last ping you heard from that call, 26 if none was measured. The band row shows "
+       "6 m and 2 m: 50.260 and 144.150 MHz, or 50.280 and 144.360 MHz in Region 1. PSK Reporter "
+       "lists both as MSK144. DIGU. Nothing keys until you press TX. START is never sent."},
       {"Feld Hell",
        "Mode → Hell is the Fldigi 4.2.06 list: Feld Hell, Slow Hell, Feld Hell X5, Feld Hell X9, "
        "FSK Hell, FSK Hell-105, and Hell 80. That screen is the receive tape over the sent log, "
@@ -5572,6 +5788,8 @@ void MainWindow::applyChannelWidth() {
     width = jt65ChannelHz(mode);
   else if (q65Mode(mode))
     width = q65ChannelHz(mode);
+  else if (mskMode(mode))
+    width = mskChannelHz(mode);
   else if (hellFamily(mode))
     width = hellBandwidthHz(mode);
   else if (rttyMode(mode)) {
@@ -5873,6 +6091,16 @@ int tuneLimitMs(const QString& mode) {
 }
 
 }  // namespace
+
+QString MainWindow::sequencedReport(int db, const QString& call) const {
+  // MSKMS sends MSHV's duration-strength report for the ping we heard
+  // (26 is the weakest); every other sequenced mode sends dB.
+  if (profile_ && mskmsMode(profile_->digitalMode())) {
+    const QString rpt = mskmsReports_.value(call.trimmed().toUpper());
+    return mskmsReportWord(rpt) ? rpt : QStringLiteral("26");
+  }
+  return reportText(db);
+}
 
 void MainWindow::setTxStatus(const QString& text) {
   if (auto* label = findChild<QLabel*>(QStringLiteral("txStatus")))
@@ -6250,7 +6478,7 @@ void MainWindow::startQueueHead(const QString& time) {
   if (!already) {
     txWorkStarted_ = false;
     txHisCall_ = head.call;
-    txReport_ = reportText(head.db);
+    txReport_ = sequencedReport(head.db, head.call);
     refreshTxFields();
     selectTxSlot(slot);
     armAnswerSlot(time, slot > 0 ? 1 : 0);
@@ -6412,6 +6640,9 @@ int MainWindow::txStartLeadMs(const QString& mode) const {
     return 0;
   if (jt65Mode(mode))
     return 700;
+  // MSHV starts MSK144 and MSKMS 250 ms after the period begins.
+  if (mskMode(mode))
+    return 250;
   int target = 0;
   if (mode == QLatin1String("FT8"))
     target = 450;
@@ -6473,6 +6704,10 @@ bool MainWindow::halfIsFirst(const QString& mode) const {
     return (now.minute() % 2) == 0;
   if (q65Mode(mode))
     return now.second() < 30;
+  if (mskMode(mode)) {
+    const int period = mskPeriodMs(mode);
+    return (ms % (2 * period)) < period;
+  }
   if (mode == QLatin1String("FT2"))
     return (ms % 7500) < 3750;
   if (mode == QLatin1String("FT4"))
@@ -6493,6 +6728,8 @@ int MainWindow::periodLengthMs(const QString& mode) const {
     return 60000;
   if (q65Mode(mode))
     return 30000;
+  if (mskMode(mode))
+    return mskPeriodMs(mode);
   return 0;
 }
 
@@ -7279,6 +7516,8 @@ void MainWindow::loadReplyFromLine(int line) {
     else if (word.size() >= 2 && (word.at(0) == QLatin1Char('+') || word.at(0) == QLatin1Char('-')) &&
              word.at(1).isDigit())
       report = word;
+    else if (profile_ && mskmsMode(profile_->digitalMode()) && mskmsReportWord(word))
+      report = word;
   }
   QString sender;
   if (cq) {
@@ -7310,7 +7549,7 @@ void MainWindow::loadReplyFromLine(int line) {
   }
   txFinishedCalls_.removeAll(sender);
   txHisCall_ = sender;
-  txReport_ = reportText(row.db);
+  txReport_ = sequencedReport(row.db, sender);
   QString hisGrid;
   for (const QString& word : words) {
     if (isGrid(word)) {
@@ -8296,6 +8535,8 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
     else if (word.size() >= 2 && (word.at(0) == QLatin1Char('+') || word.at(0) == QLatin1Char('-')) &&
              word.at(1).isDigit())
       report = word;
+    else if (profile_ && mskmsMode(profile_->digitalMode()) && mskmsReportWord(word))
+      report = word;
   }
   QString sender;
   if (calls.size() >= 2)
@@ -8359,7 +8600,7 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
       return;
     }
     txHisCall_ = sender;
-    txReport_ = reportText(db);
+    txReport_ = sequencedReport(db, sender);
     refreshTxFields();
     selectTxSlot(selected);
     armAnswerSlot(time, senderPos);
@@ -8370,7 +8611,7 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
   txAnswered_ = true;
   txTries_ = 0;
   txSeqStartMs_ = QDateTime::currentMSecsSinceEpoch();
-  txReport_ = reportText(db);
+  txReport_ = sequencedReport(db, sender);
   int next = slot;
   if (seventy || rr73 || rrr)
     next = 4;
@@ -8820,6 +9061,13 @@ void MainWindow::refreshDecodeHeader() {
   auto* header = findChild<QLabel*>("decodeHeader");
   if (!header)
     return;
+  if (profile_ && mskMode(profile_->digitalMode())) {
+    header->setText(mskColumns(QStringLiteral("Time"), QStringLiteral("T"), QStringLiteral("dB"),
+                               QStringLiteral("DF"), QStringLiteral("Dist"), QStringLiteral("Message"),
+                               QStringLiteral("Navg"), QStringLiteral("Bit err"), QStringLiteral("Eye"),
+                               QStringLiteral("Freq"), showTime_, showFreq_, showDist_));
+    return;
+  }
   header->setText(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"), QStringLiteral("DT"),
                                  QStringLiteral("Dist"), QStringLiteral("Message"), QStringLiteral("Freq"),
                                  showTime_, showFreq_, showDist_));

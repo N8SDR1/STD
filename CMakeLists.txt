@@ -79,6 +79,8 @@ qt_add_executable(std
   src/MainWindow.h
   src/WaterfallWidget.cpp
   src/WaterfallWidget.h
+  src/MskPingDisplay.cpp
+  src/MskPingDisplay.h
   src/WaterfallGpu.cpp
   src/WaterfallGpu.h
   src/ModeProfile.cpp
@@ -245,8 +247,13 @@ if(WIN32)
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGen65/gen65.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenQ65/gen_q65.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenQ65/q65_subs.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decodermsk144.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decodermsk40.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenMsk/genmesage_msk.cpp"
+      "${CMAKE_SOURCE_DIR}/src/ft8/decoderms_msk.h"
+      "${CMAKE_SOURCE_DIR}/src/ft8/msk_bridge.cpp"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Building the MSHV FT8, FT4, FT2, JT65, and Q65 decoder"
+    COMMENT "Building the MSHV FT8, FT4, FT2, JT65, Q65, and MSK144 decoder"
     VERBATIM)
   add_custom_target(ft8dec DEPENDS "${FT8_DLL}")
   add_dependencies(std ft8dec)

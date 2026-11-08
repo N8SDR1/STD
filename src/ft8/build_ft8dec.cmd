@@ -111,8 +111,30 @@ echo COMPILE jt65 bridge
 "%GPP%" -std=gnu++17 -DQT_CORE_LIB -DQT_NO_DEBUG -D_WIN64_ -c -O2 %INC% -o "%OBJ%\jt65_bridge.o" "%STD%\src\ft8\jt65_bridge.cpp"
 if errorlevel 1 exit /b 1
 
+echo MOC decoderms_msk.h
+"%MOC%" -DSTD_MSK_MOC %INC% -o "%OBJ%\moc_decoderms_msk.cpp" "%STD%\src\ft8\decoderms_msk.h"
+if errorlevel 1 exit /b 1
+echo COMPILE nhash
+"%GPP%" %FLAGS% %INC% -o "%OBJ%\nhash.o" "%MSHV%\src\nhash.cpp"
+if errorlevel 1 exit /b 1
+echo COMPILE genmesage_msk
+"%GPP%" %FLAGS% %INC% -o "%OBJ%\genmesage_msk.o" "%MSHV%\src\HvMsPlayer\libsound\HvGenMsk\genmesage_msk.cpp"
+if errorlevel 1 exit /b 1
+echo COMPILE decodermsk144
+"%GPP%" %FLAGS% -include "%STD%\src\ft8\decoderms_msk.h" %INC% -o "%OBJ%\decodermsk144.o" "%MSHV%\src\HvDecoderMs\decodermsk144.cpp"
+if errorlevel 1 exit /b 1
+echo COMPILE decodermsk40
+"%GPP%" %FLAGS% -include "%STD%\src\ft8\decoderms_msk.h" %INC% -o "%OBJ%\decodermsk40.o" "%MSHV%\src\HvDecoderMs\decodermsk40.cpp"
+if errorlevel 1 exit /b 1
+echo COMPILE moc msk
+"%GPP%" -std=gnu++17 -DQT_CORE_LIB -DQT_NO_DEBUG -D_WIN64_ -DSTD_MSK_MOC -c -O2 -w %INC% -o "%OBJ%\moc_decoderms_msk.o" "%OBJ%\moc_decoderms_msk.cpp"
+if errorlevel 1 exit /b 1
+echo COMPILE msk bridge
+"%GPP%" -std=gnu++17 -DQT_CORE_LIB -DQT_NO_DEBUG -D_WIN64_ -c -O2 %INC% -o "%OBJ%\msk_bridge.o" "%STD%\src\ft8\msk_bridge.cpp"
+if errorlevel 1 exit /b 1
+
 echo LINK ft8dec.dll
-"%GPP%" -shared -static-libgcc -static-libstdc++ -o "%OUT%\ft8dec.dll" "%OBJ%\decoderpom.o" "%OBJ%\genpom.o" "%OBJ%\pack.o" "%OBJ%\gen_ft8.o" "%OBJ%\gen_ft4.o" "%OBJ%\decoderft8.o" "%OBJ%\decoderft8var.o" "%OBJ%\decoderft4.o" "%OBJ%\gen_ft2.o" "%OBJ%\decoderft2.o" "%OBJ%\moc_decoderms_ft8.o" "%OBJ%\ft8_bridge.o" "%OBJ%\gen65.o" "%OBJ%\pack_msg.o" "%OBJ%\unpack_msg.o" "%OBJ%\hvqthloc.o" "%OBJ%\gen_q65.o" "%OBJ%\q65_subs.o" "%OBJ%\decoderq65.o" "%OBJ%\decoderjt65.o" "%OBJ%\moc_decoderms_jt65.o" "%OBJ%\moc_decoderq65.o" "%OBJ%\jt65_bridge.o" "%MSHV%\src\Hv_Lib_fftw\win\libfftw3v3310_gcc730_64bit.a" -L"%QTLIB%" -lQt6Core
+"%GPP%" -shared -static-libgcc -static-libstdc++ -o "%OUT%\ft8dec.dll" "%OBJ%\decoderpom.o" "%OBJ%\genpom.o" "%OBJ%\pack.o" "%OBJ%\gen_ft8.o" "%OBJ%\gen_ft4.o" "%OBJ%\decoderft8.o" "%OBJ%\decoderft8var.o" "%OBJ%\decoderft4.o" "%OBJ%\gen_ft2.o" "%OBJ%\decoderft2.o" "%OBJ%\moc_decoderms_ft8.o" "%OBJ%\ft8_bridge.o" "%OBJ%\gen65.o" "%OBJ%\pack_msg.o" "%OBJ%\unpack_msg.o" "%OBJ%\hvqthloc.o" "%OBJ%\gen_q65.o" "%OBJ%\q65_subs.o" "%OBJ%\decoderq65.o" "%OBJ%\decoderjt65.o" "%OBJ%\moc_decoderms_jt65.o" "%OBJ%\moc_decoderq65.o" "%OBJ%\jt65_bridge.o" "%OBJ%\nhash.o" "%OBJ%\genmesage_msk.o" "%OBJ%\decodermsk144.o" "%OBJ%\decodermsk40.o" "%OBJ%\moc_decoderms_msk.o" "%OBJ%\msk_bridge.o" "%MSHV%\src\Hv_Lib_fftw\win\libfftw3v3310_gcc730_64bit.a" -L"%QTLIB%" -lQt6Core
 if errorlevel 1 exit /b 1
 
 python "%STD%\src\ft8\patch_qt_import.py" "%OUT%\ft8dec.dll"

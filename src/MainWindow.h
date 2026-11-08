@@ -372,7 +372,18 @@ private:
     QString dt;
     QString message;
     int freqHz = 0;
+    // MSK144 and MSKMS: MSHV's DF, Navg, Bit err, and Eye columns.
+    bool msk = false;
+    int df = 0;
+    int navg = 0;
+    int bitErrors = 0;
+    QString eye;
   };
+  // MSK extras arrive just before the matching decoded() line.
+  QHash<QString, DecodeRow> mskPending_;
+  class MskPingDisplay* mskDisplay_ = nullptr;
+  QWidget* makeMskPanel();
+  void applyMskOptions();
 
   QToolBar* brandBar_ = nullptr;
   WaterfallWidget* waterfall_ = nullptr;
@@ -536,6 +547,9 @@ private:
   QDateTime contestDupeStamp_;
   QString txHisCall_;
   QString txReport_;
+  // MSKMS duration-strength reports from the last ping of each call.
+  QHash<QString, QString> mskmsReports_;
+  QString sequencedReport(int db, const QString& call) const;
   QString txQrg_;
   QVector<QueuedCall> txQueue_;
   QVector<QueuedCall> txNow_;

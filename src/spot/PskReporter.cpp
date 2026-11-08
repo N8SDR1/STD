@@ -254,6 +254,9 @@ QString pskReporterModeName(const QString& mode) {
     return QStringLiteral("Q65");
   if (mode.startsWith(QLatin1String("JS8")))
     return QStringLiteral("JS8");
+  // MSKMS is MSHV's MSK144 variant; PSK Reporter lists it as MSK144.
+  if (mode == QLatin1String("MSKMS"))
+    return QStringLiteral("MSK144");
   return mode;
 }
 
