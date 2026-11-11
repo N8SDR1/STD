@@ -47,6 +47,10 @@ class PskUploader;
 class WsprNetUploader;
 class UpdateChecker;
 class WxFeed;
+class DxpedPanel;
+class HotList;
+class HotListBar;
+struct DxpedEntry;
 class Callbook;
 struct CallbookRecord;
 class ModeProfile;
@@ -91,6 +95,9 @@ private:
   void showGuide();
   void tuneActiveBand();
   void activateDigitalMode(const QString& modeName);
+  // DXpeditions double-click: that DXpedition's band and digital mode.
+  // Moves the dial only; never keys, never sends START.
+  void dxpedTune(const DxpedEntry& entry);
   void clearModePanes(const QString& previous, const QString& next);
   void cycleDigitalMode();
   void offerLayoutSave();
@@ -393,6 +400,9 @@ private:
   Ft8Decode* ft8_ = nullptr;
   HellEngine* hell_ = nullptr;
   SpeechReader* speech_ = nullptr;
+  // Hot list announcements: their own voice on the Options → Speech output
+  // device, not muted by read-back, the mode, TX, or RADE.
+  SpeechReader* hotVoice_ = nullptr;
   SpeechInput* talkIn_ = nullptr;
   SpeechInput* radeMic_ = nullptr;
   class RadeSpeaker* radeSpeaker_ = nullptr;
@@ -497,6 +507,19 @@ private:
   QDockWidget* transmitDock_ = nullptr;
   QDockWidget* macroDock_ = nullptr;
   QDockWidget* statusDock_ = nullptr;
+  QDockWidget* dxpedDock_ = nullptr;   // View → DXpeditions, hidden until opened
+  DxpedPanel* dxped_ = nullptr;
+  HotList* hot_ = nullptr;          // View → Hot list
+  HotListBar* hotBar_ = nullptr;    // the hot list on the top bar, right of the dial
+  void offerCall(const QString& call);  // QSO bar call, or the clipboard
+  void openHotList();
+  void applyHotBar();
+  QString hotWhere(const QString& mode, int db) const;
+  // A decode or received text for the hot list, with this band, mode, and dial.
+  void noteHot(const QString& text, const QString& mode, int db, bool stream);
+  // Double-click a hot list call: where it was heard, else its DXpedition.
+  void hotTune(const QString& call);
+  qint64 hotDialHz() const;
   bool heroSized_ = false;
   bool headerAlignQueued_ = false;
   QTimer* txTimer_ = nullptr;

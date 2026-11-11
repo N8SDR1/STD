@@ -77,6 +77,15 @@ void MainWindow::applySpeechSettings() {
     speech_->setSkipGarbled(store.value(QStringLiteral("speech/skipGarbled"), true).toBool());
     speech_->setMuted(muted || !on || !speakable);
   }
+  // Hot list alerts: same voice, rate, volume, and output device, never
+  // muted here. Visual + Voice in the hot list is their switch.
+  if (hotVoice_) {
+    hotVoice_->setVoice(store.value(QStringLiteral("speech/voice")).toString());
+    hotVoice_->setOutput(store.value(QStringLiteral("speech/output")).toString());
+    hotVoice_->setRate(std::clamp(store.value(QStringLiteral("speech/rate"), 0).toInt(), -10, 10));
+    hotVoice_->setVolume(volume);
+    hotVoice_->setMuted(false);
+  }
   if (auto* chip = findChild<QPushButton*>(QStringLiteral("speechChip"))) {
     const QSignalBlocker block(chip);
     chip->setChecked(!muted);

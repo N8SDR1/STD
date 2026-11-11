@@ -46,6 +46,10 @@ Options → Network Configuration. Enable PSK Reporter style spots is off until 
 
 Options → Network Configuration. Off and On. On posts each WSPR station STD decodes. Off posts nothing. WSPRnet does not ask for a password. It does not post your own transmission. Options → WSPRnet reports opens the page of stations reported by the callsign in Options → User. There is no second callsign or locator. It does not send START, and it does not key.
 
+## DXpeditions and the hot list
+
+View → DXpeditions lists the announced DX operations from NG3K, filtered to digital modes. A double-click moves STD to that DXpedition's band and digital mode: FT8 (Super Hound when the listing says Fox/Hound), then FT4, RTTY, and PSK (PSK31 unless another rate is named). Tick a call to put it on the hot list, which shows on the top bar right of the dial, marks a call when STD decodes it, and can say it with its own voice on the Options → Speech output device. Click a hot call to put it in the QSO bar; double-click it to tune to where it was heard. Only the dial and mode move. Nothing keys, and START is never sent. The whole description is in [DXpeditions and the hot list](dxpeditions.md).
+
 ## File
 
 File → Backup settings saves layouts and the callsign and locator already stored under Options → User. It does not copy the TCI host or port. File → Import settings restores that file and leaves the TCI host and port as they are. File → Backup logbook copies the ADIF file and leaves the original in place. File → Export ADIF writes a copy another logger can import. None of this keys, and START is never sent.

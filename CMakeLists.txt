@@ -166,6 +166,14 @@ qt_add_executable(std
   src/UpdateChecker.cpp
   src/WxFeed.cpp
   src/WxFeed.h
+  src/DxpedFeed.cpp
+  src/DxpedFeed.h
+  src/DxpedPanel.cpp
+  src/DxpedPanel.h
+  src/HotList.cpp
+  src/HotList.h
+  src/HotListView.cpp
+  src/HotListView.h
   src/UpdateChecker.h
   src/mt63/fldigi/dsp.cxx
   src/mt63/fldigi/mt63base.cxx

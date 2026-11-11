@@ -1159,37 +1159,87 @@ void ModeProfile::setTxFirstLocked(bool locked) {
     setTxFirst(false);
 }
 
+void ModeProfile::setSuperHound(bool on) {
+  if (hound_ == on && !(on && fox_))
+    return;
+  auto* hound = bar_->findChild<QCheckBox*>(QStringLiteral("profileSuperHound"));
+  auto* fox = bar_->findChild<QCheckBox*>(QStringLiteral("profileSuperFox"));
+  {
+    const QSignalBlocker blockHound(hound);
+    const QSignalBlocker blockFox(fox);
+    if (hound)
+      hound->setChecked(on);
+    if (on && fox)
+      fox->setChecked(false);
+  }
+  hound_ = on;
+  if (on)
+    fox_ = false;
+  remember();
+  refreshBands();
+  emit houndChanged(hound_ || fox_);
+}
+
 bool ModeProfile::multiAnswer() const {
   return multiMode_ != 0;
 }
 
 qint64 ModeProfile::tableHz(int index) const {
+  return dialFor(mode_, index);
+}
+
+int ModeProfile::bandIndexForMetres(int metres) {
+  static const struct {
+    int metres;
+    const char* label;
+  } map[] = {{160, "1.8"}, {80, "3.5"}, {60, "5.3"}, {40, "7"},  {30, "10"}, {20, "14"},
+             {17, "18"},   {15, "21"},  {12, "24"},  {10, "28"}, {6, "50"},  {2, "144"}};
+  for (const auto& row : map) {
+    if (row.metres != metres)
+      continue;
+    for (int i = 0; i < kBandCount; ++i)
+      if (QLatin1String(kBands[i].label) == QLatin1String(row.label))
+        return i;
+  }
+  return -1;
+}
+
+int ModeProfile::metresForBand(int index) {
+  for (int m : {160, 80, 60, 40, 30, 20, 17, 15, 12, 10, 6, 2})
+    if (bandIndexForMetres(m) == index)
+      return m;
+  return 0;
+}
+
+qint64 ModeProfile::dialFor(const QString& mode, int index) const {
+  if (index < 0 || index >= kBandCount)
+    return 0;
   const Ft8Band& band = kBands[index];
-  if (radeMode(mode_)) {
+  if (radeMode(mode)) {
     const qint64* rows = nullptr;
     int count = 0;
     radePublished(index, rows, count);
     return count > 0 ? rows[0] : 0;
   }
-  if (mode_ == QLatin1String("FT8") && (hound_ || fox_) && QLatin1String(band.label) == QLatin1String("7"))
+  if (mode == QLatin1String("FT8") && (hound_ || fox_) && QLatin1String(band.label) == QLatin1String("7"))
     return 7056000;
-  if (hellFamily(mode_)) {
+  if (hellFamily(mode)) {
     if (effectiveRegion() == 1 && band.hellRegion1Hz > 0)
       return band.hellRegion1Hz;
     return band.hellHz;
   }
-  if (mskMode(mode_)) {
+  if (mskMode(mode)) {
     if (effectiveRegion() == 1 && band.mskRegion1Hz > 0)
       return band.mskRegion1Hz;
     return band.mskHz;
   }
-  if (jt65Mode(mode_))
+  if (jt65Mode(mode))
     return band.jt65Hz;
-  if (q65Mode(mode_))
+  if (q65Mode(mode))
     return band.q65Hz;
-  if (mode_ == QLatin1String("FT2"))
+  if (mode == QLatin1String("FT2"))
     return band.ft2Hz;
-  if (mode_ == QLatin1String("FT4")) {
+  if (mode == QLatin1String("FT4")) {
     if (effectiveRegion() == 3 && band.ft4Region3Hz > 0)
       return band.ft4Region3Hz;
     return band.ft4Hz;

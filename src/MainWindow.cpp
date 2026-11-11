@@ -29,6 +29,9 @@
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
 #include "WxFeed.h"
+#include "DxpedPanel.h"
+#include "HotList.h"
+#include "HotListView.h"
 #include "Callbook.h"
 #include "ModeProfile.h"
 #include "QsoLog.h"
@@ -66,6 +69,8 @@
 #include <QHash>
 #include <QIcon>
 #include <QImage>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QDockWidget>
 #include <QFont>
 #include <QFontMetrics>
@@ -498,6 +503,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildBrandBar();
   buildDocks();
   buildMenus();
+  applyHotBar();
   arrangeDefault();
   qsoLog_ = new QsoLog(this);
   // The logger link: Status once a second when it changes, and the
@@ -649,6 +655,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
   hell_ = new HellEngine(this);
   speech_ = new SpeechReader(this);
+  hotVoice_ = new SpeechReader(this);
+  hotVoice_->setObjectName(QStringLiteral("hotListVoice"));
   talkIn_ = new SpeechInput(this);
   modelDl_ = new SpeechModelDownload(this);
   recognizer_ = new SpeechRecognizer(this);
@@ -1140,7 +1148,29 @@ void MainWindow::buildBrandBar() {
 
   auto* balance = new QWidget(host);
   balance->setObjectName(QStringLiteral("dialBalance"));
-  balance->setAttribute(Qt::WA_TransparentForMouseEvents);
+  // The space right of the dial matches the logo and title on the left, so
+  // the dial stays centered. The hot list sits in it.
+  hot_ = new HotList(true, this);
+  auto* balanceRow = new QHBoxLayout(balance);
+  balanceRow->setContentsMargins(12, 0, 0, 0);
+  hotBar_ = new HotListBar(hot_, balance);
+  balanceRow->addWidget(hotBar_);
+  connect(hot_, &HotList::changed, this, [this] { applyHotBar(); });
+  connect(hot_, &HotList::heard, this, [this](const QString& call, const QString& where, bool speak) {
+    setTxStatus(QStringLiteral("Hot list: %1 heard%2. Nothing was keyed.")
+                    .arg(call, where.isEmpty() ? QString() : QStringLiteral(", ") + where));
+    // Its own voice: read-back being off, an FT8 or WSPR mode, TX, or RADE
+    // must not silence the alert. Same device as Options → Speech.
+    if (speak && hotVoice_) {
+      QStringList spelled;
+      for (const QChar c : call)
+        spelled << (c == QLatin1Char('/') ? QStringLiteral("stroke") : QString(c));
+      hotVoice_->say(QStringLiteral("Hot list. %1.").arg(spelled.join(QLatin1Char(' '))));
+    }
+  });
+  connect(hotBar_, &HotListBar::callPicked, this, [this](const QString& call) { offerCall(call); });
+  connect(hotBar_, &HotListBar::manageRequested, this, [this] { openHotList(); });
+  connect(hotBar_, &HotListBar::tuneRequested, this, [this](const QString& call) { hotTune(call); });
 
   layout->addWidget(mark);
   layout->addWidget(words);
@@ -1172,6 +1202,8 @@ void MainWindow::buildDocks() {
   connect(profile_, &ModeProfile::radeVolumeChanged, this, [this](int value) {
     if (speech_)
       speech_->setVolume(value);
+    if (hotVoice_)
+      hotVoice_->setVolume(value);
     if (auto* spin = findChild<QSpinBox*>(QStringLiteral("speechVolume"))) {
       const QSignalBlocker block(spin);
       spin->setValue(value);
@@ -1267,6 +1299,187 @@ void MainWindow::buildDocks() {
   auto* hiddenTitle = new QWidget(statusDock_);
   hiddenTitle->setFixedSize(0, 0);
   statusDock_->setTitleBarWidget(hiddenTitle);
+
+  // View → DXpeditions. Hidden until opened; the first time it opens it
+  // floats over the window. Nothing is fetched until it is shown.
+  dxpedDock_ = new QDockWidget(QStringLiteral("DXpeditions"), this);
+  dxpedDock_->setObjectName(QStringLiteral("dxpedDock"));
+  dxped_ = new DxpedPanel(dxpedDock_);
+  dxpedDock_->setWidget(dxped_);
+  dxpedDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
+  dxpedDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable |
+                          QDockWidget::DockWidgetClosable);
+  dxpedDock_->hide();
+  connect(dxpedDock_, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+    QSettings store;
+    if (!visible || store.value(QStringLiteral("dxped/placed"), false).toBool() ||
+        qEnvironmentVariableIsSet("STD_SELFTEST"))
+      return;
+    store.setValue(QStringLiteral("dxped/placed"), true);
+    dxpedDock_->setFloating(true);
+    const QSize size(std::min(1000, width() - 40), std::min(460, height() - 80));
+    dxpedDock_->resize(size);
+    dxpedDock_->move(geometry().center() - QPoint(size.width() / 2, size.height() / 2));
+  });
+  connect(dxped_, &DxpedPanel::statusMessage, this, [this](const QString& text) { setTxStatus(text); });
+  connect(dxped_, &DxpedPanel::callPicked, this, [this](const QString& call) { offerCall(call); });
+  connect(dxped_, &DxpedPanel::tuneRequested, this, [this](const DxpedEntry& e) { dxpedTune(e); });
+  connect(dxped_, &DxpedPanel::hotListRequested, this, [this] { openHotList(); });
+  dxped_->setHotList(hot_);
+}
+
+void MainWindow::offerCall(const QString& call) {
+  const auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"));
+  if (bar && bar->isVisible()) {
+    qsoBarPut(QStringLiteral("qsoBarCall"), call);
+    setTxStatus(QStringLiteral("%1 is in the QSO call. Nothing was keyed. START was not sent.").arg(call));
+  } else {
+    QGuiApplication::clipboard()->setText(call);
+    setTxStatus(QStringLiteral("Copied %1. The QSO bar is in the keyboard modes. Nothing was keyed. "
+                               "START was not sent.")
+                    .arg(call));
+  }
+}
+
+void MainWindow::openHotList() {
+  if (!hot_)
+    return;
+  if (auto* open = findChild<HotListDialog*>(QStringLiteral("hotListDialog"))) {
+    open->raise();
+    open->activateWindow();
+    return;
+  }
+  auto* dialog = new HotListDialog(hot_, this);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  dialog->show();
+}
+
+void MainWindow::applyHotBar() {
+  if (hotBar_ && hot_)
+    hotBar_->setVisible(hot_->onBar());
+  if (auto* action = findChild<QAction*>(QStringLiteral("viewHotListBar"))) {
+    const QSignalBlocker block(action);
+    action->setChecked(hot_ && hot_->onBar());
+  }
+}
+
+qint64 MainWindow::hotDialHz() const {
+  qint64 dial = liveDialHz_;
+  if (dial < 100000 && profile_)
+    dial = profile_->dialHz();
+  return dial;
+}
+
+void MainWindow::noteHot(const QString& text, const QString& mode, int db, bool stream) {
+  if (!hot_ || mode.trimmed().isEmpty())
+    return;
+  const qint64 dial = hotDialHz();
+  const int metres = DxpedFeed::metresForHz(dial);
+  const QString where = hotWhere(mode, db);
+  const QDateTime now = QDateTime::currentDateTimeUtc();
+  if (stream)
+    hot_->noteStream(text, where, now, metres, mode, dial);
+  else
+    hot_->noteHeard(text, where, now, metres, mode, dial);
+}
+
+void MainWindow::hotTune(const QString& call) {
+  if (!hot_ || !profile_)
+    return;
+  const HotEntry e = hot_->entry(call);
+  if (e.heard.isValid() && !e.heardMode.isEmpty() && e.heardMetres > 0) {
+    const QString current = profile_->digitalMode();
+    if (e.heardMode != current)
+      activateDigitalMode(e.heardMode);
+    const int index = ModeProfile::bandIndexForMetres(e.heardMetres);
+    const qint64 table = index >= 0 ? profile_->dialFor(e.heardMode, index) : 0;
+    // The band chip for the modes that have one, then the dial it was
+    // heard on (a Fox channel or an Extra dial, or any keyboard-mode dial).
+    if (table > 0 && profile_->mshvFamily())
+      profile_->selectDial(index, table);
+    if (e.heardDialHz > 100000 && e.heardDialHz != (table > 0 && profile_->mshvFamily() ? table : 0))
+      qsyDial(e.heardDialHz);
+    const bool radio = tci_ && tci_->isOpen();
+    setTxStatus(QStringLiteral("%1: back to where it was heard at %2Z, %3, %4 MHz.%5 Nothing was keyed. "
+                               "START was not sent.")
+                    .arg(e.call, e.heard.toUTC().toString(QStringLiteral("HH:mm")), e.where)
+                    .arg(double(e.heardDialHz > 100000 ? e.heardDialHz : table) / 1.0e6, 0, 'f', 3)
+                    .arg(radio ? QString() : QStringLiteral(" The radio is not connected.")));
+    return;
+  }
+  if (dxped_) {
+    const QString want = e.call.isEmpty() ? call.trimmed().toUpper() : e.call;
+    for (const DxpedEntry& d : dxped_->feed()->entries()) {
+      QStringList names{d.lookup, d.call};
+      for (const QString& part : d.lookup.split(QLatin1Char('/'), Qt::SkipEmptyParts))
+        names << part;
+      if (names.contains(want)) {
+        dxpedTune(d);
+        return;
+      }
+    }
+  }
+  setTxStatus(QStringLiteral("%1 has not been heard since STD started and is not in the DXpeditions list, "
+                             "so STD does not know its band or mode. Nothing moved. Nothing was keyed.")
+                  .arg(call));
+}
+
+QString MainWindow::hotWhere(const QString& mode, int db) const {
+  const qint64 dial = hotDialHz();
+  const int metres = DxpedFeed::metresForHz(dial);
+  QString where = metres > 0 ? QStringLiteral("%1 m %2").arg(metres).arg(mode) : mode;
+  if (db > -100 && db < 100 && !mode.isEmpty() && !keyboardTextMode(mode))
+    where += QStringLiteral(", %1 dB").arg(db);
+  return where.trimmed();
+}
+
+void MainWindow::dxpedTune(const DxpedEntry& e) {
+  if (!profile_)
+    return;
+  const QString current = profile_->digitalMode();
+  const int here = ModeProfile::metresForBand(profile_->band());
+  const DxpedTune plan = DxpedFeed::planTune(e, here, [this](const QString& mode, int metres) {
+    const int index = ModeProfile::bandIndexForMetres(metres);
+    return index >= 0 && profile_->dialFor(mode, index) > 0;
+  });
+  const QString who = e.lookup;
+  if (plan.mode.isEmpty()) {
+    setTxStatus(QStringLiteral("%1 lists no digital mode STD runs (%2). Nothing changed. Nothing was keyed.")
+                    .arg(who, e.modes.isEmpty() ? QStringLiteral("no modes named") : e.modes.join(QLatin1Char(' '))));
+    return;
+  }
+  if (plan.mode != current)
+    activateDigitalMode(plan.mode);
+  // Fox/Hound in the listing: Super Hound on (7.056 MHz on 40 m, RX at the
+  // fox channel). An FT8 DXpedition without it: Super Hound off.
+  QString hound;
+  if (plan.mode == QLatin1String("FT8") && profile_->superHound() != plan.superHound) {
+    profile_->setSuperHound(plan.superHound);
+    hound = plan.superHound ? QStringLiteral(", Super Hound on") : QStringLiteral(", Super Hound off");
+  } else if (plan.superHound) {
+    hound = QStringLiteral(", Super Hound");
+  }
+  QString what;
+  if (plan.dial && plan.metres > 0) {
+    const int index = ModeProfile::bandIndexForMetres(plan.metres);
+    const qint64 hz = profile_->dialFor(plan.mode, index);
+    profile_->selectDial(index, hz);  // the band chip; the radio follows when connected
+    what = QStringLiteral("%1 on %2 m, %3 MHz %4%5")
+               .arg(plan.mode)
+               .arg(plan.metres)
+               .arg(double(hz) / 1.0e6, 0, 'f', 3)
+               .arg(profile_->sideband(), hound);
+  } else if (plan.dial) {
+    what = QStringLiteral("%1; none of its bands (%2) has a %1 dial, so the band did not change")
+               .arg(plan.mode, e.bands.isEmpty() ? QStringLiteral("none named") : e.bands);
+  } else {
+    what = QStringLiteral("%1; STD has no %1 band dial, so tune to the DXpedition yourself").arg(plan.mode);
+  }
+  const bool radio = tci_ && tci_->isOpen();
+  setTxStatus(QStringLiteral("%1 (%2): %3.%4 Nothing was keyed. START was not sent.")
+                  .arg(who, e.entity, what,
+                       radio || !plan.dial ? QString()
+                                           : QStringLiteral(" The radio is not connected, so only the band chip moved.")));
 }
 
 QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& placeholder,
@@ -2393,6 +2606,8 @@ void MainWindow::openWsprnetReports() const {
 
 void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz,
                                 const QString& dt, const QString& utc) {
+  if (hot_ && !mode.trimmed().isEmpty())
+    noteHot(message, mode, db, false);
   QTime clock = QTime::fromString(utc, QStringLiteral("HHmmss"));
   if (!clock.isValid())
     clock = QTime::fromString(utc, QStringLiteral("hhmmss"));
@@ -2655,6 +2870,8 @@ QWidget* MainWindow::makeReceivePanel() {
     QSettings().setValue(QStringLiteral("speech/volume"), value);
     if (speech_)
       speech_->setVolume(value);
+    if (hotVoice_)
+      hotVoice_->setVolume(value);
     applyRadePlaybackVolume(value);
     if (profile_)
       profile_->refreshRadeDevices();
@@ -4106,12 +4323,35 @@ void MainWindow::buildMenus() {
       {transmitDock_, "Transmit"},
       {macroDock_, "Macros"},
       {statusDock_, "Status strip"},
+      {dxpedDock_, "DXpeditions"},
   };
   for (const auto& panel : panels) {
     QAction* toggle = panel.dock->toggleViewAction();
     toggle->setText(panel.label);
+    if (panel.dock == dxpedDock_) {
+      viewMenu->addSeparator();
+      toggle->setObjectName(QStringLiteral("viewDxpeditions"));
+      toggle->setToolTip(QStringLiteral(
+          "Announced DXpeditions from NG3K, filtered to digital modes. Opens the last saved list "
+          "when offline. This does not key."));
+    }
     viewMenu->addAction(toggle);
   }
+  auto* hotOnBar = viewMenu->addAction(QStringLiteral("Hot list on top bar"));
+  hotOnBar->setObjectName(QStringLiteral("viewHotListBar"));
+  hotOnBar->setCheckable(true);
+  hotOnBar->setChecked(hot_ && hot_->onBar());
+  hotOnBar->setToolTip(QStringLiteral(
+      "Show the watched calls on the top bar, right of the dial. This does not key."));
+  connect(hotOnBar, &QAction::toggled, this, [this](bool on) {
+    if (hot_)
+      hot_->setOnBar(on);
+  });
+  auto* hotManage = viewMenu->addAction(QStringLiteral("Hot list…"));
+  hotManage->setObjectName(QStringLiteral("viewHotList"));
+  hotManage->setToolTip(QStringLiteral(
+      "Calls to watch for, alerts, and which calls the top bar shows. This does not key."));
+  connect(hotManage, &QAction::triggered, this, [this] { openHotList(); });
   viewMenu->addSeparator();
   auto* saveLayout = viewMenu->addAction(QStringLiteral("Save layout"));
   saveLayout->setObjectName(QStringLiteral("saveLayout"));
@@ -4950,8 +5190,8 @@ void MainWindow::showGuide() {
        "the radio is past full scale, before this display. Receive audio does not raise the notice. "
        "None of this keys the radio or sends START."},
       {"Docking and layouts",
-       "Waterfall, Receive, Transmit, Macros, and the status strip are docks. Drag a title to move a "
-       "pane or float it. Close hides it. The View menu lists those panes and shows a hidden one again. "
+       "Waterfall, Receive, Transmit, Macros, the status strip, and DXpeditions are docks. Drag a title "
+       "to move a pane or float it. Close hides it. The View menu lists those panes and shows a hidden one again. "
        "Macros stays hidden on FT8, FT4, FT2, JT65, Q65, and WSPR. Hell and the other keyboard modes show the macro row. "
        "Each mode keeps its own dock arrangement, window "
        "geometry, and waterfall Floor, Range, and Auto. View → Save layout writes the mode that is open. The next "
@@ -4964,6 +5204,49 @@ void MainWindow::showGuide() {
        "back. Receive text is not stored. View → Reset layout stacks this mode's docks back to the "
        "default and forgets the working arrangement. Named copies stay. None of this keys the radio or "
        "sends START."},
+      {"DXpeditions",
+       "View → DXpeditions lists the announced DX operations from NG3K's ADXO feed: status, call, "
+       "entity, start, end, bands, modes, QSL, and the announcement's notes. Bands and modes are read "
+       "from those notes. The panel floats the first time it opens and docks like the other panes. "
+       "Digital modes, the filter it opens with, keeps FT8, FT4, FT2, RTTY, PSK, the other digital "
+       "modes, and the ones that say + digital or all modes; All modes, FT8 / FT4 / FT2, RTTY, and PSK "
+       "are the other choices. An announcement that names no mode shows a dash and appears only under "
+       "All modes. On the air now keeps the operations whose dates include today (UTC); those rows are "
+       "tinted green and Status reads NOW with the days left. Find matches the call, entity, QSL, or "
+       "notes. Click a column title to sort. A double-click moves STD to that DXpedition's band and "
+       "digital mode. DXpeditions run the FT modes, RTTY, and PSK, so the mode is the first one listed "
+       "of FT8, FT4, RTTY, and PSK, then FT2, JT65, Q65, and MSK144; + digital alone is FT8. FT8 turns "
+       "Super Hound on when the listing says Fox/Hound (f/h, SuperFox) and off when it does not. PSK is "
+       "PSK31 unless the listing names another rate. The band is the one you are on when it is listed "
+       "and has a dial for that mode, "
+       "otherwise the nearest listed band that has one. RTTY and PSK have no band dial in STD, so only "
+       "the mode changes. Only the dial and mode move, over TCI, and the status line says what was "
+       "done. Tick a call to put it on the hot list. Right-click to put the call in the QSO bar "
+       "(copied on the FT8 family), add it to the hot list, copy it, or open the info page; NG3K "
+       "opens the whole list. When the announcement gives only a prefix and its link names the full "
+       "call, that call is used. Nothing is "
+       "fetched until the panel is shown, then when the list is more than an hour old and once an hour "
+       "while it stays open; Refresh fetches now. The last list is saved in the STD AppData folder, so "
+       "the panel works offline. Nothing here keys the radio or sends START."},
+      {"Hot list",
+       "The calls you are watching for, as SDRLogger+ keeps them. Tick a call in View → DXpeditions, "
+       "or type calls in View → Hot list…, which also removes calls and clears the list. The list "
+       "shows on the top bar right of the dial, up to 12 calls, +N opens the rest. View → Hot list on "
+       "top bar, or right-click → Hide from the top bar, turns it off; in JS8 the JS8 clock row takes "
+       "that space. Top bar shows All calls, Ticked calls (ticked in View → Hot list…), or Heard calls, "
+       "heard calls first. Alerts are Off until chosen; click the chip on the top bar to cycle Off, "
+       "Visual, and Visual + Voice. Visual turns a call red for 15 minutes after STD decodes it, then "
+       "amber, and puts the band, mode, and report on the status line; calls not heard are dim. Visual "
+       "+ Voice also says Hot list and the call, once per call every 15 minutes, with the voice, rate, "
+       "and volume from Options → Speech on the Speech output device, the same device RADE's Speaker "
+       "box uses. It has its own voice, so it speaks in every mode, FT8 and WSPR included, with read-"
+       "back off or muted, while transmitting, and in RADE. STD looks in FT8-family, JS8, and WSPR "
+       "decodes and in received keyboard text. A call matches as a whole word, inside FT8 brackets, or "
+       "on either side of a slash, so FO matches FO/WE9G. Click a call on the top bar to put it in the "
+       "QSO bar. Double-click it to tune to the band, mode, and dial where STD last heard it; if it has "
+       "not been heard, to its DXpedition's band and mode; with neither, nothing moves. In View → "
+       "DXpeditions, hot rows are tinted orange, amber once heard, and red when heard in the last 15 "
+       "minutes. Nothing here keys the radio or sends START."},
       {"Waterfall zoom",
        "The wheel zooms around the cursor. Drag pans. Both stay inside the receive band the radio "
        "reports. A double-click or a right-click opens that whole band again. Start and BW narrow the "
@@ -5192,6 +5475,10 @@ void MainWindow::arrangeDefault() {
   splitDockWidget(receiveDock_, transmitDock_, Qt::Vertical);
   splitDockWidget(transmitDock_, macroDock_, Qt::Vertical);
   splitDockWidget(macroDock_, statusDock_, Qt::Vertical);
+  if (dxpedDock_ && dockWidgetArea(dxpedDock_) == Qt::NoDockWidgetArea && !dxpedDock_->isFloating()) {
+    addDockWidget(Qt::RightDockWidgetArea, dxpedDock_);
+    dxpedDock_->hide();
+  }
   applyMacroBar();
 }
 
@@ -8009,6 +8296,10 @@ void MainWindow::appendRxEcho(const QString& text) {
   auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"));
   appendKeyedEcho(echo, text, rxEchoColor());
   qsoScanRx(text);
+  // JS8 lines come through noteDecodeSpot as well; the keyboard modes
+  // only arrive here, a few characters at a time.
+  if (hot_ && profile_ && profile_->digitalMode().compare(QLatin1String("JS8"), Qt::CaseInsensitive) != 0)
+    noteHot(text, profile_->digitalMode(), 999, true);
   // Someone answered the repeating CQ: stop calling. Only received text
   // counts; the sent echo in the same pane has our call in every CQ.
   if (macroRepeatIndex_ >= 0) {
