@@ -24,6 +24,8 @@ public:
   // The clock chip: hidden unless the FT decodes say this PC's clock is off.
   // seconds > 0 is fast. mode names the mode the DTs came from.
   void setClockOff(bool off, double seconds, const QString& mode, int decodes);
+  // Who heard me: hidden when off; green when someone heard us on this band.
+  void setHeard(bool shown, const QString& text, bool heard, const QString& tip);
   // samples are float -1..1. A null pointer clears the meter.
   void setRxLevel(const float* samples, int count);
   // Re-reads the spot chip from the Network Configuration settings.
@@ -34,6 +36,8 @@ signals:
   void spotToggled(const QString& key, bool on);
   // Right-click on the spot chip: "psk", "wsprnet", or "freedv".
   void spotMapRequested(const QString& service);
+  // The heard-me chip was clicked; pos is where to open the list.
+  void heardClicked(const QPoint& pos);
 
 private:
   void refreshRxLevel();

@@ -9,6 +9,7 @@
 #include "MaEngine.h"
 #include "MainWindow.h"
 #include "LoggerFeed.h"
+#include "HeardWatch.h"
 #include "ModeProfile.h"
 #include "StatusStrip.h"
 
@@ -5497,6 +5498,56 @@ By ops fm Berbera (LK20mk); HF
       qCritical("worked sources own %d other %d logger %d ja-alone %d ve %d ja %d ve-still %d",
                 onlyOwn.size(), withOther.size(), withLogger.size(), jaNeededAlone, veWorked, jaWorked, veStill);
       return fail("the worked list does not combine STD's ADIF with the chosen source");
+    }
+  }
+  // Who heard me: PSK Reporter's reply, the chip, and its on/off. No network.
+  {
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    const QByteArray xml = QStringLiteral(
+        "<?xml version=\"1.0\"?><receptionReports>"
+        "<receptionReport receiverCallsign=\"MM9PSY\" receiverLocator=\"IO86ha\" senderCallsign=\"N8SDR\" "
+        "frequency=\"14074812\" flowStartSeconds=\"%1\" mode=\"FT8\" receiverDXCC=\"Scotland\" sNR=\"-7\" />"
+        "<receptionReport receiverCallsign=\"MM9PSY\" receiverLocator=\"IO86ha\" senderCallsign=\"N8SDR\" "
+        "frequency=\"14074812\" flowStartSeconds=\"%2\" mode=\"FT8\" receiverDXCC=\"Scotland\" sNR=\"-3\" />"
+        "<receptionReport receiverCallsign=\"KG7QVK\" receiverLocator=\"EN82JR\" senderCallsign=\"N8SDR\" "
+        "frequency=\"14074822\" flowStartSeconds=\"%2\" mode=\"FT8\" receiverDXCC=\"United States\" sNR=\"-12\" />"
+        "<receptionReport receiverCallsign=\"VK3XX\" receiverLocator=\"QF22\" senderCallsign=\"N8SDR\" "
+        "frequency=\"21074500\" flowStartSeconds=\"%2\" mode=\"FT8\" receiverDXCC=\"Australia\" sNR=\"-20\" />"
+        "</receptionReports>")
+                               .arg(now - 300)
+                               .arg(now - 60)
+                               .toUtf8();
+    QString err;
+    const QList<HeardReport> heardList = HeardWatch::parse(xml, &err);
+    bool scot = false;
+    for (const HeardReport& r : heardList)
+      scot = scot || (r.call == QLatin1String("MM9PSY") && r.snr == -3);
+    if (!err.isEmpty() || heardList.size() != 3 || !scot ||
+        !HeardWatch::parse("<html>busy</html>", &err).isEmpty() || err.isEmpty() ||
+        !HeardWatch::url(QStringLiteral("N8SDR")).contains(QLatin1String("senderCallsign=N8SDR")) ||
+        !HeardWatch::url(QStringLiteral("N8SDR")).contains(QLatin1String("flowStartSeconds=-900")))
+      return fail("PSK Reporter reception reports were read wrong");
+    auto* watch = window.findChild<HeardWatch*>(QStringLiteral("heardWatch"));
+    auto* strip = window.findChild<StatusStrip*>(QStringLiteral("statusStrip"));
+    auto* chip = strip ? strip->findChild<QPushButton*>(QStringLiteral("heardChip")) : nullptr;
+    if (!watch || !chip)
+      return fail("the heard-me chip is missing");
+    const QVariant kept = QSettings().value(QStringLiteral("pskr/heardMe"));
+    const bool wasOn = watch->enabled();
+    watch->setEnabled(false);
+    const bool hiddenOff = chip->isHidden();
+    watch->setEnabled(true);
+    watch->setReports(heardList);
+    const QString text = chip->text();
+    const bool shownOn = !chip->isHidden() && text.startsWith(QLatin1String("HEARD "));
+    watch->setEnabled(wasOn);
+    if (kept.isValid())
+      QSettings().setValue(QStringLiteral("pskr/heardMe"), kept);
+    else
+      QSettings().remove(QStringLiteral("pskr/heardMe"));
+    if (!hiddenOff || !shownOn) {
+      qCritical("heard chip off-hidden %d on [%s]", hiddenOff, qPrintable(text));
+      return fail("the heard-me chip does not follow its on/off");
     }
   }
   qInfo("STD self-test ok");

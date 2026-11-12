@@ -4,6 +4,7 @@
 #include "MainWindow.h"
 
 #include "LoggerFeed.h"
+#include "HeardWatch.h"
 
 #include "DigitalMode.h"
 #include "EchoLog.h"
@@ -69,6 +70,8 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
+#include <QHeaderView>
+#include <QTableWidget>
 #include <QHash>
 #include <QIcon>
 #include <QImage>
@@ -527,6 +530,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   });
   connect(loggerFeed_, &LoggerFeed::updated, this, [this] { loggerFeedError_.clear(); });
   applyWorkedSource();
+  heard_ = new HeardWatch(this);
+  heard_->setObjectName(QStringLiteral("heardWatch"));
+  heard_->setCall(stationCall());
+  connect(heard_, &HeardWatch::changed, this, [this] { showHeard(); });
   // The logger link: Status once a second when it changes, and the
   // logger's Reply, Halt Tx, and Free Text.
   connect(qsoLog_, &QsoLog::requestReceived, this, &MainWindow::loggerRequest);
@@ -589,6 +596,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     refreshDialBox();
   });
   connect(tci_, &TciClient::pttChanged, this, [this](bool on) {
+    if (on && heard_) {
+      heard_->setCall(stationCall());
+      heard_->noteTransmit();
+    }
     refreshDialBox();
     if (statusStrip_)
       statusStrip_->setPtt(on, tci_->isOpen());
@@ -700,7 +711,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(modelDl_, &SpeechModelDownload::finished, this,
           [this](const QString&, bool, const QString& message) { setTxStatus(message); });
   if (statusStrip_) {
-    if (auto* sql = statusStrip_->findChild<QPushButton*>(QStringLiteral("squelchToggle"))) {
+    connect(statusStrip_, &StatusStrip::heardClicked, this, [this](const QPoint& at) { openHeardList(at); });
+  showHeard();
+  if (auto* sql = statusStrip_->findChild<QPushButton*>(QStringLiteral("squelchToggle"))) {
       connect(sql, &QPushButton::toggled, this, [this](bool on) {
         QSettings().setValue(QStringLiteral("dx/squelchOn"), on);
         applyHellSquelch();
@@ -5464,6 +5477,8 @@ void MainWindow::showGuide() {
        "backend already in use replaces the picture immediately. It does not key and does not send START."},
       {"Needed stations",
        "Options → Decode List Options → Mark Needed Stations, off until ticked, adds a Need column to the FT8, FT4, FT2, JT65, and Q65 list, checked against your ADIF log. NEW (deep red) is a DXCC entity never worked; BAND (amber) an entity worked but not on the band you are on; GRID (blue) a grid never worked; GRID+BAND (light blue) a grid worked, but not on this band; B4 (dim) a call already worked on this band. Worked QSOs count; confirmations do not. The station is the one sending: the call after CQ, or the second call in a reply. Entities come from AD1C's cty.dat (country-files.com), built in; a newer cty.dat placed in %APPDATA%\\N8SDR\\STD is used instead. What counts as worked is set in Options → Log Options → Log file and logger → Worked list: STD's ADIF file only (the default); STD's ADIF file plus another ADIF file, read but never written (WSJT-X's wsjtx_log.adi, or an export from Log4OM, DXKeeper, N1MM, and others), read again whenever it changes; or STD's ADIF file plus SDRLogger+ (live), which asks SDRLogger+ on this PC (127.0.0.1, port 5050 unless changed) for its whole log every five minutes and ten seconds after each QSO, and keeps the last copy so the marks still work while SDRLogger+ is closed. The same list drives Hide QSO B4. It does not key."},
+      {"Who heard me",
+       "Options → Network Configuration → Show who heard me (PSK Reporter), off until ticked, puts a chip on the status bar: HEARD, the number of stations that reported hearing your callsign (from Options → User) in the last 15 minutes on the band you are on, and the farthest of them, for example \"HEARD 23 · 20m · best VK3XX 16400 km\". It is green when someone heard you and grey when nobody has. Click it for the list, farthest first: call, country, band, mode, the SNR they heard you at, distance, and time. STD asks PSK Reporter every five minutes, as PSK Reporter asks, and only while you have transmitted in the last half hour; listening sends nothing. It does not key."},
       {"Clock check",
        "The clock check watches the DT of the FT8, FT4, and FT2 decodes. When the middle of the last few minutes of them is off by more than 1 s in FT8, 0.5 s in FT4, or 0.3 s in FT2, the status bar shows Clock 1.3 s fast (or slow) and the status line says so once. It needs eight decodes from two periods, and a few stations far off do not move it. STD does not change the clock: sync it with Windows time, Meinberg NTP, or BktTimeSync. It does not key."},
       {"Fox and Hound",
@@ -9190,6 +9205,111 @@ void MainWindow::stopUserTx(bool uncheck) {
   }
 }
 
+void MainWindow::showHeard() {
+  if (!statusStrip_ || !heard_)
+    return;
+  if (!heard_->enabled()) {
+    statusStrip_->setHeard(false, QString(), false, QString());
+    return;
+  }
+  const QString band = currentAdifBand();
+  double lat0 = 0.0;
+  double lon0 = 0.0;
+  const bool home = gridCenter(stationGrid(), &lat0, &lon0);
+  int count = 0;
+  double bestKm = -1.0;
+  QString bestCall;
+  for (const HeardReport& r : heard_->reports()) {
+    if (!band.isEmpty() && adifBandForMhz(double(r.freqHz) / 1.0e6) != band)
+      continue;
+    ++count;
+    double lat = 0.0;
+    double lon = 0.0;
+    if (home && gridCenter(r.locator.left(4), &lat, &lon)) {
+      const double km = kilometers(lat0, lon0, lat, lon);
+      if (km > bestKm) {
+        bestKm = km;
+        bestCall = r.call;
+      }
+    }
+  }
+  QString text = QStringLiteral("HEARD %1").arg(count);
+  if (!band.isEmpty())
+    text += QStringLiteral(" · %1").arg(band);
+  if (bestKm >= 0.0) {
+    const double shown = distMiles_ ? bestKm * 0.621371 : bestKm;
+    text += QStringLiteral(" · best %1 %2 %3").arg(bestCall).arg(qlonglong(std::llround(shown)))
+                .arg(distMiles_ ? QStringLiteral("mi") : QStringLiteral("km"));
+  }
+  QString tip = QStringLiteral("Stations that reported hearing %1 to PSK Reporter in the last 15 minutes, on this "
+                               "band. Click for the list. Asked every five minutes, only while you have "
+                               "transmitted in the last half hour. This does not key.")
+                    .arg(stationCall().isEmpty() ? QStringLiteral("your call") : stationCall());
+  if (heard_->checkedAt().isValid())
+    tip += QStringLiteral("\nChecked %1Z.").arg(heard_->checkedAt().toUTC().toString(QStringLiteral("HH:mm")));
+  if (!heard_->lastError().isEmpty())
+    tip += QStringLiteral("\n") + heard_->lastError();
+  statusStrip_->setHeard(true, text, count > 0, tip);
+}
+
+void MainWindow::openHeardList(const QPoint& at) {
+  if (!heard_)
+    return;
+  auto* popup = new QFrame(this, Qt::Popup);
+  popup->setAttribute(Qt::WA_DeleteOnClose);
+  popup->setObjectName(QStringLiteral("heardList"));
+  auto* layout = new QVBoxLayout(popup);
+  layout->setContentsMargins(6, 6, 6, 6);
+  double lat0 = 0.0;
+  double lon0 = 0.0;
+  const bool home = gridCenter(stationGrid(), &lat0, &lon0);
+  struct Row {
+    HeardReport r;
+    double km;
+  };
+  QList<Row> rows;
+  for (const HeardReport& r : heard_->reports()) {
+    double lat = 0.0;
+    double lon = 0.0;
+    const double km = home && gridCenter(r.locator.left(4), &lat, &lon) ? kilometers(lat0, lon0, lat, lon) : -1.0;
+    rows << Row{r, km};
+  }
+  std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.km > b.km; });
+  auto* title = new QLabel(rows.isEmpty()
+                               ? QStringLiteral("Nobody has reported hearing you in the last 15 minutes.")
+                               : QStringLiteral("Heard by %1 in the last 15 minutes, farthest first").arg(rows.size()),
+                           popup);
+  layout->addWidget(title);
+  if (!rows.isEmpty()) {
+    auto* table = new QTableWidget(int(rows.size()), 7, popup);
+    table->setObjectName(QStringLiteral("heardTable"));
+    table->setHorizontalHeaderLabels({QStringLiteral("Call"), QStringLiteral("Country"), QStringLiteral("Band"),
+                                      QStringLiteral("Mode"), QStringLiteral("SNR"),
+                                      distMiles_ ? QStringLiteral("mi") : QStringLiteral("km"),
+                                      QStringLiteral("UTC")});
+    table->verticalHeader()->hide();
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    for (int i = 0; i < rows.size(); ++i) {
+      const Row& row = rows.at(i);
+      const double shown = row.km < 0 ? -1 : (distMiles_ ? row.km * 0.621371 : row.km);
+      const QStringList cells = {row.r.call, row.r.country, adifBandForMhz(double(row.r.freqHz) / 1.0e6),
+                                 row.r.mode, QString::number(row.r.snr),
+                                 shown < 0 ? QStringLiteral("-") : QString::number(qlonglong(std::llround(shown))),
+                                 row.r.time.toUTC().toString(QStringLiteral("HH:mm"))};
+      for (int c = 0; c < cells.size(); ++c)
+        table->setItem(i, c, new QTableWidgetItem(cells.at(c)));
+    }
+    table->resizeColumnsToContents();
+    table->setMinimumWidth(std::min(760, table->horizontalHeader()->length() + 24));
+    table->setMinimumHeight(std::min(420, 32 + int(rows.size()) * 24));
+    layout->addWidget(table);
+  }
+  popup->adjustSize();
+  popup->move(at - QPoint(0, popup->height() + 4));
+  popup->show();
+}
+
 void MainWindow::applyWorkedSource() {
   if (!loggerFeed_)
     return;
@@ -10482,6 +10602,14 @@ void MainWindow::openNetworkDialog() {
   dialog.setMinimumWidth(460);
   auto* enable = new QCheckBox(QStringLiteral("Enable PSK Reporter style spots"), &dialog);
   enable->setChecked(settings.value(QStringLiteral("dx/reportEnabled"), false).toBool());
+  auto* heardMe = new QCheckBox(QStringLiteral("Show who heard me (PSK Reporter)"), &dialog);
+  heardMe->setObjectName(QStringLiteral("heardMe"));
+  heardMe->setChecked(heard_ && heard_->enabled());
+  heardMe->setToolTip(QStringLiteral(
+      "A chip on the status bar counts the stations that reported hearing your callsign (Options → User) "
+      "to PSK Reporter in the last 15 minutes on this band; click it for the list, farthest first. STD "
+      "asks PSK Reporter every five minutes, only while you have transmitted in the last half hour. "
+      "Off asks nothing. This does not key."));
   auto* reportWspr = new QCheckBox(QStringLiteral("Also send WSPR spots to PSK Reporter"), &dialog);
   reportWspr->setObjectName(QStringLiteral("reportWspr"));
   reportWspr->setChecked(settings.value(QStringLiteral("dx/reportWspr"), false).toBool());
@@ -10644,6 +10772,7 @@ void MainWindow::openNetworkDialog() {
   buttons->addWidget(cancel);
   auto* layout = new QVBoxLayout(&dialog);
   layout->addWidget(enable);
+  layout->addWidget(heardMe);
   layout->addWidget(reportWspr);
   layout->addLayout(form);
   layout->addWidget(note);
@@ -10659,6 +10788,10 @@ void MainWindow::openNetworkDialog() {
   QSettings store;
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
   store.setValue(QStringLiteral("dx/reportWspr"), reportWspr->isChecked());
+  if (heard_) {
+    heard_->setCall(stationCall());
+    heard_->setEnabled(heardMe->isChecked());
+  }
   store.setValue(QStringLiteral("dx/wsprnetEnabled"), wsprOn->isChecked());
   store.setValue(QStringLiteral("dx/freedvReporterEnabled"), fdvOn->isChecked());
   store.setValue(QStringLiteral("dx/freedvReporterMessage"), fdvMessage->text().trimmed());

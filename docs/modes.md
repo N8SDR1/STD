@@ -42,6 +42,8 @@ TX or Tune is what sends `trx`. An empty line does not key.
 
 Options → Network Configuration. Enable PSK Reporter style spots is off until checked. Antenna is the description sent with each spot. Also send WSPR spots to PSK Reporter is a separate checkbox and stays off. The map uses the callsign already saved under Options → User. There is no second callsign or locator. It does not send START, and it does not key.
 
+Options → Network Configuration → Show who heard me (PSK Reporter), off until ticked, puts a chip on the status bar: HEARD, the number of stations that reported hearing your callsign (from Options → User) in the last 15 minutes on the band you are on, and the farthest of them, for example "HEARD 23 · 20m · best VK3XX 16400 km". It is green when someone heard you and grey when nobody has. Click it for the list, farthest first: call, country, band, mode, the SNR they heard you at, distance, and time. STD asks PSK Reporter every five minutes, as PSK Reporter asks, and only while you have transmitted in the last half hour; listening sends nothing.
+
 ## WSPRnet
 
 Options → Network Configuration. Off and On. On posts each WSPR station STD decodes. Off posts nothing. WSPRnet does not ask for a password. It does not post your own transmission. Options → WSPRnet reports opens the page of stations reported by the callsign in Options → User. There is no second callsign or locator. It does not send START, and it does not key.

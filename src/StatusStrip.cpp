@@ -350,6 +350,17 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
       emit spotMapRequested(service);
   });
   applySpot(QStringLiteral("FT8"));
+  auto* heard = new QPushButton(this);
+  heard->setObjectName(QStringLiteral("heardChip"));
+  heard->setFlat(true);
+  heard->setFocusPolicy(Qt::NoFocus);
+  heard->setCursor(Qt::PointingHandCursor);
+  heard->setFixedHeight(22);
+  heard->setFont(monoFont(12));
+  heard->hide();
+  layout->addWidget(heard);
+  connect(heard, &QPushButton::clicked, this,
+          [this, heard] { emit heardClicked(heard->mapToGlobal(QPoint(0, 0))); });
   layout->addWidget(separator());
   layout->addWidget(readout("DIAL", "dialValue", QString::fromUtf8("—")));
   layout->addWidget(separator());
@@ -686,6 +697,19 @@ void StatusStrip::setClockOff(bool off, double seconds, const QString& mode, int
                          .arg(fast ? QStringLiteral("fast") : QStringLiteral("slow"))
                          .arg(mode == QLatin1String("FT8") ? QStringLiteral("1") :
                               mode == QLatin1String("FT4") ? QStringLiteral("0.5") : QStringLiteral("0.3")));
+}
+
+void StatusStrip::setHeard(bool shown, const QString& text, bool heard, const QString& tip) {
+  auto* chip = findChild<QPushButton*>(QStringLiteral("heardChip"));
+  if (!chip)
+    return;
+  chip->setVisible(shown);
+  chip->setText(text);
+  chip->setToolTip(tip);
+  chip->setStyleSheet(heard ? QStringLiteral("QPushButton#heardChip { color: #0b1a10; background: #3ccf6b; "
+                                             "border-radius: 3px; padding: 0 8px; }")
+                            : QStringLiteral("QPushButton#heardChip { color: #8a94a6; background: transparent; "
+                                             "border: 1px solid #3a4352; border-radius: 3px; padding: 0 8px; }"));
 }
 
 void StatusStrip::setRadio(bool connected, const QString& line) {

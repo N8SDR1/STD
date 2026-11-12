@@ -182,6 +182,8 @@ qt_add_executable(std
   src/Needed.h
   src/LoggerFeed.cpp
   src/LoggerFeed.h
+  src/HeardWatch.cpp
+  src/HeardWatch.h
   src/UpdateChecker.h
   src/mt63/fldigi/dsp.cxx
   src/mt63/fldigi/mt63base.cxx

@@ -387,6 +387,9 @@ private:
   QString currentAdifBand() const;
   void applyWorkedSource();
   void loggedQso();
+  // Who heard me (PSK Reporter): the status bar chip and its list.
+  void showHeard();
+  void openHeardList(const QPoint& at);
 
   struct DecodeRow {
     QString time;
@@ -500,6 +503,7 @@ private:
   mutable QString workedPath_;
   class LoggerFeed* loggerFeed_ = nullptr;
   QString loggerFeedError_;
+  class HeardWatch* heard_ = nullptr;
   mutable WorkedIndex workedIndex_;
   mutable CtyTable cty_;
   mutable bool ctyLoaded_ = false;
