@@ -223,20 +223,20 @@ layout: null
       <p class="joke">The real expansion is Shift, Tone, Decode. Around the shack it also answers to Sending Transmittal Disease, because this build is still in the contagious stage. It keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air.</p>
       <p class="bourbon">STD: Help keep the infections spreading and buy us a shot of bourbon.</p>
       <div class="chips">
-        <span class="badge">v0.1.11 · testing phase · highly transmissible · GPL v3</span>
-        <a class="badge chip-download" href="https://github.com/N8SDR1/STD/releases/download/v0.1.11/STD-Setup-0.1.11.exe">Download STD</a>
-        <a class="badge chip-release" href="https://github.com/N8SDR1/STD/releases/tag/v0.1.11">Releases</a>
+        <span class="badge">v0.1.12 · testing phase · highly transmissible · GPL v3</span>
+        <a class="badge chip-download" href="https://github.com/N8SDR1/STD/releases/download/v0.1.12/STD-Setup-0.1.12.exe">Download STD</a>
+        <a class="badge chip-release" href="https://github.com/N8SDR1/STD/releases/tag/v0.1.12">Releases</a>
       </div>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/N8SDR1/STD/releases/download/v0.1.11/STD-Setup-0.1.11.exe">Download STD</a>
-        <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD/releases/tag/v0.1.11">Releases</a>
+        <a class="btn btn-primary" href="https://github.com/N8SDR1/STD/releases/download/v0.1.12/STD-Setup-0.1.12.exe">Download STD</a>
+        <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD/releases/tag/v0.1.12">Releases</a>
         <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD">★ GitHub</a>
         <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD/wiki">📖 Wiki</a>
         <a class="btn btn-ghost" href="https://www.paypal.com/donate/?business=NP2ZQS4LR454L&amp;no_recurring=0&amp;item_name=STD%3A+Help+keep+the+infections+spreading+and+buy+us+a+shot+of+bourbon.&amp;currency_code=USD">☕ Bourbon</a>
         <a class="btn btn-ghost" href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a>
         <a class="btn btn-ghost" href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a>
       </div>
-      <p class="platforms">Windows installer · STD-Setup-0.1.11.exe · not a zip · 64-bit · Qt 6.11.1 MSVC · CW stays in Lyra</p>
+      <p class="platforms">Windows installer · STD-Setup-0.1.12.exe · not a zip · 64-bit · Qt 6.11.1 MSVC · CW stays in Lyra</p>
     </header>
 
     <section class="showcase">
@@ -312,6 +312,7 @@ layout: null
         <div class="card"><h3><span class="ico">🎙️</span> FreeDV Reporter</h3><p>Options → Network Configuration. Off and On. On shows your call, locator, dial and TX on qso.freedv.org while a RADE mode is selected, and reports each RADE station you hear with its SNR. The box beside On, or Reporter message on the RADE screen, fills the Message column. The status strip has a FREEDV RPT chip in RADE (and PSK RPT or WSPRNET in the modes that use them): click the name to open the live page, On/Off to toggle. Off connects to nothing. View FreeDV Reporter opens the map. The RADE screen also lists stations in a table, with Filter, All or This band, row tints, double-click tune, and Request QSY.</p></div>
         <div class="card"><h3><span class="ico">🗺️</span> PSK Reporter</h3><p>Upload stays off until Enable is checked. Antenna is the description sent with each spot. Also send WSPR spots to PSK Reporter stays off until that box is checked. The map uses the callsign already saved under Options → User. There is no second callsign. Show who heard me (off until ticked) puts a HEARD chip on the status bar: how many stations reported hearing you in the last 15 minutes on this band, and the farthest; it follows the band as you change it; click it for the list.</p></div>
         <div class="card"><h3><span class="ico">📒</span> Logger link</h3><p>Options → Log Options → Log file and logger → Link to a logger over WSJT-X UDP. STD sends decodes and Status the way WSJT-X does, so SDRLogger+, GridTracker, JTAlert, and Log4OM see it, and the call in STD fills the logger's log entry. With Accept requests on, a click on a decode in the logger works that station in STD as a double-click would. For SDRLogger+, turn on its Decoder Link on port 2237, tick Link to a logger, Accept requests, and WSJT-X UDP logged QSO (not logged ADIF) in STD, and tick Log Automatically QSO. The link alone does not log. It stays off until you turn it on.</p></div>
+        <div class="card"><h3><span class="ico">📒</span> Better with SDRLogger+</h3><p>Point STD's worked list at SDRLogger+ and the NEW / BAND / GRID marks always match your whole SDRLogger+ log, no export needed. Options → Log Options → Log file and logger → Worked list → STD's ADIF file + SDRLogger+ (live) reads <code>127.0.0.1:5050</code> on this PC every five minutes and after each QSO, and keeps the last copy while SDRLogger+ is closed. STD only reads it. Changing band redraws the Need column at once, with the HEARD chip.</p></div>
         <div class="card"><h3><span class="ico">🏝️</span> DXpeditions</h3><p>View → DXpeditions lists the announced DX operations from NG3K: call, entity, dates, bands, modes, QSL, and notes. It opens on Digital modes (FT8, FT4, FT2, RTTY, PSK, and "+ digital"), with All modes, FT8 / FT4 / FT2, RTTY, and PSK beside it, On the air now, and Find. Click a title to sort; operations on the air now are tinted green. A double-click moves STD to that DXpedition's band and digital mode: FT8 (Super Hound when it says Fox/Hound), then FT4, RTTY, and PSK (PSK31 unless another rate is named), on the band you are on when it is listed; only the dial and mode move. It fetches only while open, once an hour, and keeps the last list for offline use. Mark spotted DXpeditions adds digital cluster spots from Spothole, only for the digital DXpeditions on the air: a spotted row reads SPOTTED with its band and mode, checked every 90 or 180 s and kept 10, 20, or 30 minutes. <a href="dxpeditions.html">DXpeditions notes</a>.</p></div>
         <div class="card"><h3><span class="ico">🔥</span> Hot list</h3><p>Calls you are watching for, as in SDRLogger+. Tick a call in DXpeditions or type it in View → Hot list. It sits on the top bar right of the dial; View → Hot list on top bar turns it off, and it can show all calls, ticked calls, or heard calls. Alerts are Off until you choose Visual (a heard call turns red for 15 minutes, then amber; unheard calls stay dim) or Visual + Voice (its own voice says it on the Options → Speech output device, RADE's Speaker, in every mode, once per call every 15 minutes). Double-click a call to tune to where it was heard, or to its DXpedition. Hot rows in DXpeditions are tinted, amber once heard, red when heard lately. A cluster spot of a hot DXpedition marks it too, and Also check hot list calls does the same for any hot call, digital spots only. It watches FT8-family, JS8, and WSPR decodes and keyboard text. It never keys. <a href="dxpeditions.html#the-hot-list">Hot list notes</a>.</p></div>
         <div class="card"><h3><span class="ico">💾</span> Backup and export</h3><p>File → Backup settings saves layouts and the callsign and locator already stored under Options → User. It does not copy the TCI host or port. File → Import settings restores that file. File → Backup logbook copies the ADIF file. File → Export ADIF writes a copy another logger can import.</p></div>
@@ -342,7 +343,7 @@ layout: null
         </div>
         <div class="card">
           <h3><span class="ico">📒</span> SDRLogger+</h3>
-          <p>The logbook. TCI, the DX cluster, and the place a finished contact belongs.</p>
+          <p>The logbook. TCI, the DX cluster, and the place a finished contact belongs. Point STD's worked list at it and NEW / BAND / GRID follow the whole log, no export.</p>
           <a class="btn btn-ghost" href="https://n8sdr1.github.io/SDRLoggerPlus/">Visit SDRLogger+</a>
           <a class="btn btn-ghost" href="https://github.com/N8SDR1/SDRLoggerPlus">★ GitHub</a>
         </div>
@@ -371,7 +372,7 @@ layout: null
 
   <footer>
     <p>© 2026 Rick Langford (N8SDR) · Shift, Tone, Decode · Sending Transmittal Disease · GPL v3</p>
-    <p style="margin-top:6px;"><a href="https://github.com/N8SDR1/STD/releases/download/v0.1.11/STD-Setup-0.1.11.exe">Download STD</a> · <a href="https://github.com/N8SDR1/STD/releases/tag/v0.1.11">Releases</a> · <a href="https://github.com/N8SDR1/STD">GitHub</a> · <a href="https://github.com/N8SDR1/STD/wiki">Wiki</a> · <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a> · <a href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a></p>
+    <p style="margin-top:6px;"><a href="https://github.com/N8SDR1/STD/releases/download/v0.1.12/STD-Setup-0.1.12.exe">Download STD</a> · <a href="https://github.com/N8SDR1/STD/releases/tag/v0.1.12">Releases</a> · <a href="https://github.com/N8SDR1/STD">GitHub</a> · <a href="https://github.com/N8SDR1/STD/wiki">Wiki</a> · <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a> · <a href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a></p>
   </footer>
 </body>
 </html>
