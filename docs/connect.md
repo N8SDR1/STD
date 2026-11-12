@@ -46,6 +46,8 @@ Options → Log Options → Log file and logger → **Link to a logger over WSJT
 
 Within about 15 seconds SDRLogger+'s Decoder Link shows STD under Clients. STD's decodes then appear in its Digital Decodes panel, the call you are working fills its log entry, and a click on a CQ there works that station in STD. A QSO is logged when it ends: after a 73 or RR73 goes out, or in MA Std when their RR73 arrives and Options → TX Confirmation If 73 Or RR73 is off, as MSHV does. With it on (the default) STD answers their RR73 with 73 and logs then. STD keeps its own ADIF too.
 
+4. **Optional, for Mark Needed Stations:** in the same Log file and logger dialog set **Worked list** to **STD's ADIF file + SDRLogger+ (live)**. STD then asks SDRLogger+ on this PC (127.0.0.1, port **5050**) for its whole log every five minutes and ten seconds after each QSO, so NEW, BAND, GRID, and B4 follow everything in SDRLogger+, not just what STD logged. The last copy is kept, so the marks still work while SDRLogger+ is closed. If SDRLogger+ started on another port because 5050 was busy, set that port. STD only reads; it sends nothing to SDRLogger+ this way.
+
 **The link alone does not log.** It carries decodes, Status, and the logger's clicks. Sending a QSO to the logger is the logged QSO box (logged ADIF for loggers that want it), and deciding to log at all is Log Automatically QSO or Prompt Me To Log QSO.
 
 The link sends a heartbeat every 15 seconds and logs nothing by itself; the WSJT-X UDP logged QSO and logged ADIF options still decide whether a finished QSO is sent. TCI to the radio is separate and unchanged. START is never sent.
