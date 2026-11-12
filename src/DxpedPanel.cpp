@@ -189,6 +189,16 @@ DxpedPanel::DxpedPanel(QWidget* parent) : QWidget(parent) {
   spotKeep_->setCurrentIndex(spots_->keepMins() / 10 - 1);
   spotKeep_->setToolTip(QStringLiteral("How long a DXpedition stays marked SPOTTED after its last spot."));
   spotRow->addWidget(spotKeep_);
+  spotHot_ = new QCheckBox(QStringLiteral("Also check hot list calls"), this);
+  spotHot_->setObjectName(QStringLiteral("dxpedSpotHot"));
+  spotHot_->setToolTip(QStringLiteral(
+      "Also ask Spothole for digital spots of every call on the hot list, not only the DXpeditions: "
+      "a special event station, a rare call, one you need. A spot marks its hot list chip and, with "
+      "alerts Visual or Visual + Voice, says where it is. Digital spots only. Off until ticked. "
+      "This does not key."));
+  spotHot_->setChecked(QSettings().value(QStringLiteral("spots/hotList"), false).toBool());
+  spotHot_->setEnabled(spotsOn_->isChecked());
+  spotRow->addWidget(spotHot_);
   spotRow->addStretch(1);
   layout->addLayout(spotRow);
 
@@ -278,9 +288,16 @@ DxpedPanel::DxpedPanel(QWidget* parent) : QWidget(parent) {
           [this](const QString& call, const DxSpot& spot) { emit spotted(call, spot); });
   connect(spotsOn_, &QCheckBox::toggled, this, [this](bool on) {
     spots_->setEnabled(on);
+    spotHot_->setEnabled(on);
     emit statusMessage(on ? QStringLiteral("Marking spotted DXpeditions from Spothole, digital spots only. "
                                            "Nothing was keyed.")
                           : QStringLiteral("Cluster spots are off."));
+  });
+  connect(spotHot_, &QCheckBox::toggled, this, [this](bool on) {
+    QSettings().setValue(QStringLiteral("spots/hotList"), on);
+    updateWatch();
+    emit statusMessage(on ? QStringLiteral("Cluster spots also checked for the hot list calls. Nothing was keyed.")
+                          : QStringLiteral("Cluster spots checked for the digital DXpeditions only."));
   });
   connect(spotEvery_, &QComboBox::currentIndexChanged, this,
           [this](int) { spots_->setPollSecs(spotEvery_->currentData().toInt()); });
@@ -318,6 +335,11 @@ void DxpedPanel::updateWatch() {
       continue;
     if (e.start.addDays(-1) <= today_ && today_ <= e.end.addDays(1))
       calls << e.lookup;
+  }
+  // With Also check hot list calls on, every call on the hot list too.
+  if (hot_ && spotHot_ && spotHot_->isChecked()) {
+    for (const HotEntry& h : hot_->entries())
+      calls << h.call;
   }
   spots_->setWatch(calls);
 }

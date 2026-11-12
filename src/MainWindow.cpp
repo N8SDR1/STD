@@ -5335,7 +5335,9 @@ void MainWindow::showGuide() {
        "minutes. With Mark spotted DXpeditions on in View → DXpeditions, a cluster spot of a hot call "
        "that is one of those DXpeditions counts too: the chip turns red, the status line says spotted "
        "with the band, mode, frequency, and spotter, Visual + Voice says it, and a double-click goes to "
-       "the spot. Nothing here keys the radio or sends START."},
+       "the spot. Tick Also check hot list calls beside it and every call on the hot list is asked "
+       "for too, a special event station or a rare call, still digital spots only, so an SSB or CW "
+       "station never alerts. Nothing here keys the radio or sends START."},
       {"Waterfall zoom",
        "The wheel zooms around the cursor. Drag pans. Both stay inside the receive band the radio "
        "reports. A double-click or a right-click opens that whole band again. Start and BW narrow the "

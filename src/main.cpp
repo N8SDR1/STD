@@ -5126,7 +5126,7 @@ By ops fm Berbera (LK20mk); HF
     const QStringList keys = {QStringLiteral("spots/enabled"),  QStringLiteral("spots/pollSecs"),
                               QStringLiteral("spots/keepMins"), QStringLiteral("hotlist/calls"),
                               QStringLiteral("hotlist/hidden"), QStringLiteral("hotlist/alerts"),
-                              QStringLiteral("profile/superHound")};
+                              QStringLiteral("profile/superHound"), QStringLiteral("spots/hotList")};
     QHash<QString, QVariant> kept;
     for (const QString& k : keys)
       kept.insert(k, store.value(k));
@@ -5267,6 +5267,34 @@ By ops fm Berbera (LK20mk); HF
     QApplication::processEvents();
     const bool tuned = bandBar->digitalMode() == QLatin1String("FT8") &&
                        ModeProfile::metresForBand(bandBar->band()) == 15;
+    // Also check hot list calls: a hot call that is no DXpedition is asked
+    // for only with the option on, and its spot marks the chip.
+    auto* hotSpots = main->findChild<QCheckBox*>(QStringLiteral("dxpedSpotHot"));
+    const bool hadW1aw = winHot->contains(QStringLiteral("W1AW"));
+    winHot->add(QStringLiteral("W1AW"));
+    bool hotWatch = false;
+    bool hotMarked = false;
+    if (hotSpots) {
+      hotSpots->setChecked(false);
+      const bool offOk = !main->spots()->watch().contains(QStringLiteral("W1AW"));
+      hotSpots->setChecked(true);
+      hotWatch = offOk && main->spots()->watch().contains(QStringLiteral("W1AW")) &&
+                 main->spots()->watch().contains(QStringLiteral("3B9KW"));
+      main->spots()->ingest(SpotWatch::parseSpots(
+          QStringLiteral("[%1]").arg(spotJson("W1AW/8", 14075600, "FT8", "DATA", "COMMENT", t - 30, false)).toUtf8(), &err));
+      const HotEntry w1 = winHot->entry(QStringLiteral("W1AW"));
+      hotMarked = w1.spotted && w1.heardMetres == 20 && w1.heardMode == QLatin1String("FT8");
+      hotSpots->setChecked(false);
+      hotWatch = hotWatch && !main->spots()->watch().contains(QStringLiteral("W1AW"));
+    }
+    if (!hadW1aw)
+      winHot->remove(QStringLiteral("W1AW"));
+    if (!hotWatch || !hotMarked) {
+      winHot->setAlerts(keepAlerts);
+      restoreSpots();
+      qCritical("hot spots option %d watch %d marked %d", hotSpots != nullptr, hotWatch, hotMarked);
+      return fail("Also check hot list calls did not watch the hot list or mark a spotted hot call");
+    }
     if (!had3b9)
       winHot->remove(QStringLiteral("3B9KW"));
     if (!hadH44)
@@ -5363,6 +5391,14 @@ int main(int argc, char* argv[]) {
   else
     qWarning("STD stylesheet is missing from the binary resources");
 
+  // The self-test reads the DXpeditions table whole. The operator's On the
+  // air now filter would hide rows it counts, so it is off for the run and
+  // put back after.
+  const QVariant keptActiveOnly =
+      selftest ? QSettings().value(QStringLiteral("dxped/activeOnly")) : QVariant();
+  if (selftest)
+    QSettings().setValue(QStringLiteral("dxped/activeOnly"), false);
+
   MainWindow window;
   if (!selftest)
     window.primeGraphics();
@@ -5373,5 +5409,12 @@ int main(int argc, char* argv[]) {
     QTimer::singleShot(0, &app, [&app, &window] { app.exit(shellReady(window)); });
   }
 
-  return app.exec();
+  const int code = app.exec();
+  if (selftest) {
+    if (keptActiveOnly.isValid())
+      QSettings().setValue(QStringLiteral("dxped/activeOnly"), keptActiveOnly);
+    else
+      QSettings().remove(QStringLiteral("dxped/activeOnly"));
+  }
+  return code;
 }

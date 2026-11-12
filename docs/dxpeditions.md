@@ -52,6 +52,7 @@ NG3K says when a DXpedition is scheduled; a cluster spot says it is on the air n
 - **Check every** 90 or 180 seconds. STD asks for all the watched DXpeditions in one query, and after the first one only for spots newer than the last it saw. Spothole is run by a volunteer, so STD asks no more often than this.
 - **Keep spots** 10, 20, or 30 minutes. A row stays marked that long after its last spot, then goes back to NOW.
 - **Double-click** a spotted row to go to the spot: its band and mode; the band's dial for that mode when the spot is within 4 kHz of it; otherwise the spot's frequency to the kHz (an FT8 Fox off the usual dial); and for RTTY and PSK the dial 1500 Hz off the spot, so the signal sits at 1500 Hz in the waterfall. FT8 sets Super Hound from the listing, as before.
+- **Also check hot list calls**, beside Keep spots, is off until ticked. With it on, STD asks for every call on the hot list as well, such as a special event station or a rare call you need. They are still digital spots only: a station on SSB or CW never alerts. A spot of one marks its hot list chip (see [The hot list](#the-hot-list)); it has no row here unless it is also a DXpedition.
 - STD sends no callsign and no login. The status line under the table shows how many watched DXpeditions are spotted and when Spothole was last asked; when it does not answer, the rows simply stay as NG3K lists them.
 
 ## The hot list
@@ -74,7 +75,7 @@ Alerts are **Off** until chosen. Click the chip on the top bar to cycle Off, Vis
 - **Visual.** When STD decodes a watched call it turns red on the top bar for 15 minutes, then amber, and the status line names the band, mode, and report. Calls not heard are dim.
 - **Visual + Voice** also says "Hot list" and the call, letter by letter, once per call every 15 minutes. It uses the voice, rate, and volume from Options → Speech and plays on the **Speech output device**, the same device RADE's Speaker box uses (the Windows default only when that is the device chosen). The hot list has its own voice, so it speaks in every mode, FT8 and WSPR included, with "Read received text aloud" off or the Speech chip muted, while transmitting, and in RADE.
 - STD looks in FT8, FT4, FT2, JT65, Q65, MSK144, JS8, and WSPR decodes and in received keyboard text. A call matches as a whole word, inside FT8 brackets, or on either side of a slash, so a hot FO matches FO/WE9G.
-- **Cluster spots.** With Mark spotted DXpeditions on, a spot of a hot call that is one of the watched DXpeditions counts the same way: the chip turns red, the status line says "spotted" with the band, mode, frequency, and spotter, Visual + Voice says it, and a double-click goes to the spot. A decode by STD itself is still what the chip shows when it is newer.
+- **Cluster spots.** With Mark spotted DXpeditions on, a spot of a hot call that is one of the watched DXpeditions counts the same way: the chip turns red, the status line says "spotted" with the band, mode, frequency, and spotter, Visual + Voice says it, and a double-click goes to the spot. With **Also check hot list calls** on, any call on the hot list counts, digital spots only. A decode by STD itself is still what the chip shows when it is newer.
 - Heard marks last until STD closes. Right-click → Clear heard marks clears them.
 
 ### Highlighting

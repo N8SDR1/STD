@@ -75,6 +75,7 @@ private:
   QCheckBox* spotsOn_ = nullptr;
   QComboBox* spotEvery_ = nullptr;
   QComboBox* spotKeep_ = nullptr;
+  QCheckBox* spotHot_ = nullptr;
   HotList* hot_ = nullptr;
   bool building_ = false;
   QStandardItemModel* model_ = nullptr;
