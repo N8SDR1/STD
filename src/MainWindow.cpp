@@ -3,6 +3,8 @@
 
 #include "MainWindow.h"
 
+#include "LoggerFeed.h"
+
 #include "DigitalMode.h"
 #include "EchoLog.h"
 #include "Ft8Decode.h"
@@ -97,6 +99,7 @@
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QTextBrowser>
+#include <QTextBlock>
 #include <QTextCharFormat>
 #include <QTextEdit>
 #include <QTime>
@@ -107,6 +110,8 @@
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QPointer>
+#include <QThreadPool>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -327,7 +332,7 @@ QString columnCell(const QString& text, int width) {
 
 QString decodeColumns(const QString& time, const QString& db, const QString& dt, const QString& dist,
                       const QString& message, const QString& freq, bool showTime, bool showFreq,
-                      bool showDist) {
+                      bool showDist, bool showNeed = false, const QString& need = QString()) {
   QStringList fields;
   if (showTime)
     fields << columnCell(time, 8);
@@ -338,6 +343,8 @@ QString decodeColumns(const QString& time, const QString& db, const QString& dt,
   fields << columnCell(message, 28);
   if (showFreq)
     fields << columnCell(freq, 6);
+  if (showNeed)
+    fields << need;
   return fields.join(QStringLiteral(" | "));
 }
 
@@ -507,6 +514,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   applyHotBar();
   arrangeDefault();
   qsoLog_ = new QsoLog(this);
+  loggerFeed_ = new LoggerFeed(this);
+  connect(loggerFeed_, &LoggerFeed::updated, this, [this] {
+    workedPath_.clear();
+    refreshDecodes();
+  });
+  connect(loggerFeed_, &LoggerFeed::failed, this, [this](const QString& error) {
+    // Once per outage, not every five minutes.
+    if (error != loggerFeedError_)
+      setTxStatus(error + QStringLiteral(" Nothing was keyed."));
+    loggerFeedError_ = error;
+  });
+  connect(loggerFeed_, &LoggerFeed::updated, this, [this] { loggerFeedError_.clear(); });
+  applyWorkedSource();
   // The logger link: Status once a second when it changes, and the
   // logger's Reply, Halt Tx, and Free Text.
   connect(qsoLog_, &QsoLog::requestReceived, this, &MainWindow::loggerRequest);
@@ -3484,6 +3504,9 @@ void MainWindow::refreshDecodes() {
   const QString needle = filter ? filter->text().trimmed() : QString();
   QString text;
   shownDecodes_.clear();
+  QVector<Need> needs;
+  if (markNeeded_)
+    ensureWorkedCalls();
   for (const DecodeRow& row : decodes_) {
     QString line;
     if (row.time.isEmpty())
@@ -3493,9 +3516,13 @@ void MainWindow::refreshDecodes() {
                         distanceText(row.message), row.message, QString::number(row.navg),
                         QString::number(row.bitErrors), row.eye, QString::number(row.freqHz), showTime_,
                         showFreq_, showDist_);
-    else
+    Need need = Need::None;
+    if (!row.time.isEmpty() && !row.msk && markNeeded_)
+      need = needFor(row.message);
+    if (!row.time.isEmpty() && !row.msk)
       line = decodeColumns(row.time, QString::number(row.db), row.dt, distanceText(row.message),
-                           row.message, QString::number(row.freqHz), showTime_, showFreq_, showDist_);
+                           row.message, QString::number(row.freqHz), showTime_, showFreq_, showDist_,
+                           markNeeded_, needTag(need));
     if (!needle.isEmpty() && !line.contains(needle, Qt::CaseInsensitive))
       continue;
     if (!keepDecode(row.message))
@@ -3504,8 +3531,39 @@ void MainWindow::refreshDecodes() {
       text += QLatin1Char('\n');
     text += line;
     shownDecodes_.push_back(row);
+    needs.push_back(need);
   }
   edit->setPlainText(text);
+  // setPlainText keeps the old first character's format, so a tint from the
+  // last refresh would spread over every row. Start plain.
+  {
+    QTextCursor all(edit->document());
+    all.select(QTextCursor::Document);
+    all.setCharFormat(QTextCharFormat());
+  }
+  // Needed stations: a tint for NEW, BAND, and GRID; worked before is dim.
+  if (markNeeded_) {
+    QTextBlock block = edit->document()->begin();
+    for (int i = 0; i < needs.size() && block.isValid(); ++i, block = block.next()) {
+      const Need need = needs.at(i);
+      if (need == Need::None)
+        continue;
+      QTextCharFormat format;
+      if (need == Need::Entity)
+        format.setBackground(QColor(150, 40, 80, 170));
+      else if (need == Need::Band)
+        format.setBackground(QColor(170, 100, 20, 150));
+      else if (need == Need::Grid)
+        format.setBackground(QColor(30, 100, 150, 150));
+      else if (need == Need::GridBand)
+        format.setBackground(QColor(30, 100, 150, 85));
+      else
+        format.setForeground(QColor(120, 128, 140));
+      QTextCursor cursor(block);
+      cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+      cursor.mergeCharFormat(format);
+    }
+  }
   edit->moveCursor(QTextCursor::End);
 }
 
@@ -3979,6 +4037,11 @@ void MainWindow::buildMenus() {
            QStringLiteral("Show or hide the Time column."));
   addCheck(listMenu, "listShowDist", QStringLiteral("Show Distance Column"), "dx/showDist", true,
            QStringLiteral("Distance from your grid to the grid in the message. This does not key."));
+  addCheck(listMenu, "listMarkNeeded", QStringLiteral("Mark Needed Stations"), "dx/markNeeded", false,
+           QStringLiteral("A Need column against your worked list: NEW is a DXCC entity never worked, BAND an "
+                          "entity not worked on this band, GRID a grid never worked, GRID+BAND a grid not "
+                          "worked on this band, and B4 a call already worked on this band, shown dim. Worked "
+                          "QSOs count; confirmations do not. Entities are from AD1C's cty.dat. This does not key."));
   auto* miles = listMenu->addAction(QStringLiteral("Distance in miles"));
   miles->setObjectName(QStringLiteral("distUnitMiles"));
   miles->setCheckable(true);
@@ -5399,6 +5462,8 @@ void MainWindow::showGuide() {
        "Direct3D 12, OpenGL, and Painter are explicit. The Graphics line names the backend in "
        "use. Choosing a different graphics API restarts STD so that backend is selected. Choosing the "
        "backend already in use replaces the picture immediately. It does not key and does not send START."},
+      {"Needed stations",
+       "Options → Decode List Options → Mark Needed Stations, off until ticked, adds a Need column to the FT8, FT4, FT2, JT65, and Q65 list, checked against your ADIF log. NEW (deep red) is a DXCC entity never worked; BAND (amber) an entity worked but not on the band you are on; GRID (blue) a grid never worked; GRID+BAND (light blue) a grid worked, but not on this band; B4 (dim) a call already worked on this band. Worked QSOs count; confirmations do not. The station is the one sending: the call after CQ, or the second call in a reply. Entities come from AD1C's cty.dat (country-files.com), built in; a newer cty.dat placed in %APPDATA%\\N8SDR\\STD is used instead. What counts as worked is set in Options → Log Options → Log file and logger → Worked list: STD's ADIF file only (the default); STD's ADIF file plus another ADIF file, read but never written (WSJT-X's wsjtx_log.adi, or an export from Log4OM, DXKeeper, N1MM, and others), read again whenever it changes; or STD's ADIF file plus SDRLogger+ (live), which asks SDRLogger+ on this PC (127.0.0.1, port 5050 unless changed) for its whole log every five minutes and ten seconds after each QSO, and keeps the last copy so the marks still work while SDRLogger+ is closed. The same list drives Hide QSO B4. It does not key."},
       {"Clock check",
        "The clock check watches the DT of the FT8, FT4, and FT2 decodes. When the middle of the last few minutes of them is off by more than 1 s in FT8, 0.5 s in FT4, or 0.3 s in FT2, the status bar shows Clock 1.3 s fast (or slow) and the status line says so once. It needs eight decodes from two periods, and a few stations far off do not move it. STD does not change the clock: sync it with Windows time, Meinberg NTP, or BktTimeSync. It does not key."},
       {"Fox and Hound",
@@ -9125,57 +9190,176 @@ void MainWindow::stopUserTx(bool uncheck) {
   }
 }
 
-void MainWindow::ensureWorkedCalls() const {
-  QSettings settings;
-  QString path = settings.value(QStringLiteral("log/adifPath")).toString().trimmed();
-  if (path.isEmpty())
-    path = QsoLog::defaultAdifPath();
-  const QFileInfo info(path);
-  const qint64 stamp = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
-  const qint64 size = info.exists() ? info.size() : -1;
-  if (path == workedPath_ && stamp == workedStamp_ && size == workedSize_)
+void MainWindow::applyWorkedSource() {
+  if (!loggerFeed_)
     return;
-  workedPath_ = path;
+  QSettings settings;
+  loggerFeed_->setPort(settings.value(QStringLiteral("needed/sdrPort"), 5050).toInt());
+  loggerFeed_->setEnabled(settings.value(QStringLiteral("needed/source"), 0).toInt() == 2);
+  workedPath_.clear();
+}
+
+void MainWindow::loggedQso() {
+  // SDRLogger+ gets the QSO over UDP; ask for its log once it has stored it.
+  if (loggerFeed_ && loggerFeed_->enabled())
+    QTimer::singleShot(10000, loggerFeed_, &LoggerFeed::refresh);
+}
+
+QStringList MainWindow::workedSources() const {
+  QSettings settings;
+  QString own = settings.value(QStringLiteral("log/adifPath")).toString().trimmed();
+  if (own.isEmpty())
+    own = QsoLog::defaultAdifPath();
+  QStringList paths{own};
+  const int source = settings.value(QStringLiteral("needed/source"), 0).toInt();
+  if (source == 1) {
+    const QString other = settings.value(QStringLiteral("needed/adifPath")).toString().trimmed();
+    if (!other.isEmpty() && QFileInfo(other).absoluteFilePath() != QFileInfo(own).absoluteFilePath())
+      paths << other;
+  } else if (source == 2) {
+    paths << LoggerFeed::cachePath();
+  }
+  return paths;
+}
+
+namespace {
+
+// The worked list read from every source. Built on a pool thread.
+struct WorkedLists {
+  QSet<QString> calls;
+  WorkedIndex index;
+};
+
+WorkedLists readWorkedLists(const QStringList& paths, const CtyTable& cty) {
+  WorkedLists out;
+  for (const QString& path : paths) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+      continue;
+    const QByteArray adifBytes = file.readAll();
+    out.index.addAdif(cty, adifBytes);
+    const QByteArray upper = adifBytes.toUpper();
+    const int eoh = upper.indexOf("<EOH>");
+    int pos = eoh < 0 ? 0 : eoh + 5;
+    const QByteArray tag("<CALL:");
+    while (pos < upper.size()) {
+      const int at = upper.indexOf(tag, pos);
+      if (at < 0)
+        break;
+      int digits = at + tag.size();
+      int length = 0;
+      bool any = false;
+      while (digits < adifBytes.size() && adifBytes.at(digits) >= '0' && adifBytes.at(digits) <= '9') {
+        any = true;
+        length = length * 10 + (adifBytes.at(digits) - '0');
+        ++digits;
+        if (length > 32)
+          break;
+      }
+      if (!any || length > 32 || digits >= adifBytes.size() || adifBytes.at(digits) != '>') {
+        pos = at + tag.size();
+        continue;
+      }
+      const int start = digits + 1;
+      if (length < 3 || start + length > adifBytes.size()) {
+        pos = start;
+        continue;
+      }
+      const QString call = QString::fromLatin1(adifBytes.constData() + start, length).trimmed();
+      const QString home = callHome(call);
+      if (!home.isEmpty())
+        out.calls.insert(home);
+      pos = start + length;
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+void MainWindow::ensureWorkedCalls() const {
+  // One key for every source: a change to any file reads them all again.
+  // The reading runs on a pool thread so a large log never pauses the
+  // window; the old list is used until the new one is in.
+  const QStringList paths = workedSources();
+  QString key;
+  qint64 stamp = 0;
+  qint64 size = 0;
+  for (const QString& path : paths) {
+    const QFileInfo info(path);
+    key += path + QLatin1Char('|');
+    stamp ^= info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    size += info.exists() ? info.size() : -1;
+  }
+  if (key == workedPath_ && stamp == workedStamp_ && size == workedSize_)
+    return;
+  if (workedLoading_) {
+    workedAgain_ = true;  // read again once this one is in
+    return;
+  }
+  workedPath_ = key;
   workedStamp_ = stamp;
   workedSize_ = size;
-  workedCalls_.clear();
-  QFile file(path);
-  if (!file.open(QIODevice::ReadOnly))
-    return;
-  const QByteArray adifBytes = file.readAll();
-  const QByteArray upper = adifBytes.toUpper();
-  const int eoh = upper.indexOf("<EOH>");
-  int pos = eoh < 0 ? 0 : eoh + 5;
-  const QByteArray tag("<CALL:");
-  while (pos < upper.size()) {
-    const int at = upper.indexOf(tag, pos);
-    if (at < 0)
-      break;
-    int digits = at + tag.size();
-    int length = 0;
-    bool any = false;
-    while (digits < adifBytes.size() && adifBytes.at(digits) >= '0' && adifBytes.at(digits) <= '9') {
-      any = true;
-      length = length * 10 + (adifBytes.at(digits) - '0');
-      ++digits;
-      if (length > 32)
-        break;
+  workedLoading_ = true;
+  // The thread gets its own copy of the country table (shared data, cheap),
+  // so nothing it reads goes away if the window closes mid-read.
+  const CtyTable cty = ctyTable();
+  QPointer<MainWindow> self(const_cast<MainWindow*>(this));
+  QThreadPool::globalInstance()->start([self, paths, cty] {
+    WorkedLists lists = readWorkedLists(paths, cty);
+    QMetaObject::invokeMethod(
+        qApp,
+        [self, lists = std::move(lists)]() mutable {
+          if (!self)
+            return;
+          self->workedCalls_ = std::move(lists.calls);
+          self->workedIndex_ = std::move(lists.index);
+          self->workedLoading_ = false;
+          if (self->workedAgain_) {
+            self->workedAgain_ = false;
+            self->workedPath_.clear();
+          }
+          self->refreshDecodes();
+        },
+        Qt::QueuedConnection);
+  });
+}
+
+bool MainWindow::workedListLoading() const {
+  return workedLoading_;
+}
+
+const CtyTable& MainWindow::ctyTable() const {
+  if (!ctyLoaded_) {
+    ctyLoaded_ = true;
+    QFile own(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/cty.dat"));
+    if (!own.open(QIODevice::ReadOnly) || !cty_.load(own.readAll())) {
+      QFile built(QStringLiteral(":/std/cty.dat"));
+      if (built.open(QIODevice::ReadOnly))
+        cty_.load(built.readAll());
     }
-    if (!any || length > 32 || digits >= adifBytes.size() || adifBytes.at(digits) != '>') {
-      pos = at + tag.size();
-      continue;
-    }
-    const int start = digits + 1;
-    if (length < 3 || start + length > adifBytes.size()) {
-      pos = start;
-      continue;
-    }
-    const QString call = QString::fromLatin1(adifBytes.constData() + start, length).trimmed();
-    const QString home = callHome(call);
-    if (!home.isEmpty())
-      workedCalls_.insert(home);
-    pos = start + length;
   }
+  return cty_;
+}
+
+QString MainWindow::currentAdifBand() const {
+  if (!profile_)
+    return QString();
+  const qint64 dial = liveDialHz_ > 100000 ? liveDialHz_ : profile_->dialHz();
+  return adifBandForMhz(double(dial) / 1.0e6);
+}
+
+Need MainWindow::needFor(const QString& message) const {
+  QString call;
+  QString grid;
+  if (!messageStation(message, &call, &grid))
+    return Need::None;
+  ensureWorkedCalls();
+  const QString mine = callHome(stationCall());
+  const QString home = callHome(call);
+  if (home.isEmpty() || (!mine.isEmpty() && home == mine))
+    return Need::None;
+  return classifyNeed(ctyTable(), workedIndex_, call, grid, currentAdifBand());
 }
 
 bool MainWindow::keepDecode(const QString& message) const {
@@ -9439,6 +9623,7 @@ void MainWindow::applyDxOptions() {
   filterHideCall_ = settings.value(QStringLiteral("dx/hideCall")).toString().trimmed().toUpper();
   filterHidePrefix_ = settings.value(QStringLiteral("dx/hidePrefix")).toString().trimmed().toUpper();
   filterQsoB4_ = settings.value(QStringLiteral("dx/hideQsoB4"), false).toBool();
+  markNeeded_ = settings.value(QStringLiteral("dx/markNeeded"), false).toBool();
   const QString hide = settings.value(QStringLiteral("dx/hideContinent")).toString();
   for (int i = 0; i < 7; ++i)
     hideContinent_[i] = hide.size() > i && hide.at(i) == QLatin1Char('1');
@@ -9488,7 +9673,7 @@ void MainWindow::refreshDecodeHeader() {
   }
   header->setText(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"), QStringLiteral("DT"),
                                  QStringLiteral("Dist"), QStringLiteral("Message"), QStringLiteral("Freq"),
-                                 showTime_, showFreq_, showDist_));
+                                 showTime_, showFreq_, showDist_, markNeeded_, QStringLiteral("Need")));
 }
 
 void MainWindow::loadMacroStore() {
@@ -10646,6 +10831,8 @@ QString MainWindow::maybeLogQso(const QString& sent) {
   record.timeOn = timeOn;
   record.timeOff = timeOff;
   const QsoLog::Result result = qsoLog_ ? qsoLog_->store(record) : QsoLog::Result{};
+  if (result.wrote)
+    loggedQso();
   if (!result.wrote)
     return result.detail.isEmpty()
                ? QStringLiteral("The QSO was not written. TRX is off. START was not sent.")
@@ -10851,8 +11038,52 @@ void MainWindow::openLogDialog() {
   tcpPort->setRange(1, 65535);
   tcpPort->setValue(std::clamp(settings.value(QStringLiteral("log/tcpPort"), 52001).toInt(), 1, 65535));
 
+  // Worked list for Mark Needed Stations and Hide QSO B4.
+  auto* worked = new QComboBox(&dialog);
+  worked->setObjectName(QStringLiteral("logWorkedSource"));
+  worked->addItem(QStringLiteral("STD's ADIF file only"), 0);
+  worked->addItem(QStringLiteral("STD's ADIF file + another ADIF file"), 1);
+  worked->addItem(QStringLiteral("STD's ADIF file + SDRLogger+ (live)"), 2);
+  worked->setCurrentIndex(std::clamp(settings.value(QStringLiteral("needed/source"), 0).toInt(), 0, 2));
+  worked->setToolTip(QStringLiteral(
+      "What counts as worked for Mark Needed Stations and Hide QSO B4. STD's own ADIF always counts. "
+      "Another ADIF file is read, never written: WSJT-X's wsjtx_log.adi or an export from Log4OM, "
+      "DXKeeper, N1MM, and others, read again whenever it changes. SDRLogger+ (live) asks SDRLogger+ "
+      "on this PC for its whole log every five minutes and after each QSO, and keeps the last copy for "
+      "when it is closed. This does not key."));
+  auto* workedPath = new QLineEdit(settings.value(QStringLiteral("needed/adifPath")).toString(), &dialog);
+  workedPath->setObjectName(QStringLiteral("logWorkedAdif"));
+  workedPath->setPlaceholderText(QStringLiteral("Another logger's ADIF file"));
+  auto* workedBrowse = new QPushButton(QStringLiteral("Browse…"), &dialog);
+  connect(workedBrowse, &QPushButton::clicked, &dialog, [this, workedPath] {
+    const QString picked = QFileDialog::getOpenFileName(this, QStringLiteral("Worked list ADIF"), workedPath->text(),
+                                                        QStringLiteral("ADIF (*.adi *.adif)"));
+    if (!picked.isEmpty())
+      workedPath->setText(picked);
+  });
+  auto* workedRow = new QHBoxLayout;
+  workedRow->addWidget(workedPath, 1);
+  workedRow->addWidget(workedBrowse);
+  auto* workedPort = new QSpinBox(&dialog);
+  workedPort->setObjectName(QStringLiteral("logWorkedPort"));
+  workedPort->setRange(1, 65535);
+  workedPort->setValue(std::clamp(settings.value(QStringLiteral("needed/sdrPort"), 5050).toInt(), 1, 65535));
+  workedPort->setToolTip(QStringLiteral(
+      "SDRLogger+'s local web port, 5050 unless that was busy when it started. STD asks 127.0.0.1 only."));
+  auto showWorked = [worked, workedPath, workedBrowse, workedPort] {
+    const int s = worked->currentData().toInt();
+    workedPath->setEnabled(s == 1);
+    workedBrowse->setEnabled(s == 1);
+    workedPort->setEnabled(s == 2);
+  };
+  showWorked();
+  connect(worked, &QComboBox::currentIndexChanged, &dialog, [showWorked](int) { showWorked(); });
+
   auto* form = new QFormLayout;
   form->addRow(QStringLiteral("ADIF file"), pathRow);
+  form->addRow(QStringLiteral("Worked list"), worked);
+  form->addRow(QStringLiteral("Other ADIF"), workedRow);
+  form->addRow(QStringLiteral("SDRLogger+ port"), workedPort);
   form->addRow(udpLink);
   form->addRow(udpAccept);
   form->addRow(udpQso);
@@ -10901,6 +11132,11 @@ void MainWindow::openLogDialog() {
   store.setValue(QStringLiteral("log/tcp"), tcp->isChecked());
   store.setValue(QStringLiteral("log/tcpHost"), tcpHost->text().trimmed());
   store.setValue(QStringLiteral("log/tcpPort"), tcpPort->value());
+  store.setValue(QStringLiteral("needed/source"), worked->currentData().toInt());
+  store.setValue(QStringLiteral("needed/adifPath"), workedPath->text().trimmed());
+  store.setValue(QStringLiteral("needed/sdrPort"), workedPort->value());
+  applyWorkedSource();
+  refreshDecodes();
   if (qsoLog_)
     qsoLog_->applySettings();
   setTxStatus(QStringLiteral("Log file saved. Nothing was keyed. START was not sent."));

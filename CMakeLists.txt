@@ -178,6 +178,10 @@ qt_add_executable(std
   src/SpotWatch.h
   src/ClockCheck.cpp
   src/ClockCheck.h
+  src/Needed.cpp
+  src/Needed.h
+  src/LoggerFeed.cpp
+  src/LoggerFeed.h
   src/UpdateChecker.h
   src/mt63/fldigi/dsp.cxx
   src/mt63/fldigi/mt63base.cxx

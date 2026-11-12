@@ -554,6 +554,8 @@ QString MainWindow::logQsoBar() {
     return QStringLiteral("Logged %1. Nothing was keyed. START was not sent.").arg(record.call);
   }
   const QsoLog::Result result = qsoLog_ ? qsoLog_->store(record) : QsoLog::Result{};
+  if (result.wrote)
+    loggedQso();
   if (!result.wrote)
     return QStringLiteral("%1 was not logged. %2 Nothing was keyed. START was not sent.")
         .arg(record.call, result.detail);

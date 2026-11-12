@@ -8,6 +8,7 @@
 #include "MacroFile.h"
 #include "MaEngine.h"
 #include "MainWindow.h"
+#include "LoggerFeed.h"
 #include "ModeProfile.h"
 #include "StatusStrip.h"
 
@@ -5357,6 +5358,146 @@ By ops fm Berbera (LK20mk); HF
     strip.setClockOff(false, 0.0, QStringLiteral("FT8"), 12);
     if (!shown || !clockChip->isHidden())
       return fail("the status bar clock chip does not show a slow clock or hide again");
+  }
+  // Needed stations: AD1C entities, the ADIF index, and the Need column.
+  {
+    CtyTable cty;
+    QFile built(QStringLiteral(":/std/cty.dat"));
+    if (!built.open(QIODevice::ReadOnly) || !cty.load(built.readAll()) || cty.entities() < 300)
+      return fail("the built-in cty.dat did not load");
+    const QString us = cty.entity(QStringLiteral("N8SDR"));
+    if (us.isEmpty() || cty.entity(QStringLiteral("W1AW/8")) != us ||
+        cty.entity(QStringLiteral("3B9KW")).isEmpty() || cty.entity(QStringLiteral("3B9KW")) == us ||
+        cty.entity(QStringLiteral("K1ABC/VE3")) != cty.entity(QStringLiteral("VE3XX")) ||
+        cty.entity(QStringLiteral("JA1XYZ")) == us || !cty.entity(QStringLiteral("QQ")).isEmpty()) {
+      qCritical("cty N8SDR [%s] 3B9KW [%s] K1ABC/VE3 [%s]", qPrintable(us),
+                qPrintable(cty.entity(QStringLiteral("3B9KW"))), qPrintable(cty.entity(QStringLiteral("K1ABC/VE3"))));
+      return fail("cty.dat gives the wrong entity for a call");
+    }
+    QString call;
+    QString grid;
+    if (!messageStation(QStringLiteral("CQ DX K1ABC FN42"), &call, &grid) || call != QLatin1String("K1ABC") ||
+        grid != QLatin1String("FN42") ||
+        !messageStation(QStringLiteral("N8SDR KC2NDA R-05"), &call, &grid) || call != QLatin1String("KC2NDA") ||
+        !grid.isEmpty() || !messageStation(QStringLiteral("M7IAF VE2FON RR73"), &call, &grid) ||
+        call != QLatin1String("VE2FON") || !grid.isEmpty() || messageStation(QStringLiteral("TNX"), &call, &grid))
+      return fail("the station a message is from was read wrong");
+    const QByteArray adif =
+        "STD log<EOH>\n"
+        "<CALL:5>N8SDR<BAND:3>20m<GRIDSQUARE:6>EM79xx<EOR>\n"
+        "<CALL:6>JA1XYZ<FREQ:6>14.074<GRIDSQUARE:4>PM95<EOR>\n"
+        "<CALL:5>VE3XX<BAND:3>40m<EOR>\n";
+    WorkedIndex log;
+    log.addAdif(cty, adif);
+    const QString ja = cty.entity(QStringLiteral("JA1XYZ"));
+    const QString ve = cty.entity(QStringLiteral("VE3XX"));
+    if (!log.entities.contains(ja) || !log.entityBands.contains(ja + QStringLiteral("|20m")) ||
+        !log.entityBands.contains(ve + QStringLiteral("|40m")) || !log.grids.contains(QStringLiteral("EM79")) ||
+        !log.grids.contains(QStringLiteral("PM95")) || adifBandForMhz(7.074) != QLatin1String("40m"))
+      return fail("the ADIF log was not indexed by entity, band, and grid");
+    const auto need = [&](const char* c, const char* g, const char* band) {
+      return classifyNeed(cty, log, QLatin1String(c), QLatin1String(g), QLatin1String(band));
+    };
+    // VE3XX was worked on 40 m only: B4 on 40 m, nothing on 20 m. CN89 is
+    // worked on 20 m only, so on 40 m it is a grid new on the band.
+    log.add(cty, QStringLiteral("VE7AAA"), QStringLiteral("20m"), QStringLiteral("CN89"));
+    if (need("3B9KW", "", "20m") != Need::Entity || need("VE3ZZ", "FN03", "40m") != Need::Grid ||
+        need("JA2AAA", "PM84", "20m") != Need::Grid || need("JA1XYZ", "PM95", "20m") != Need::Worked ||
+        need("JA2AAA", "PM95", "20m") != Need::None || need("VE7AAA", "CN89", "40m") != Need::GridBand ||
+        need("VE3XX", "", "40m") != Need::Worked || need("VE3XX", "", "20m") != Need::None ||
+        need("VE7AAA/P", "CN89", "20m") != Need::Worked || needTag(Need::Entity) != QLatin1String("NEW") ||
+        needTag(Need::GridBand) != QLatin1String("GRID+BAND") || needTag(Need::Worked) != QLatin1String("B4"))
+      return fail("needed stations are classified wrong");
+
+    // Opt-in: the Need column shows only with Mark Needed Stations on.
+    auto* mark = window.findChild<QAction*>(QStringLiteral("listMarkNeeded"));
+    auto* header = window.findChild<QLabel*>(QStringLiteral("decodeHeader"));
+    const QVariant kept = QSettings().value(QStringLiteral("dx/markNeeded"));
+    if (!mark || !header)
+      return fail("Mark Needed Stations is missing");
+    const bool wasOn = mark->isChecked();
+    mark->setChecked(false);
+    QApplication::processEvents();
+    const bool offOk = !header->text().contains(QLatin1String("Need"));
+    mark->setChecked(true);
+    QApplication::processEvents();
+    const bool onOk = header->text().contains(QLatin1String("Need"));
+    mark->setChecked(wasOn);
+    if (kept.isValid())
+      QSettings().setValue(QStringLiteral("dx/markNeeded"), kept);
+    else
+      QSettings().remove(QStringLiteral("dx/markNeeded"));
+    if (!offOk || !onOk)
+      return fail("Mark Needed Stations does not add and remove the Need column");
+  }
+  // Worked list sources: STD's ADIF always, plus another ADIF or the
+  // SDRLogger+ copy when chosen. Reading only; nothing is fetched here.
+  {
+    QSettings store;
+    const QStringList keys = {QStringLiteral("log/adifPath"), QStringLiteral("needed/source"),
+                              QStringLiteral("needed/adifPath"), QStringLiteral("needed/sdrPort")};
+    QHash<QString, QVariant> kept;
+    for (const QString& k : keys)
+      kept.insert(k, store.value(k));
+    auto restoreWorked = [&] {
+      for (const QString& k : keys) {
+        if (kept.value(k).isValid())
+          store.setValue(k, kept.value(k));
+        else
+          store.remove(k);
+      }
+    };
+    QTemporaryDir wdir;
+    const QString own = wdir.filePath(QStringLiteral("own.adi"));
+    const QString other = wdir.filePath(QStringLiteral("other.adi"));
+    {
+      QFile f(own);
+      f.open(QIODevice::WriteOnly);
+      f.write("own<EOH>\n<CALL:5>VE3XX<BAND:3>20m<GRIDSQUARE:4>FN03<EOR>\n");
+    }
+    {
+      QFile f(other);
+      f.open(QIODevice::WriteOnly);
+      f.write("other<EOH>\n<CALL:6>JA1XYZ<BAND:3>20m<GRIDSQUARE:4>PM95<EOR>\n");
+    }
+    store.setValue(QStringLiteral("log/adifPath"), own);
+    store.setValue(QStringLiteral("needed/adifPath"), other);
+    // The worked list is read on a pool thread: ask once, then wait for it.
+    auto settle = [&window] {
+      QElapsedTimer waited;
+      waited.start();
+      // Ask until a request starts no new read: a read queued behind
+      // another one is picked up by the next ask.
+      while (waited.elapsed() < 10000) {
+        window.needFor(QStringLiteral("CQ K1ABC FN42"));
+        if (!window.workedListLoading())
+          break;
+        while (window.workedListLoading() && waited.elapsed() < 10000)
+          QApplication::processEvents(QEventLoop::AllEvents, 20);
+      }
+    };
+    store.setValue(QStringLiteral("needed/source"), 0);
+    const QStringList onlyOwn = window.workedSources();
+    settle();
+    const bool jaNeededAlone = window.needFor(QStringLiteral("CQ JA1XYZ PM95")) == Need::Entity;
+    const bool veWorked = window.needFor(QStringLiteral("CQ VE3XX FN03")) != Need::Entity;
+    store.setValue(QStringLiteral("needed/source"), 1);
+    const QStringList withOther = window.workedSources();
+    settle();
+    const bool jaWorked = window.needFor(QStringLiteral("CQ JA1XYZ PM95")) != Need::Entity;
+    const bool veStill = window.needFor(QStringLiteral("CQ VE3XX FN03")) != Need::Entity;
+    store.setValue(QStringLiteral("needed/source"), 2);
+    const QStringList withLogger = window.workedSources();
+    restoreWorked();
+    window.workedSources();  // settings back before any failure
+    if (onlyOwn != QStringList{own} || withOther != QStringList({own, other}) ||
+        withLogger != QStringList({own, LoggerFeed::cachePath()}) || !jaNeededAlone || !veWorked ||
+        !jaWorked || !veStill ||
+        LoggerFeed::url(5050) != QLatin1String("http://127.0.0.1:5050/api/adif/export")) {
+      qCritical("worked sources own %d other %d logger %d ja-alone %d ve %d ja %d ve-still %d",
+                onlyOwn.size(), withOther.size(), withLogger.size(), jaNeededAlone, veWorked, jaWorked, veStill);
+      return fail("the worked list does not combine STD's ADIF with the chosen source");
+    }
   }
   qInfo("STD self-test ok");
   return 0;

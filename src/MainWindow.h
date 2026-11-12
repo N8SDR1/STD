@@ -7,6 +7,7 @@
 #include "LiveTx.h"
 #include "MaEngine.h"
 #include "MacroFile.h"
+#include "Needed.h"
 #include "QsoCapture.h"
 #include "QsoLog.h"
 #include "RstMeter.h"
@@ -75,6 +76,12 @@ public:
   explicit MainWindow(QWidget* parent = nullptr);
   // Self-test plants a call on Tx1–Tx5. It does not key and does not send START.
   void placeAnswer(const QString& call);
+  // How needed the station sending this message is (Mark Needed Stations).
+  Need needFor(const QString& message) const;
+  // The worked list: STD's ADIF, plus another ADIF or SDRLogger+ when chosen.
+  QStringList workedSources() const;
+  // True while the worked list is being read on a pool thread.
+  bool workedListLoading() const;
   // Puts the waterfall RHI widget in the tree before the window is shown.
   void primeGraphics();
   // Self-test: RADE TX through STD's own 48 kHz output path, decoded back.
@@ -374,6 +381,12 @@ private:
   void rememberModeTone();
   void applyModeTone();
   void ensureWorkedCalls() const;
+  // AD1C cty.dat: the operator's copy in the data folder, else the one built in.
+  const CtyTable& ctyTable() const;
+  // The ADIF band STD is on now ("20m"), or empty.
+  QString currentAdifBand() const;
+  void applyWorkedSource();
+  void loggedQso();
 
   struct DecodeRow {
     QString time;
@@ -485,8 +498,16 @@ private:
   bool hideContinent_[7] = {};
   mutable QSet<QString> workedCalls_;
   mutable QString workedPath_;
+  class LoggerFeed* loggerFeed_ = nullptr;
+  QString loggerFeedError_;
+  mutable WorkedIndex workedIndex_;
+  mutable CtyTable cty_;
+  mutable bool ctyLoaded_ = false;
+  bool markNeeded_ = false;
   mutable qint64 workedStamp_ = 0;
   mutable qint64 workedSize_ = -1;
+  mutable bool workedLoading_ = false;
+  mutable bool workedAgain_ = false;
   bool clearEachPeriod_ = false;
   int maxSignals_ = 0;
   QString lastPeriod_;
