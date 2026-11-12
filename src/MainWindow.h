@@ -504,6 +504,7 @@ private:
   class LoggerFeed* loggerFeed_ = nullptr;
   QString loggerFeedError_;
   class HeardWatch* heard_ = nullptr;
+  QString shownBand_;  // the band the HEARD chip and Need column were last drawn for
   mutable WorkedIndex workedIndex_;
   mutable CtyTable cty_;
   mutable bool ctyLoaded_ = false;
