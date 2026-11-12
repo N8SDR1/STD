@@ -48,7 +48,7 @@ Options → Network Configuration. Off and On. On posts each WSPR station STD de
 
 ## DXpeditions and the hot list
 
-View → DXpeditions lists the announced DX operations from NG3K, filtered to digital modes. A double-click moves STD to that DXpedition's band and digital mode: FT8 (Super Hound when the listing says Fox/Hound), then FT4, RTTY, and PSK (PSK31 unless another rate is named). Tick a call to put it on the hot list, which shows on the top bar right of the dial, marks a call when STD decodes it, and can say it with its own voice on the Options → Speech output device. Click a hot call to put it in the QSO bar; double-click it to tune to where it was heard. Only the dial and mode move. Nothing keys, and START is never sent. The whole description is in [DXpeditions and the hot list](dxpeditions.md).
+View → DXpeditions lists the announced DX operations from NG3K, filtered to digital modes. A double-click moves STD to that DXpedition's band and digital mode: FT8 (Super Hound when the listing says Fox/Hound), then FT4, RTTY, and PSK (PSK31 unless another rate is named). Mark spotted DXpeditions adds digital cluster spots from Spothole for the digital DXpeditions on the air, so a row reads SPOTTED with its band and mode. Tick a call to put it on the hot list, which shows on the top bar right of the dial, marks a call when STD decodes it, and can say it with its own voice on the Options → Speech output device. Click a hot call to put it in the QSO bar; double-click it to tune to where it was heard. Only the dial and mode move. Nothing keys, and START is never sent. The whole description is in [DXpeditions and the hot list](dxpeditions.md).
 
 ## File
 

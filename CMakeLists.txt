@@ -174,6 +174,8 @@ qt_add_executable(std
   src/HotList.h
   src/HotListView.cpp
   src/HotListView.h
+  src/SpotWatch.cpp
+  src/SpotWatch.h
   src/UpdateChecker.h
   src/mt63/fldigi/dsp.cxx
   src/mt63/fldigi/mt63base.cxx

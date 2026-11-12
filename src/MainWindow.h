@@ -51,6 +51,7 @@ class DxpedPanel;
 class HotList;
 class HotListBar;
 struct DxpedEntry;
+struct DxSpot;
 class Callbook;
 struct CallbookRecord;
 class ModeProfile;
@@ -519,6 +520,15 @@ private:
   void noteHot(const QString& text, const QString& mode, int db, bool stream);
   // Double-click a hot list call: where it was heard, else its DXpedition.
   void hotTune(const QString& call);
+  // A cluster spot of a watched DXpedition: mark it on the hot list.
+  void noteSpot(const QString& call, const DxSpot& spot);
+  // The dial for a spot: the band's dial for the mode when the spot is
+  // within 4 kHz of it, else the spot itself (its kHz for the FT modes,
+  // 1500 Hz off for the keyboard modes). 0 when STD does not run the mode.
+  qint64 spotDialHz(const DxSpot& spot, const QString& mode) const;
+  // Move STD to a spot's band, mode, and dial. False when STD does not run
+  // the spot's mode. Nothing keys.
+  bool tuneToSpot(const QString& who, const DxSpot& spot, int superHound);
   qint64 hotDialHz() const;
   bool heroSized_ = false;
   bool headerAlignQueued_ = false;

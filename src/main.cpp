@@ -59,6 +59,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 #include <random>
 #include <utility>
@@ -5115,6 +5116,167 @@ By ops fm Berbera (LK20mk); HF
     if (!heardOk || !dxOk || !stayOk) {
       qCritical("hot tune heard %d dx %d stay %d [%s]", heardOk, dxOk, stayOk, qPrintable(bandBar->digitalMode()));
       return fail("double-clicking a hot list call did not tune to where it was heard or its DXpedition");
+    }
+  }
+  // Cluster spots (Spothole): only digital spots of the digital
+  // DXpeditions on the air mark rows and the hot list. A canned reply; no
+  // network in the self-test.
+  {
+    QSettings store;
+    const QStringList keys = {QStringLiteral("spots/enabled"),  QStringLiteral("spots/pollSecs"),
+                              QStringLiteral("spots/keepMins"), QStringLiteral("hotlist/calls"),
+                              QStringLiteral("hotlist/hidden"), QStringLiteral("hotlist/alerts"),
+                              QStringLiteral("profile/superHound")};
+    QHash<QString, QVariant> kept;
+    for (const QString& k : keys)
+      kept.insert(k, store.value(k));
+    auto restoreSpots = [&] {
+      for (const QString& k : keys) {
+        if (kept.value(k).isValid())
+          store.setValue(k, kept.value(k));
+        else
+          store.remove(k);
+      }
+    };
+    const qint64 t = QDateTime::currentSecsSinceEpoch();
+    auto spotJson = [](const char* call, double freq, const char* mode, const char* type, const char* src,
+                   qint64 time, bool qrt) {
+      return QStringLiteral("{\"dx_call\":\"%1\",\"freq\":%2,\"mode\":\"%3\",\"mode_type\":\"%4\","
+                            "\"mode_source\":\"%5\",\"comment\":\"%3 -10 dB\",\"de_call\":\"W1AW\","
+                            "\"source\":\"Cluster\",\"time\":%6,\"received_time\":%7.5,\"qrt\":%8}")
+          .arg(QLatin1String(call))
+          .arg(freq, 0, 'f', 1)
+          .arg(QLatin1String(mode), QLatin1String(type), QLatin1String(src))
+          .arg(time)
+          .arg(time + 5)
+          .arg(qrt ? QStringLiteral("true") : QStringLiteral("false"));
+    };
+    const QString body = QStringLiteral("[%1]").arg(QStringList{
+        spotJson("3B9KW", 21075200, "FT8", "DATA", "COMMENT", t - 240, false),
+        spotJson("3B9KW", 21025000, "CW", "CW", "SPOT", t - 60, false),        // CW: never shown
+        spotJson("3B9FR", 14074900, "FT8", "DATA", "COMMENT", t - 60, false),  // starts like 3B9KW, not it
+        spotJson("H44MS", 14083000, "RTTY", "DATA", "BANDPLAN", t - 120, false),
+        spotJson("HR9XX", 7074000, "FT8", "DATA", "COMMENT", t - 60, true),    // QRT
+        spotJson("5H3MB", 14074000, "FT8", "DATA", "COMMENT", t - 60, false),  // a CW-only DXpedition
+    }.join(QLatin1Char(',')));
+    QString err;
+    double newest = 0;
+    const QList<DxSpot> spotList = SpotWatch::parseSpots(body.toUtf8(), &err, &newest);
+    if (!err.isEmpty() || spotList.size() != 4 || newest < double(t - 60 + 5)) {
+      restoreSpots();
+      qCritical("spots spotList %lld [%s]", qlonglong(spotList.size()), qPrintable(err));
+      return fail("Spothole spots were read wrong, or a CW or QRT spot was kept");
+    }
+    if (!SpotWatch::parseSpots("<html>busy</html>", &err).isEmpty() || err.isEmpty()) {
+      restoreSpots();
+      return fail("a page that is not a spot list was taken as spots");
+    }
+    if (SpotWatch::sameStation(QStringLiteral("3B9FR"), QStringLiteral("3B9KW")) ||
+        !SpotWatch::sameStation(QStringLiteral("K6VHF/HR9"), QStringLiteral("HR9")) ||
+        !SpotWatch::sameStation(QStringLiteral("VP2V/NY9K"), QStringLiteral("VP2V/NY9K")) ||
+        SpotWatch::sameStation(QStringLiteral("NY9K"), QStringLiteral("VP2V/NY9K")) ||
+        SpotWatch::stdMode(QStringLiteral("PSK")) != QLatin1String("PSK31") ||
+        SpotWatch::stdMode(QStringLiteral("FT4")) != QLatin1String("FT4") ||
+        !SpotWatch::stdMode(QStringLiteral("OLIVIA")).isEmpty()) {
+      restoreSpots();
+      return fail("cluster spots are matched to the wrong station or mode");
+    }
+
+    // A panel of its own: the canned list, Nov 21. On the air and digital:
+    // H44MS (ends Nov 20, a day's grace), 3B9 as 3B9KW, and HR9.
+    auto* main = window.findChild<DxpedPanel*>(QStringLiteral("dxpedPanel"));
+    DxpedPanel sp;
+    sp.setToday(QDate(2026, 11, 21));
+    sp.feed()->setEntries(main->feed()->entries(), QDateTime(QDate(2026, 11, 21), QTime(12, 0), QTimeZone(QTimeZone::UTC)));
+    QStringList watched = sp.spots()->watch();
+    if (watched != QStringList({QStringLiteral("3B9KW"), QStringLiteral("H44MS"), QStringLiteral("HR9")}) ||
+        !sp.findChild<QCheckBox*>(QStringLiteral("dxpedSpots")) ||
+        !sp.findChild<QComboBox*>(QStringLiteral("dxpedSpotEvery")) ||
+        !sp.findChild<QComboBox*>(QStringLiteral("dxpedSpotKeep"))) {
+      restoreSpots();
+      qCritical("spots watch [%s]", qPrintable(watched.join(QLatin1Char(' '))));
+      return fail("the spot watch is not the digital DXpeditions on the air, or its controls are missing");
+    }
+    auto* every = sp.findChild<QComboBox*>(QStringLiteral("dxpedSpotEvery"));
+    auto* keepBox = sp.findChild<QComboBox*>(QStringLiteral("dxpedSpotKeep"));
+    if (every->count() != 2 || every->itemData(0).toInt() != 90 || every->itemData(1).toInt() != 180 ||
+        keepBox->count() != 3 || keepBox->itemData(2).toInt() != 30) {
+      restoreSpots();
+      return fail("the spot check and keep choices are not 90/180 s and 10/20/30 min");
+    }
+    keepBox->setCurrentIndex(1);  // 20 min
+    QStringList heardSpots;
+    QObject::connect(&sp, &DxpedPanel::spotted, &sp,
+                     [&heardSpots](const QString& call, const DxSpot&) { heardSpots << call; });
+    sp.spots()->ingest(spotList);
+    QHash<QString, QString> status;
+    QAbstractItemModel* m = sp.table()->model();
+    if (auto* box = sp.findChild<QComboBox*>(QStringLiteral("dxpedModes")))
+      box->setCurrentIndex(DxpedPanel::AllModes);
+    for (int r = 0; r < m->rowCount(); ++r)
+      status.insert(m->index(r, 1).data().toString(), m->index(r, 0).data().toString());
+    heardSpots.sort();
+    if (sp.spots()->spottedCount() != 2 ||
+        heardSpots != QStringList({QStringLiteral("3B9KW"), QStringLiteral("H44MS")}) ||
+        !status.value(QStringLiteral("3B9")).startsWith(QLatin1String("SPOTTED 15 m FT8 ")) ||
+        !status.value(QStringLiteral("H44MS")).startsWith(QLatin1String("SPOTTED 20 m RTTY? ")) ||
+        status.value(QStringLiteral("HR9")).startsWith(QLatin1String("SPOTTED")) ||
+        status.value(QStringLiteral("5H3MB")).startsWith(QLatin1String("SPOTTED"))) {
+      restoreSpots();
+      qCritical("spot rows 3B9 [%s] H44MS [%s] HR9 [%s]", qPrintable(status.value(QStringLiteral("3B9"))),
+                qPrintable(status.value(QStringLiteral("H44MS"))), qPrintable(status.value(QStringLiteral("HR9"))));
+      return fail("spotted DXpeditions are not marked SPOTTED with band and mode");
+    }
+    // Spotted rows sort first.
+    sp.table()->sortByColumn(0, Qt::AscendingOrder);
+    if (!m->index(0, 0).data().toString().startsWith(QLatin1String("SPOTTED"))) {
+      restoreSpots();
+      return fail("spotted DXpeditions are not listed first");
+    }
+    // Keep 10 min: the 4-minute-old spot stays, an older one goes.
+    keepBox->setCurrentIndex(0);
+    sp.spots()->prune(QDateTime::currentDateTimeUtc().addSecs(7 * 60));
+    if (sp.spots()->spottedCount() != 1 || !sp.spots()->latest(QStringLiteral("H44MS"))) {
+      restoreSpots();
+      return fail("spots did not age out after the keep time");
+    }
+
+    // The window: a spotted hot call is marked as spotted, and a double-click
+    // goes to the spot's band, mode, and dial.
+    auto* winHot = window.findChild<HotList*>(QStringLiteral("hotList"));
+    auto* winBar = window.findChild<HotListBar*>(QStringLiteral("hotListBar"));
+    auto* bandBar = window.findChild<ModeProfile*>();
+    if (!winHot || !winBar || !bandBar || !main) {
+      restoreSpots();
+      return fail("the window spot wiring is missing");
+    }
+    const HotList::Alerts keepAlerts = winHot->alerts();
+    const bool had3b9 = winHot->contains(QStringLiteral("3B9KW"));
+    const bool hadH44 = winHot->contains(QStringLiteral("H44MS"));
+    winHot->add(QStringLiteral("3B9KW H44MS"));
+    winHot->setAlerts(HotList::Visual);
+    main->setToday(QDate(2026, 11, 21));
+    main->spots()->ingest(spotList);
+    const HotEntry b9 = winHot->entry(QStringLiteral("3B9KW"));
+    const HotEntry h44 = winHot->entry(QStringLiteral("H44MS"));
+    const bool marked = b9.spotted && b9.heardMode == QLatin1String("FT8") && b9.heardMetres == 15 &&
+                        b9.recent() && std::llabs(b9.heardDialHz - 21075200) <= 4000 &&
+                        h44.spotted && h44.heardMode == QLatin1String("RTTY") &&
+                        std::llabs(std::llabs(h44.heardDialHz - 14083000) - 1500) == 0;
+    emit winBar->tuneRequested(QStringLiteral("3B9KW"));
+    QApplication::processEvents();
+    const bool tuned = bandBar->digitalMode() == QLatin1String("FT8") &&
+                       ModeProfile::metresForBand(bandBar->band()) == 15;
+    if (!had3b9)
+      winHot->remove(QStringLiteral("3B9KW"));
+    if (!hadH44)
+      winHot->remove(QStringLiteral("H44MS"));
+    winHot->setAlerts(keepAlerts);
+    restoreSpots();
+    if (!marked || !tuned) {
+      qCritical("spot hot marked %d tuned %d dial %lld rtty %lld [%s]", marked, tuned,
+                qlonglong(b9.heardDialHz), qlonglong(h44.heardDialHz), qPrintable(bandBar->digitalMode()));
+      return fail("a spotted hot call was not marked, or double-click did not go to its spot");
     }
   }
   qInfo("STD self-test ok");

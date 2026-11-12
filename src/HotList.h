@@ -22,6 +22,9 @@ struct HotEntry {
   int heardMetres = 0;
   QString heardMode;
   qint64 heardDialHz = 0;
+  // The last report came from a cluster spot (Spothole), not from STD's own
+  // decode; where then reads "spotted ...".
+  bool spotted = false;
   // Heard in the last 15 minutes (red on the top bar).
   bool recent(const QDateTime& nowUtc = QDateTime::currentDateTimeUtc()) const;
 };
@@ -73,6 +76,11 @@ public:
   QStringList noteHeard(const QString& message, const QString& where,
                         const QDateTime& nowUtc = QDateTime::currentDateTimeUtc(), int metres = 0,
                         const QString& mode = QString(), qint64 dialHz = 0);
+  // A cluster spot of a listed call (the DXpeditions panel's Spothole
+  // watch). Marks it as heard, with spotted set. Alerts Off: nothing.
+  bool noteSpot(const QString& call, const QString& where,
+                const QDateTime& nowUtc = QDateTime::currentDateTimeUtc(), int metres = 0,
+                const QString& mode = QString(), qint64 dialHz = 0);
   // Received keyboard text as it prints; a call counts once its word ends.
   QStringList noteStream(const QString& chunk, const QString& where,
                          const QDateTime& nowUtc = QDateTime::currentDateTimeUtc(), int metres = 0,
@@ -91,6 +99,7 @@ signals:
 
 private:
   void save() const;
+  bool speakNow(const QString& call, const QDateTime& nowUtc);
   int indexOf(const QString& call) const;
 
   bool persist_ = true;

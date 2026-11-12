@@ -122,6 +122,7 @@ void HotList::clearHeard() {
     e.heardMetres = 0;
     e.heardMode.clear();
     e.heardDialHz = 0;
+    e.spotted = false;
   }
   emit changed();
 }
@@ -227,19 +228,44 @@ QStringList HotList::noteHeard(const QString& message, const QString& where, con
     entries_[i].heardMetres = metres;
     entries_[i].heardMode = mode;
     entries_[i].heardDialHz = dialHz;
-    bool speak = false;
-    if (alerts_ == Voice) {
-      const QDateTime last = spoken_.value(call);
-      if (!last.isValid() || last.secsTo(nowUtc) >= kVoiceCooldownSecs) {
-        spoken_.insert(call, nowUtc);
-        speak = true;
-      }
-    }
-    emit heard(call, where, speak);
+    entries_[i].spotted = false;
+    emit heard(call, where, speakNow(call, nowUtc));
   }
   if (!calls.isEmpty())
     emit changed();
   return calls;
+}
+
+bool HotList::speakNow(const QString& call, const QDateTime& nowUtc) {
+  if (alerts_ != Voice)
+    return false;
+  const QDateTime last = spoken_.value(call);
+  if (last.isValid() && last.secsTo(nowUtc) < kVoiceCooldownSecs)
+    return false;
+  spoken_.insert(call, nowUtc);
+  return true;
+}
+
+bool HotList::noteSpot(const QString& call, const QString& where, const QDateTime& nowUtc, int metres,
+                       const QString& mode, qint64 dialHz) {
+  if (alerts_ == Off)
+    return false;
+  const int i = indexOf(call.trimmed().toUpper());
+  if (i < 0)
+    return false;
+  HotEntry& e = entries_[i];
+  // A decode by STD itself is newer and better than an older spot.
+  if (e.heard.isValid() && !e.spotted && e.heard > nowUtc)
+    return false;
+  e.heard = nowUtc;
+  e.where = where;
+  e.heardMetres = metres;
+  e.heardMode = mode;
+  e.heardDialHz = dialHz;
+  e.spotted = true;
+  emit heard(e.call, where, speakNow(e.call, nowUtc));
+  emit changed();
+  return true;
 }
 
 QStringList HotList::noteStream(const QString& chunk, const QString& where, const QDateTime& nowUtc,

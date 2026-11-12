@@ -100,6 +100,7 @@ private:
 DxpedPanel::DxpedPanel(QWidget* parent) : QWidget(parent) {
   setObjectName(QStringLiteral("dxpedPanel"));
   feed_ = new DxpedFeed(this);
+  spots_ = new SpotWatch(this);
   model_ = new QStandardItemModel(0, ColCount, this);
   model_->setHorizontalHeaderLabels({QStringLiteral("Status"), QStringLiteral("Call"),
                                      QStringLiteral("Entity"), QStringLiteral("Start"),
@@ -155,6 +156,42 @@ DxpedPanel::DxpedPanel(QWidget* parent) : QWidget(parent) {
   row->addWidget(site);
   layout->addLayout(row);
 
+  // Cluster spots: off until ticked. Only digital spots of the digital
+  // DXpeditions on the air are asked for.
+  auto* spotRow = new QHBoxLayout;
+  spotRow->setSpacing(6);
+  spotsOn_ = new QCheckBox(QStringLiteral("Mark spotted DXpeditions"), this);
+  spotsOn_->setObjectName(QStringLiteral("dxpedSpots"));
+  spotsOn_->setToolTip(QStringLiteral(
+      "Ask Spothole (spothole.app, which gathers the DX clusters and the RBN) for digital spots of the "
+      "digital DXpeditions on the air: FT8, FT4, RTTY, PSK and the other data modes. A spotted "
+      "DXpedition reads SPOTTED with its band and mode, and a hot list call is marked. CW and phone "
+      "spots, and stations that are not DXpeditions, are never shown. No callsign or login is sent. "
+      "This does not key."));
+  spotsOn_->setChecked(spots_->enabled());
+  spotRow->addWidget(spotsOn_);
+  spotRow->addWidget(new QLabel(QStringLiteral("Check every"), this));
+  spotEvery_ = new QComboBox(this);
+  spotEvery_->setObjectName(QStringLiteral("dxpedSpotEvery"));
+  spotEvery_->addItem(QStringLiteral("90 s"), 90);
+  spotEvery_->addItem(QStringLiteral("180 s"), 180);
+  spotEvery_->setCurrentIndex(spots_->pollSecs() == 180 ? 1 : 0);
+  spotEvery_->setToolTip(QStringLiteral(
+      "How often STD asks Spothole for new spots, in one query for all the DXpeditions watched. "
+      "Spothole is run by a volunteer, so STD asks no more often than this."));
+  spotRow->addWidget(spotEvery_);
+  spotRow->addWidget(new QLabel(QStringLiteral("Keep spots"), this));
+  spotKeep_ = new QComboBox(this);
+  spotKeep_->setObjectName(QStringLiteral("dxpedSpotKeep"));
+  spotKeep_->addItem(QStringLiteral("10 min"), 10);
+  spotKeep_->addItem(QStringLiteral("20 min"), 20);
+  spotKeep_->addItem(QStringLiteral("30 min"), 30);
+  spotKeep_->setCurrentIndex(spots_->keepMins() / 10 - 1);
+  spotKeep_->setToolTip(QStringLiteral("How long a DXpedition stays marked SPOTTED after its last spot."));
+  spotRow->addWidget(spotKeep_);
+  spotRow->addStretch(1);
+  layout->addLayout(spotRow);
+
   table_ = new QTableView(this);
   table_->setObjectName(QStringLiteral("dxpedTable"));
   table_->setModel(proxy_);
@@ -187,8 +224,10 @@ DxpedPanel::DxpedPanel(QWidget* parent) : QWidget(parent) {
   fade_ = new QTimer(this);
   fade_->setInterval(60 * 1000);
   connect(fade_, &QTimer::timeout, this, [this] {
-    if (hot_ && std::any_of(hot_->entries().begin(), hot_->entries().end(),
-                            [](const HotEntry& h) { return h.heard.isValid(); }))
+    spots_->prune();  // a spot older than the keep time unmarks its row
+    if (spots_->spottedCount() > 0 ||
+        (hot_ && std::any_of(hot_->entries().begin(), hot_->entries().end(),
+                             [](const HotEntry& h) { return h.heard.isValid(); })))
       rebuild();
   });
 
@@ -231,6 +270,22 @@ DxpedPanel::DxpedPanel(QWidget* parent) : QWidget(parent) {
   });
   connect(table_, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { contextMenu(pos); });
   connect(feed_, &DxpedFeed::updated, this, [this] { rebuild(); });
+  connect(spots_, &SpotWatch::changed, this, [this] {
+    if (!building_)
+      rebuild();
+  });
+  connect(spots_, &SpotWatch::spotted, this,
+          [this](const QString& call, const DxSpot& spot) { emit spotted(call, spot); });
+  connect(spotsOn_, &QCheckBox::toggled, this, [this](bool on) {
+    spots_->setEnabled(on);
+    emit statusMessage(on ? QStringLiteral("Marking spotted DXpeditions from Spothole, digital spots only. "
+                                           "Nothing was keyed.")
+                          : QStringLiteral("Cluster spots are off."));
+  });
+  connect(spotEvery_, &QComboBox::currentIndexChanged, this,
+          [this](int) { spots_->setPollSecs(spotEvery_->currentData().toInt()); });
+  connect(spotKeep_, &QComboBox::currentIndexChanged, this,
+          [this](int) { spots_->setKeepMins(spotKeep_->currentData().toInt()); });
 
   proxy_->set(modes_->currentIndex(), activeOnly_->isChecked(), QString());
   feed_->loadCache();
@@ -250,6 +305,23 @@ void DxpedPanel::setToday(const QDate& day) {
   rebuild();
 }
 
+const DxSpot* DxpedPanel::spotFor(const DxpedEntry& e) const {
+  return spots_->latest(e.lookup);
+}
+
+void DxpedPanel::updateWatch() {
+  // The digital DXpeditions on the air, with a day either side for the
+  // dates the announcement gives. Their full calls (3B9KW for "3B9").
+  QStringList calls;
+  for (const DxpedEntry& e : feed_->entries()) {
+    if (!e.digital || !e.start.isValid() || !e.end.isValid())
+      continue;
+    if (e.start.addDays(-1) <= today_ && today_ <= e.end.addDays(1))
+      calls << e.lookup;
+  }
+  spots_->setWatch(calls);
+}
+
 int DxpedPanel::shownRows() const {
   return proxy_->rowCount();
 }
@@ -259,16 +331,27 @@ void DxpedPanel::rebuild() {
     today_ = QDateTime::currentDateTimeUtc().date();
   const QList<DxpedEntry>& list = feed_->entries();
   const bool widthsSet = model_->rowCount() > 0;
+  updateWatch();
+  const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
   building_ = true;
   model_->removeRows(0, model_->rowCount());
   const QBrush activeBack(QColor(46, 160, 67, 70));
+  const QBrush spottedBack(QColor(40, 200, 90, 150));
   for (int n = 0; n < list.size(); ++n) {
     const DxpedEntry& e = list.at(n);
-    const bool active = e.activeOn(today_);
+    const DxSpot* spot = spotFor(e);
+    const bool active = e.activeOn(today_) || spot;
     const bool ended = e.end.isValid() && e.end < today_;
     QString status;
     qint64 statusKey = 0;
-    if (active) {
+    if (spot) {
+      const qint64 age = std::max<qint64>(0, spot->time.secsTo(nowUtc) / 60);
+      const QString band = spot->metres > 0 ? QStringLiteral("%1 m ").arg(spot->metres) : QString();
+      status = QStringLiteral("SPOTTED %1%2%3 · %4 min")
+                   .arg(band, spot->mode, spot->modeGuessed ? QStringLiteral("?") : QString())
+                   .arg(age);
+      statusKey = -3000000 + age;
+    } else if (active) {
       const qint64 left = today_.daysTo(e.end);
       status = left == 0 ? QStringLiteral("NOW, last day") : QStringLiteral("NOW, %1 d left").arg(left);
       statusKey = -1000000 + e.end.toJulianDay();
@@ -288,7 +371,9 @@ void DxpedPanel::rebuild() {
     auto add = [&](const QString& text, const QVariant& key) {
       auto* item = new QStandardItem(text);
       item->setData(key, Qt::UserRole);
-      if (active)
+      if (spot)
+        item->setBackground(spottedBack);
+      else if (active)
         item->setBackground(activeBack);
       items << item;
     };
@@ -351,6 +436,13 @@ void DxpedPanel::rebuild() {
       }
     }
     QString tip = QStringLiteral("%1 — %2\n%3").arg(e.call, e.entity, e.dates);
+    if (spot)
+      tip += QStringLiteral("\nSpotted %1Z on %2 MHz %3%4 by %5 (%6)%7")
+                 .arg(spot->time.toUTC().toString(QStringLiteral("HH:mm")))
+                 .arg(double(spot->freqHz) / 1.0e6, 0, 'f', 4)
+                 .arg(spot->mode, spot->modeGuessed ? QStringLiteral(" (mode from the band plan)") : QString(),
+                      spot->spotter.isEmpty() ? QStringLiteral("?") : spot->spotter, spot->source,
+                      spot->comment.isEmpty() ? QString() : QStringLiteral(": ") + spot->comment);
     if (hotLevel == 1)
       tip += QStringLiteral("\nOn the hot list, not heard since STD started");
     else if (hotLevel >= 2)
@@ -404,6 +496,16 @@ void DxpedPanel::showStatus() {
   if (!feed_->lastError().isEmpty())
     text += QStringLiteral(" %1 Showing the saved list.").arg(feed_->lastError());
   text += QStringLiteral(" Source: NG3K ADXO.");
+  if (spots_->enabled()) {
+    text += QStringLiteral(" Spots: %1 of %2 watched spotted")
+                .arg(spots_->spottedCount())
+                .arg(spots_->watch().size());
+    if (spots_->checkedAt().isValid())
+      text += QStringLiteral(", checked %1Z").arg(spots_->checkedAt().toUTC().toString(QStringLiteral("HH:mm")));
+    text += QStringLiteral(" (Spothole).");
+    if (!spots_->lastError().isEmpty())
+      text += QStringLiteral(" ") + spots_->lastError();
+  }
   status_->setText(text);
   refresh_->setEnabled(!feed_->busy());
 }

@@ -27,7 +27,9 @@ namespace {
 QString heardText(const HotEntry& e) {
   if (!e.heard.isValid())
     return QStringLiteral("not heard since STD started");
-  QString text = QStringLiteral("heard %1Z").arg(e.heard.toUTC().toString(QStringLiteral("HH:mm")));
+  QString text = QStringLiteral("%1 %2Z")
+                     .arg(e.spotted ? QStringLiteral("cluster spot") : QStringLiteral("heard"),
+                          e.heard.toUTC().toString(QStringLiteral("HH:mm")));
   if (!e.where.isEmpty())
     text += QStringLiteral(", ") + e.where;
   return text;

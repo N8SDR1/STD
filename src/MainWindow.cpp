@@ -43,6 +43,7 @@
 #include "WaterfallWidget.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iterator>
 #include <cmath>
 #include <functional>
@@ -1157,8 +1158,10 @@ void MainWindow::buildBrandBar() {
   balanceRow->addWidget(hotBar_);
   connect(hot_, &HotList::changed, this, [this] { applyHotBar(); });
   connect(hot_, &HotList::heard, this, [this](const QString& call, const QString& where, bool speak) {
-    setTxStatus(QStringLiteral("Hot list: %1 heard%2. Nothing was keyed.")
-                    .arg(call, where.isEmpty() ? QString() : QStringLiteral(", ") + where));
+    const bool spot = hot_->entry(call).spotted;
+    setTxStatus(QStringLiteral("Hot list: %1 %2%3. Nothing was keyed.")
+                    .arg(call, spot ? QStringLiteral("spotted") : QStringLiteral("heard"),
+                         where.isEmpty() ? QString() : QStringLiteral(", ") + where));
     // Its own voice: read-back being off, an FT8 or WSPR mode, TX, or RADE
     // must not silence the alert. Same device as Options → Speech.
     if (speak && hotVoice_) {
@@ -1325,6 +1328,8 @@ void MainWindow::buildDocks() {
   connect(dxped_, &DxpedPanel::callPicked, this, [this](const QString& call) { offerCall(call); });
   connect(dxped_, &DxpedPanel::tuneRequested, this, [this](const DxpedEntry& e) { dxpedTune(e); });
   connect(dxped_, &DxpedPanel::hotListRequested, this, [this] { openHotList(); });
+  connect(dxped_, &DxpedPanel::spotted, this,
+          [this](const QString& call, const DxSpot& spot) { noteSpot(call, spot); });
   dxped_->setHotList(hot_);
 }
 
@@ -1400,9 +1405,10 @@ void MainWindow::hotTune(const QString& call) {
     if (e.heardDialHz > 100000 && e.heardDialHz != (table > 0 && profile_->mshvFamily() ? table : 0))
       qsyDial(e.heardDialHz);
     const bool radio = tci_ && tci_->isOpen();
-    setTxStatus(QStringLiteral("%1: back to where it was heard at %2Z, %3, %4 MHz.%5 Nothing was keyed. "
+    setTxStatus(QStringLiteral("%1: back to where it was %2 at %3Z, %4, %5 MHz.%6 Nothing was keyed. "
                                "START was not sent.")
-                    .arg(e.call, e.heard.toUTC().toString(QStringLiteral("HH:mm")), e.where)
+                    .arg(e.call, e.spotted ? QStringLiteral("spotted") : QStringLiteral("heard"),
+                         e.heard.toUTC().toString(QStringLiteral("HH:mm")), e.where)
                     .arg(double(e.heardDialHz > 100000 ? e.heardDialHz : table) / 1.0e6, 0, 'f', 3)
                     .arg(radio ? QString() : QStringLiteral(" The radio is not connected.")));
     return;
@@ -1433,9 +1439,79 @@ QString MainWindow::hotWhere(const QString& mode, int db) const {
   return where.trimmed();
 }
 
+void MainWindow::noteSpot(const QString& call, const DxSpot& spot) {
+  if (!hot_)
+    return;
+  const QString mode = SpotWatch::stdMode(spot.mode);
+  QString where = spot.metres > 0 ? QStringLiteral("%1 m %2").arg(spot.metres).arg(spot.mode) : spot.mode;
+  where += QStringLiteral(", %1 MHz").arg(double(spot.freqHz) / 1.0e6, 0, 'f', 4);
+  if (!spot.spotter.isEmpty())
+    where += QStringLiteral(", by %1").arg(spot.spotter);
+  where += QStringLiteral(" (%1)").arg(spot.source.isEmpty() ? QStringLiteral("cluster") : spot.source);
+  const QDateTime when = spot.time.isValid() ? spot.time : QDateTime::currentDateTimeUtc();
+  hot_->noteSpot(call, where, when, spot.metres, mode, mode.isEmpty() ? 0 : spotDialHz(spot, mode));
+}
+
+qint64 MainWindow::spotDialHz(const DxSpot& spot, const QString& mode) const {
+  if (!profile_ || mode.isEmpty() || spot.freqHz <= 0)
+    return 0;
+  const int index = ModeProfile::bandIndexForMetres(spot.metres);
+  const qint64 table = index >= 0 ? profile_->dialFor(mode, index) : 0;
+  // A spot is the signal: the dial plus the audio offset. Near the band's
+  // dial for the mode, that dial; FT8 off the usual dial (a Fox): the kHz.
+  if (table > 0 && std::llabs(spot.freqHz - table) <= 4000)
+    return table;
+  if (keyboardTextMode(mode)) {
+    // The signal 1500 Hz up the waterfall, on the side the mode uses.
+    const bool lower = profile_->sideband().contains(QLatin1Char('L'));
+    return lower ? spot.freqHz + 1500 : spot.freqHz - 1500;
+  }
+  return spot.freqHz / 1000 * 1000;
+}
+
+bool MainWindow::tuneToSpot(const QString& who, const DxSpot& spot, int superHound) {
+  if (!profile_)
+    return false;
+  const QString mode = SpotWatch::stdMode(spot.mode);
+  if (mode.isEmpty() || spot.metres <= 0)
+    return false;
+  if (mode != profile_->digitalMode())
+    activateDigitalMode(mode);
+  QString hound;
+  if (mode == QLatin1String("FT8") && superHound >= 0 && profile_->superHound() != (superHound > 0)) {
+    profile_->setSuperHound(superHound > 0);
+    hound = superHound > 0 ? QStringLiteral(", Super Hound on") : QStringLiteral(", Super Hound off");
+  }
+  const int index = ModeProfile::bandIndexForMetres(spot.metres);
+  const qint64 table = index >= 0 ? profile_->dialFor(mode, index) : 0;
+  const qint64 dial = spotDialHz(spot, mode);
+  if (table > 0 && profile_->mshvFamily())
+    profile_->selectDial(index, table);
+  if (dial > 100000 && dial != (table > 0 && profile_->mshvFamily() ? table : 0))
+    qsyDial(dial);
+  const bool radio = tci_ && tci_->isOpen();
+  setTxStatus(QStringLiteral("%1: to its cluster spot at %2Z, %3 m %4 on %5 MHz, dial %6 MHz %7%8.%9 "
+                             "Nothing was keyed. START was not sent.")
+                  .arg(who, spot.time.toUTC().toString(QStringLiteral("HH:mm")))
+                  .arg(spot.metres)
+                  .arg(mode)
+                  .arg(double(spot.freqHz) / 1.0e6, 0, 'f', 4)
+                  .arg(double(dial) / 1.0e6, 0, 'f', 3)
+                  .arg(profile_->sideband(), hound,
+                       radio ? QString() : QStringLiteral(" The radio is not connected.")));
+  return true;
+}
+
 void MainWindow::dxpedTune(const DxpedEntry& e) {
   if (!profile_)
     return;
+  // Spotted on a digital mode STD runs: go where it was spotted.
+  if (dxped_) {
+    if (const DxSpot* spot = dxped_->spotFor(e)) {
+      if (tuneToSpot(e.lookup, *spot, e.foxHound ? 1 : 0))
+        return;
+    }
+  }
   const QString current = profile_->digitalMode();
   const int here = ModeProfile::metresForBand(profile_->band());
   const DxpedTune plan = DxpedFeed::planTune(e, here, [this](const QString& mode, int metres) {
@@ -5227,7 +5303,17 @@ void MainWindow::showGuide() {
        "call, that call is used. Nothing is "
        "fetched until the panel is shown, then when the list is more than an hour old and once an hour "
        "while it stays open; Refresh fetches now. The last list is saved in the STD AppData folder, so "
-       "the panel works offline. Nothing here keys the radio or sends START."},
+       "the panel works offline. Mark spotted DXpeditions, off until ticked, asks Spothole (which "
+       "gathers the DX clusters and the RBN) for digital spots of the digital DXpeditions on the air "
+       "(their dates, a day either side), every 90 or 180 seconds as chosen in Check every. CW and phone "
+       "spots, and stations that are not those DXpeditions, are never shown; 3B9FR does not mark 3B9KW. "
+       "A spotted row reads SPOTTED with the band, mode, and minutes since the spot (a ? when Spothole "
+       "took the mode from the band plan), is tinted bright green, sorts first, and counts as On the air "
+       "now; its tooltip gives the frequency, spotter, and comment. Keep spots (10, 20, or 30 minutes) is "
+       "how long it stays marked after its last spot. A double-click on a spotted row goes to the spot: "
+       "its band and mode, the band's dial when the spot is within 4 kHz of it, else the spot's kHz, and "
+       "for RTTY and PSK the dial 1500 Hz off so the signal is at 1500 Hz in the waterfall. No callsign or "
+       "login is sent. Nothing here keys the radio or sends START."},
       {"Hot list",
        "The calls you are watching for, as SDRLogger+ keeps them. Tick a call in View → DXpeditions, "
        "or type calls in View → Hot list…, which also removes calls and clears the list. The list "
@@ -5246,7 +5332,10 @@ void MainWindow::showGuide() {
        "QSO bar. Double-click it to tune to the band, mode, and dial where STD last heard it; if it has "
        "not been heard, to its DXpedition's band and mode; with neither, nothing moves. In View → "
        "DXpeditions, hot rows are tinted orange, amber once heard, and red when heard in the last 15 "
-       "minutes. Nothing here keys the radio or sends START."},
+       "minutes. With Mark spotted DXpeditions on in View → DXpeditions, a cluster spot of a hot call "
+       "that is one of those DXpeditions counts too: the chip turns red, the status line says spotted "
+       "with the band, mode, frequency, and spotter, Visual + Voice says it, and a double-click goes to "
+       "the spot. Nothing here keys the radio or sends START."},
       {"Waterfall zoom",
        "The wheel zooms around the cursor. Drag pans. Both stay inside the receive band the radio "
        "reports. A double-click or a right-click opens that whole band again. Start and BW narrow the "
