@@ -57,7 +57,7 @@ inline int hellBandwidthHz(const QString& mode) {
 }
 
 // Fldigi keyboard text: one transmit box, a receive echo, CLR RX, and CLR TX.
-// FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. CW stays in Lyra.
+// FT8, FT4, FT2, JT65, Q65, MSK144, and MSKMS stay on the MSHV sequencer. CW stays in Lyra.
 // A later menu item is covered when its name starts with one of these
 // (Olivia is not on the menu yet). Matching is case-insensitive.
 inline bool rttyMode(const QString& mode) {
@@ -200,6 +200,31 @@ inline int q65ChannelHz(const QString& mode) {
   return 0;
 }
 
+// MSHV MSK144 meteor scatter. 2000 baud MSK, tones fixed at 1000 and
+// 2000 Hz, one 72 ms frame repeated for the whole period. MSK144 sends
+// the 77-bit messages (and MSK40 "<CALL1 CALL2> RPT" short frames).
+// MSKMS is MSHV's MSK144 variant: 72-bit messages and the classic
+// duration-strength report (26, R27). Periods are 5, 10, 15, or 30 s.
+inline bool mskmsMode(const QString& mode) {
+  return mode == QLatin1String("MSKMS");
+}
+
+inline bool mskMode(const QString& mode) {
+  return mode == QLatin1String("MSK144") || mskmsMode(mode);
+}
+
+// MSK144's two tones are 1000 and 2000 Hz at 2000 baud, so the signal
+// fills 500 to 2500 Hz, centered on 1500 Hz.
+inline int mskChannelHz(const QString& mode) {
+  return mskMode(mode) ? 2000 : 0;
+}
+
+// An MSKMS report: first digit duration 2-5, second strength 6-9.
+inline bool mskmsReportWord(const QString& word) {
+  return word.size() == 2 && word.at(0) >= QLatin1Char('2') && word.at(0) <= QLatin1Char('5') &&
+         word.at(1) >= QLatin1Char('6') && word.at(1) <= QLatin1Char('9');
+}
+
 // WSPR-2. Not a keyboard mode and not the FT8 sequencer.
 inline bool wsprMode(const QString& mode) {
   return mode.compare(QLatin1String("WSPR"), Qt::CaseInsensitive) == 0;
@@ -226,7 +251,7 @@ inline bool radeMode(const QString& mode) {
 
 inline bool sequencedFamily(const QString& mode) {
   return mode == QLatin1String("FT8") || mode == QLatin1String("FT4") ||
-         mode == QLatin1String("FT2") || jt65Mode(mode) || q65Mode(mode);
+         mode == QLatin1String("FT2") || jt65Mode(mode) || q65Mode(mode) || mskMode(mode);
 }
 
 inline bool keyboardTextMode(const QString& mode) {
@@ -244,7 +269,11 @@ inline bool keyboardTextMode(const QString& mode) {
 
 // The cursor is the carrier, and the signal sits on both sides of it.
 // FT8, FT4, FT2, JT65, Q65, and JS8 start at the cursor and run upward.
+// MSK144 and MSKMS sit on 500 to 2500 Hz around a 1500 Hz center.
 inline bool carrierCenteredMode(const QString& mode) {
+  // MSK144 is centered on 1500 Hz, not built upward from the cursor.
+  if (mskMode(mode))
+    return true;
   if (sequencedFamily(mode) || mode.startsWith(QLatin1String("JS8"), Qt::CaseInsensitive))
     return false;
   if (hellFamily(mode) || rttyMode(mode) || keyedPsk(mode) || wsprMode(mode) || wefaxMode(mode))

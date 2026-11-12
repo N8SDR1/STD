@@ -35,6 +35,9 @@ public:
   bool superHound() const { return hound_; }
   bool superFox() const { return fox_; }
   bool txFirst() const { return txFirst_; }
+  // Super Hound on or off, as its checkbox does, without moving the dial
+  // (the caller picks the band next). Super Fox goes off with it on.
+  void setSuperHound(bool on);
   // Remembers the even or odd slot. Does not key.
   void setTxFirst(bool first);
   // Super Hound answers on TX SECOND. Does not key.
@@ -71,6 +74,13 @@ public:
   static QStringList radeScanBands();
   // Moves to that band and dial and emits tuneRequested, as a band click does.
   void selectDial(int band, qint64 hz);
+  // The band chip that is lit, and the band chip for a band in metres
+  // (160 ... 2), or -1. metresForBand is the reverse, 0 for none.
+  int band() const { return band_; }
+  static int bandIndexForMetres(int metres);
+  static int metresForBand(int index);
+  // The table dial a mode uses on a band chip, 0 when it has none there.
+  qint64 dialFor(const QString& mode, int index) const;
   // Band index for a RADE dial, or -1 when it is outside every HF band.
   static int radeBandForHz(qint64 hz);
   // DIGL on 160, 80, and 40. DIGU everywhere else, including 60 m.

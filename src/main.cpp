@@ -8,6 +8,8 @@
 #include "MacroFile.h"
 #include "MaEngine.h"
 #include "MainWindow.h"
+#include "LoggerFeed.h"
+#include "HeardWatch.h"
 #include "ModeProfile.h"
 #include "StatusStrip.h"
 
@@ -15,6 +17,7 @@
 #include "RstMeter.h"
 #include "StationFiles.h"
 #include "TxWave.h"
+#include "MskPingDisplay.h"
 #include "hell/HellEngine.h"
 #include "dominoex/DominoModem.h"
 #include "thor/ThorModem.h"
@@ -39,6 +42,9 @@
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
 #include "WxFeed.h"
+#include "DxpedPanel.h"
+#include "HotList.h"
+#include "HotListView.h"
 #include "QsoCapture.h"
 #include "Callbook.h"
 #include "WaterfallGpu.h"
@@ -55,6 +61,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 #include <random>
 #include <utility>
@@ -96,7 +103,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QClipboard>
 #include <QComboBox>
+#include <QTableView>
 #include <QDataStream>
 #include <QDate>
 #include <QDateTime>
@@ -108,6 +117,7 @@
 #include <QPushButton>
 #include <QSpinBox>
 #include <QSlider>
+#include <QMouseEvent>
 #include <QToolButton>
 #include <QStyleFactory>
 #include <QTimer>
@@ -1647,13 +1657,16 @@ int shellReady(MainWindow& window) {
   channelBandHz(1102, 245, true, &bandLo, &bandHi);
   if (std::fabs(bandLo - (1102.0f - 122.5f)) > 0.01f || std::fabs(bandHi - (1102.0f + 122.5f)) > 0.01f)
     return fail("Hell marker is not centered on the carrier");
+  channelBandHz(1500, mskChannelHz(QStringLiteral("MSK144")), true, &bandLo, &bandHi);
+  if (std::fabs(bandLo - 500.0f) > 0.01f || std::fabs(bandHi - 2500.0f) > 0.01f)
+    return fail("MSK144 band is not 500 to 2500 Hz");
   channelBandHz(1500, 50, false, &bandLo, &bandHi);
   if (std::fabs(bandLo - 1500.0f) > 0.01f || std::fabs(bandHi - 1550.0f) > 0.01f)
     return fail("FT8 marker does not start at the cursor");
   const char* centeredModes[] = {"Feld Hell", "Slow Hell", "Feld Hell X5", "Feld Hell X9",
                                   "FSK Hell", "FSK Hell-105", "Hell 80", "RTTY", "PSK31",
                                   "QPSK31", "MFSK16", "DominoEX 16", "Thor 16", "Olivia 8/250",
-                                  "Contestia 8/250", "MT63-500S", "WSPR", "WEFAX-576"};
+                                  "Contestia 8/250", "MT63-500S", "WSPR", "WEFAX-576", "MSK144", "MSKMS"};
   for (const char* name : centeredModes) {
     if (!carrierCenteredMode(QString::fromLatin1(name)))
       return fail("a carrier-centered mode starts at the cursor");
@@ -1942,7 +1955,7 @@ int shellReady(MainWindow& window) {
   if (!autoDec)
     return fail("auto decode is missing");
   const auto bands = window.findChildren<QPushButton*>("profileBand");
-  if (bands.size() != 11)
+  if (bands.size() != 12)
     return fail("band buttons are missing");
   int checked = 0;
   for (const QPushButton* button : bands) {
@@ -3086,6 +3099,38 @@ int shellReady(MainWindow& window) {
     if (!cleared)
       return fail("mode change kept the previous text");
   }
+  {
+    // FT8-family rows live in the same pane as Time/dB/DT titles. The Hell
+    // splitter must not keep a second empty box under them.
+    auto* ft8Mode = window.findChild<QAction*>(QStringLiteral("modeFt8"));
+    auto* listHost = window.findChild<QWidget*>(QStringLiteral("decodeList"));
+    auto* header = window.findChild<QLabel*>(QStringLiteral("decodeHeader"));
+    auto* list = window.findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
+    auto* split = window.findChild<QSplitter*>(QStringLiteral("hellSplit"));
+    auto* filter = window.findChild<QLineEdit*>(QStringLiteral("decodeFilter"));
+    auto* clear = window.findChild<QPushButton*>(QStringLiteral("decodeClear"));
+    if (!ft8Mode || !listHost || !header || !list || !filter || !clear)
+      return fail("decode list widgets are missing");
+    const char* listModes[] = {"modeFt8", "modeFt4", "modeFt2", "modeJt65A", "modeQ65A"};
+    for (const char* name : listModes) {
+      auto* action = window.findChild<QAction*>(QLatin1String(name));
+      if (!action)
+        return fail("an FT list mode is missing");
+      action->trigger();
+      if (header->parentWidget() != listHost || list->parentWidget() != listHost ||
+          !listHost->isVisibleTo(&window) || !header->isVisibleTo(&window) ||
+          !list->isVisibleTo(&window) || !filter->isVisibleTo(&window) ||
+          !clear->isVisibleTo(&window) || (split && split->isVisibleTo(&window)))
+        return fail("FT decode rows are not under the column titles");
+    }
+    auto* rttyMode = window.findChild<QAction*>(QStringLiteral("modeRtty"));
+    if (!rttyMode)
+      return fail("RTTY mode action is missing");
+    rttyMode->trigger();
+    if (!split || !split->isVisibleTo(&window) || listHost->isVisibleTo(&window))
+      return fail("RTTY hid the receive echo");
+    ft8Mode->trigger();
+  }
   // Keyboard modes take what went out off the TX box, as Fldigi does.
   if (textAfterSent(QStringLiteral("CQ CQ de N8SDR") + QChar(u'\n') + QStringLiteral("W1AW de N8SDR"),QStringLiteral("CQ CQ de N8SDR"), true) !=
           QLatin1String("W1AW de N8SDR") ||
@@ -3289,6 +3334,18 @@ int shellReady(MainWindow& window) {
     if ((macros && macros->isVisibleTo(&window)) || (txBox && txBox->isVisibleTo(&window)) ||
         (txKey && txKey->isVisibleTo(&window)) || !stations || !stations->isVisibleTo(&window) || !faxRegion)
       return fail("WEFAX shows transmit controls or macros, or no stations pane");
+    {
+      auto* faxScroll = window.findChild<QScrollArea*>(QStringLiteral("wefaxScroll"));
+      auto* faxView = window.findChild<QLabel*>(QStringLiteral("wefaxView"));
+      auto* faxHost = window.findChild<QWidget*>(QStringLiteral("wefaxHost"));
+      auto* decodeList = window.findChild<QWidget*>(QStringLiteral("decodeList"));
+      auto* split = window.findChild<QSplitter*>(QStringLiteral("hellSplit"));
+      if (!faxScroll || !faxView || !faxHost || faxScroll->widget() != faxHost ||
+          faxView->parentWidget() != faxHost || !faxScroll->isVisibleTo(&window) ||
+          !(faxScroll->alignment() & Qt::AlignTop) ||
+          (decodeList && decodeList->isVisibleTo(&window)) || (split && split->isVisibleTo(&window)))
+        return fail("WEFAX chart is not immediately under the toolbar");
+    }
     {
       // Left-edge shift turns every line: pixel 100 of the raw picture
       // becomes pixel 0 of the shown one.
@@ -3981,6 +4038,9 @@ int shellReady(MainWindow& window) {
       {"FT2", 0, 56, false}, {"FT2", 1, 0, true},
       {"JT65A", 0, 0, true}, {"JT65A", 1, 0, false},
       {"Q65A", 0, 0, true}, {"Q65A", 0, 30, false},
+      // MSK144 and MSKMS default to MSHV's 30 s.
+      {"MSK144", 0, 0, true}, {"MSK144", 0, 30, false}, {"MSK144", 1, 0, true},
+      {"MSKMS", 0, 0, true}, {"MSKMS", 0, 30, false},
   };
   std::vector<float> jt65;
   if (!buildTxWave(QStringLiteral("JT65A"), QStringLiteral("CQ N8SDR EM79"), 1500, &jt65) ||
@@ -4019,6 +4079,155 @@ int shellReady(MainWindow& window) {
   qInfo("Q65A all options %s", qPrintable(q65All));
   if (!q65All.contains(QLatin1String("CQ N8SDR EM79")))
     return fail("Q65A did not decode with every Decode option on");
+  {
+    // MSK144 and MSKMS: menu, TX wave, and a synthetic meteor ping in noise
+    // decoded by MSHV's real-time block decoder, anywhere in the period.
+    for (const char* name : {"modeMsk144", "modeMskms"}) {
+      const auto* action = window.findChild<QAction*>(QString::fromLatin1(name));
+      if (!action || !action->toolTip().contains(QLatin1String("START")) ||
+          !action->toolTip().contains(QLatin1String("does not key")))
+        return fail("MSK144 or MSKMS is missing from the menu");
+    }
+    {
+      // MSHV's TX/RX box (5, 7.5, 10, 15, 30 s), DF Tol (default 150), Sh, SWL.
+      const auto* period = window.findChild<QComboBox*>(QStringLiteral("mskPeriod"));
+      const auto* tol = window.findChild<QComboBox*>(QStringLiteral("mskDfTol"));
+      if (!period || period->count() != 5 || period->itemData(1).toInt() != 7500 ||
+          period->itemText(1) != QLatin1String("7.5 s") || !tol || tol->findData(150) < 0 ||
+          tol->itemData(0).toInt() != 10 || tol->itemData(tol->count() - 1).toInt() != 400 ||
+          !window.findChild<QCheckBox*>(QStringLiteral("mskShort")) ||
+          !window.findChild<QCheckBox*>(QStringLiteral("mskSwl")) ||
+          !window.findChild<MskPingDisplay*>())
+        return fail("MSK row is missing");
+      if (mskDfTolerance() != 150)
+        return fail("MSK DF Tol default is not 150");
+    }
+    if (!sequencedFamily(QStringLiteral("MSK144")) || !sequencedFamily(QStringLiteral("MSKMS")) ||
+        keyboardTextMode(QStringLiteral("MSK144")) || mskChannelHz(QStringLiteral("MSK144")) != 2000 ||
+        !mskmsReportWord(QStringLiteral("26")) || mskmsReportWord(QStringLiteral("73")) ||
+        mskmsReportWord(QStringLiteral("-05")))
+      return fail("MSK144 mode helpers are wrong");
+    if (mskPeriodMs(QStringLiteral("MSK144")) != 30000 || mskPeriodMs(QStringLiteral("MSKMS")) != 30000)
+      return fail("MSK144 default period is not MSHV's 30 s");
+    if (!txStampIsFirstHalf(QStringLiteral("FT4"), 0, 0) || txStampIsFirstHalf(QStringLiteral("FT4"), 0, 7))
+      return fail("7.5 s halves are wrong");
+    {
+      // The ping display: a 1500 Hz burst 4 s into a 15 s period is bright
+      // at 4 s and 1500 Hz, dark at 10 s, and its decode leaves a mark.
+      MskPingDisplay ping;
+      ping.setPeriodMs(15000);
+      if (ping.columnsPerPeriod() != 15000 * 12 / 256)
+        return fail("ping display column count is wrong");
+      const qint64 periodStart = 1700000010000LL - (1700000010000LL % 15000);
+      std::vector<float> audio(size_t(15 * 48000), 0.0f);
+      quint32 seed = 7;
+      for (size_t i = 0; i < audio.size(); ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        audio[i] = 0.01f * (float(seed >> 8) / float(1u << 24) - 0.5f);
+        if (i >= size_t(4 * 48000) && i < size_t(4 * 48000 + 9600))
+          audio[i] += 0.3f * float(std::sin(2.0 * 3.141592653589793 * 1500.0 * double(i) / 48000.0));
+      }
+      ping.pushAudioAt(audio.data(), int(audio.size()), 48000, periodStart);
+      const int burst = ping.levelAt(4.1, 1500);
+      const int quiet = ping.levelAt(10.0, 1500);
+      // Noise paints near black (MSHV's look), the burst bright.
+      if (burst < 0 || quiet < 0 || quiet > 120 || burst < quiet + 200)
+        return fail("ping display did not show the burst");
+      const QString stamp = ping.stamp(true);
+      ping.addPing(QString(stamp).remove(QLatin1Char(':')), 4.1);
+      if (ping.pingCount(true) != 1)
+        return fail("ping display did not mark the decode");
+    }
+    if (pskReporterModeName(QStringLiteral("MSK144")) != QLatin1String("MSK144") ||
+        pskReporterModeName(QStringLiteral("MSKMS")) != QLatin1String("MSK144"))
+      return fail("MSK144 PSK Reporter mode name is wrong");
+    // A frame is 144 symbols at 2000 baud: 72 ms, 3456 samples at 48 kHz.
+    // MSK40 is 40 symbols, 20 ms.
+    if (mskFrame(QStringLiteral("MSK144"), QStringLiteral("CQ N8SDR EM79")).size() != 3456 ||
+        mskFrame(QStringLiteral("MSKMS"), QStringLiteral("K1JT N8SDR R26")).size() != 3456 ||
+        mskFrame(QStringLiteral("MSK144"), QStringLiteral("<K1JT N8SDR> R+06")).size() != 960)
+      return fail("MSK144 frame length is wrong");
+    std::vector<float> slot;
+    if (!buildTxWave(QStringLiteral("MSK144"), QStringLiteral("CQ N8SDR EM79"), 1500, &slot))
+      return fail("MSK144 encoder is missing");
+    // 250 ms lead and 370 ms guard in MSHV's 30 s slot.
+    if (slot.size() > size_t(29380 * 48) || slot.size() < size_t(29300 * 48))
+      return fail("MSK144 wave does not fill the slot");
+    // The frame is continuous phase: no step where copies join.
+    for (size_t i = 3456; i < 3456 * 4; i += 3456) {
+      if (std::fabs(slot[i] - slot[i - 1]) > 0.5f)
+        return fail("MSK144 frames do not join cleanly");
+    }
+    if (decodeMskMessage(QStringLiteral("MSK144"), slot) != QLatin1String("CQ N8SDR EM79"))
+      return fail("MSK144 TX wave did not round-trip");
+    const auto pingAt = [](const std::vector<float>& frame, double atSec, int periodSec) {
+      std::vector<float> wave(size_t(periodSec * 48000), 0.0f);
+      quint32 seed = 12345;
+      for (float& x : wave) {
+        seed = seed * 1664525u + 1013904223u;
+        x = 0.05f * (float(seed >> 8) / float(1u << 24) - 0.5f);
+      }
+      // A 250 ms meteor ping with a fast rise and an exponential decay.
+      const int start = int(atSec * 48000);
+      const int len = 12000;
+      for (int i = 0; i < len && start + i < int(wave.size()); ++i) {
+        const float env = std::min(1.0f, i / 240.0f) * std::exp(-3.0f * float(i) / len);
+        wave[size_t(start + i)] += 0.3f * env * frame[size_t(i) % frame.size()];
+      }
+      return wave;
+    };
+    const auto ping = pingAt(mskFrame(QStringLiteral("MSK144"), QStringLiteral("K1JT N8SDR R+05")), 6.3, 15);
+    const QString pingBack = decodeMskMessage(QStringLiteral("MSK144"), ping);
+    qInfo("MSK144 ping %s", qPrintable(pingBack));
+    if (pingBack != QLatin1String("K1JT N8SDR R+05"))
+      return fail("MSK144 ping did not decode");
+    const auto ms = pingAt(mskFrame(QStringLiteral("MSKMS"), QStringLiteral("K1JT N8SDR R26")), 11.0, 30);
+    QString msReport;
+    const QString msBack = decodeMskMessage(QStringLiteral("MSKMS"), ms, false, QString(), QString(), &msReport);
+    qInfo("MSKMS ping %s report %s", qPrintable(msBack), qPrintable(msReport));
+    if (msBack != QLatin1String("K1JT N8SDR R26") || !mskmsReportWord(msReport))
+      return fail("MSKMS ping did not decode with a report");
+    const auto shortPing =
+        pingAt(mskFrame(QStringLiteral("MSK144"), QStringLiteral("<K1JT N8SDR> R+06")), 2.0, 15);
+    const QString shortBack = decodeMskMessage(QStringLiteral("MSK144"), shortPing, true, QStringLiteral("N8SDR"),
+                                               QStringLiteral("K1JT"));
+    qInfo("MSK40 ping %s", qPrintable(shortBack));
+    if (shortBack != QLatin1String("<K1JT N8SDR> R+06"))
+      return fail("MSK40 short message did not decode");
+    // Band dials: 6 m and 2 m only, the regional calling frequencies.
+    auto* mskProfile = window.findChild<ModeProfile*>();
+    if (!mskProfile)
+      return fail("profile is missing");
+    const QString keepMode = mskProfile->digitalMode();
+    QPushButton* six = nullptr;
+    QPushButton* two = nullptr;
+    QPushButton* twenty = nullptr;
+    for (QPushButton* button : window.findChildren<QPushButton*>(QStringLiteral("profileBand"))) {
+      if (button->text() == QLatin1String("50"))
+        six = button;
+      else if (button->text() == QLatin1String("144"))
+        two = button;
+      else if (button->text() == QLatin1String("14"))
+        twenty = button;
+    }
+    if (!six || !two || !twenty)
+      return fail("MSK144 band buttons are missing");
+    mskProfile->setDigitalMode(QStringLiteral("FT8"));
+    if (!two->isHidden() || twenty->isHidden())
+      return fail("2 m shows outside MSK144");
+    mskProfile->setDigitalMode(QStringLiteral("MSK144"));
+    if (two->isHidden() || six->isHidden() || !twenty->isHidden())
+      return fail("MSK144 band buttons are wrong");
+    six->click();
+    if (mskProfile->dialHz() != 50260000 && mskProfile->dialHz() != 50280000)
+      return fail("MSK144 6 m dial is wrong");
+    two->click();
+    if (mskProfile->dialHz() != 144150000 && mskProfile->dialHz() != 144360000)
+      return fail("MSK144 2 m dial is wrong");
+    mskProfile->setDigitalMode(keepMode);
+    if (two->isHidden() == false && !mskMode(keepMode))
+      return fail("2 m stayed after leaving MSK144");
+  }
   for (const auto& row : halves) {
     if (txStampIsFirstHalf(QString::fromLatin1(row.mode), row.minute, row.second) != row.first)
       return fail("period half is wrong");
@@ -4477,6 +4686,870 @@ int shellReady(MainWindow& window) {
     if (bar->value() < bar->maximum() - 2)
       return fail("receive log did not follow the bottom");
   }
+  // View → DXpeditions: a canned NG3K feed (no network in the self-test),
+  // the digital-mode filter, sorting, and a double-click that only fills
+  // the call.
+  {
+    const QByteArray dxSample = R"(<?xml version="1.0" ?>
+<rss version="2.0"><channel><title>ADXO</title>
+<item><title>Solomon Is: Oct 3-Nov 20, 2026 -- H44MS -- QSL via: LoTW</title>
+<description>
+Oct 3-Nov 20, 2026 --
+Solomon Is --
+H44MS --
+QSL: LoTW --
+Source: OPDX (Sep 22, 2026) --
+By DL2GAC; 80-10m; mainly FT8, some SSB; QSL via DL2GAC (B/d)
+</description><link>https://www.qrz.com/db/H44MS</link></item>
+<item><title>Tanzania: Oct 19-Nov 19, 2026 -- 5H3MB -- QSL via: IK2GZU</title>
+<description>
+Oct 19-Nov 19, 2026 --
+Tanzania --
+5H3MB --
+QSL: IK2GZU --
+Source: OPDX (Sep 23, 2026) --
+By IK2GZU fm Ilembula; 80-10m; CW; QSL via IK2GZU (B/d)
+</description><link>https://www.qrz.com/db/5H3MB</link></item>
+<item><title>Rodrigues I: Oct 20-Nov 28, 2026 -- 3B9 -- QSL via: LoTW</title>
+<description>
+Oct 20-Nov 28, 2026 --
+Rodrigues I --
+3B9 --
+QSL: LoTW --
+Source: OPDX (Sep 23, 2026) --
+By M0CFW as 3B9/M0CFW; 160-6m; CW SSB + digital; QRV for CQWW DX SSB using 3B9KW
+</description><link>https://www.qrz.com/db/3B9KW</link></item>
+<item><title>Fiji: Dec 28, 2026-Jan 8, 2027 -- 3D2AA -- QSL via: LoTW</title>
+<description>
+Dec 28, 2026-Jan 8, 2027 --
+Fiji --
+3D2AA --
+QSL: LoTW --
+Source: 425DXN (Nov 1, 2026) --
+By SP3RK; 40 20 17 15 12 10m; FT8 FT4 FT2, some CW; QRP
+</description><link>https://www.qrz.com/db/3D2AA</link></item>
+<item><title>Honduras: Nov 20-27, 2026 -- HR9 -- QSL via: LoTW</title>
+<description>
+Nov 20-27, 2026 --
+Honduras --
+HR9 --
+QSL: LoTW --
+Source: OPDX (Nov 2, 2026) --
+By K6VHF as K6VHF/HR9; HF, incl 60m; all modes; 100w
+</description><link>https://www.qrz.com/db/K6VHF</link></item>
+<item><title>Somaliland: Jan 9-21, 2027 -- 6O3T -- QSL via: Club Log OQRS</title>
+<description>
+Jan 9-21, 2027 --
+Somaliland --
+6O3T --
+QSL: Club Log OQRS --
+Source: DXW (Oct 1, 2026) --
+By ops fm Berbera (LK20mk); HF
+</description><link>http://www.ng3k.com/Misc/adxo.html</link></item>
+</channel></rss>)";
+    QString err;
+    const QList<DxpedEntry> list = DxpedFeed::parseRss(dxSample, &err);
+    if (list.size() != 6 || !err.isEmpty()) {
+      qCritical("dxped [%lld] %s", qlonglong(list.size()), qPrintable(err));
+      return fail("the DXpedition feed did not read");
+    }
+    auto find = [&](const char* call) -> const DxpedEntry* {
+      for (const DxpedEntry& e : list)
+        if (e.call == QLatin1String(call))
+          return &e;
+      return nullptr;
+    };
+    const DxpedEntry* h44 = find("H44MS");
+    const DxpedEntry* tz = find("5H3MB");
+    const DxpedEntry* b9 = find("3B9");
+    const DxpedEntry* fiji = find("3D2AA");
+    const DxpedEntry* hr = find("HR9");
+    const DxpedEntry* so = find("6O3T");
+    if (!h44 || !tz || !b9 || !fiji || !hr || !so)
+      return fail("a DXpedition call was not read");
+    if (h44->entity != QLatin1String("Solomon Is") || h44->qsl != QLatin1String("LoTW") ||
+        h44->source != QLatin1String("OPDX (Sep 22, 2026)") || h44->start != QDate(2026, 10, 3) ||
+        h44->end != QDate(2026, 11, 20) || h44->bands != QLatin1String("80-10m") || h44->bandKey != 80 ||
+        h44->modes != QStringList({QStringLiteral("SSB"), QStringLiteral("FT8")}) || !h44->digital) {
+      qCritical("dxped H44MS [%s] [%s] [%s]", qPrintable(h44->entity), qPrintable(h44->bands),
+                qPrintable(h44->modes.join(QLatin1Char(' '))));
+      return fail("a DXpedition's fields were read wrong");
+    }
+    if (tz->digital || tz->modes != QStringList{QStringLiteral("CW")})
+      return fail("\"fm\" (from) in a DXpedition note was read as FM, or CW was missed");
+    if (!b9->digital || b9->lookup != QLatin1String("3B9KW") || b9->bandKey != 160)
+      return fail("a prefix DXpedition did not take the call from its link, or \"+ digital\" was missed");
+    if (fiji->start != QDate(2026, 12, 28) || fiji->end != QDate(2027, 1, 8) ||
+        fiji->bands != QLatin1String("40 20 17 15 12 10m") || !fiji->modes.contains(QLatin1String("FT2"))) {
+      qCritical("dxped 3D2AA [%s]", qPrintable(fiji->bands));
+      return fail("a DXpedition across the new year or a band list was read wrong");
+    }
+    if (!hr->digital || hr->bands != QLatin1String("HF 60m") || hr->lookup != QLatin1String("HR9")) {
+      qCritical("dxped HR9 [%s]", qPrintable(hr->bands));
+      return fail("\"all modes\" or an HF band note was read wrong");
+    }
+    if (so->digital || !so->modes.isEmpty())
+      return fail("a DXpedition with no modes was counted as digital");
+    QDate s0, e0;
+    if (!DxpedFeed::parseDates(QStringLiteral("Dec 28-Jan 5, 2027"), &s0, &e0) || s0 != QDate(2026, 12, 28) ||
+        e0 != QDate(2027, 1, 5))
+      return fail("a DXpedition date range across the year was read wrong");
+    if (!DxpedFeed::parseRss("<html><body>moved</body></html>", &err).isEmpty() || err.isEmpty())
+      return fail("a page that is not the feed was taken as a DXpedition list");
+
+    auto* dock = window.findChild<QDockWidget*>(QStringLiteral("dxpedDock"));
+    auto* panel = window.findChild<DxpedPanel*>(QStringLiteral("dxpedPanel"));
+    auto* view = window.findChild<QAction*>(QStringLiteral("viewDxpeditions"));
+    if (!dock || !panel || !view || dock->isVisible() || !(dock->features() & QDockWidget::DockWidgetFloatable))
+      return fail("View DXpeditions is missing, not floatable, or open at start");
+    auto* modes = panel->findChild<QComboBox*>(QStringLiteral("dxpedModes"));
+    auto* onAir = panel->findChild<QCheckBox*>(QStringLiteral("dxpedActive"));
+    auto* search = panel->findChild<QLineEdit*>(QStringLiteral("dxpedSearch"));
+    QTableView* table = panel->table();
+    if (!modes || !onAir || !search || !table)
+      return fail("the DXpeditions panel controls are missing");
+    // The filter and "On the air now" are stored; put the operator's back.
+    const QVariant keepFilter = QSettings().value(QStringLiteral("dxped/filter"));
+    const QVariant keepActive = QSettings().value(QStringLiteral("dxped/activeOnly"));
+    auto restoreDxped = [&] {
+      QSettings store;
+      for (const auto& [key, value] : {std::pair{QStringLiteral("dxped/filter"), keepFilter},
+                                       std::pair{QStringLiteral("dxped/activeOnly"), keepActive}}) {
+        if (value.isValid())
+          store.setValue(key, value);
+        else
+          store.remove(key);
+      }
+    };
+    panel->setToday(QDate(2026, 11, 21));
+    panel->feed()->setEntries(list, QDateTime(QDate(2026, 11, 21), QTime(12, 0), QTimeZone(QTimeZone::UTC)));
+    onAir->setChecked(false);
+    search->clear();
+    modes->setCurrentIndex(DxpedPanel::AllModes);
+    const int all = panel->shownRows();
+    modes->setCurrentIndex(DxpedPanel::Digital);
+    const int digital = panel->shownRows();
+    modes->setCurrentIndex(DxpedPanel::FtModes);
+    const int ft = panel->shownRows();
+    modes->setCurrentIndex(DxpedPanel::AllModes);
+    onAir->setChecked(true);
+    const int now = panel->shownRows();  // 3B9 and HR9 on Nov 21
+    onAir->setChecked(false);
+    search->setText(QStringLiteral("solomon"));
+    const int found = panel->shownRows();
+    search->clear();
+    if (all != 6 || digital != 4 || ft != 4 || now != 2 || found != 1) {
+      qCritical("dxped rows all %d digital %d ft %d now %d find %d", all, digital, ft, now, found);
+      return fail("the DXpeditions filter shows the wrong rows");
+    }
+    table->sortByColumn(3, Qt::DescendingOrder);  // Start
+    if (table->model()->index(0, 1).data().toString() != QLatin1String("6O3T"))
+      return fail("the DXpeditions table did not sort by start date");
+    table->sortByColumn(1, Qt::AscendingOrder);  // Call
+    if (table->model()->index(0, 1).data().toString() != QLatin1String("3B9"))
+      return fail("the DXpeditions table did not sort by call");
+    table->sortByColumn(0, Qt::AscendingOrder);  // on the air first
+    const QString first = table->model()->index(0, 1).data().toString();
+    if (first != QLatin1String("HR9") && first != QLatin1String("3B9"))
+      return fail("the DXpeditions on the air now are not listed first");
+    // Double-click: STD moves to the DXpedition's band and digital mode,
+    // and only the dial moves.
+    {
+      auto* bandBar = window.findChild<ModeProfile*>();
+      QModelIndex b9Row;
+      for (int r = 0; r < table->model()->rowCount(); ++r)
+        if (table->model()->index(r, 1).data().toString() == QLatin1String("3B9"))
+          b9Row = table->model()->index(r, 2);
+      if (!bandBar || !b9Row.isValid())
+        return fail("the DXpedition row or the band bar is missing");
+      const QVariant keepHound = QSettings().value(QStringLiteral("profile/superHound"));
+      emit table->doubleClicked(b9Row);
+      QApplication::processEvents();
+      if (keepHound.isValid())
+        QSettings().setValue(QStringLiteral("profile/superHound"), keepHound);
+      else
+        QSettings().remove(QStringLiteral("profile/superHound"));
+      const int metres = ModeProfile::metresForBand(bandBar->band());
+      if (bandBar->digitalMode() != QLatin1String("FT8") || metres < 6 || metres > 160 ||
+          metres == 2) {
+        qCritical("dxped tune [%s] %d m", qPrintable(bandBar->digitalMode()), metres);
+        return fail("double-clicking a DXpedition did not move STD to its band and FT8");
+      }
+    }
+    modes->setCurrentIndex(DxpedPanel::Digital);
+    restoreDxped();
+  }
+  // DXpedition double-click planning, with a fake dial table: FT4 has no
+  // 60 m dial, RTTY and PSK have none at all.
+  {
+    auto dials = [](const QString& mode, int metres) {
+      if (mode == QLatin1String("FT4") && metres == 60)
+        return false;
+      return metres >= 6 && metres <= 160;
+    };
+    DxpedEntry e;
+    e.modes = {QStringLiteral("CW"), QStringLiteral("SSB"), QStringLiteral("FT8"), QStringLiteral("FT4")};
+    e.digital = true;
+    e.bands = QStringLiteral("80-10m");
+    DxpedTune t = DxpedFeed::planTune(e, 20, dials);
+    if (t.mode != QLatin1String("FT8") || t.metres != 20 || !t.dial || t.superHound)
+      return fail("a DXpedition on FT8 and FT4 did not pick FT8 on the current band");
+    t = DxpedFeed::planTune(e, 160, dials);
+    if (t.mode != QLatin1String("FT8") || t.metres != 80)
+      return fail("a DXpedition did not pick the nearest listed band");
+    e.foxHound = true;
+    if (!DxpedFeed::planTune(e, 20, dials).superHound)
+      return fail("an FT8 Fox/Hound DXpedition did not ask for Super Hound");
+    e.foxHound = false;
+    e.modes = {QStringLiteral("FT4")};
+    e.bands = QStringLiteral("60m");
+    t = DxpedFeed::planTune(e, 20, dials);
+    if (t.mode != QLatin1String("FT4") || t.metres != 0)
+      return fail("a band without a dial for the mode was chosen");
+    e.modes = {QStringLiteral("CW"), QStringLiteral("RTTY"), QStringLiteral("PSK31"), QStringLiteral("FT4")};
+    if (DxpedFeed::planTune(e, 20, dials).mode != QLatin1String("FT4"))
+      return fail("a DXpedition with FT4, RTTY, and PSK did not pick FT4 first");
+    e.modes = {QStringLiteral("PSK31"), QStringLiteral("RTTY")};
+    t = DxpedFeed::planTune(e, 20, dials);
+    if (t.mode != QLatin1String("RTTY") || t.dial || t.metres != 0)
+      return fail("a DXpedition with RTTY and PSK did not pick RTTY without a dial");
+    e.modes = {QStringLiteral("PSK63")};
+    if (DxpedFeed::planTune(e, 20, dials).mode != QLatin1String("PSK63"))
+      return fail("a DXpedition naming PSK63 did not get PSK63");
+    e.modes = {QStringLiteral("PSK")};
+    if (DxpedFeed::planTune(e, 20, dials).mode != QLatin1String("PSK31"))
+      return fail("a DXpedition naming only PSK did not get PSK31");
+    e.modes = {QStringLiteral("CW"), QStringLiteral("SSB")};
+    e.digital = false;
+    if (!DxpedFeed::planTune(e, 20, dials).mode.isEmpty())
+      return fail("a CW and SSB DXpedition was given a digital mode");
+    bool dig = false;
+    if (!DxpedFeed::modesOf(QStringLiteral("160-6m; CW SSB FT8 FT4 RTTY PSK31"), &dig).contains(QLatin1String("PSK31")) ||
+        !DxpedFeed::modesOf(QStringLiteral("HF; BPSK63 only"), &dig).contains(QLatin1String("PSK63")) ||
+        !DxpedFeed::foxHoundOf(QStringLiteral("mainly CW, some FT8 (f/h) SSB")) ||
+        !DxpedFeed::foxHoundOf(QStringLiteral("FT8 SuperFox mode")) ||
+        DxpedFeed::foxHoundOf(QStringLiteral("By IK2GZU fm Ilembula; 80-10m; CW")))
+      return fail("a DXpedition's PSK rate or Fox/Hound was read wrong");
+    e.modes = {QStringLiteral("All")};
+    e.digital = true;
+    e.bands.clear();
+    t = DxpedFeed::planTune(e, 17, dials);
+    if (t.mode != QLatin1String("FT8") || t.metres != 17)
+      return fail("an all-modes DXpedition with no band did not stay on this band in FT8");
+    if (DxpedFeed::bandMetres(QStringLiteral("40 20 17 15 12 10m 80m")) != QList<int>({80, 40, 20, 17, 15, 12, 10}) ||
+        DxpedFeed::bandMetres(QStringLiteral("HF 6m")) != QList<int>({160, 80, 60, 40, 30, 20, 17, 15, 12, 10, 6}) ||
+        DxpedFeed::bandMetres(QStringLiteral("160-6m QO100")).size() != 11 ||
+        !DxpedFeed::bandMetres(QStringLiteral("QO100")).isEmpty())
+      return fail("DXpedition band lists were read wrong");
+    if (DxpedFeed::metresForHz(14074000) != 20 || DxpedFeed::metresForHz(50313000) != 6 ||
+        DxpedFeed::metresForHz(13000000) != 0)
+      return fail("a dial was put in the wrong band");
+    if (ModeProfile::metresForBand(ModeProfile::bandIndexForMetres(30)) != 30 ||
+        ModeProfile::bandIndexForMetres(11) != -1)
+      return fail("band chips and metres do not round-trip");
+  }
+  // Hot list: add, match, alerts, the voice cooldown, and what the top bar
+  // shows. This one keeps nothing in the settings.
+  {
+    HotList hot(false);
+    hot.add(QStringLiteral("3b9kw, FO  vp2v/ny9k"));
+    if (hot.entries().size() != 3 || !hot.contains(QStringLiteral("3B9KW")) || hot.toggle(QStringLiteral("FO")) ||
+        hot.contains(QStringLiteral("FO")) || !hot.toggle(QStringLiteral("FO")))
+      return fail("hot list add, toggle, or remove is wrong");
+    const QDateTime t0(QDate(2026, 11, 21), QTime(12, 0), QTimeZone(QTimeZone::UTC));
+    if (!hot.noteHeard(QStringLiteral("CQ 3B9KW LH80"), QStringLiteral("20 m FT8"), t0).isEmpty())
+      return fail("hot list alerts that are Off marked a call");
+    hot.setAlerts(HotList::Voice);
+    QStringList spoken;
+    QObject::connect(&hot, &HotList::heard, &hot, [&spoken](const QString& call, const QString&, bool speak) {
+      if (speak)
+        spoken << call;
+    });
+    if (hot.noteHeard(QStringLiteral("N8SDR <3B9KW> -12"), QStringLiteral("20 m FT8, -12 dB"), t0) !=
+            QStringList{QStringLiteral("3B9KW")} ||
+        hot.noteHeard(QStringLiteral("CQ FO/WE9G CJ"), QString(), t0) != QStringList{QStringLiteral("FO")} ||
+        hot.noteHeard(QStringLiteral("CQ VP2V/NY9K FK"), QString(), t0) != QStringList{QStringLiteral("VP2V/NY9K")} ||
+        !hot.noteHeard(QStringLiteral("CQ 3B9KWX FO1A"), QString(), t0).isEmpty())
+      return fail("hot list matching is wrong");
+    hot.noteHeard(QStringLiteral("3B9KW N8SDR RR73"), QString(), t0.addSecs(60));
+    hot.noteHeard(QStringLiteral("3B9KW N8SDR 73"), QString(), t0.addSecs(16 * 60));
+    if (spoken != QStringList({QStringLiteral("3B9KW"), QStringLiteral("FO"), QStringLiteral("VP2V/NY9K"),
+                               QStringLiteral("3B9KW")}))
+      return fail("the hot list voice did not keep a 15 minute cooldown per call");
+    if (!hot.noteStream(QStringLiteral("de 3B9"), QString(), t0).isEmpty() ||
+        hot.noteStream(QStringLiteral("KW k "), QString(), t0) != QStringList{QStringLiteral("3B9KW")})
+      return fail("hot list did not find a call split across keyboard text");
+    hot.add(QStringLiteral("K1ABC"));
+    hot.setShown(QStringLiteral("FO"), false);
+    if (hot.displayed().first().heard.isValid() == false || hot.displayed().size() != 4)
+      return fail("the hot list top bar does not list heard calls first");
+    hot.setShow(HotList::ShowTicked);
+    if (hot.displayed().size() != 3)
+      return fail("the hot list top bar shows unticked calls");
+    hot.setShow(HotList::ShowHeard);
+    if (hot.displayed().size() != 3)
+      return fail("the hot list top bar shows calls that were not heard");
+    HotListBar bar(&hot);
+    if (bar.chipCount() != 3)
+      return fail("the hot list bar has the wrong number of calls");
+    hot.clear();
+    if (bar.chipCount() != 0 || !hot.entries().isEmpty())
+      return fail("Clear all left calls on the hot list");
+    auto* top = window.findChild<HotListBar*>(QStringLiteral("hotListBar"));
+    auto* onBar = window.findChild<QAction*>(QStringLiteral("viewHotListBar"));
+    auto* host = window.findChild<QWidget*>(QStringLiteral("brandHost"));
+    auto* dialFrame = window.findChild<QFrame*>(QStringLiteral("dialBox"));
+    if (!top || !onBar || !host || !dialFrame || !window.findChild<QAction*>(QStringLiteral("viewHotList")))
+      return fail("the hot list is missing from the top bar or the View menu");
+    const bool wasOn = onBar->isChecked();
+    onBar->setChecked(true);
+    QApplication::processEvents();
+    const QPoint at = top->mapTo(host, QPoint(0, 0));
+    if (!top->isVisibleTo(host) || at.x() < dialFrame->geometry().right())
+      return fail("the hot list is not on the top bar right of the dial");
+    onBar->setChecked(false);
+    if (top->isVisibleTo(host))
+      return fail("View Hot list on top bar did not hide it");
+    onBar->setChecked(wasOn);
+  }
+  // Hot list follow-ups: its own voice, double-click to tune, and the
+  // DXpeditions rows lit by hot and heard.
+  {
+    auto* hotVoice = window.findChild<SpeechReader*>(QStringLiteral("hotListVoice"));
+    if (!hotVoice || hotVoice->muted() ||
+        hotVoice->outputId() != QSettings().value(QStringLiteral("speech/output")).toString() ||
+        window.findChildren<SpeechReader*>().size() < 2)
+      return fail("hot list announcements do not have their own unmuted voice on the Speech device");
+
+    // A chip double-click asks to tune and does not click twice.
+    HotList hot(false);
+    hot.add(QStringLiteral("H44MS 3B9KW 3D2AA"));
+    HotListBar bar(&hot);
+    QStringList tuned, picked;
+    QObject::connect(&bar, &HotListBar::tuneRequested, &bar, [&tuned](const QString& c) { tuned << c; });
+    QObject::connect(&bar, &HotListBar::callPicked, &bar, [&picked](const QString& c) { picked << c; });
+    QToolButton* hotChip = nullptr;
+    for (auto* b : bar.findChildren<QToolButton*>(QStringLiteral("hotListChip")))
+      if (b->text() == QLatin1String("H44MS"))
+        hotChip = b;
+    if (!hotChip)
+      return fail("the hot list chip is missing");
+    QMouseEvent dbl(QEvent::MouseButtonDblClick, QPointF(4, 4), hotChip->mapToGlobal(QPointF(4, 4)), Qt::LeftButton,
+                    Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(hotChip, &dbl);
+    if (tuned != QStringList{QStringLiteral("H44MS")} || !picked.isEmpty())
+      return fail("double-clicking a hot list chip did not ask to tune");
+
+    // DXpeditions rows: unheard hot, heard, heard lately.
+    hot.setAlerts(HotList::Visual);
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    hot.noteHeard(QStringLiteral("CQ H44MS RH"), QStringLiteral("20 m FT8"), now, 20, QStringLiteral("FT8"), 14074000);
+    hot.noteHeard(QStringLiteral("CQ 3B9KW LH"), QStringLiteral("15 m FT8"), now.addSecs(-3600), 15,
+                  QStringLiteral("FT8"), 21074000);
+    if (hot.entry(QStringLiteral("H44MS")).heardMetres != 20 || hot.entry(QStringLiteral("H44MS")).heardDialHz != 14074000 ||
+        !hot.entry(QStringLiteral("H44MS")).recent() || hot.entry(QStringLiteral("3B9KW")).recent())
+      return fail("the hot list did not keep where a call was heard");
+    const QVariant keepFilter = QSettings().value(QStringLiteral("dxped/filter"));
+    DxpedPanel lit;
+    lit.setHotList(&hot);
+    lit.setToday(QDate(2026, 11, 21));
+    lit.feed()->setEntries(window.findChild<DxpedPanel*>(QStringLiteral("dxpedPanel"))->feed()->entries(), QDateTime(QDate(2026, 11, 21), QTime(12, 0), QTimeZone(QTimeZone::UTC)));
+    if (auto* box = lit.findChild<QComboBox*>(QStringLiteral("dxpedModes")))
+      box->setCurrentIndex(DxpedPanel::AllModes);
+    QHash<QString, int> level;
+    QHash<QString, QColor> back;
+    QAbstractItemModel* m = lit.table()->model();
+    for (int r = 0; r < m->rowCount(); ++r) {
+      const QString call = m->index(r, 1).data().toString();
+      level.insert(call, m->index(r, 0).data(Qt::UserRole + 7).toInt());
+      back.insert(call, m->index(r, 2).data(Qt::BackgroundRole).value<QBrush>().color());
+    }
+    if (keepFilter.isValid())
+      QSettings().setValue(QStringLiteral("dxped/filter"), keepFilter);
+    else
+      QSettings().remove(QStringLiteral("dxped/filter"));
+    if (level.value(QStringLiteral("H44MS")) != 3 || level.value(QStringLiteral("3B9")) != 2 ||
+        level.value(QStringLiteral("3D2AA")) != 1 || level.value(QStringLiteral("5H3MB")) != 0 ||
+        back.value(QStringLiteral("H44MS")) == back.value(QStringLiteral("3B9")) ||
+        back.value(QStringLiteral("3B9")) == back.value(QStringLiteral("3D2AA")) ||
+        back.value(QStringLiteral("3D2AA")) == back.value(QStringLiteral("5H3MB"))) {
+      qCritical("hot rows %d %d %d %d", level.value(QStringLiteral("H44MS")), level.value(QStringLiteral("3B9")),
+                level.value(QStringLiteral("3D2AA")), level.value(QStringLiteral("5H3MB")));
+      return fail("DXpeditions rows on the hot list are not lit by heard and not heard");
+    }
+
+    // The window: tune to where a call was heard, else its DXpedition,
+    // else nothing moves.
+    auto* winHot = window.findChild<HotList*>(QStringLiteral("hotList"));
+    auto* winBar = window.findChild<HotListBar*>(QStringLiteral("hotListBar"));
+    auto* bandBar = window.findChild<ModeProfile*>();
+    if (!winHot || !winBar || !bandBar)
+      return fail("the window hot list is missing");
+    QSettings store;
+    const QStringList keys = {QStringLiteral("hotlist/calls"), QStringLiteral("hotlist/hidden"),
+                              QStringLiteral("hotlist/alerts"), QStringLiteral("profile/superHound")};
+    QHash<QString, QVariant> kept;
+    for (const QString& k : keys)
+      kept.insert(k, store.value(k));
+    const HotList::Alerts keepAlerts = winHot->alerts();
+    winHot->add(QStringLiteral("ZZ9ZZ QQ0QQ"));
+    winHot->setAlerts(HotList::Visual);
+    winHot->noteHeard(QStringLiteral("CQ ZZ9ZZ FN42"), QStringLiteral("17 m FT4"), QDateTime::currentDateTimeUtc(), 17,
+                      QStringLiteral("FT4"), 18104000);
+    emit winBar->tuneRequested(QStringLiteral("ZZ9ZZ"));
+    QApplication::processEvents();
+    const bool heardOk = bandBar->digitalMode() == QLatin1String("FT4") && ModeProfile::metresForBand(bandBar->band()) == 17;
+    emit winBar->tuneRequested(QStringLiteral("H44MS"));  // not heard here: its DXpedition, FT8
+    QApplication::processEvents();
+    const bool dxOk = bandBar->digitalMode() == QLatin1String("FT8");
+    const int bandBefore = bandBar->band();
+    emit winBar->tuneRequested(QStringLiteral("QQ0QQ"));  // nothing known
+    QApplication::processEvents();
+    const bool stayOk = bandBar->digitalMode() == QLatin1String("FT8") && bandBar->band() == bandBefore;
+    winHot->remove(QStringLiteral("ZZ9ZZ"));
+    winHot->remove(QStringLiteral("QQ0QQ"));
+    winHot->setAlerts(keepAlerts);
+    for (const QString& k : keys) {
+      if (kept.value(k).isValid())
+        store.setValue(k, kept.value(k));
+      else
+        store.remove(k);
+    }
+    if (!heardOk || !dxOk || !stayOk) {
+      qCritical("hot tune heard %d dx %d stay %d [%s]", heardOk, dxOk, stayOk, qPrintable(bandBar->digitalMode()));
+      return fail("double-clicking a hot list call did not tune to where it was heard or its DXpedition");
+    }
+  }
+  // Cluster spots (Spothole): only digital spots of the digital
+  // DXpeditions on the air mark rows and the hot list. A canned reply; no
+  // network in the self-test.
+  {
+    QSettings store;
+    const QStringList keys = {QStringLiteral("spots/enabled"),  QStringLiteral("spots/pollSecs"),
+                              QStringLiteral("spots/keepMins"), QStringLiteral("hotlist/calls"),
+                              QStringLiteral("hotlist/hidden"), QStringLiteral("hotlist/alerts"),
+                              QStringLiteral("profile/superHound"), QStringLiteral("spots/hotList")};
+    QHash<QString, QVariant> kept;
+    for (const QString& k : keys)
+      kept.insert(k, store.value(k));
+    auto restoreSpots = [&] {
+      for (const QString& k : keys) {
+        if (kept.value(k).isValid())
+          store.setValue(k, kept.value(k));
+        else
+          store.remove(k);
+      }
+    };
+    const qint64 t = QDateTime::currentSecsSinceEpoch();
+    auto spotJson = [](const char* call, double freq, const char* mode, const char* type, const char* src,
+                   qint64 time, bool qrt) {
+      return QStringLiteral("{\"dx_call\":\"%1\",\"freq\":%2,\"mode\":\"%3\",\"mode_type\":\"%4\","
+                            "\"mode_source\":\"%5\",\"comment\":\"%3 -10 dB\",\"de_call\":\"W1AW\","
+                            "\"source\":\"Cluster\",\"time\":%6,\"received_time\":%7.5,\"qrt\":%8}")
+          .arg(QLatin1String(call))
+          .arg(freq, 0, 'f', 1)
+          .arg(QLatin1String(mode), QLatin1String(type), QLatin1String(src))
+          .arg(time)
+          .arg(time + 5)
+          .arg(qrt ? QStringLiteral("true") : QStringLiteral("false"));
+    };
+    const QString body = QStringLiteral("[%1]").arg(QStringList{
+        spotJson("3B9KW", 21075200, "FT8", "DATA", "COMMENT", t - 240, false),
+        spotJson("3B9KW", 21025000, "CW", "CW", "SPOT", t - 60, false),        // CW: never shown
+        spotJson("3B9FR", 14074900, "FT8", "DATA", "COMMENT", t - 60, false),  // starts like 3B9KW, not it
+        spotJson("H44MS", 14083000, "RTTY", "DATA", "BANDPLAN", t - 120, false),
+        spotJson("HR9XX", 7074000, "FT8", "DATA", "COMMENT", t - 60, true),    // QRT
+        spotJson("5H3MB", 14074000, "FT8", "DATA", "COMMENT", t - 60, false),  // a CW-only DXpedition
+    }.join(QLatin1Char(',')));
+    QString err;
+    double newest = 0;
+    const QList<DxSpot> spotList = SpotWatch::parseSpots(body.toUtf8(), &err, &newest);
+    if (!err.isEmpty() || spotList.size() != 4 || newest < double(t - 60 + 5)) {
+      restoreSpots();
+      qCritical("spots spotList %lld [%s]", qlonglong(spotList.size()), qPrintable(err));
+      return fail("Spothole spots were read wrong, or a CW or QRT spot was kept");
+    }
+    if (!SpotWatch::parseSpots("<html>busy</html>", &err).isEmpty() || err.isEmpty()) {
+      restoreSpots();
+      return fail("a page that is not a spot list was taken as spots");
+    }
+    if (SpotWatch::sameStation(QStringLiteral("3B9FR"), QStringLiteral("3B9KW")) ||
+        !SpotWatch::sameStation(QStringLiteral("K6VHF/HR9"), QStringLiteral("HR9")) ||
+        !SpotWatch::sameStation(QStringLiteral("VP2V/NY9K"), QStringLiteral("VP2V/NY9K")) ||
+        SpotWatch::sameStation(QStringLiteral("NY9K"), QStringLiteral("VP2V/NY9K")) ||
+        SpotWatch::stdMode(QStringLiteral("PSK")) != QLatin1String("PSK31") ||
+        SpotWatch::stdMode(QStringLiteral("FT4")) != QLatin1String("FT4") ||
+        !SpotWatch::stdMode(QStringLiteral("OLIVIA")).isEmpty()) {
+      restoreSpots();
+      return fail("cluster spots are matched to the wrong station or mode");
+    }
+
+    // A panel of its own: the canned list, Nov 21. On the air and digital:
+    // H44MS (ends Nov 20, a day's grace), 3B9 as 3B9KW, and HR9.
+    auto* main = window.findChild<DxpedPanel*>(QStringLiteral("dxpedPanel"));
+    DxpedPanel sp;
+    sp.setToday(QDate(2026, 11, 21));
+    sp.feed()->setEntries(main->feed()->entries(), QDateTime(QDate(2026, 11, 21), QTime(12, 0), QTimeZone(QTimeZone::UTC)));
+    QStringList watched = sp.spots()->watch();
+    if (watched != QStringList({QStringLiteral("3B9KW"), QStringLiteral("H44MS"), QStringLiteral("HR9")}) ||
+        !sp.findChild<QCheckBox*>(QStringLiteral("dxpedSpots")) ||
+        !sp.findChild<QComboBox*>(QStringLiteral("dxpedSpotEvery")) ||
+        !sp.findChild<QComboBox*>(QStringLiteral("dxpedSpotKeep"))) {
+      restoreSpots();
+      qCritical("spots watch [%s]", qPrintable(watched.join(QLatin1Char(' '))));
+      return fail("the spot watch is not the digital DXpeditions on the air, or its controls are missing");
+    }
+    auto* every = sp.findChild<QComboBox*>(QStringLiteral("dxpedSpotEvery"));
+    auto* keepBox = sp.findChild<QComboBox*>(QStringLiteral("dxpedSpotKeep"));
+    if (every->count() != 2 || every->itemData(0).toInt() != 90 || every->itemData(1).toInt() != 180 ||
+        keepBox->count() != 3 || keepBox->itemData(2).toInt() != 30) {
+      restoreSpots();
+      return fail("the spot check and keep choices are not 90/180 s and 10/20/30 min");
+    }
+    keepBox->setCurrentIndex(1);  // 20 min
+    QStringList heardSpots;
+    QObject::connect(&sp, &DxpedPanel::spotted, &sp,
+                     [&heardSpots](const QString& call, const DxSpot&) { heardSpots << call; });
+    sp.spots()->ingest(spotList);
+    QHash<QString, QString> status;
+    QAbstractItemModel* m = sp.table()->model();
+    if (auto* box = sp.findChild<QComboBox*>(QStringLiteral("dxpedModes")))
+      box->setCurrentIndex(DxpedPanel::AllModes);
+    for (int r = 0; r < m->rowCount(); ++r)
+      status.insert(m->index(r, 1).data().toString(), m->index(r, 0).data().toString());
+    heardSpots.sort();
+    if (sp.spots()->spottedCount() != 2 ||
+        heardSpots != QStringList({QStringLiteral("3B9KW"), QStringLiteral("H44MS")}) ||
+        !status.value(QStringLiteral("3B9")).startsWith(QLatin1String("SPOTTED 15 m FT8 ")) ||
+        !status.value(QStringLiteral("H44MS")).startsWith(QLatin1String("SPOTTED 20 m RTTY? ")) ||
+        status.value(QStringLiteral("HR9")).startsWith(QLatin1String("SPOTTED")) ||
+        status.value(QStringLiteral("5H3MB")).startsWith(QLatin1String("SPOTTED"))) {
+      restoreSpots();
+      qCritical("spot rows 3B9 [%s] H44MS [%s] HR9 [%s]", qPrintable(status.value(QStringLiteral("3B9"))),
+                qPrintable(status.value(QStringLiteral("H44MS"))), qPrintable(status.value(QStringLiteral("HR9"))));
+      return fail("spotted DXpeditions are not marked SPOTTED with band and mode");
+    }
+    // Spotted rows sort first.
+    sp.table()->sortByColumn(0, Qt::AscendingOrder);
+    if (!m->index(0, 0).data().toString().startsWith(QLatin1String("SPOTTED"))) {
+      restoreSpots();
+      return fail("spotted DXpeditions are not listed first");
+    }
+    // Keep 10 min: the 4-minute-old spot stays, an older one goes.
+    keepBox->setCurrentIndex(0);
+    sp.spots()->prune(QDateTime::currentDateTimeUtc().addSecs(7 * 60));
+    if (sp.spots()->spottedCount() != 1 || !sp.spots()->latest(QStringLiteral("H44MS"))) {
+      restoreSpots();
+      return fail("spots did not age out after the keep time");
+    }
+
+    // The window: a spotted hot call is marked as spotted, and a double-click
+    // goes to the spot's band, mode, and dial.
+    auto* winHot = window.findChild<HotList*>(QStringLiteral("hotList"));
+    auto* winBar = window.findChild<HotListBar*>(QStringLiteral("hotListBar"));
+    auto* bandBar = window.findChild<ModeProfile*>();
+    if (!winHot || !winBar || !bandBar || !main) {
+      restoreSpots();
+      return fail("the window spot wiring is missing");
+    }
+    const HotList::Alerts keepAlerts = winHot->alerts();
+    const bool had3b9 = winHot->contains(QStringLiteral("3B9KW"));
+    const bool hadH44 = winHot->contains(QStringLiteral("H44MS"));
+    winHot->add(QStringLiteral("3B9KW H44MS"));
+    winHot->setAlerts(HotList::Visual);
+    main->setToday(QDate(2026, 11, 21));
+    main->spots()->ingest(spotList);
+    const HotEntry b9 = winHot->entry(QStringLiteral("3B9KW"));
+    const HotEntry h44 = winHot->entry(QStringLiteral("H44MS"));
+    const bool marked = b9.spotted && b9.heardMode == QLatin1String("FT8") && b9.heardMetres == 15 &&
+                        b9.recent() && std::llabs(b9.heardDialHz - 21075200) <= 4000 &&
+                        h44.spotted && h44.heardMode == QLatin1String("RTTY") &&
+                        std::llabs(std::llabs(h44.heardDialHz - 14083000) - 1500) == 0;
+    emit winBar->tuneRequested(QStringLiteral("3B9KW"));
+    QApplication::processEvents();
+    const bool tuned = bandBar->digitalMode() == QLatin1String("FT8") &&
+                       ModeProfile::metresForBand(bandBar->band()) == 15;
+    // Also check hot list calls: a hot call that is no DXpedition is asked
+    // for only with the option on, and its spot marks the chip.
+    auto* hotSpots = main->findChild<QCheckBox*>(QStringLiteral("dxpedSpotHot"));
+    const bool hadW1aw = winHot->contains(QStringLiteral("W1AW"));
+    winHot->add(QStringLiteral("W1AW"));
+    bool hotWatch = false;
+    bool hotMarked = false;
+    if (hotSpots) {
+      hotSpots->setChecked(false);
+      const bool offOk = !main->spots()->watch().contains(QStringLiteral("W1AW"));
+      hotSpots->setChecked(true);
+      hotWatch = offOk && main->spots()->watch().contains(QStringLiteral("W1AW")) &&
+                 main->spots()->watch().contains(QStringLiteral("3B9KW"));
+      main->spots()->ingest(SpotWatch::parseSpots(
+          QStringLiteral("[%1]").arg(spotJson("W1AW/8", 14075600, "FT8", "DATA", "COMMENT", t - 30, false)).toUtf8(), &err));
+      const HotEntry w1 = winHot->entry(QStringLiteral("W1AW"));
+      hotMarked = w1.spotted && w1.heardMetres == 20 && w1.heardMode == QLatin1String("FT8");
+      hotSpots->setChecked(false);
+      hotWatch = hotWatch && !main->spots()->watch().contains(QStringLiteral("W1AW"));
+    }
+    if (!hadW1aw)
+      winHot->remove(QStringLiteral("W1AW"));
+    if (!hotWatch || !hotMarked) {
+      winHot->setAlerts(keepAlerts);
+      restoreSpots();
+      qCritical("hot spots option %d watch %d marked %d", hotSpots != nullptr, hotWatch, hotMarked);
+      return fail("Also check hot list calls did not watch the hot list or mark a spotted hot call");
+    }
+    if (!had3b9)
+      winHot->remove(QStringLiteral("3B9KW"));
+    if (!hadH44)
+      winHot->remove(QStringLiteral("H44MS"));
+    winHot->setAlerts(keepAlerts);
+    restoreSpots();
+    if (!marked || !tuned) {
+      qCritical("spot hot marked %d tuned %d dial %lld rtty %lld [%s]", marked, tuned,
+                qlonglong(b9.heardDialHz), qlonglong(h44.heardDialHz), qPrintable(bandBar->digitalMode()));
+      return fail("a spotted hot call was not marked, or double-click did not go to its spot");
+    }
+  }
+  // Clock check: the median DT of FT decodes over several periods.
+  {
+    ClockCheck clock;
+    const qint64 t0 = 1000000;
+    // Five stations a period, scattered round +1.4 s: a fast clock.
+    const double fast[] = {1.2, 1.5, 1.4, 1.6, 1.3};
+    for (int p = 0; p < 2; ++p)
+      for (double dt : fast)
+        clock.add(QStringLiteral("FT8"), QStringLiteral("1200%1").arg(p * 15, 2, 10, QLatin1Char('0')), dt,
+                  t0 + p * 15000);
+    const bool fastOk = clock.state() == ClockCheck::State::Fast && std::fabs(clock.offset() - 1.4) < 0.11;
+    // One period is not enough, a sound clock is Ok, slow is caught, and a
+    // few stations far off do not move the median.
+    ClockCheck one;
+    for (double dt : fast)
+      one.add(QStringLiteral("FT8"), QStringLiteral("120000"), dt, t0);
+    ClockCheck good;
+    const double fine[] = {0.1, -0.2, 0.3, 0.0, 2.6, -0.1, 0.2, 0.1, -2.0, 0.4};
+    for (int i = 0; i < 10; ++i)
+      good.add(QStringLiteral("FT8"), QStringLiteral("1200%1").arg((i % 2) * 15, 2, 10, QLatin1Char('0')), fine[i],
+               t0 + i * 1500);
+    ClockCheck slow;
+    for (int i = 0; i < 10; ++i)
+      slow.add(QStringLiteral("FT4"), QStringLiteral("12000%1").arg((i % 2) ? 7 : 0), -0.7 + 0.02 * i, t0 + i * 750);
+    // Old decodes age out after three minutes; another mode starts over.
+    ClockCheck aged = clock;
+    aged.add(QStringLiteral("FT8"), QStringLiteral("120500"), 1.4, t0 + 5 * 60 * 1000);
+    ClockCheck other = clock;
+    other.add(QStringLiteral("JT65A"), QStringLiteral("1210"), 1.4, t0 + 20000);
+    // Hysteresis: once off, 0.9 s still counts as fast in FT8.
+    ClockCheck sticky = clock;
+    for (int i = 0; i < 40; ++i)
+      sticky.add(QStringLiteral("FT8"), QStringLiteral("1201%1").arg((i % 2) * 15, 2, 10, QLatin1Char('0')), 0.9,
+                 t0 + 30000 + i * 100);
+    if (!fastOk || one.state() != ClockCheck::State::Unknown || good.state() != ClockCheck::State::Ok ||
+        slow.state() != ClockCheck::State::Slow || aged.state() != ClockCheck::State::Unknown ||
+        other.state() != ClockCheck::State::Unknown || sticky.state() != ClockCheck::State::Fast ||
+        ClockCheck::limitFor(QStringLiteral("FT2")) != 0.3 || ClockCheck::limitFor(QStringLiteral("PSK31")) != 0.0) {
+      qCritical("clock fast %d %.2f one %d good %d slow %d aged %d other %d sticky %d", int(clock.state()),
+                clock.offset(), int(one.state()), int(good.state()), int(slow.state()), int(aged.state()),
+                int(other.state()), int(sticky.state()));
+      return fail("the clock check misjudged the FT decode DTs");
+    }
+    StatusStrip strip;
+    auto* clockChip = strip.findChild<QLabel*>(QStringLiteral("clockOff"));
+    strip.setClockOff(true, -1.3, QStringLiteral("FT8"), 12);
+    const bool shown = clockChip && !clockChip->isHidden() && clockChip->text() == QLatin1String("Clock 1.3 s slow");
+    strip.setClockOff(false, 0.0, QStringLiteral("FT8"), 12);
+    if (!shown || !clockChip->isHidden())
+      return fail("the status bar clock chip does not show a slow clock or hide again");
+  }
+  // Needed stations: AD1C entities, the ADIF index, and the Need column.
+  {
+    CtyTable cty;
+    QFile built(QStringLiteral(":/std/cty.dat"));
+    if (!built.open(QIODevice::ReadOnly) || !cty.load(built.readAll()) || cty.entities() < 300)
+      return fail("the built-in cty.dat did not load");
+    const QString us = cty.entity(QStringLiteral("N8SDR"));
+    if (us.isEmpty() || cty.entity(QStringLiteral("W1AW/8")) != us ||
+        cty.entity(QStringLiteral("3B9KW")).isEmpty() || cty.entity(QStringLiteral("3B9KW")) == us ||
+        cty.entity(QStringLiteral("K1ABC/VE3")) != cty.entity(QStringLiteral("VE3XX")) ||
+        cty.entity(QStringLiteral("JA1XYZ")) == us || !cty.entity(QStringLiteral("QQ")).isEmpty()) {
+      qCritical("cty N8SDR [%s] 3B9KW [%s] K1ABC/VE3 [%s]", qPrintable(us),
+                qPrintable(cty.entity(QStringLiteral("3B9KW"))), qPrintable(cty.entity(QStringLiteral("K1ABC/VE3"))));
+      return fail("cty.dat gives the wrong entity for a call");
+    }
+    QString call;
+    QString grid;
+    if (!messageStation(QStringLiteral("CQ DX K1ABC FN42"), &call, &grid) || call != QLatin1String("K1ABC") ||
+        grid != QLatin1String("FN42") ||
+        !messageStation(QStringLiteral("N8SDR KC2NDA R-05"), &call, &grid) || call != QLatin1String("KC2NDA") ||
+        !grid.isEmpty() || !messageStation(QStringLiteral("M7IAF VE2FON RR73"), &call, &grid) ||
+        call != QLatin1String("VE2FON") || !grid.isEmpty() || messageStation(QStringLiteral("TNX"), &call, &grid))
+      return fail("the station a message is from was read wrong");
+    const QByteArray adif =
+        "STD log<EOH>\n"
+        "<CALL:5>N8SDR<BAND:3>20m<GRIDSQUARE:6>EM79xx<EOR>\n"
+        "<CALL:6>JA1XYZ<FREQ:6>14.074<GRIDSQUARE:4>PM95<EOR>\n"
+        "<CALL:5>VE3XX<BAND:3>40m<EOR>\n";
+    WorkedIndex log;
+    log.addAdif(cty, adif);
+    const QString ja = cty.entity(QStringLiteral("JA1XYZ"));
+    const QString ve = cty.entity(QStringLiteral("VE3XX"));
+    if (!log.entities.contains(ja) || !log.entityBands.contains(ja + QStringLiteral("|20m")) ||
+        !log.entityBands.contains(ve + QStringLiteral("|40m")) || !log.grids.contains(QStringLiteral("EM79")) ||
+        !log.grids.contains(QStringLiteral("PM95")) || adifBandForMhz(7.074) != QLatin1String("40m"))
+      return fail("the ADIF log was not indexed by entity, band, and grid");
+    const auto need = [&](const char* c, const char* g, const char* band) {
+      return classifyNeed(cty, log, QLatin1String(c), QLatin1String(g), QLatin1String(band));
+    };
+    // VE3XX was worked on 40 m only: B4 on 40 m, nothing on 20 m. CN89 is
+    // worked on 20 m only, so on 40 m it is a grid new on the band.
+    log.add(cty, QStringLiteral("VE7AAA"), QStringLiteral("20m"), QStringLiteral("CN89"));
+    if (need("3B9KW", "", "20m") != Need::Entity || need("VE3ZZ", "FN03", "40m") != Need::Grid ||
+        need("JA2AAA", "PM84", "20m") != Need::Grid || need("JA1XYZ", "PM95", "20m") != Need::Worked ||
+        need("JA2AAA", "PM95", "20m") != Need::None || need("VE7AAA", "CN89", "40m") != Need::GridBand ||
+        need("VE3XX", "", "40m") != Need::Worked || need("VE3XX", "", "20m") != Need::None ||
+        need("VE7AAA/P", "CN89", "20m") != Need::Worked || needTag(Need::Entity) != QLatin1String("NEW") ||
+        needTag(Need::GridBand) != QLatin1String("GRID+BAND") || needTag(Need::Worked) != QLatin1String("B4"))
+      return fail("needed stations are classified wrong");
+
+    // Opt-in: the Need column shows only with Mark Needed Stations on.
+    auto* mark = window.findChild<QAction*>(QStringLiteral("listMarkNeeded"));
+    auto* header = window.findChild<QLabel*>(QStringLiteral("decodeHeader"));
+    const QVariant kept = QSettings().value(QStringLiteral("dx/markNeeded"));
+    if (!mark || !header)
+      return fail("Mark Needed Stations is missing");
+    const bool wasOn = mark->isChecked();
+    mark->setChecked(false);
+    QApplication::processEvents();
+    const bool offOk = !header->text().contains(QLatin1String("Need"));
+    mark->setChecked(true);
+    QApplication::processEvents();
+    const bool onOk = header->text().contains(QLatin1String("Need"));
+    mark->setChecked(wasOn);
+    if (kept.isValid())
+      QSettings().setValue(QStringLiteral("dx/markNeeded"), kept);
+    else
+      QSettings().remove(QStringLiteral("dx/markNeeded"));
+    if (!offOk || !onOk)
+      return fail("Mark Needed Stations does not add and remove the Need column");
+  }
+  // Worked list sources: STD's ADIF always, plus another ADIF or the
+  // SDRLogger+ copy when chosen. Reading only; nothing is fetched here.
+  {
+    QSettings store;
+    const QStringList keys = {QStringLiteral("log/adifPath"), QStringLiteral("needed/source"),
+                              QStringLiteral("needed/adifPath"), QStringLiteral("needed/sdrPort")};
+    QHash<QString, QVariant> kept;
+    for (const QString& k : keys)
+      kept.insert(k, store.value(k));
+    auto restoreWorked = [&] {
+      for (const QString& k : keys) {
+        if (kept.value(k).isValid())
+          store.setValue(k, kept.value(k));
+        else
+          store.remove(k);
+      }
+    };
+    QTemporaryDir wdir;
+    const QString own = wdir.filePath(QStringLiteral("own.adi"));
+    const QString other = wdir.filePath(QStringLiteral("other.adi"));
+    {
+      QFile f(own);
+      f.open(QIODevice::WriteOnly);
+      f.write("own<EOH>\n<CALL:5>VE3XX<BAND:3>20m<GRIDSQUARE:4>FN03<EOR>\n");
+    }
+    {
+      QFile f(other);
+      f.open(QIODevice::WriteOnly);
+      f.write("other<EOH>\n<CALL:6>JA1XYZ<BAND:3>20m<GRIDSQUARE:4>PM95<EOR>\n");
+    }
+    store.setValue(QStringLiteral("log/adifPath"), own);
+    store.setValue(QStringLiteral("needed/adifPath"), other);
+    // The worked list is read on a pool thread: ask once, then wait for it.
+    auto settle = [&window] {
+      QElapsedTimer waited;
+      waited.start();
+      // Ask until a request starts no new read: a read queued behind
+      // another one is picked up by the next ask.
+      while (waited.elapsed() < 10000) {
+        window.needFor(QStringLiteral("CQ K1ABC FN42"));
+        if (!window.workedListLoading())
+          break;
+        while (window.workedListLoading() && waited.elapsed() < 10000)
+          QApplication::processEvents(QEventLoop::AllEvents, 20);
+      }
+    };
+    store.setValue(QStringLiteral("needed/source"), 0);
+    const QStringList onlyOwn = window.workedSources();
+    settle();
+    const bool jaNeededAlone = window.needFor(QStringLiteral("CQ JA1XYZ PM95")) == Need::Entity;
+    const bool veWorked = window.needFor(QStringLiteral("CQ VE3XX FN03")) != Need::Entity;
+    store.setValue(QStringLiteral("needed/source"), 1);
+    const QStringList withOther = window.workedSources();
+    settle();
+    const bool jaWorked = window.needFor(QStringLiteral("CQ JA1XYZ PM95")) != Need::Entity;
+    const bool veStill = window.needFor(QStringLiteral("CQ VE3XX FN03")) != Need::Entity;
+    store.setValue(QStringLiteral("needed/source"), 2);
+    const QStringList withLogger = window.workedSources();
+    restoreWorked();
+    window.workedSources();  // settings back before any failure
+    if (onlyOwn != QStringList{own} || withOther != QStringList({own, other}) ||
+        withLogger != QStringList({own, LoggerFeed::cachePath()}) || !jaNeededAlone || !veWorked ||
+        !jaWorked || !veStill ||
+        LoggerFeed::url(5050) != QLatin1String("http://127.0.0.1:5050/api/adif/export")) {
+      qCritical("worked sources own %d other %d logger %d ja-alone %d ve %d ja %d ve-still %d",
+                onlyOwn.size(), withOther.size(), withLogger.size(), jaNeededAlone, veWorked, jaWorked, veStill);
+      return fail("the worked list does not combine STD's ADIF with the chosen source");
+    }
+  }
+  // Who heard me: PSK Reporter's reply, the chip, and its on/off. No network.
+  {
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    const QByteArray xml = QStringLiteral(
+        "<?xml version=\"1.0\"?><receptionReports>"
+        "<receptionReport receiverCallsign=\"MM9PSY\" receiverLocator=\"IO86ha\" senderCallsign=\"N8SDR\" "
+        "frequency=\"14074812\" flowStartSeconds=\"%1\" mode=\"FT8\" receiverDXCC=\"Scotland\" sNR=\"-7\" />"
+        "<receptionReport receiverCallsign=\"MM9PSY\" receiverLocator=\"IO86ha\" senderCallsign=\"N8SDR\" "
+        "frequency=\"14074812\" flowStartSeconds=\"%2\" mode=\"FT8\" receiverDXCC=\"Scotland\" sNR=\"-3\" />"
+        "<receptionReport receiverCallsign=\"KG7QVK\" receiverLocator=\"EN82JR\" senderCallsign=\"N8SDR\" "
+        "frequency=\"14074822\" flowStartSeconds=\"%2\" mode=\"FT8\" receiverDXCC=\"United States\" sNR=\"-12\" />"
+        "<receptionReport receiverCallsign=\"VK3XX\" receiverLocator=\"QF22\" senderCallsign=\"N8SDR\" "
+        "frequency=\"21074500\" flowStartSeconds=\"%2\" mode=\"FT8\" receiverDXCC=\"Australia\" sNR=\"-20\" />"
+        "</receptionReports>")
+                               .arg(now - 300)
+                               .arg(now - 60)
+                               .toUtf8();
+    QString err;
+    const QList<HeardReport> heardList = HeardWatch::parse(xml, &err);
+    bool scot = false;
+    for (const HeardReport& r : heardList)
+      scot = scot || (r.call == QLatin1String("MM9PSY") && r.snr == -3);
+    if (!err.isEmpty() || heardList.size() != 3 || !scot ||
+        !HeardWatch::parse("<html>busy</html>", &err).isEmpty() || err.isEmpty() ||
+        !HeardWatch::url(QStringLiteral("N8SDR")).contains(QLatin1String("senderCallsign=N8SDR")) ||
+        !HeardWatch::url(QStringLiteral("N8SDR")).contains(QLatin1String("flowStartSeconds=-900")))
+      return fail("PSK Reporter reception reports were read wrong");
+    auto* watch = window.findChild<HeardWatch*>(QStringLiteral("heardWatch"));
+    auto* strip = window.findChild<StatusStrip*>(QStringLiteral("statusStrip"));
+    auto* chip = strip ? strip->findChild<QPushButton*>(QStringLiteral("heardChip")) : nullptr;
+    if (!watch || !chip)
+      return fail("the heard-me chip is missing");
+    const QVariant kept = QSettings().value(QStringLiteral("pskr/heardMe"));
+    const bool wasOn = watch->enabled();
+    watch->setEnabled(false);
+    const bool hiddenOff = chip->isHidden();
+    watch->setEnabled(true);
+    watch->setReports(heardList);
+    const QString text = chip->text();
+    const bool shownOn = !chip->isHidden() && text.startsWith(QLatin1String("HEARD "));
+    watch->setEnabled(wasOn);
+    if (kept.isValid())
+      QSettings().setValue(QStringLiteral("pskr/heardMe"), kept);
+    else
+      QSettings().remove(QStringLiteral("pskr/heardMe"));
+    if (!hiddenOff || !shownOn) {
+      qCritical("heard chip off-hidden %d on [%s]", hiddenOff, qPrintable(text));
+      return fail("the heard-me chip does not follow its on/off");
+    }
+  }
   qInfo("STD self-test ok");
   return 0;
 }
@@ -4561,6 +5634,14 @@ int main(int argc, char* argv[]) {
   else
     qWarning("STD stylesheet is missing from the binary resources");
 
+  // The self-test reads the DXpeditions table whole. The operator's On the
+  // air now filter would hide rows it counts, so it is off for the run and
+  // put back after.
+  const QVariant keptActiveOnly =
+      selftest ? QSettings().value(QStringLiteral("dxped/activeOnly")) : QVariant();
+  if (selftest)
+    QSettings().setValue(QStringLiteral("dxped/activeOnly"), false);
+
   MainWindow window;
   if (!selftest)
     window.primeGraphics();
@@ -4571,5 +5652,12 @@ int main(int argc, char* argv[]) {
     QTimer::singleShot(0, &app, [&app, &window] { app.exit(shellReady(window)); });
   }
 
-  return app.exec();
+  const int code = app.exec();
+  if (selftest) {
+    if (keptActiveOnly.isValid())
+      QSettings().setValue(QStringLiteral("dxped/activeOnly"), keptActiveOnly);
+    else
+      QSettings().remove(QStringLiteral("dxped/activeOnly"));
+  }
+  return code;
 }

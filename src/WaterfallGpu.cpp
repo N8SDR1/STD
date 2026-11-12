@@ -16,7 +16,11 @@
 
 namespace {
 
+#if defined(Q_OS_WIN)
+QString gProcessBackend = QStringLiteral("d3d11");
+#else
 QString gProcessBackend = QStringLiteral("vulkan");
+#endif
 
 bool knownGraphicsKey(const QString& key) {
   const QString known[] = {QStringLiteral("auto"),   QStringLiteral("vulkan"), QStringLiteral("d3d11"),
@@ -80,8 +84,16 @@ QRhiWidget::Api WaterfallGpu::resolve(const QString& choice, QString* liveName) 
     name("Direct3D 11");
     return Api::Direct3D11;
   }
-  // Empty, auto, and vulkan all request Vulkan. The instance is attached
-  // separately. Painter is only the explicit software choice.
+  if (key == QLatin1String("auto") || key.isEmpty()) {
+#if defined(Q_OS_WIN)
+    name("Direct3D 11");
+    return Api::Direct3D11;
+#else
+    name("Vulkan");
+    return Api::Vulkan;
+#endif
+  }
+  // Explicit Vulkan. Painter is only the software choice.
   name("Vulkan");
   return Api::Vulkan;
 }
@@ -91,18 +103,15 @@ QString WaterfallGpu::processBackend() {
 }
 
 QString WaterfallGpu::probeAutoBackend() {
-  QVulkanInstance inst;
-  inst.setExtensions(QRhiVulkanInitParams::preferredInstanceExtensions());
-  if (inst.create()) {
-    qInfo("STD graphics auto: Vulkan");
-    return QStringLiteral("vulkan");
-  }
+  // Do not construct QVulkanInstance here. Creating it (or setting
+  // QT_WIDGETS_RHI_BACKEND=vulkan) before QApplication has taken QtGui
+  // down with 0xc0000005 when Vulkan is missing or the loader faults.
 #if defined(Q_OS_WIN)
-  qInfo("STD graphics auto: Vulkan unavailable, Direct3D 11");
+  qInfo("STD graphics auto: Direct3D 11");
   return QStringLiteral("d3d11");
 #else
-  qInfo("STD graphics auto: Vulkan unavailable, Painter");
-  return QStringLiteral("painter");
+  qInfo("STD graphics auto: Vulkan");
+  return QStringLiteral("vulkan");
 #endif
 }
 
@@ -127,9 +136,14 @@ QString WaterfallGpu::prepareProcessBackend(bool applyEnvironment) {
   if (backend == QLatin1String("auto") || backend.isEmpty())
     backend = probeAutoBackend();
   gProcessBackend = backend;
-  if (applyEnvironment && backend != QLatin1String("painter")) {
-    qputenv("QT_WIDGETS_RHI", "1");
-    qputenv("QT_WIDGETS_RHI_BACKEND", backend.toLatin1());
+  if (applyEnvironment) {
+    if (backend == QLatin1String("painter") || backend == QLatin1String("software")) {
+      qunsetenv("QT_WIDGETS_RHI");
+      qunsetenv("QT_WIDGETS_RHI_BACKEND");
+    } else {
+      qputenv("QT_WIDGETS_RHI", "1");
+      qputenv("QT_WIDGETS_RHI_BACKEND", backend.toLatin1());
+    }
   }
   return backend;
 }

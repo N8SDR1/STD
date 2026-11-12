@@ -3,9 +3,11 @@
 
 #pragma once
 
+#include "ClockCheck.h"
 #include "LiveTx.h"
 #include "MaEngine.h"
 #include "MacroFile.h"
+#include "Needed.h"
 #include "QsoCapture.h"
 #include "QsoLog.h"
 #include "RstMeter.h"
@@ -47,6 +49,11 @@ class PskUploader;
 class WsprNetUploader;
 class UpdateChecker;
 class WxFeed;
+class DxpedPanel;
+class HotList;
+class HotListBar;
+struct DxpedEntry;
+struct DxSpot;
 class Callbook;
 struct CallbookRecord;
 class ModeProfile;
@@ -69,6 +76,12 @@ public:
   explicit MainWindow(QWidget* parent = nullptr);
   // Self-test plants a call on Tx1–Tx5. It does not key and does not send START.
   void placeAnswer(const QString& call);
+  // How needed the station sending this message is (Mark Needed Stations).
+  Need needFor(const QString& message) const;
+  // The worked list: STD's ADIF, plus another ADIF or SDRLogger+ when chosen.
+  QStringList workedSources() const;
+  // True while the worked list is being read on a pool thread.
+  bool workedListLoading() const;
   // Puts the waterfall RHI widget in the tree before the window is shown.
   void primeGraphics();
   // Self-test: RADE TX through STD's own 48 kHz output path, decoded back.
@@ -91,6 +104,9 @@ private:
   void showGuide();
   void tuneActiveBand();
   void activateDigitalMode(const QString& modeName);
+  // DXpeditions double-click: that DXpedition's band and digital mode.
+  // Moves the dial only; never keys, never sends START.
+  void dxpedTune(const DxpedEntry& entry);
   void clearModePanes(const QString& previous, const QString& next);
   void cycleDigitalMode();
   void offerLayoutSave();
@@ -365,6 +381,15 @@ private:
   void rememberModeTone();
   void applyModeTone();
   void ensureWorkedCalls() const;
+  // AD1C cty.dat: the operator's copy in the data folder, else the one built in.
+  const CtyTable& ctyTable() const;
+  // The ADIF band STD is on now ("20m"), or empty.
+  QString currentAdifBand() const;
+  void applyWorkedSource();
+  void loggedQso();
+  // Who heard me (PSK Reporter): the status bar chip and its list.
+  void showHeard();
+  void openHeardList(const QPoint& at);
 
   struct DecodeRow {
     QString time;
@@ -372,16 +397,31 @@ private:
     QString dt;
     QString message;
     int freqHz = 0;
+    // MSK144 and MSKMS: MSHV's DF, Navg, Bit err, and Eye columns.
+    bool msk = false;
+    int df = 0;
+    int navg = 0;
+    int bitErrors = 0;
+    QString eye;
   };
+  // MSK extras arrive just before the matching decoded() line.
+  QHash<QString, DecodeRow> mskPending_;
+  class MskPingDisplay* mskDisplay_ = nullptr;
+  QWidget* makeMskPanel();
+  void applyMskOptions();
 
   QToolBar* brandBar_ = nullptr;
   WaterfallWidget* waterfall_ = nullptr;
   ModeProfile* profile_ = nullptr;
   StatusStrip* statusStrip_ = nullptr;
+  ClockCheck clock_;
   TciClient* tci_ = nullptr;
   Ft8Decode* ft8_ = nullptr;
   HellEngine* hell_ = nullptr;
   SpeechReader* speech_ = nullptr;
+  // Hot list announcements: their own voice on the Options → Speech output
+  // device, not muted by read-back, the mode, TX, or RADE.
+  SpeechReader* hotVoice_ = nullptr;
   SpeechInput* talkIn_ = nullptr;
   SpeechInput* radeMic_ = nullptr;
   class RadeSpeaker* radeSpeaker_ = nullptr;
@@ -461,8 +501,18 @@ private:
   bool hideContinent_[7] = {};
   mutable QSet<QString> workedCalls_;
   mutable QString workedPath_;
+  class LoggerFeed* loggerFeed_ = nullptr;
+  QString loggerFeedError_;
+  class HeardWatch* heard_ = nullptr;
+  QString shownBand_;  // the band the HEARD chip and Need column were last drawn for
+  mutable WorkedIndex workedIndex_;
+  mutable CtyTable cty_;
+  mutable bool ctyLoaded_ = false;
+  bool markNeeded_ = false;
   mutable qint64 workedStamp_ = 0;
   mutable qint64 workedSize_ = -1;
+  mutable bool workedLoading_ = false;
+  mutable bool workedAgain_ = false;
   bool clearEachPeriod_ = false;
   int maxSignals_ = 0;
   QString lastPeriod_;
@@ -486,6 +536,31 @@ private:
   QDockWidget* transmitDock_ = nullptr;
   QDockWidget* macroDock_ = nullptr;
   QDockWidget* statusDock_ = nullptr;
+  QDockWidget* dxpedDock_ = nullptr;   // View → DXpeditions, hidden until opened
+  DxpedPanel* dxped_ = nullptr;
+  HotList* hot_ = nullptr;          // View → Hot list
+  HotListBar* hotBar_ = nullptr;    // the hot list on the top bar, right of the dial
+  void offerCall(const QString& call);  // QSO bar call, or the clipboard
+  void openHotList();
+  void applyHotBar();
+  QString hotWhere(const QString& mode, int db) const;
+  // A decode or received text for the hot list, with this band, mode, and dial.
+  void noteHot(const QString& text, const QString& mode, int db, bool stream);
+  // Double-click a hot list call: where it was heard, else its DXpedition.
+  void hotTune(const QString& call);
+  // A cluster spot of a watched DXpedition: mark it on the hot list.
+  void noteSpot(const QString& call, const DxSpot& spot);
+  // FT8/FT4/FT2 clock check from the decode DTs. Shows the status bar chip.
+  void noteClock(const QString& time, const QString& dt);
+  void showClock();
+  // The dial for a spot: the band's dial for the mode when the spot is
+  // within 4 kHz of it, else the spot itself (its kHz for the FT modes,
+  // 1500 Hz off for the keyboard modes). 0 when STD does not run the mode.
+  qint64 spotDialHz(const DxSpot& spot, const QString& mode) const;
+  // Move STD to a spot's band, mode, and dial. False when STD does not run
+  // the spot's mode. Nothing keys.
+  bool tuneToSpot(const QString& who, const DxSpot& spot, int superHound);
+  qint64 hotDialHz() const;
   bool heroSized_ = false;
   bool headerAlignQueued_ = false;
   QTimer* txTimer_ = nullptr;
@@ -536,6 +611,9 @@ private:
   QDateTime contestDupeStamp_;
   QString txHisCall_;
   QString txReport_;
+  // MSKMS duration-strength reports from the last ping of each call.
+  QHash<QString, QString> mskmsReports_;
+  QString sequencedReport(int db, const QString& call) const;
   QString txQrg_;
   QVector<QueuedCall> txQueue_;
   QVector<QueuedCall> txNow_;

@@ -7,7 +7,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(STD
-  VERSION 0.1.10
+  VERSION 0.1.12
   DESCRIPTION "STD — Shift, Tone, Decode"
   LANGUAGES CXX)
 
@@ -79,6 +79,8 @@ qt_add_executable(std
   src/MainWindow.h
   src/WaterfallWidget.cpp
   src/WaterfallWidget.h
+  src/MskPingDisplay.cpp
+  src/MskPingDisplay.h
   src/WaterfallGpu.cpp
   src/WaterfallGpu.h
   src/ModeProfile.cpp
@@ -164,6 +166,24 @@ qt_add_executable(std
   src/UpdateChecker.cpp
   src/WxFeed.cpp
   src/WxFeed.h
+  src/DxpedFeed.cpp
+  src/DxpedFeed.h
+  src/DxpedPanel.cpp
+  src/DxpedPanel.h
+  src/HotList.cpp
+  src/HotList.h
+  src/HotListView.cpp
+  src/HotListView.h
+  src/SpotWatch.cpp
+  src/SpotWatch.h
+  src/ClockCheck.cpp
+  src/ClockCheck.h
+  src/Needed.cpp
+  src/Needed.h
+  src/LoggerFeed.cpp
+  src/LoggerFeed.h
+  src/HeardWatch.cpp
+  src/HeardWatch.h
   src/UpdateChecker.h
   src/mt63/fldigi/dsp.cxx
   src/mt63/fldigi/mt63base.cxx
@@ -245,8 +265,13 @@ if(WIN32)
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGen65/gen65.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenQ65/gen_q65.cpp"
       "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenQ65/q65_subs.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decodermsk144.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvDecoderMs/decodermsk40.cpp"
+      "${CMAKE_SOURCE_DIR}/../MSHV/src/HvMsPlayer/libsound/HvGenMsk/genmesage_msk.cpp"
+      "${CMAKE_SOURCE_DIR}/src/ft8/decoderms_msk.h"
+      "${CMAKE_SOURCE_DIR}/src/ft8/msk_bridge.cpp"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Building the MSHV FT8, FT4, FT2, JT65, and Q65 decoder"
+    COMMENT "Building the MSHV FT8, FT4, FT2, JT65, Q65, and MSK144 decoder"
     VERBATIM)
   add_custom_target(ft8dec DEPENDS "${FT8_DLL}")
   add_dependencies(std ft8dec)

@@ -3,6 +3,9 @@
 
 #include "MainWindow.h"
 
+#include "LoggerFeed.h"
+#include "HeardWatch.h"
+
 #include "DigitalMode.h"
 #include "EchoLog.h"
 #include "Ft8Decode.h"
@@ -29,6 +32,9 @@
 #include "spot/WsprNet.h"
 #include "UpdateChecker.h"
 #include "WxFeed.h"
+#include "DxpedPanel.h"
+#include "HotList.h"
+#include "HotListView.h"
 #include "Callbook.h"
 #include "ModeProfile.h"
 #include "QsoLog.h"
@@ -36,9 +42,11 @@
 #include "StatusStrip.h"
 #include "TciClient.h"
 #include "TxWave.h"
+#include "MskPingDisplay.h"
 #include "WaterfallWidget.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iterator>
 #include <cmath>
 #include <functional>
@@ -62,9 +70,13 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
+#include <QHeaderView>
+#include <QTableWidget>
 #include <QHash>
 #include <QIcon>
 #include <QImage>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QDockWidget>
 #include <QFont>
 #include <QFontMetrics>
@@ -90,6 +102,7 @@
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QTextBrowser>
+#include <QTextBlock>
 #include <QTextCharFormat>
 #include <QTextEdit>
 #include <QTime>
@@ -100,6 +113,8 @@
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QPointer>
+#include <QThreadPool>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -320,7 +335,7 @@ QString columnCell(const QString& text, int width) {
 
 QString decodeColumns(const QString& time, const QString& db, const QString& dt, const QString& dist,
                       const QString& message, const QString& freq, bool showTime, bool showFreq,
-                      bool showDist) {
+                      bool showDist, bool showNeed = false, const QString& need = QString()) {
   QStringList fields;
   if (showTime)
     fields << columnCell(time, 8);
@@ -329,6 +344,25 @@ QString decodeColumns(const QString& time, const QString& db, const QString& dt,
   if (showDist)
     fields << columnCell(dist, 6);
   fields << columnCell(message, 28);
+  if (showFreq)
+    fields << columnCell(freq, 6);
+  if (showNeed)
+    fields << need;
+  return fields.join(QStringLiteral(" | "));
+}
+
+// MSHV's MSK144 list: Time, T (seconds into the period), dB, DF from
+// 1500 Hz, Message, Navg, Bit err, Eye, Freq.
+QString mskColumns(const QString& time, const QString& t, const QString& db, const QString& df,
+                   const QString& dist, const QString& message, const QString& navg, const QString& bitErrors,
+                   const QString& eye, const QString& freq, bool showTime, bool showFreq, bool showDist) {
+  QStringList fields;
+  if (showTime)
+    fields << columnCell(time, 8);
+  fields << columnCell(t, 5) << columnCell(db, 4) << columnCell(df, 5);
+  if (showDist)
+    fields << columnCell(dist, 6);
+  fields << columnCell(message, 28) << columnCell(navg, 4) << columnCell(bitErrors, 7) << columnCell(eye, 4);
   if (showFreq)
     fields << columnCell(freq, 6);
   return fields.join(QStringLiteral(" | "));
@@ -480,8 +514,26 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildBrandBar();
   buildDocks();
   buildMenus();
+  applyHotBar();
   arrangeDefault();
   qsoLog_ = new QsoLog(this);
+  loggerFeed_ = new LoggerFeed(this);
+  connect(loggerFeed_, &LoggerFeed::updated, this, [this] {
+    workedPath_.clear();
+    refreshDecodes();
+  });
+  connect(loggerFeed_, &LoggerFeed::failed, this, [this](const QString& error) {
+    // Once per outage, not every five minutes.
+    if (error != loggerFeedError_)
+      setTxStatus(error + QStringLiteral(" Nothing was keyed."));
+    loggerFeedError_ = error;
+  });
+  connect(loggerFeed_, &LoggerFeed::updated, this, [this] { loggerFeedError_.clear(); });
+  applyWorkedSource();
+  heard_ = new HeardWatch(this);
+  heard_->setObjectName(QStringLiteral("heardWatch"));
+  heard_->setCall(stationCall());
+  connect(heard_, &HeardWatch::changed, this, [this] { showHeard(); });
   // The logger link: Status once a second when it changes, and the
   // logger's Reply, Halt Tx, and Free Text.
   connect(qsoLog_, &QsoLog::requestReceived, this, &MainWindow::loggerRequest);
@@ -544,6 +596,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     refreshDialBox();
   });
   connect(tci_, &TciClient::pttChanged, this, [this](bool on) {
+    if (on && heard_) {
+      heard_->setCall(stationCall());
+      heard_->noteTransmit();
+    }
     refreshDialBox();
     if (statusStrip_)
       statusStrip_->setPtt(on, tci_->isOpen());
@@ -595,6 +651,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const float* gained = rxScaled_.data();
     if (waterfall_)
       waterfall_->pushRealAudio(gained, count, rate);
+    if (mskDisplay_ && mskDisplay_->isVisible())
+      mskDisplay_->pushAudio(gained, count, rate);
     if (statusStrip_)
       statusStrip_->setRxLevel(gained, count);
     if (ft8_)
@@ -629,6 +687,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
   hell_ = new HellEngine(this);
   speech_ = new SpeechReader(this);
+  hotVoice_ = new SpeechReader(this);
+  hotVoice_->setObjectName(QStringLiteral("hotListVoice"));
   talkIn_ = new SpeechInput(this);
   modelDl_ = new SpeechModelDownload(this);
   recognizer_ = new SpeechRecognizer(this);
@@ -651,7 +711,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(modelDl_, &SpeechModelDownload::finished, this,
           [this](const QString&, bool, const QString& message) { setTxStatus(message); });
   if (statusStrip_) {
-    if (auto* sql = statusStrip_->findChild<QPushButton*>(QStringLiteral("squelchToggle"))) {
+    connect(statusStrip_, &StatusStrip::heardClicked, this, [this](const QPoint& at) { openHeardList(at); });
+  showHeard();
+  if (auto* sql = statusStrip_->findChild<QPushButton*>(QStringLiteral("squelchToggle"))) {
       connect(sql, &QPushButton::toggled, this, [this](bool on) {
         QSettings().setValue(QStringLiteral("dx/squelchOn"), on);
         applyHellSquelch();
@@ -802,10 +864,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       return;
     if (wefax_->rowCount() < 1 || wefax_->image().isNull()) {
       view->clear();
+      view->setFixedSize(0, 0);
       return;
     }
     const QImage frame = wefax_->picture();
-    // Fit the pane width and follow the newest lines while you are at the bottom.
+    // Fit the pane width. A short chart stays under the toolbar; follow the
+    // newest lines only once the picture is taller than the pane.
     auto* scroll = findChild<QScrollArea*>(QStringLiteral("wefaxScroll"));
     const int width = scroll ? std::max(320, scroll->viewport()->width() - 4) : 720;
     QScrollBar* bar = scroll ? scroll->verticalScrollBar() : nullptr;
@@ -814,9 +878,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const bool fitWidth = !fit || fit->isChecked();
     const QPixmap picture = QPixmap::fromImage(fitWidth ? frame.scaledToWidth(width, Qt::SmoothTransformation)
                                                         : frame);
+    view->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     view->setPixmap(picture);
-    view->resize(picture.size());
-    if (bar && follow)
+    view->setFixedSize(picture.size());
+    if (bar && follow && picture.height() > (scroll ? scroll->viewport()->height() : 0))
       bar->setValue(bar->maximum());
     showWefaxState();
   });
@@ -862,6 +927,28 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
   }
   ft8_ = new Ft8Decode(this);
+  connect(ft8_, &Ft8Decode::mskDecoded, this,
+          [this](const QString& time, int db, const QString& t0, const QString& message, int freqHz, int,
+                 const QString& rpt, int df, int navg, int bitErrors, const QString& eye) {
+            DecodeRow extra{time, db, t0, message, freqHz};
+            extra.msk = true;
+            extra.df = df;
+            extra.navg = navg;
+            extra.bitErrors = bitErrors;
+            extra.eye = eye;
+            mskPending_.insert(time + QLatin1Char('|') + message, extra);
+            if (mskDisplay_)
+              mskDisplay_->addPing(time, t0.toDouble());
+            // MSHV gives each MSKMS ping a duration-strength report. Keep
+            // the latest one for every call in the line; Tx2 sends it.
+            if (rpt.isEmpty())
+              return;
+            for (const QString& word : message.split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+              const QString call = word.toUpper().remove(QLatin1Char('<')).remove(QLatin1Char('>'));
+              if (call.size() >= 3 && call != QLatin1String("CQ"))
+                mskmsReports_.insert(call, rpt);
+            }
+          });
   connect(ft8_, &Ft8Decode::decoded, this,
           [this](const QString& time, int db, const QString& dt, const QString& message, int freqHz) {
             if (clearEachPeriod_ && !time.isEmpty() && time != lastPeriod_)
@@ -895,8 +982,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             }
             if (decodes_.size() >= 500)
               decodes_.remove(0, decodes_.size() - 499);
-            decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
+            const QString mskKey = time + QLatin1Char('|') + message;
+            if (mskPending_.contains(mskKey))
+              decodes_.push_back(mskPending_.take(mskKey));
+            else
+              decodes_.push_back(DecodeRow{time, db, dt, message, freqHz});
+            if (mskPending_.size() > 64)
+              mskPending_.clear();
             noteTheirReply(time, db, message);
+            noteClock(time, dt);
             noteDecodeSpot(profile_ ? profile_->digitalMode() : QString(), message, db, freqHz, dt, time);
             refreshDecodes();
           },
@@ -963,6 +1057,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       period = Ft8Decode::Period::Q65D;
     else if (mode == QLatin1String("Q65A"))
       period = Ft8Decode::Period::Q65A;
+    else if (mskmsMode(mode))
+      period = Ft8Decode::Period::Mskms;
+    else if (mskMode(mode))
+      period = Ft8Decode::Period::Msk144;
+    if (mskMode(mode)) {
+      ft8_->setMskOptions(mskPeriodMs(mode), mskShortMessages(), mskSwl(), mskDfTolerance());
+      if (mskDisplay_)
+        mskDisplay_->setPeriodMs(mskPeriodMs(mode));
+    }
     ft8_->setMode(period);
     ft8_->setArmed(armed, low, high);
     maybeWsprHop();
@@ -1080,7 +1183,31 @@ void MainWindow::buildBrandBar() {
 
   auto* balance = new QWidget(host);
   balance->setObjectName(QStringLiteral("dialBalance"));
-  balance->setAttribute(Qt::WA_TransparentForMouseEvents);
+  // The space right of the dial matches the logo and title on the left, so
+  // the dial stays centered. The hot list sits in it.
+  hot_ = new HotList(true, this);
+  auto* balanceRow = new QHBoxLayout(balance);
+  balanceRow->setContentsMargins(12, 0, 0, 0);
+  hotBar_ = new HotListBar(hot_, balance);
+  balanceRow->addWidget(hotBar_);
+  connect(hot_, &HotList::changed, this, [this] { applyHotBar(); });
+  connect(hot_, &HotList::heard, this, [this](const QString& call, const QString& where, bool speak) {
+    const bool spot = hot_->entry(call).spotted;
+    setTxStatus(QStringLiteral("Hot list: %1 %2%3. Nothing was keyed.")
+                    .arg(call, spot ? QStringLiteral("spotted") : QStringLiteral("heard"),
+                         where.isEmpty() ? QString() : QStringLiteral(", ") + where));
+    // Its own voice: read-back being off, an FT8 or WSPR mode, TX, or RADE
+    // must not silence the alert. Same device as Options → Speech.
+    if (speak && hotVoice_) {
+      QStringList spelled;
+      for (const QChar c : call)
+        spelled << (c == QLatin1Char('/') ? QStringLiteral("stroke") : QString(c));
+      hotVoice_->say(QStringLiteral("Hot list. %1.").arg(spelled.join(QLatin1Char(' '))));
+    }
+  });
+  connect(hotBar_, &HotListBar::callPicked, this, [this](const QString& call) { offerCall(call); });
+  connect(hotBar_, &HotListBar::manageRequested, this, [this] { openHotList(); });
+  connect(hotBar_, &HotListBar::tuneRequested, this, [this](const QString& call) { hotTune(call); });
 
   layout->addWidget(mark);
   layout->addWidget(words);
@@ -1112,6 +1239,8 @@ void MainWindow::buildDocks() {
   connect(profile_, &ModeProfile::radeVolumeChanged, this, [this](int value) {
     if (speech_)
       speech_->setVolume(value);
+    if (hotVoice_)
+      hotVoice_->setVolume(value);
     if (auto* spin = findChild<QSpinBox*>(QStringLiteral("speechVolume"))) {
       const QSignalBlocker block(spin);
       spin->setValue(value);
@@ -1125,6 +1254,7 @@ void MainWindow::buildDocks() {
   auto* columnLayout = new QVBoxLayout(column);
   columnLayout->setContentsMargins(0, 0, 0, 0);
   columnLayout->setSpacing(0);
+  columnLayout->addWidget(makeMskPanel(), 2);
   columnLayout->addWidget(waterfall_, 1);
   columnLayout->addWidget(profile_);
   if (auto* tone = waterfall_->findChild<QWidget*>(QStringLiteral("waterfallTone"))) {
@@ -1206,6 +1336,291 @@ void MainWindow::buildDocks() {
   auto* hiddenTitle = new QWidget(statusDock_);
   hiddenTitle->setFixedSize(0, 0);
   statusDock_->setTitleBarWidget(hiddenTitle);
+
+  // View → DXpeditions. Hidden until opened; the first time it opens it
+  // floats over the window. Nothing is fetched until it is shown.
+  dxpedDock_ = new QDockWidget(QStringLiteral("DXpeditions"), this);
+  dxpedDock_->setObjectName(QStringLiteral("dxpedDock"));
+  dxped_ = new DxpedPanel(dxpedDock_);
+  dxpedDock_->setWidget(dxped_);
+  dxpedDock_->setAllowedAreas(Qt::AllDockWidgetAreas);
+  dxpedDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable |
+                          QDockWidget::DockWidgetClosable);
+  dxpedDock_->hide();
+  connect(dxpedDock_, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+    QSettings store;
+    if (!visible || store.value(QStringLiteral("dxped/placed"), false).toBool() ||
+        qEnvironmentVariableIsSet("STD_SELFTEST"))
+      return;
+    store.setValue(QStringLiteral("dxped/placed"), true);
+    dxpedDock_->setFloating(true);
+    const QSize size(std::min(1000, width() - 40), std::min(460, height() - 80));
+    dxpedDock_->resize(size);
+    dxpedDock_->move(geometry().center() - QPoint(size.width() / 2, size.height() / 2));
+  });
+  connect(dxped_, &DxpedPanel::statusMessage, this, [this](const QString& text) { setTxStatus(text); });
+  connect(dxped_, &DxpedPanel::callPicked, this, [this](const QString& call) { offerCall(call); });
+  connect(dxped_, &DxpedPanel::tuneRequested, this, [this](const DxpedEntry& e) { dxpedTune(e); });
+  connect(dxped_, &DxpedPanel::hotListRequested, this, [this] { openHotList(); });
+  connect(dxped_, &DxpedPanel::spotted, this,
+          [this](const QString& call, const DxSpot& spot) { noteSpot(call, spot); });
+  dxped_->setHotList(hot_);
+}
+
+void MainWindow::offerCall(const QString& call) {
+  const auto* bar = findChild<QWidget*>(QStringLiteral("qsoBar"));
+  if (bar && bar->isVisible()) {
+    qsoBarPut(QStringLiteral("qsoBarCall"), call);
+    setTxStatus(QStringLiteral("%1 is in the QSO call. Nothing was keyed. START was not sent.").arg(call));
+  } else {
+    QGuiApplication::clipboard()->setText(call);
+    setTxStatus(QStringLiteral("Copied %1. The QSO bar is in the keyboard modes. Nothing was keyed. "
+                               "START was not sent.")
+                    .arg(call));
+  }
+}
+
+void MainWindow::openHotList() {
+  if (!hot_)
+    return;
+  if (auto* open = findChild<HotListDialog*>(QStringLiteral("hotListDialog"))) {
+    open->raise();
+    open->activateWindow();
+    return;
+  }
+  auto* dialog = new HotListDialog(hot_, this);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  dialog->show();
+}
+
+void MainWindow::applyHotBar() {
+  if (hotBar_ && hot_)
+    hotBar_->setVisible(hot_->onBar());
+  if (auto* action = findChild<QAction*>(QStringLiteral("viewHotListBar"))) {
+    const QSignalBlocker block(action);
+    action->setChecked(hot_ && hot_->onBar());
+  }
+}
+
+qint64 MainWindow::hotDialHz() const {
+  qint64 dial = liveDialHz_;
+  if (dial < 100000 && profile_)
+    dial = profile_->dialHz();
+  return dial;
+}
+
+void MainWindow::noteHot(const QString& text, const QString& mode, int db, bool stream) {
+  if (!hot_ || mode.trimmed().isEmpty())
+    return;
+  const qint64 dial = hotDialHz();
+  const int metres = DxpedFeed::metresForHz(dial);
+  const QString where = hotWhere(mode, db);
+  const QDateTime now = QDateTime::currentDateTimeUtc();
+  if (stream)
+    hot_->noteStream(text, where, now, metres, mode, dial);
+  else
+    hot_->noteHeard(text, where, now, metres, mode, dial);
+}
+
+void MainWindow::hotTune(const QString& call) {
+  if (!hot_ || !profile_)
+    return;
+  const HotEntry e = hot_->entry(call);
+  if (e.heard.isValid() && !e.heardMode.isEmpty() && e.heardMetres > 0) {
+    const QString current = profile_->digitalMode();
+    if (e.heardMode != current)
+      activateDigitalMode(e.heardMode);
+    const int index = ModeProfile::bandIndexForMetres(e.heardMetres);
+    const qint64 table = index >= 0 ? profile_->dialFor(e.heardMode, index) : 0;
+    // The band chip for the modes that have one, then the dial it was
+    // heard on (a Fox channel or an Extra dial, or any keyboard-mode dial).
+    if (table > 0 && profile_->mshvFamily())
+      profile_->selectDial(index, table);
+    if (e.heardDialHz > 100000 && e.heardDialHz != (table > 0 && profile_->mshvFamily() ? table : 0))
+      qsyDial(e.heardDialHz);
+    const bool radio = tci_ && tci_->isOpen();
+    setTxStatus(QStringLiteral("%1: back to where it was %2 at %3Z, %4, %5 MHz.%6 Nothing was keyed. "
+                               "START was not sent.")
+                    .arg(e.call, e.spotted ? QStringLiteral("spotted") : QStringLiteral("heard"),
+                         e.heard.toUTC().toString(QStringLiteral("HH:mm")), e.where)
+                    .arg(double(e.heardDialHz > 100000 ? e.heardDialHz : table) / 1.0e6, 0, 'f', 3)
+                    .arg(radio ? QString() : QStringLiteral(" The radio is not connected.")));
+    return;
+  }
+  if (dxped_) {
+    const QString want = e.call.isEmpty() ? call.trimmed().toUpper() : e.call;
+    for (const DxpedEntry& d : dxped_->feed()->entries()) {
+      QStringList names{d.lookup, d.call};
+      for (const QString& part : d.lookup.split(QLatin1Char('/'), Qt::SkipEmptyParts))
+        names << part;
+      if (names.contains(want)) {
+        dxpedTune(d);
+        return;
+      }
+    }
+  }
+  setTxStatus(QStringLiteral("%1 has not been heard since STD started and is not in the DXpeditions list, "
+                             "so STD does not know its band or mode. Nothing moved. Nothing was keyed.")
+                  .arg(call));
+}
+
+QString MainWindow::hotWhere(const QString& mode, int db) const {
+  const qint64 dial = hotDialHz();
+  const int metres = DxpedFeed::metresForHz(dial);
+  QString where = metres > 0 ? QStringLiteral("%1 m %2").arg(metres).arg(mode) : mode;
+  if (db > -100 && db < 100 && !mode.isEmpty() && !keyboardTextMode(mode))
+    where += QStringLiteral(", %1 dB").arg(db);
+  return where.trimmed();
+}
+
+void MainWindow::noteSpot(const QString& call, const DxSpot& spot) {
+  if (!hot_)
+    return;
+  const QString mode = SpotWatch::stdMode(spot.mode);
+  QString where = spot.metres > 0 ? QStringLiteral("%1 m %2").arg(spot.metres).arg(spot.mode) : spot.mode;
+  where += QStringLiteral(", %1 MHz").arg(double(spot.freqHz) / 1.0e6, 0, 'f', 4);
+  if (!spot.spotter.isEmpty())
+    where += QStringLiteral(", by %1").arg(spot.spotter);
+  where += QStringLiteral(" (%1)").arg(spot.source.isEmpty() ? QStringLiteral("cluster") : spot.source);
+  const QDateTime when = spot.time.isValid() ? spot.time : QDateTime::currentDateTimeUtc();
+  hot_->noteSpot(call, where, when, spot.metres, mode, mode.isEmpty() ? 0 : spotDialHz(spot, mode));
+}
+
+void MainWindow::noteClock(const QString& time, const QString& dt) {
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  bool ok = false;
+  const double seconds = dt.trimmed().toDouble(&ok);
+  if (!ok)
+    return;
+  const ClockCheck::State was = clock_.state();
+  clock_.add(mode, time, seconds, QDateTime::currentMSecsSinceEpoch());
+  const ClockCheck::State now = clock_.state();
+  const bool off = now == ClockCheck::State::Fast || now == ClockCheck::State::Slow;
+  const bool wasOff = was == ClockCheck::State::Fast || was == ClockCheck::State::Slow;
+  if (off && !wasOff)
+    setTxStatus(QStringLiteral("Clock check: the %1 decodes say this PC's clock is %2 s %3. Sync the clock; "
+                               "STD does not change it. Nothing was keyed.")
+                    .arg(mode)
+                    .arg(std::fabs(clock_.offset()), 0, 'f', 1)
+                    .arg(clock_.offset() > 0 ? QStringLiteral("fast") : QStringLiteral("slow")));
+  else if (!off && wasOff)
+    setTxStatus(QStringLiteral("Clock check: the %1 decodes look on time again.").arg(mode));
+  showClock();
+}
+
+void MainWindow::showClock() {
+  if (!statusStrip_)
+    return;
+  const ClockCheck::State s = clock_.state();
+  const bool off = s == ClockCheck::State::Fast || s == ClockCheck::State::Slow;
+  statusStrip_->setClockOff(off, clock_.offset(), profile_ ? profile_->digitalMode() : QString(),
+                            clock_.samples());
+}
+
+qint64 MainWindow::spotDialHz(const DxSpot& spot, const QString& mode) const {
+  if (!profile_ || mode.isEmpty() || spot.freqHz <= 0)
+    return 0;
+  const int index = ModeProfile::bandIndexForMetres(spot.metres);
+  const qint64 table = index >= 0 ? profile_->dialFor(mode, index) : 0;
+  // A spot is the signal: the dial plus the audio offset. Near the band's
+  // dial for the mode, that dial; FT8 off the usual dial (a Fox): the kHz.
+  if (table > 0 && std::llabs(spot.freqHz - table) <= 4000)
+    return table;
+  if (keyboardTextMode(mode)) {
+    // The signal 1500 Hz up the waterfall, on the side the mode uses.
+    const bool lower = profile_->sideband().contains(QLatin1Char('L'));
+    return lower ? spot.freqHz + 1500 : spot.freqHz - 1500;
+  }
+  return spot.freqHz / 1000 * 1000;
+}
+
+bool MainWindow::tuneToSpot(const QString& who, const DxSpot& spot, int superHound) {
+  if (!profile_)
+    return false;
+  const QString mode = SpotWatch::stdMode(spot.mode);
+  if (mode.isEmpty() || spot.metres <= 0)
+    return false;
+  if (mode != profile_->digitalMode())
+    activateDigitalMode(mode);
+  QString hound;
+  if (mode == QLatin1String("FT8") && superHound >= 0 && profile_->superHound() != (superHound > 0)) {
+    profile_->setSuperHound(superHound > 0);
+    hound = superHound > 0 ? QStringLiteral(", Super Hound on") : QStringLiteral(", Super Hound off");
+  }
+  const int index = ModeProfile::bandIndexForMetres(spot.metres);
+  const qint64 table = index >= 0 ? profile_->dialFor(mode, index) : 0;
+  const qint64 dial = spotDialHz(spot, mode);
+  if (table > 0 && profile_->mshvFamily())
+    profile_->selectDial(index, table);
+  if (dial > 100000 && dial != (table > 0 && profile_->mshvFamily() ? table : 0))
+    qsyDial(dial);
+  const bool radio = tci_ && tci_->isOpen();
+  setTxStatus(QStringLiteral("%1: to its cluster spot at %2Z, %3 m %4 on %5 MHz, dial %6 MHz %7%8.%9 "
+                             "Nothing was keyed. START was not sent.")
+                  .arg(who, spot.time.toUTC().toString(QStringLiteral("HH:mm")))
+                  .arg(spot.metres)
+                  .arg(mode)
+                  .arg(double(spot.freqHz) / 1.0e6, 0, 'f', 4)
+                  .arg(double(dial) / 1.0e6, 0, 'f', 3)
+                  .arg(profile_->sideband(), hound,
+                       radio ? QString() : QStringLiteral(" The radio is not connected.")));
+  return true;
+}
+
+void MainWindow::dxpedTune(const DxpedEntry& e) {
+  if (!profile_)
+    return;
+  // Spotted on a digital mode STD runs: go where it was spotted.
+  if (dxped_) {
+    if (const DxSpot* spot = dxped_->spotFor(e)) {
+      if (tuneToSpot(e.lookup, *spot, e.foxHound ? 1 : 0))
+        return;
+    }
+  }
+  const QString current = profile_->digitalMode();
+  const int here = ModeProfile::metresForBand(profile_->band());
+  const DxpedTune plan = DxpedFeed::planTune(e, here, [this](const QString& mode, int metres) {
+    const int index = ModeProfile::bandIndexForMetres(metres);
+    return index >= 0 && profile_->dialFor(mode, index) > 0;
+  });
+  const QString who = e.lookup;
+  if (plan.mode.isEmpty()) {
+    setTxStatus(QStringLiteral("%1 lists no digital mode STD runs (%2). Nothing changed. Nothing was keyed.")
+                    .arg(who, e.modes.isEmpty() ? QStringLiteral("no modes named") : e.modes.join(QLatin1Char(' '))));
+    return;
+  }
+  if (plan.mode != current)
+    activateDigitalMode(plan.mode);
+  // Fox/Hound in the listing: Super Hound on (7.056 MHz on 40 m, RX at the
+  // fox channel). An FT8 DXpedition without it: Super Hound off.
+  QString hound;
+  if (plan.mode == QLatin1String("FT8") && profile_->superHound() != plan.superHound) {
+    profile_->setSuperHound(plan.superHound);
+    hound = plan.superHound ? QStringLiteral(", Super Hound on") : QStringLiteral(", Super Hound off");
+  } else if (plan.superHound) {
+    hound = QStringLiteral(", Super Hound");
+  }
+  QString what;
+  if (plan.dial && plan.metres > 0) {
+    const int index = ModeProfile::bandIndexForMetres(plan.metres);
+    const qint64 hz = profile_->dialFor(plan.mode, index);
+    profile_->selectDial(index, hz);  // the band chip; the radio follows when connected
+    what = QStringLiteral("%1 on %2 m, %3 MHz %4%5")
+               .arg(plan.mode)
+               .arg(plan.metres)
+               .arg(double(hz) / 1.0e6, 0, 'f', 3)
+               .arg(profile_->sideband(), hound);
+  } else if (plan.dial) {
+    what = QStringLiteral("%1; none of its bands (%2) has a %1 dial, so the band did not change")
+               .arg(plan.mode, e.bands.isEmpty() ? QStringLiteral("none named") : e.bands);
+  } else {
+    what = QStringLiteral("%1; STD has no %1 band dial, so tune to the DXpedition yourself").arg(plan.mode);
+  }
+  const bool radio = tci_ && tci_->isOpen();
+  setTxStatus(QStringLiteral("%1 (%2): %3.%4 Nothing was keyed. START was not sent.")
+                  .arg(who, e.entity, what,
+                       radio || !plan.dial ? QString()
+                                           : QStringLiteral(" The radio is not connected, so only the band chip moved.")));
 }
 
 QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& placeholder,
@@ -2332,6 +2747,8 @@ void MainWindow::openWsprnetReports() const {
 
 void MainWindow::noteDecodeSpot(const QString& mode, const QString& message, int db, int audioHz,
                                 const QString& dt, const QString& utc) {
+  if (hot_ && !mode.trimmed().isEmpty())
+    noteHot(message, mode, db, false);
   QTime clock = QTime::fromString(utc, QStringLiteral("HHmmss"));
   if (!clock.isValid())
     clock = QTime::fromString(utc, QStringLiteral("hhmmss"));
@@ -2594,6 +3011,8 @@ QWidget* MainWindow::makeReceivePanel() {
     QSettings().setValue(QStringLiteral("speech/volume"), value);
     if (speech_)
       speech_->setVolume(value);
+    if (hotVoice_)
+      hotVoice_->setVolume(value);
     applyRadePlaybackVolume(value);
     if (profile_)
       profile_->refreshRadeDevices();
@@ -2765,7 +3184,6 @@ QWidget* MainWindow::makeReceivePanel() {
   header->setObjectName("decodeHeader");
   header->setFont(monoFont(13));
   header->setTextInteractionFlags(Qt::NoTextInteraction);
-  layout->addWidget(header);
   layout->addWidget(makeQsoBar(panel));
 
   auto* raster = new HellRaster(panel);
@@ -2922,20 +3340,30 @@ QWidget* MainWindow::makeReceivePanel() {
     if (sizes.size() == 2 && sizes.at(0) > 0 && sizes.at(1) > 0)
       QSettings().setValue(QStringLiteral("hell/split"), QVariantList{sizes.at(0), sizes.at(1)});
   });
+  // Hidden in FT8-family list modes so decode rows sit under the titles.
+  // Keyboard, Hell, and WSPR show it for the echo log (and the Hell tape).
+  hellSplit->hide();
   layout->addWidget(hellSplit, 1);
   connect(echo->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { alignWsprHeader(); });
 
   auto* faxScroll = new QScrollArea(panel);
   faxScroll->setObjectName(QStringLiteral("wefaxScroll"));
-  faxScroll->setWidgetResizable(false);
+  faxScroll->setWidgetResizable(true);
   faxScroll->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
   faxScroll->setFrameShape(QFrame::NoFrame);
+  faxScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  faxScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   faxScroll->hide();
-  auto* faxView = new QLabel(faxScroll);
+  auto* faxHost = new QWidget;
+  faxHost->setObjectName(QStringLiteral("wefaxHost"));
+  auto* faxLay = new QVBoxLayout(faxHost);
+  faxLay->setContentsMargins(0, 0, 0, 0);
+  faxLay->setSpacing(0);
+  faxLay->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+  auto* faxView = new QLabel(faxHost);
   faxView->setObjectName(QStringLiteral("wefaxView"));
   faxView->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-  faxView->setMinimumHeight(72);
-  faxView->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+  faxView->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
   faxView->setToolTip(QStringLiteral(
       "WEFAX-576 picture. IOC 576, 120 lines per minute. Black is 400 Hz below the cursor and white "
       "is 400 Hz above it. A 300 Hz start tone opens the picture and a 450 Hz stop tone saves it. "
@@ -2943,7 +3371,8 @@ QWidget* MainWindow::makeReceivePanel() {
       "If the chart is split, with its left edge part way across, click where the left edge should be. "
       "Right-click puts it back. This does not key and does not send START."));
   installWefaxClick(faxView);
-  faxScroll->setWidget(faxView);
+  faxLay->addWidget(faxView, 0, Qt::AlignTop | Qt::AlignHCenter);
+  faxScroll->setWidget(faxHost);
   layout->addWidget(faxScroll, 1);
 
   auto* edit = new QPlainTextEdit(panel);
@@ -2960,7 +3389,16 @@ QWidget* MainWindow::makeReceivePanel() {
   edit->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
   edit->document()->setDocumentMargin(0);
   edit->viewport()->installEventFilter(this);
-  layout->addWidget(edit, 1);
+  // Titles and rows are one pane so a leftover Hell splitter cannot park
+  // the list in a separate box under a gap.
+  auto* decodeList = new QWidget(panel);
+  decodeList->setObjectName(QStringLiteral("decodeList"));
+  auto* decodeLayout = new QVBoxLayout(decodeList);
+  decodeLayout->setContentsMargins(0, 0, 0, 0);
+  decodeLayout->setSpacing(0);
+  decodeLayout->addWidget(header);
+  decodeLayout->addWidget(edit, 1);
+  layout->addWidget(decodeList, 1);
 
   connect(filter, &QLineEdit::textChanged, this, [this](const QString&) { refreshDecodes(); });
   connect(clear, &QPushButton::clicked, this, [this] {
@@ -2972,6 +3410,105 @@ QWidget* MainWindow::makeReceivePanel() {
   return panel;
 }
 
+QWidget* MainWindow::makeMskPanel() {
+  auto* panel = new QWidget(this);
+  panel->setObjectName(QStringLiteral("mskPanel"));
+  auto* layout = new QVBoxLayout(panel);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(0);
+  auto* row = new QWidget(panel);
+  row->setObjectName(QStringLiteral("mskRow"));
+  auto* rowLayout = new QHBoxLayout(row);
+  rowLayout->setContentsMargins(8, 4, 8, 4);
+  rowLayout->setSpacing(10);
+  // MSHV's TX/RX box: 5, 7.5, 10, 15, 30 s.
+  auto* periodLabel = new QLabel(QStringLiteral("TX/RX"), row);
+  auto* period = new QComboBox(row);
+  period->setObjectName(QStringLiteral("mskPeriod"));
+  for (int ms : {5000, 7500, 10000, 15000, 30000})
+    period->addItem(ms == 7500 ? QStringLiteral("7.5 s") : QStringLiteral("%1 s").arg(ms / 1000), ms);
+  period->setToolTip(QStringLiteral(
+      "MSHV's TX/RX period for this mode: 5, 7.5, 10, 15, or 30 s, 30 s by default. Both stations must use "
+      "the same one. Saved for MSK144 and MSKMS separately. Does not key."));
+  // MSHV's DF Tol box for MSK144: 10, 20, 50, then 100 to 400 in 50 Hz steps.
+  auto* tolLabel = new QLabel(QStringLiteral("DF Tol def=150 +/-"), row);
+  auto* tol = new QComboBox(row);
+  tol->setObjectName(QStringLiteral("mskDfTol"));
+  for (int hz : {10, 20, 50, 100, 150, 200, 250, 300, 350, 400})
+    tol->addItem(QStringLiteral("%1 Hz").arg(hz), hz);
+  tol->setToolTip(QStringLiteral(
+      "How far from 1500 Hz the decoder looks for a ping. 150 Hz is MSHV's default. Saved. Does not key."));
+  auto* sh = new QCheckBox(QStringLiteral("Sh"), row);
+  sh->setObjectName(QStringLiteral("mskShort"));
+  sh->setToolTip(QStringLiteral(
+      "MSK144 only. MSK40 short messages: also decode 20 ms frames such as <K1JT N8SDR> R+06, which repeat "
+      "3.6 times as often as a full frame. Reports are -03, +00, +03, +06, +10, +13, +16, their R forms, "
+      "RRR, and 73. A Tx line in that form sends MSK40. Saved. Does not key."));
+  auto* swl = new QCheckBox(QStringLiteral("SWL"), row);
+  swl->setObjectName(QStringLiteral("mskSwl"));
+  swl->setToolTip(QStringLiteral(
+      "MSK144 only. Listen mode: also decode MSK40 short messages between other stations heard recently, "
+      "not only ones to your call. Saved. Does not key."));
+  rowLayout->addWidget(periodLabel);
+  rowLayout->addWidget(period);
+  rowLayout->addWidget(tolLabel);
+  rowLayout->addWidget(tol);
+  rowLayout->addWidget(sh);
+  rowLayout->addWidget(swl);
+  rowLayout->addStretch(1);
+  mskDisplay_ = new MskPingDisplay(panel);
+  layout->addWidget(row);
+  layout->addWidget(mskDisplay_, 1);
+  const QSignalBlocker b1(period);
+  const QSignalBlocker b2(tol);
+  const QSignalBlocker b3(sh);
+  const QSignalBlocker b4(swl);
+  tol->setCurrentIndex(std::max(0, tol->findData(mskDfTolerance())));
+  sh->setChecked(mskShortMessages());
+  swl->setChecked(mskSwl());
+  connect(period, &QComboBox::currentIndexChanged, this, [this, period](int) {
+    const QString mode = profile_ ? profile_->digitalMode() : QString();
+    if (!mskMode(mode))
+      return;
+    setMskPeriodMs(mode, period->currentData().toInt());
+    applyMskOptions();
+    setTxStatus(QStringLiteral("%1 period is %2. START was not sent.").arg(mode, period->currentText()));
+  });
+  connect(tol, &QComboBox::currentIndexChanged, this, [this, tol](int) {
+    setMskDfTolerance(tol->currentData().toInt());
+    applyMskOptions();
+  });
+  connect(sh, &QCheckBox::toggled, this, [this](bool on) {
+    QSettings().setValue(QStringLiteral("msk/shortMessages"), on);
+    applyMskOptions();
+  });
+  connect(swl, &QCheckBox::toggled, this, [this](bool on) {
+    QSettings().setValue(QStringLiteral("msk/swl"), on);
+    applyMskOptions();
+  });
+  panel->setVisible(false);
+  return panel;
+}
+
+void MainWindow::applyMskOptions() {
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  if (!mskMode(mode))
+    return;
+  if (auto* period = findChild<QComboBox*>(QStringLiteral("mskPeriod"))) {
+    const QSignalBlocker block(period);
+    period->setCurrentIndex(std::max(0, period->findData(mskPeriodMs(mode))));
+  }
+  // MSHV greys Sh and SWL out in MSKMS.
+  for (const char* name : {"mskShort", "mskSwl"}) {
+    if (auto* box = findChild<QCheckBox*>(QLatin1String(name)))
+      box->setEnabled(!mskmsMode(mode));
+  }
+  if (mskDisplay_)
+    mskDisplay_->setPeriodMs(mskPeriodMs(mode));
+  if (ft8_)
+    ft8_->setMskOptions(mskPeriodMs(mode), mskShortMessages(), mskSwl(), mskDfTolerance());
+}
+
 void MainWindow::refreshDecodes() {
   auto* edit = findChild<QPlainTextEdit*>("receiveText");
   auto* filter = findChild<QLineEdit*>("decodeFilter");
@@ -2980,13 +3517,25 @@ void MainWindow::refreshDecodes() {
   const QString needle = filter ? filter->text().trimmed() : QString();
   QString text;
   shownDecodes_.clear();
+  QVector<Need> needs;
+  if (markNeeded_)
+    ensureWorkedCalls();
   for (const DecodeRow& row : decodes_) {
     QString line;
     if (row.time.isEmpty())
       line = row.message;
-    else
+    else if (row.msk)
+      line = mskColumns(row.time, row.dt, QString::number(row.db), QString::number(row.df),
+                        distanceText(row.message), row.message, QString::number(row.navg),
+                        QString::number(row.bitErrors), row.eye, QString::number(row.freqHz), showTime_,
+                        showFreq_, showDist_);
+    Need need = Need::None;
+    if (!row.time.isEmpty() && !row.msk && markNeeded_)
+      need = needFor(row.message);
+    if (!row.time.isEmpty() && !row.msk)
       line = decodeColumns(row.time, QString::number(row.db), row.dt, distanceText(row.message),
-                           row.message, QString::number(row.freqHz), showTime_, showFreq_, showDist_);
+                           row.message, QString::number(row.freqHz), showTime_, showFreq_, showDist_,
+                           markNeeded_, needTag(need));
     if (!needle.isEmpty() && !line.contains(needle, Qt::CaseInsensitive))
       continue;
     if (!keepDecode(row.message))
@@ -2995,8 +3544,39 @@ void MainWindow::refreshDecodes() {
       text += QLatin1Char('\n');
     text += line;
     shownDecodes_.push_back(row);
+    needs.push_back(need);
   }
   edit->setPlainText(text);
+  // setPlainText keeps the old first character's format, so a tint from the
+  // last refresh would spread over every row. Start plain.
+  {
+    QTextCursor all(edit->document());
+    all.select(QTextCursor::Document);
+    all.setCharFormat(QTextCharFormat());
+  }
+  // Needed stations: a tint for NEW, BAND, and GRID; worked before is dim.
+  if (markNeeded_) {
+    QTextBlock block = edit->document()->begin();
+    for (int i = 0; i < needs.size() && block.isValid(); ++i, block = block.next()) {
+      const Need need = needs.at(i);
+      if (need == Need::None)
+        continue;
+      QTextCharFormat format;
+      if (need == Need::Entity)
+        format.setBackground(QColor(150, 40, 80, 170));
+      else if (need == Need::Band)
+        format.setBackground(QColor(170, 100, 20, 150));
+      else if (need == Need::Grid)
+        format.setBackground(QColor(30, 100, 150, 150));
+      else if (need == Need::GridBand)
+        format.setBackground(QColor(30, 100, 150, 85));
+      else
+        format.setForeground(QColor(120, 128, 140));
+      QTextCursor cursor(block);
+      cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+      cursor.mergeCharFormat(format);
+    }
+  }
   edit->moveCursor(QTextCursor::End);
 }
 
@@ -3360,7 +3940,8 @@ void MainWindow::buildMenus() {
   auto* graphicsMenu = optionsMenu->addMenu(QStringLiteral("Graphics"));
   graphicsMenu->setObjectName(QStringLiteral("graphicsMenu"));
   graphicsMenu->setToolTip(QStringLiteral(
-      "Waterfall graphics. Auto tries Vulkan, then Direct3D 11, then Painter. "
+      "Waterfall graphics. Auto uses Direct3D 11 on Windows and Vulkan elsewhere. "
+      "If that device fails, the waterfall paints in software. "
       "The checked line is the backend in use. "
       "Choosing a different graphics API restarts STD. This does not key."));
   const struct {
@@ -3469,6 +4050,11 @@ void MainWindow::buildMenus() {
            QStringLiteral("Show or hide the Time column."));
   addCheck(listMenu, "listShowDist", QStringLiteral("Show Distance Column"), "dx/showDist", true,
            QStringLiteral("Distance from your grid to the grid in the message. This does not key."));
+  addCheck(listMenu, "listMarkNeeded", QStringLiteral("Mark Needed Stations"), "dx/markNeeded", false,
+           QStringLiteral("A Need column against your worked list: NEW is a DXCC entity never worked, BAND an "
+                          "entity not worked on this band, GRID a grid never worked, GRID+BAND a grid not "
+                          "worked on this band, and B4 a call already worked on this band, shown dim. Worked "
+                          "QSOs count; confirmations do not. Entities are from AD1C's cty.dat. This does not key."));
   auto* miles = listMenu->addAction(QStringLiteral("Distance in miles"));
   miles->setObjectName(QStringLiteral("distUnitMiles"));
   miles->setCheckable(true);
@@ -3589,7 +4175,8 @@ void MainWindow::buildMenus() {
                   {"FT2", "modeFt2", false},     {"JT65A", "modeJt65A", false},
                   {"JT65B", "modeJt65B", false}, {"JT65C", "modeJt65C", false},
                   {"Q65A", "modeQ65A", false},   {"Q65B", "modeQ65B", false},
-                  {"Q65C", "modeQ65C", false},   {"Q65D", "modeQ65D", false}};
+                  {"Q65C", "modeQ65C", false},   {"Q65D", "modeQ65D", false},
+                  {"MSK144", "modeMsk144", false}, {"MSKMS", "modeMskms", false}};
   for (const auto& row : modeRows) {
     auto* action = modeMenu->addAction(row.label);
     action->setCheckable(true);
@@ -3604,6 +4191,19 @@ void MainWindow::buildMenus() {
     else if (q65Mode(modeName))
       tip = QStringLiteral(
           "DIGU. 30 second period. The tone follows the cursor. TX sends it. "
+          "This does not key and does not send START.");
+    else if (mskmsMode(modeName))
+      tip = QStringLiteral(
+          "DIGU. MSHV's meteor-scatter MSK144 variant: 72-bit messages and the duration-strength "
+          "report (26, R27) taken from each ping. Tones are fixed at 1000 and 2000 Hz. Pings print "
+          "as they land. TX/RX on the MSK row, 30 s by default. "
+          "This does not key and does not send START.");
+    else if (mskMode(modeName))
+      tip = QStringLiteral(
+          "DIGU. Meteor scatter: 72 ms frames at 2000 baud, tones fixed at 1000 and 2000 Hz, "
+          "repeated for the whole slot. The waterfall band is 500 to 2500 Hz around 1500 Hz. Pings print as they land, anywhere in the period. FT8-style "
+          "messages and contest exchanges, plus MSK40 short messages when that option is on. "
+          "TX/RX period, DF Tol, Sh, and SWL are on the MSK row, 30 s by default. "
           "This does not key and does not send START.");
     action->setToolTip(tip);
     modes->addAction(action);
@@ -3907,12 +4507,35 @@ void MainWindow::buildMenus() {
       {transmitDock_, "Transmit"},
       {macroDock_, "Macros"},
       {statusDock_, "Status strip"},
+      {dxpedDock_, "DXpeditions"},
   };
   for (const auto& panel : panels) {
     QAction* toggle = panel.dock->toggleViewAction();
     toggle->setText(panel.label);
+    if (panel.dock == dxpedDock_) {
+      viewMenu->addSeparator();
+      toggle->setObjectName(QStringLiteral("viewDxpeditions"));
+      toggle->setToolTip(QStringLiteral(
+          "Announced DXpeditions from NG3K, filtered to digital modes. Opens the last saved list "
+          "when offline. This does not key."));
+    }
     viewMenu->addAction(toggle);
   }
+  auto* hotOnBar = viewMenu->addAction(QStringLiteral("Hot list on top bar"));
+  hotOnBar->setObjectName(QStringLiteral("viewHotListBar"));
+  hotOnBar->setCheckable(true);
+  hotOnBar->setChecked(hot_ && hot_->onBar());
+  hotOnBar->setToolTip(QStringLiteral(
+      "Show the watched calls on the top bar, right of the dial. This does not key."));
+  connect(hotOnBar, &QAction::toggled, this, [this](bool on) {
+    if (hot_)
+      hot_->setOnBar(on);
+  });
+  auto* hotManage = viewMenu->addAction(QStringLiteral("Hot list…"));
+  hotManage->setObjectName(QStringLiteral("viewHotList"));
+  hotManage->setToolTip(QStringLiteral(
+      "Calls to watch for, alerts, and which calls the top bar shows. This does not key."));
+  connect(hotManage, &QAction::triggered, this, [this] { openHotList(); });
   viewMenu->addSeparator();
   auto* saveLayout = viewMenu->addAction(QStringLiteral("Save layout"));
   saveLayout->setObjectName(QStringLiteral("saveLayout"));
@@ -3960,9 +4583,11 @@ void eachModeAction(QMenu* menu, const std::function<void(QAction*)>& visit) {
   if (!menu)
     return;
   for (QAction* action : menu->actions()) {
-    if (QMenu* child = action->menu())
-      eachModeAction(child, visit);
-    else if (action->isCheckable())
+    if (QMenu* child = action->menu()) {
+      // MSK144 options holds the period and Sh checks, not modes.
+      if (child->objectName() != QLatin1String("mskOptionsMenu"))
+        eachModeAction(child, visit);
+    } else if (action->isCheckable())
       visit(action);
   }
 }
@@ -3983,8 +4608,10 @@ void MainWindow::clearModePanes(const QString& previous, const QString& next) {
     box->clear();
   if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
     tape->clear();
-  if (auto* view = findChild<QLabel*>(QStringLiteral("wefaxView")))
+  if (auto* view = findChild<QLabel*>(QStringLiteral("wefaxView"))) {
     view->clear();
+    view->setFixedSize(0, 0);
+  }
   if (rtty_)
     rtty_->clear();
   if (psk_)
@@ -4049,6 +4676,8 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   }
   if (statusStrip_)
     statusStrip_->setDigitalMode(modeName);
+  clock_.reset();
+  showClock();
   showKeyboardReceive(modeName);
   const bool rtty = rttyMode(modeName);
   const bool psk = keyedPsk(modeName);
@@ -4066,6 +4695,16 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   if (jt65Mode(modeName) && waterfall_) {
     waterfall_->setRxHz(1270);
     waterfall_->setTxHz(1270);
+  }
+  // MSK144's tones are fixed at 1000 and 2000 Hz; the markers sit on the
+  // 1500 Hz center the decoder searches around.
+  if (mskMode(modeName) && waterfall_) {
+    waterfall_->setRxHz(1500);
+    waterfall_->setTxHz(1500);
+  }
+  if (mskMode(modeName)) {
+    // activateDigitalMode sets the profile first; read the new mode back.
+    QTimer::singleShot(0, this, [this] { applyMskOptions(); });
   }
   if (fax && waterfall_)
     waterfall_->setRxHz(1900);
@@ -4187,9 +4826,10 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   }
   if (auto* pane = findChild<QWidget*>(QStringLiteral("hellTapePane")))
     pane->setVisible(hell);
+  const bool echoOn = (text || wspr) && !js8Mode(mode) && !rade;
   if (auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"))) {
     // JS8 shows its activity lists and conversation instead.
-    echo->setVisible((text || wspr) && !js8Mode(mode) && !rade);
+    echo->setVisible(echoOn);
     const QString body = withoutWsprTitleLine(echo->toPlainText());
     if (body != echo->toPlainText())
       echo->setPlainText(body);
@@ -4256,14 +4896,27 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   if (auto* clrSent = findChild<QPushButton*>(QStringLiteral("clrSent")))
     clrSent->setVisible(hell);
   applySpeechSettings();
+  const bool decodeListOn = !text && !fax && !wspr && !rade;
+  if (auto* panel = findChild<QWidget*>(QStringLiteral("mskPanel")))
+    panel->setVisible(mskMode(mode));
+  // MSHV shows only the ping display in MSK144; the frequency waterfall goes.
+  if (waterfall_)
+    waterfall_->setVisible(!mskMode(mode));
+  refreshDecodeHeader();
+  if (auto* split = findChild<QSplitter*>(QStringLiteral("hellSplit")))
+    split->setVisible(hell || echoOn);
+  if (auto* logPane = findChild<QWidget*>(QStringLiteral("rxLogPane")))
+    logPane->setVisible(hell || echoOn);
+  if (auto* list = findChild<QWidget*>(QStringLiteral("decodeList")))
+    list->setVisible(decodeListOn);
   if (auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText")))
-    edit->setVisible(!text && !fax && !wspr && !rade);
+    edit->setVisible(decodeListOn);
   if (auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader")))
-    header->setVisible(!text && !fax && !wspr && !rade);
+    header->setVisible(decodeListOn);
   if (auto* filter = findChild<QLineEdit*>(QStringLiteral("decodeFilter")))
-    filter->setVisible(!text && !fax && !wspr && !rade);
+    filter->setVisible(decodeListOn);
   if (auto* clear = findChild<QPushButton*>(QStringLiteral("decodeClear")))
-    clear->setVisible(!text && !fax && !wspr && !rade);
+    clear->setVisible(decodeListOn);
   if (auto* scroll = findChild<QWidget*>(QStringLiteral("wefaxScroll")))
     scroll->setVisible(fax);
   for (const char* name : {"hellSave", "hellOpen"}) {
@@ -4419,15 +5072,37 @@ void MainWindow::showGuide() {
        "Tx6 as they are. AFC stays off: FT8, FT4, FT2, JT65, and Q65 have no AFC switch, and they "
        "have no squelch slider. The decoder searches the audio window. START is never sent."},
       {"MSHV modes still out",
-       "FT8, FT4, FT2, JT65, and Q65 are the MSHV modes in this build. JT65A, JT65B, and JT65C "
+       "FT8, FT4, FT2, JT65, Q65, MSK144, and MSKMS are the MSHV modes in this build. JT65A, JT65B, and JT65C "
        "are a 60 second period. Tone 0 stays near 1270 Hz. Q65A, Q65B, Q65C, and Q65D are a "
-       "30 second period and the tone follows the cursor. TX sends them. The rest of the MSHV "
-       "Mode menu is not here and does not key: MSK144, MSKMS, JTMS, FSK441, FSK315, ISCAT-A, "
+       "30 second period and the tone follows the cursor. TX sends them. MSK144 and MSKMS are "
+       "the meteor-scatter modes, covered in their own Help section. The rest of the MSHV "
+       "Mode menu is not here and does not key: JTMS, FSK441, FSK315, ISCAT-A, "
        "ISCAT-B, JT6M, and PI4. Those leftover meteor modes are not shipping. The 11025 Hz family "
        "cannot run on TCI, which is 44100 Hz only. That list is kept in docs/mshv-modes.md so "
        "it is not forgotten. Hell, RTTY, BPSK, Olivia, Contestia, MFSK, DominoEX, Thor, and WEFAX-576 are Fldigi modes, "
        "not that list. MT63 is a Fldigi mode on this menu. "
        "CW stays in Lyra. START is never sent."},
+      {"MSK144 and MSKMS",
+       "Mode → MSK144 and Mode → MSKMS are meteor scatter from the MSHV generator and decoder. "
+       "A frame is 144 symbols at 2000 baud, 72 ms, with tones fixed at 1000 and 2000 Hz, so the "
+       "cursor does not move the signal. The waterfall band is 500 to 2500 Hz, centered on 1500 Hz, and RX and TX sit on 1500. TX repeats the frame from 250 ms into your slot until "
+       "370 ms before it ends. Receive runs MSHV's real-time ping decoder on overlapping 0.6 s "
+       "blocks as the audio arrives, so a ping prints about a second after it lands, anywhere in "
+       "the period. The MSK row above the waterfall is MSHV's: TX/RX period 5, 7.5, 10, 15, or "
+       "30 s (30 s by default for both modes; both stations must use the same one), DF Tol 10 to "
+       "400 Hz around 1500 (150 by default), Sh, and SWL (MSK144 only). Under it is MSHV's ping "
+       "display: time runs across the period and frequency up, the period on the air is on top "
+       "and the one before is under it with its UTC start, and a yellow mark shows where each "
+       "decode came from. The receive list uses MSHV's columns: Time, T (seconds into the "
+       "period), dB, DF from 1500 Hz, Message, Navg, Bit err, and Eye, then Freq. MSK144 sends "
+       "FT8-style messages, Tx1 through Tx6, and the contest exchanges. MSK40 short messages (Sh) "
+       "also decode 20 ms frames such as <K1JT N8SDR> R+06; a Tx line in that form sends one. "
+       "Their reports are -03, +00, +03, +06, +10, +13, +16, the R forms, RRR, and 73. MSKMS is "
+       "MSHV's MSK144 variant: 72-bit messages and the classic duration-strength report, first "
+       "digit 2 to 5 for the ping length and second 6 to 9 for its strength. Tx2 sends the report "
+       "for the last ping you heard from that call, 26 if none was measured. The band row shows "
+       "6 m and 2 m: 50.260 and 144.150 MHz, or 50.280 and 144.360 MHz in Region 1. PSK Reporter "
+       "lists both as MSK144. DIGU. Nothing keys until you press TX. START is never sent."},
       {"Feld Hell",
        "Mode → Hell is the Fldigi 4.2.06 list: Feld Hell, Slow Hell, Feld Hell X5, Feld Hell X9, "
        "FSK Hell, FSK Hell-105, and Hell 80. That screen is the receive tape over the sent log, "
@@ -4701,8 +5376,8 @@ void MainWindow::showGuide() {
        "the radio is past full scale, before this display. Receive audio does not raise the notice. "
        "None of this keys the radio or sends START."},
       {"Docking and layouts",
-       "Waterfall, Receive, Transmit, Macros, and the status strip are docks. Drag a title to move a "
-       "pane or float it. Close hides it. The View menu lists those panes and shows a hidden one again. "
+       "Waterfall, Receive, Transmit, Macros, the status strip, and DXpeditions are docks. Drag a title "
+       "to move a pane or float it. Close hides it. The View menu lists those panes and shows a hidden one again. "
        "Macros stays hidden on FT8, FT4, FT2, JT65, Q65, and WSPR. Hell and the other keyboard modes show the macro row. "
        "Each mode keeps its own dock arrangement, window "
        "geometry, and waterfall Floor, Range, and Auto. View → Save layout writes the mode that is open. The next "
@@ -4715,6 +5390,64 @@ void MainWindow::showGuide() {
        "back. Receive text is not stored. View → Reset layout stacks this mode's docks back to the "
        "default and forgets the working arrangement. Named copies stay. None of this keys the radio or "
        "sends START."},
+      {"DXpeditions",
+       "View → DXpeditions lists the announced DX operations from NG3K's ADXO feed: status, call, "
+       "entity, start, end, bands, modes, QSL, and the announcement's notes. Bands and modes are read "
+       "from those notes. The panel floats the first time it opens and docks like the other panes. "
+       "Digital modes, the filter it opens with, keeps FT8, FT4, FT2, RTTY, PSK, the other digital "
+       "modes, and the ones that say + digital or all modes; All modes, FT8 / FT4 / FT2, RTTY, and PSK "
+       "are the other choices. An announcement that names no mode shows a dash and appears only under "
+       "All modes. On the air now keeps the operations whose dates include today (UTC); those rows are "
+       "tinted green and Status reads NOW with the days left. Find matches the call, entity, QSL, or "
+       "notes. Click a column title to sort. A double-click moves STD to that DXpedition's band and "
+       "digital mode. DXpeditions run the FT modes, RTTY, and PSK, so the mode is the first one listed "
+       "of FT8, FT4, RTTY, and PSK, then FT2, JT65, Q65, and MSK144; + digital alone is FT8. FT8 turns "
+       "Super Hound on when the listing says Fox/Hound (f/h, SuperFox) and off when it does not. PSK is "
+       "PSK31 unless the listing names another rate. The band is the one you are on when it is listed "
+       "and has a dial for that mode, "
+       "otherwise the nearest listed band that has one. RTTY and PSK have no band dial in STD, so only "
+       "the mode changes. Only the dial and mode move, over TCI, and the status line says what was "
+       "done. Tick a call to put it on the hot list. Right-click to put the call in the QSO bar "
+       "(copied on the FT8 family), add it to the hot list, copy it, or open the info page; NG3K "
+       "opens the whole list. When the announcement gives only a prefix and its link names the full "
+       "call, that call is used. Nothing is "
+       "fetched until the panel is shown, then when the list is more than an hour old and once an hour "
+       "while it stays open; Refresh fetches now. The last list is saved in the STD AppData folder, so "
+       "the panel works offline. Mark spotted DXpeditions, off until ticked, asks Spothole (which "
+       "gathers the DX clusters and the RBN) for digital spots of the digital DXpeditions on the air "
+       "(their dates, a day either side), every 90 or 180 seconds as chosen in Check every. CW and phone "
+       "spots, and stations that are not those DXpeditions, are never shown; 3B9FR does not mark 3B9KW. "
+       "A spotted row reads SPOTTED with the band, mode, and minutes since the spot (a ? when Spothole "
+       "took the mode from the band plan), is tinted bright green, sorts first, and counts as On the air "
+       "now; its tooltip gives the frequency, spotter, and comment. Keep spots (10, 20, or 30 minutes) is "
+       "how long it stays marked after its last spot. A double-click on a spotted row goes to the spot: "
+       "its band and mode, the band's dial when the spot is within 4 kHz of it, else the spot's kHz, and "
+       "for RTTY and PSK the dial 1500 Hz off so the signal is at 1500 Hz in the waterfall. No callsign or "
+       "login is sent. Nothing here keys the radio or sends START."},
+      {"Hot list",
+       "The calls you are watching for, as SDRLogger+ keeps them. Tick a call in View → DXpeditions, "
+       "or type calls in View → Hot list…, which also removes calls and clears the list. The list "
+       "shows on the top bar right of the dial, up to 12 calls, +N opens the rest. View → Hot list on "
+       "top bar, or right-click → Hide from the top bar, turns it off; in JS8 the JS8 clock row takes "
+       "that space. Top bar shows All calls, Ticked calls (ticked in View → Hot list…), or Heard calls, "
+       "heard calls first. Alerts are Off until chosen; click the chip on the top bar to cycle Off, "
+       "Visual, and Visual + Voice. Visual turns a call red for 15 minutes after STD decodes it, then "
+       "amber, and puts the band, mode, and report on the status line; calls not heard are dim. Visual "
+       "+ Voice also says Hot list and the call, once per call every 15 minutes, with the voice, rate, "
+       "and volume from Options → Speech on the Speech output device, the same device RADE's Speaker "
+       "box uses. It has its own voice, so it speaks in every mode, FT8 and WSPR included, with read-"
+       "back off or muted, while transmitting, and in RADE. STD looks in FT8-family, JS8, and WSPR "
+       "decodes and in received keyboard text. A call matches as a whole word, inside FT8 brackets, or "
+       "on either side of a slash, so FO matches FO/WE9G. Click a call on the top bar to put it in the "
+       "QSO bar. Double-click it to tune to the band, mode, and dial where STD last heard it; if it has "
+       "not been heard, to its DXpedition's band and mode; with neither, nothing moves. In View → "
+       "DXpeditions, hot rows are tinted orange, amber once heard, and red when heard in the last 15 "
+       "minutes. With Mark spotted DXpeditions on in View → DXpeditions, a cluster spot of a hot call "
+       "that is one of those DXpeditions counts too: the chip turns red, the status line says spotted "
+       "with the band, mode, frequency, and spotter, Visual + Voice says it, and a double-click goes to "
+       "the spot. Tick Also check hot list calls beside it and every call on the hot list is asked "
+       "for too, a special event station or a rare call, still digital spots only, so an SSB or CW "
+       "station never alerts. Nothing here keys the radio or sends START."},
       {"Waterfall zoom",
        "The wheel zooms around the cursor. Drag pans. Both stay inside the receive band the radio "
        "reports. A double-click or a right-click opens that whole band again. Start and BW narrow the "
@@ -4737,11 +5470,17 @@ void MainWindow::showGuide() {
        "Grayscale, and Amber. The choice recolors the trace. It does not change the frequency "
        "span, and it does not key."},
       {"Graphics",
-       "Options → Graphics chooses the waterfall backend. Auto tries Vulkan, then Direct3D 11, "
-       "then Painter, before the window is shown. Direct3D 11, "
+       "Options → Graphics chooses the waterfall backend. Auto uses Direct3D 11 on Windows and "
+       "Vulkan on other systems, then Painter if that device fails. Vulkan, Direct3D 11, "
        "Direct3D 12, OpenGL, and Painter are explicit. The Graphics line names the backend in "
        "use. Choosing a different graphics API restarts STD so that backend is selected. Choosing the "
        "backend already in use replaces the picture immediately. It does not key and does not send START."},
+      {"Needed stations",
+       "Options → Decode List Options → Mark Needed Stations, off until ticked, adds a Need column to the FT8, FT4, FT2, JT65, and Q65 list, checked against your ADIF log. NEW (deep red) is a DXCC entity never worked; BAND (amber) an entity worked but not on the band you are on; GRID (blue) a grid never worked; GRID+BAND (light blue) a grid worked, but not on this band; B4 (dim) a call already worked on this band. Worked QSOs count; confirmations do not. The station is the one sending: the call after CQ, or the second call in a reply. Entities come from AD1C's cty.dat (country-files.com), built in; a newer cty.dat placed in %APPDATA%\\N8SDR\\STD is used instead. What counts as worked is set in Options → Log Options → Log file and logger → Worked list: STD's ADIF file only (the default); STD's ADIF file plus another ADIF file, read but never written (WSJT-X's wsjtx_log.adi, or an export from Log4OM, DXKeeper, N1MM, and others), read again whenever it changes; or STD's ADIF file plus SDRLogger+ (live), which asks SDRLogger+ on this PC (127.0.0.1, port 5050 unless changed) for its whole log every five minutes and ten seconds after each QSO, and keeps the last copy so the marks still work while SDRLogger+ is closed. The same list drives Hide QSO B4. It does not key."},
+      {"Who heard me",
+       "Options → Network Configuration → Show who heard me (PSK Reporter), off until ticked, puts a chip on the status bar: HEARD, the number of stations that reported hearing your callsign (from Options → User) in the last 15 minutes on the band you are on, and the farthest of them, for example \"HEARD 23 · 20m · best VK3XX 16400 km\". It is green when someone heard you and grey when nobody has. Click it for the list, farthest first: call, country, band, mode, the SNR they heard you at, distance, and time. STD asks PSK Reporter every five minutes, as PSK Reporter asks, and only while you have transmitted in the last half hour; listening sends nothing. Changing band redraws the chip at once for the new band, and the Need column with it. It does not key."},
+      {"Clock check",
+       "The clock check watches the DT of the FT8, FT4, and FT2 decodes. When the middle of the last few minutes of them is off by more than 1 s in FT8, 0.5 s in FT4, or 0.3 s in FT2, the status bar shows Clock 1.3 s fast (or slow) and the status line says so once. It needs eight decodes from two periods, and a few stations far off do not move it. STD does not change the clock: sync it with Windows time, Meinberg NTP, or BktTimeSync. It does not key."},
       {"Fox and Hound",
        "Super Hound or Super Fox, on the mode bar, sets 40 m to 7.056 MHz DIGU and moves the RX marker "
        "to 750 Hz. That is the fox. It is still 15 second FT8. TX FIRST and TX SECOND only remember a "
@@ -4943,6 +5682,10 @@ void MainWindow::arrangeDefault() {
   splitDockWidget(receiveDock_, transmitDock_, Qt::Vertical);
   splitDockWidget(transmitDock_, macroDock_, Qt::Vertical);
   splitDockWidget(macroDock_, statusDock_, Qt::Vertical);
+  if (dxpedDock_ && dockWidgetArea(dxpedDock_) == Qt::NoDockWidgetArea && !dxpedDock_->isFloating()) {
+    addDockWidget(Qt::RightDockWidgetArea, dxpedDock_);
+    dxpedDock_->hide();
+  }
   applyMacroBar();
 }
 
@@ -5539,6 +6282,8 @@ void MainWindow::applyChannelWidth() {
     width = jt65ChannelHz(mode);
   else if (q65Mode(mode))
     width = q65ChannelHz(mode);
+  else if (mskMode(mode))
+    width = mskChannelHz(mode);
   else if (hellFamily(mode))
     width = hellBandwidthHz(mode);
   else if (rttyMode(mode)) {
@@ -5840,6 +6585,16 @@ int tuneLimitMs(const QString& mode) {
 }
 
 }  // namespace
+
+QString MainWindow::sequencedReport(int db, const QString& call) const {
+  // MSKMS sends MSHV's duration-strength report for the ping we heard
+  // (26 is the weakest); every other sequenced mode sends dB.
+  if (profile_ && mskmsMode(profile_->digitalMode())) {
+    const QString rpt = mskmsReports_.value(call.trimmed().toUpper());
+    return mskmsReportWord(rpt) ? rpt : QStringLiteral("26");
+  }
+  return reportText(db);
+}
 
 void MainWindow::setTxStatus(const QString& text) {
   if (auto* label = findChild<QLabel*>(QStringLiteral("txStatus")))
@@ -6217,7 +6972,7 @@ void MainWindow::startQueueHead(const QString& time) {
   if (!already) {
     txWorkStarted_ = false;
     txHisCall_ = head.call;
-    txReport_ = reportText(head.db);
+    txReport_ = sequencedReport(head.db, head.call);
     refreshTxFields();
     selectTxSlot(slot);
     armAnswerSlot(time, slot > 0 ? 1 : 0);
@@ -6379,6 +7134,9 @@ int MainWindow::txStartLeadMs(const QString& mode) const {
     return 0;
   if (jt65Mode(mode))
     return 700;
+  // MSHV starts MSK144 and MSKMS 250 ms after the period begins.
+  if (mskMode(mode))
+    return 250;
   int target = 0;
   if (mode == QLatin1String("FT8"))
     target = 450;
@@ -6440,6 +7198,10 @@ bool MainWindow::halfIsFirst(const QString& mode) const {
     return (now.minute() % 2) == 0;
   if (q65Mode(mode))
     return now.second() < 30;
+  if (mskMode(mode)) {
+    const int period = mskPeriodMs(mode);
+    return (ms % (2 * period)) < period;
+  }
   if (mode == QLatin1String("FT2"))
     return (ms % 7500) < 3750;
   if (mode == QLatin1String("FT4"))
@@ -6460,6 +7222,8 @@ int MainWindow::periodLengthMs(const QString& mode) const {
     return 60000;
   if (q65Mode(mode))
     return 30000;
+  if (mskMode(mode))
+    return mskPeriodMs(mode);
   return 0;
 }
 
@@ -7246,6 +8010,8 @@ void MainWindow::loadReplyFromLine(int line) {
     else if (word.size() >= 2 && (word.at(0) == QLatin1Char('+') || word.at(0) == QLatin1Char('-')) &&
              word.at(1).isDigit())
       report = word;
+    else if (profile_ && mskmsMode(profile_->digitalMode()) && mskmsReportWord(word))
+      report = word;
   }
   QString sender;
   if (cq) {
@@ -7277,7 +8043,7 @@ void MainWindow::loadReplyFromLine(int line) {
   }
   txFinishedCalls_.removeAll(sender);
   txHisCall_ = sender;
-  txReport_ = reportText(row.db);
+  txReport_ = sequencedReport(row.db, sender);
   QString hisGrid;
   for (const QString& word : words) {
     if (isGrid(word)) {
@@ -7737,6 +8503,10 @@ void MainWindow::appendRxEcho(const QString& text) {
   auto* echo = findChild<QTextEdit*>(QStringLiteral("rxEcho"));
   appendKeyedEcho(echo, text, rxEchoColor());
   qsoScanRx(text);
+  // JS8 lines come through noteDecodeSpot as well; the keyboard modes
+  // only arrive here, a few characters at a time.
+  if (hot_ && profile_ && profile_->digitalMode().compare(QLatin1String("JS8"), Qt::CaseInsensitive) != 0)
+    noteHot(text, profile_->digitalMode(), 999, true);
   // Someone answered the repeating CQ: stop calling. Only received text
   // counts; the sent echo in the same pane has our call in every CQ.
   if (macroRepeatIndex_ >= 0) {
@@ -8263,6 +9033,8 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
     else if (word.size() >= 2 && (word.at(0) == QLatin1Char('+') || word.at(0) == QLatin1Char('-')) &&
              word.at(1).isDigit())
       report = word;
+    else if (profile_ && mskmsMode(profile_->digitalMode()) && mskmsReportWord(word))
+      report = word;
   }
   QString sender;
   if (calls.size() >= 2)
@@ -8326,7 +9098,7 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
       return;
     }
     txHisCall_ = sender;
-    txReport_ = reportText(db);
+    txReport_ = sequencedReport(db, sender);
     refreshTxFields();
     selectTxSlot(selected);
     armAnswerSlot(time, senderPos);
@@ -8337,7 +9109,7 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
   txAnswered_ = true;
   txTries_ = 0;
   txSeqStartMs_ = QDateTime::currentMSecsSinceEpoch();
-  txReport_ = reportText(db);
+  txReport_ = sequencedReport(db, sender);
   int next = slot;
   if (seventy || rr73 || rrr)
     next = 4;
@@ -8433,57 +9205,281 @@ void MainWindow::stopUserTx(bool uncheck) {
   }
 }
 
-void MainWindow::ensureWorkedCalls() const {
-  QSettings settings;
-  QString path = settings.value(QStringLiteral("log/adifPath")).toString().trimmed();
-  if (path.isEmpty())
-    path = QsoLog::defaultAdifPath();
-  const QFileInfo info(path);
-  const qint64 stamp = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
-  const qint64 size = info.exists() ? info.size() : -1;
-  if (path == workedPath_ && stamp == workedStamp_ && size == workedSize_)
+void MainWindow::showHeard() {
+  if (!statusStrip_ || !heard_)
     return;
-  workedPath_ = path;
+  if (!heard_->enabled()) {
+    statusStrip_->setHeard(false, QString(), false, QString());
+    return;
+  }
+  const QString band = currentAdifBand();
+  double lat0 = 0.0;
+  double lon0 = 0.0;
+  const bool home = gridCenter(stationGrid(), &lat0, &lon0);
+  int count = 0;
+  double bestKm = -1.0;
+  QString bestCall;
+  for (const HeardReport& r : heard_->reports()) {
+    if (!band.isEmpty() && adifBandForMhz(double(r.freqHz) / 1.0e6) != band)
+      continue;
+    ++count;
+    double lat = 0.0;
+    double lon = 0.0;
+    if (home && gridCenter(r.locator.left(4), &lat, &lon)) {
+      const double km = kilometers(lat0, lon0, lat, lon);
+      if (km > bestKm) {
+        bestKm = km;
+        bestCall = r.call;
+      }
+    }
+  }
+  QString text = QStringLiteral("HEARD %1").arg(count);
+  if (!band.isEmpty())
+    text += QStringLiteral(" · %1").arg(band);
+  if (bestKm >= 0.0) {
+    const double shown = distMiles_ ? bestKm * 0.621371 : bestKm;
+    text += QStringLiteral(" · best %1 %2 %3").arg(bestCall).arg(qlonglong(std::llround(shown)))
+                .arg(distMiles_ ? QStringLiteral("mi") : QStringLiteral("km"));
+  }
+  QString tip = QStringLiteral("Stations that reported hearing %1 to PSK Reporter in the last 15 minutes, on this "
+                               "band. Click for the list. Asked every five minutes, only while you have "
+                               "transmitted in the last half hour. This does not key.")
+                    .arg(stationCall().isEmpty() ? QStringLiteral("your call") : stationCall());
+  if (heard_->checkedAt().isValid())
+    tip += QStringLiteral("\nChecked %1Z.").arg(heard_->checkedAt().toUTC().toString(QStringLiteral("HH:mm")));
+  if (!heard_->lastError().isEmpty())
+    tip += QStringLiteral("\n") + heard_->lastError();
+  statusStrip_->setHeard(true, text, count > 0, tip);
+}
+
+void MainWindow::openHeardList(const QPoint& at) {
+  if (!heard_)
+    return;
+  auto* popup = new QFrame(this, Qt::Popup);
+  popup->setAttribute(Qt::WA_DeleteOnClose);
+  popup->setObjectName(QStringLiteral("heardList"));
+  auto* layout = new QVBoxLayout(popup);
+  layout->setContentsMargins(6, 6, 6, 6);
+  double lat0 = 0.0;
+  double lon0 = 0.0;
+  const bool home = gridCenter(stationGrid(), &lat0, &lon0);
+  struct Row {
+    HeardReport r;
+    double km;
+  };
+  QList<Row> rows;
+  for (const HeardReport& r : heard_->reports()) {
+    double lat = 0.0;
+    double lon = 0.0;
+    const double km = home && gridCenter(r.locator.left(4), &lat, &lon) ? kilometers(lat0, lon0, lat, lon) : -1.0;
+    rows << Row{r, km};
+  }
+  std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.km > b.km; });
+  auto* title = new QLabel(rows.isEmpty()
+                               ? QStringLiteral("Nobody has reported hearing you in the last 15 minutes.")
+                               : QStringLiteral("Heard by %1 in the last 15 minutes, farthest first").arg(rows.size()),
+                           popup);
+  layout->addWidget(title);
+  if (!rows.isEmpty()) {
+    auto* table = new QTableWidget(int(rows.size()), 7, popup);
+    table->setObjectName(QStringLiteral("heardTable"));
+    table->setHorizontalHeaderLabels({QStringLiteral("Call"), QStringLiteral("Country"), QStringLiteral("Band"),
+                                      QStringLiteral("Mode"), QStringLiteral("SNR"),
+                                      distMiles_ ? QStringLiteral("mi") : QStringLiteral("km"),
+                                      QStringLiteral("UTC")});
+    table->verticalHeader()->hide();
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    for (int i = 0; i < rows.size(); ++i) {
+      const Row& row = rows.at(i);
+      const double shown = row.km < 0 ? -1 : (distMiles_ ? row.km * 0.621371 : row.km);
+      const QStringList cells = {row.r.call, row.r.country, adifBandForMhz(double(row.r.freqHz) / 1.0e6),
+                                 row.r.mode, QString::number(row.r.snr),
+                                 shown < 0 ? QStringLiteral("-") : QString::number(qlonglong(std::llround(shown))),
+                                 row.r.time.toUTC().toString(QStringLiteral("HH:mm"))};
+      for (int c = 0; c < cells.size(); ++c)
+        table->setItem(i, c, new QTableWidgetItem(cells.at(c)));
+    }
+    table->resizeColumnsToContents();
+    table->setMinimumWidth(std::min(760, table->horizontalHeader()->length() + 24));
+    table->setMinimumHeight(std::min(420, 32 + int(rows.size()) * 24));
+    layout->addWidget(table);
+  }
+  popup->adjustSize();
+  popup->move(at - QPoint(0, popup->height() + 4));
+  popup->show();
+}
+
+void MainWindow::applyWorkedSource() {
+  if (!loggerFeed_)
+    return;
+  QSettings settings;
+  loggerFeed_->setPort(settings.value(QStringLiteral("needed/sdrPort"), 5050).toInt());
+  loggerFeed_->setEnabled(settings.value(QStringLiteral("needed/source"), 0).toInt() == 2);
+  workedPath_.clear();
+}
+
+void MainWindow::loggedQso() {
+  // SDRLogger+ gets the QSO over UDP; ask for its log once it has stored it.
+  if (loggerFeed_ && loggerFeed_->enabled())
+    QTimer::singleShot(10000, loggerFeed_, &LoggerFeed::refresh);
+}
+
+QStringList MainWindow::workedSources() const {
+  QSettings settings;
+  QString own = settings.value(QStringLiteral("log/adifPath")).toString().trimmed();
+  if (own.isEmpty())
+    own = QsoLog::defaultAdifPath();
+  QStringList paths{own};
+  const int source = settings.value(QStringLiteral("needed/source"), 0).toInt();
+  if (source == 1) {
+    const QString other = settings.value(QStringLiteral("needed/adifPath")).toString().trimmed();
+    if (!other.isEmpty() && QFileInfo(other).absoluteFilePath() != QFileInfo(own).absoluteFilePath())
+      paths << other;
+  } else if (source == 2) {
+    paths << LoggerFeed::cachePath();
+  }
+  return paths;
+}
+
+namespace {
+
+// The worked list read from every source. Built on a pool thread.
+struct WorkedLists {
+  QSet<QString> calls;
+  WorkedIndex index;
+};
+
+WorkedLists readWorkedLists(const QStringList& paths, const CtyTable& cty) {
+  WorkedLists out;
+  for (const QString& path : paths) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+      continue;
+    const QByteArray adifBytes = file.readAll();
+    out.index.addAdif(cty, adifBytes);
+    const QByteArray upper = adifBytes.toUpper();
+    const int eoh = upper.indexOf("<EOH>");
+    int pos = eoh < 0 ? 0 : eoh + 5;
+    const QByteArray tag("<CALL:");
+    while (pos < upper.size()) {
+      const int at = upper.indexOf(tag, pos);
+      if (at < 0)
+        break;
+      int digits = at + tag.size();
+      int length = 0;
+      bool any = false;
+      while (digits < adifBytes.size() && adifBytes.at(digits) >= '0' && adifBytes.at(digits) <= '9') {
+        any = true;
+        length = length * 10 + (adifBytes.at(digits) - '0');
+        ++digits;
+        if (length > 32)
+          break;
+      }
+      if (!any || length > 32 || digits >= adifBytes.size() || adifBytes.at(digits) != '>') {
+        pos = at + tag.size();
+        continue;
+      }
+      const int start = digits + 1;
+      if (length < 3 || start + length > adifBytes.size()) {
+        pos = start;
+        continue;
+      }
+      const QString call = QString::fromLatin1(adifBytes.constData() + start, length).trimmed();
+      const QString home = callHome(call);
+      if (!home.isEmpty())
+        out.calls.insert(home);
+      pos = start + length;
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+void MainWindow::ensureWorkedCalls() const {
+  // One key for every source: a change to any file reads them all again.
+  // The reading runs on a pool thread so a large log never pauses the
+  // window; the old list is used until the new one is in.
+  const QStringList paths = workedSources();
+  QString key;
+  qint64 stamp = 0;
+  qint64 size = 0;
+  for (const QString& path : paths) {
+    const QFileInfo info(path);
+    key += path + QLatin1Char('|');
+    stamp ^= info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    size += info.exists() ? info.size() : -1;
+  }
+  if (key == workedPath_ && stamp == workedStamp_ && size == workedSize_)
+    return;
+  if (workedLoading_) {
+    workedAgain_ = true;  // read again once this one is in
+    return;
+  }
+  workedPath_ = key;
   workedStamp_ = stamp;
   workedSize_ = size;
-  workedCalls_.clear();
-  QFile file(path);
-  if (!file.open(QIODevice::ReadOnly))
-    return;
-  const QByteArray adifBytes = file.readAll();
-  const QByteArray upper = adifBytes.toUpper();
-  const int eoh = upper.indexOf("<EOH>");
-  int pos = eoh < 0 ? 0 : eoh + 5;
-  const QByteArray tag("<CALL:");
-  while (pos < upper.size()) {
-    const int at = upper.indexOf(tag, pos);
-    if (at < 0)
-      break;
-    int digits = at + tag.size();
-    int length = 0;
-    bool any = false;
-    while (digits < adifBytes.size() && adifBytes.at(digits) >= '0' && adifBytes.at(digits) <= '9') {
-      any = true;
-      length = length * 10 + (adifBytes.at(digits) - '0');
-      ++digits;
-      if (length > 32)
-        break;
+  workedLoading_ = true;
+  // The thread gets its own copy of the country table (shared data, cheap),
+  // so nothing it reads goes away if the window closes mid-read.
+  const CtyTable cty = ctyTable();
+  QPointer<MainWindow> self(const_cast<MainWindow*>(this));
+  QThreadPool::globalInstance()->start([self, paths, cty] {
+    WorkedLists lists = readWorkedLists(paths, cty);
+    QMetaObject::invokeMethod(
+        qApp,
+        [self, lists = std::move(lists)]() mutable {
+          if (!self)
+            return;
+          self->workedCalls_ = std::move(lists.calls);
+          self->workedIndex_ = std::move(lists.index);
+          self->workedLoading_ = false;
+          if (self->workedAgain_) {
+            self->workedAgain_ = false;
+            self->workedPath_.clear();
+          }
+          self->refreshDecodes();
+        },
+        Qt::QueuedConnection);
+  });
+}
+
+bool MainWindow::workedListLoading() const {
+  return workedLoading_;
+}
+
+const CtyTable& MainWindow::ctyTable() const {
+  if (!ctyLoaded_) {
+    ctyLoaded_ = true;
+    QFile own(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/cty.dat"));
+    if (!own.open(QIODevice::ReadOnly) || !cty_.load(own.readAll())) {
+      QFile built(QStringLiteral(":/std/cty.dat"));
+      if (built.open(QIODevice::ReadOnly))
+        cty_.load(built.readAll());
     }
-    if (!any || length > 32 || digits >= adifBytes.size() || adifBytes.at(digits) != '>') {
-      pos = at + tag.size();
-      continue;
-    }
-    const int start = digits + 1;
-    if (length < 3 || start + length > adifBytes.size()) {
-      pos = start;
-      continue;
-    }
-    const QString call = QString::fromLatin1(adifBytes.constData() + start, length).trimmed();
-    const QString home = callHome(call);
-    if (!home.isEmpty())
-      workedCalls_.insert(home);
-    pos = start + length;
   }
+  return cty_;
+}
+
+QString MainWindow::currentAdifBand() const {
+  if (!profile_)
+    return QString();
+  const qint64 dial = liveDialHz_ > 100000 ? liveDialHz_ : profile_->dialHz();
+  return adifBandForMhz(double(dial) / 1.0e6);
+}
+
+Need MainWindow::needFor(const QString& message) const {
+  QString call;
+  QString grid;
+  if (!messageStation(message, &call, &grid))
+    return Need::None;
+  ensureWorkedCalls();
+  const QString mine = callHome(stationCall());
+  const QString home = callHome(call);
+  if (home.isEmpty() || (!mine.isEmpty() && home == mine))
+    return Need::None;
+  return classifyNeed(ctyTable(), workedIndex_, call, grid, currentAdifBand());
 }
 
 bool MainWindow::keepDecode(const QString& message) const {
@@ -8747,6 +9743,7 @@ void MainWindow::applyDxOptions() {
   filterHideCall_ = settings.value(QStringLiteral("dx/hideCall")).toString().trimmed().toUpper();
   filterHidePrefix_ = settings.value(QStringLiteral("dx/hidePrefix")).toString().trimmed().toUpper();
   filterQsoB4_ = settings.value(QStringLiteral("dx/hideQsoB4"), false).toBool();
+  markNeeded_ = settings.value(QStringLiteral("dx/markNeeded"), false).toBool();
   const QString hide = settings.value(QStringLiteral("dx/hideContinent")).toString();
   for (int i = 0; i < 7; ++i)
     hideContinent_[i] = hide.size() > i && hide.at(i) == QLatin1Char('1');
@@ -8787,9 +9784,16 @@ void MainWindow::refreshDecodeHeader() {
   auto* header = findChild<QLabel*>("decodeHeader");
   if (!header)
     return;
+  if (profile_ && mskMode(profile_->digitalMode())) {
+    header->setText(mskColumns(QStringLiteral("Time"), QStringLiteral("T"), QStringLiteral("dB"),
+                               QStringLiteral("DF"), QStringLiteral("Dist"), QStringLiteral("Message"),
+                               QStringLiteral("Navg"), QStringLiteral("Bit err"), QStringLiteral("Eye"),
+                               QStringLiteral("Freq"), showTime_, showFreq_, showDist_));
+    return;
+  }
   header->setText(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"), QStringLiteral("DT"),
                                  QStringLiteral("Dist"), QStringLiteral("Message"), QStringLiteral("Freq"),
-                                 showTime_, showFreq_, showDist_));
+                                 showTime_, showFreq_, showDist_, markNeeded_, QStringLiteral("Need")));
 }
 
 void MainWindow::loadMacroStore() {
@@ -9598,6 +10602,14 @@ void MainWindow::openNetworkDialog() {
   dialog.setMinimumWidth(460);
   auto* enable = new QCheckBox(QStringLiteral("Enable PSK Reporter style spots"), &dialog);
   enable->setChecked(settings.value(QStringLiteral("dx/reportEnabled"), false).toBool());
+  auto* heardMe = new QCheckBox(QStringLiteral("Show who heard me (PSK Reporter)"), &dialog);
+  heardMe->setObjectName(QStringLiteral("heardMe"));
+  heardMe->setChecked(heard_ && heard_->enabled());
+  heardMe->setToolTip(QStringLiteral(
+      "A chip on the status bar counts the stations that reported hearing your callsign (Options → User) "
+      "to PSK Reporter in the last 15 minutes on this band; click it for the list, farthest first. STD "
+      "asks PSK Reporter every five minutes, only while you have transmitted in the last half hour. "
+      "Off asks nothing. This does not key."));
   auto* reportWspr = new QCheckBox(QStringLiteral("Also send WSPR spots to PSK Reporter"), &dialog);
   reportWspr->setObjectName(QStringLiteral("reportWspr"));
   reportWspr->setChecked(settings.value(QStringLiteral("dx/reportWspr"), false).toBool());
@@ -9760,6 +10772,7 @@ void MainWindow::openNetworkDialog() {
   buttons->addWidget(cancel);
   auto* layout = new QVBoxLayout(&dialog);
   layout->addWidget(enable);
+  layout->addWidget(heardMe);
   layout->addWidget(reportWspr);
   layout->addLayout(form);
   layout->addWidget(note);
@@ -9775,6 +10788,10 @@ void MainWindow::openNetworkDialog() {
   QSettings store;
   store.setValue(QStringLiteral("dx/reportEnabled"), enable->isChecked());
   store.setValue(QStringLiteral("dx/reportWspr"), reportWspr->isChecked());
+  if (heard_) {
+    heard_->setCall(stationCall());
+    heard_->setEnabled(heardMe->isChecked());
+  }
   store.setValue(QStringLiteral("dx/wsprnetEnabled"), wsprOn->isChecked());
   store.setValue(QStringLiteral("dx/freedvReporterEnabled"), fdvOn->isChecked());
   store.setValue(QStringLiteral("dx/freedvReporterMessage"), fdvMessage->text().trimmed());
@@ -9947,6 +10964,8 @@ QString MainWindow::maybeLogQso(const QString& sent) {
   record.timeOn = timeOn;
   record.timeOff = timeOff;
   const QsoLog::Result result = qsoLog_ ? qsoLog_->store(record) : QsoLog::Result{};
+  if (result.wrote)
+    loggedQso();
   if (!result.wrote)
     return result.detail.isEmpty()
                ? QStringLiteral("The QSO was not written. TRX is off. START was not sent.")
@@ -10152,8 +11171,52 @@ void MainWindow::openLogDialog() {
   tcpPort->setRange(1, 65535);
   tcpPort->setValue(std::clamp(settings.value(QStringLiteral("log/tcpPort"), 52001).toInt(), 1, 65535));
 
+  // Worked list for Mark Needed Stations and Hide QSO B4.
+  auto* worked = new QComboBox(&dialog);
+  worked->setObjectName(QStringLiteral("logWorkedSource"));
+  worked->addItem(QStringLiteral("STD's ADIF file only"), 0);
+  worked->addItem(QStringLiteral("STD's ADIF file + another ADIF file"), 1);
+  worked->addItem(QStringLiteral("STD's ADIF file + SDRLogger+ (live)"), 2);
+  worked->setCurrentIndex(std::clamp(settings.value(QStringLiteral("needed/source"), 0).toInt(), 0, 2));
+  worked->setToolTip(QStringLiteral(
+      "What counts as worked for Mark Needed Stations and Hide QSO B4. STD's own ADIF always counts. "
+      "Another ADIF file is read, never written: WSJT-X's wsjtx_log.adi or an export from Log4OM, "
+      "DXKeeper, N1MM, and others, read again whenever it changes. SDRLogger+ (live) asks SDRLogger+ "
+      "on this PC for its whole log every five minutes and after each QSO, and keeps the last copy for "
+      "when it is closed. This does not key."));
+  auto* workedPath = new QLineEdit(settings.value(QStringLiteral("needed/adifPath")).toString(), &dialog);
+  workedPath->setObjectName(QStringLiteral("logWorkedAdif"));
+  workedPath->setPlaceholderText(QStringLiteral("Another logger's ADIF file"));
+  auto* workedBrowse = new QPushButton(QStringLiteral("Browse…"), &dialog);
+  connect(workedBrowse, &QPushButton::clicked, &dialog, [this, workedPath] {
+    const QString picked = QFileDialog::getOpenFileName(this, QStringLiteral("Worked list ADIF"), workedPath->text(),
+                                                        QStringLiteral("ADIF (*.adi *.adif)"));
+    if (!picked.isEmpty())
+      workedPath->setText(picked);
+  });
+  auto* workedRow = new QHBoxLayout;
+  workedRow->addWidget(workedPath, 1);
+  workedRow->addWidget(workedBrowse);
+  auto* workedPort = new QSpinBox(&dialog);
+  workedPort->setObjectName(QStringLiteral("logWorkedPort"));
+  workedPort->setRange(1, 65535);
+  workedPort->setValue(std::clamp(settings.value(QStringLiteral("needed/sdrPort"), 5050).toInt(), 1, 65535));
+  workedPort->setToolTip(QStringLiteral(
+      "SDRLogger+'s local web port, 5050 unless that was busy when it started. STD asks 127.0.0.1 only."));
+  auto showWorked = [worked, workedPath, workedBrowse, workedPort] {
+    const int s = worked->currentData().toInt();
+    workedPath->setEnabled(s == 1);
+    workedBrowse->setEnabled(s == 1);
+    workedPort->setEnabled(s == 2);
+  };
+  showWorked();
+  connect(worked, &QComboBox::currentIndexChanged, &dialog, [showWorked](int) { showWorked(); });
+
   auto* form = new QFormLayout;
   form->addRow(QStringLiteral("ADIF file"), pathRow);
+  form->addRow(QStringLiteral("Worked list"), worked);
+  form->addRow(QStringLiteral("Other ADIF"), workedRow);
+  form->addRow(QStringLiteral("SDRLogger+ port"), workedPort);
   form->addRow(udpLink);
   form->addRow(udpAccept);
   form->addRow(udpQso);
@@ -10202,6 +11265,11 @@ void MainWindow::openLogDialog() {
   store.setValue(QStringLiteral("log/tcp"), tcp->isChecked());
   store.setValue(QStringLiteral("log/tcpHost"), tcpHost->text().trimmed());
   store.setValue(QStringLiteral("log/tcpPort"), tcpPort->value());
+  store.setValue(QStringLiteral("needed/source"), worked->currentData().toInt());
+  store.setValue(QStringLiteral("needed/adifPath"), workedPath->text().trimmed());
+  store.setValue(QStringLiteral("needed/sdrPort"), workedPort->value());
+  applyWorkedSource();
+  refreshDecodes();
   if (qsoLog_)
     qsoLog_->applySettings();
   setTxStatus(QStringLiteral("Log file saved. Nothing was keyed. START was not sent."));
@@ -10498,6 +11566,15 @@ void MainWindow::showDial(qint64 hz) {
 }
 
 void MainWindow::refreshDialBox() {
+  // A band change redraws what depends on the band: the HEARD chip and the
+  // Need column.
+  const QString band = currentAdifBand();
+  if (band != shownBand_) {
+    shownBand_ = band;
+    showHeard();
+    if (markNeeded_)
+      refreshDecodes();
+  }
   auto* box = findChild<QFrame*>(QStringLiteral("dialBox"));
   auto* role = findChild<QLabel*>(QStringLiteral("dialRole"));
   auto* freq = findChild<QLabel*>(QStringLiteral("dialFreq"));

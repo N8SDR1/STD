@@ -10,12 +10,15 @@
 // period. FT8 can run MSHV's three passes. FT4 is one pass at 6.1 seconds.
 // FT2 is one pass at 3.4 seconds. JT65 is one pass at 52 seconds of a 60
 // second period. Q65 is one pass at 27 seconds of a 30 second period.
+// MSK144 and MSKMS run MSHV's real-time ping decoder on overlapping
+// 0.6 s blocks as the audio arrives, so a ping prints about a second
+// after it lands, anywhere in the period.
 // It never opens a socket and never transmits.
 class Ft8Decode : public QObject {
   Q_OBJECT
 
 public:
-  enum class Period { Ft8, Ft4, Ft2, Jt65A, Jt65B, Jt65C, Q65A, Q65B, Q65C, Q65D };
+  enum class Period { Ft8, Ft4, Ft2, Jt65A, Jt65B, Jt65C, Q65A, Q65B, Q65C, Q65D, Msk144, Mskms };
 
   explicit Ft8Decode(QObject* parent = nullptr);
   ~Ft8Decode() override;
@@ -45,15 +48,25 @@ public:
   void setApCalls(const QString& myCall, const QString& hisCall, const QString& hisGrid);
   // JT65 deep search list: "CALL,GRID4" lines. It does not transmit.
   void setDeepSearchCalls(const QStringList& callGrid);
+  // MSK144 and MSKMS: MSHV's period (5, 7.5, 10, 15, or 30 s, in ms),
+  // MSK40 short messages and SWL (MSK144 only), and the DF tolerance
+  // around 1500 Hz (10 to 400).
+  void setMskOptions(int periodMs, bool shortMessages, bool swl, int toleranceHz);
   // Drops the JT65 and Q65 averages before the next decode.
   void clearAverages();
   void clear();
 
 signals:
   void decoded(const QString& time, int db, const QString& dt, const QString& message, int freqHz);
+  // MSK144 and MSKMS lines come here first, then through decoded(): t0 is
+  // seconds into the period, widthMs the ping width, rpt MSKMS's report
+  // ("" in MSK144), and df, navg, bitErrors, eye MSHV's list columns.
+  void mskDecoded(const QString& time, int db, const QString& t0, const QString& message, int freqHz,
+                  int widthMs, const QString& rpt, int df, int navg, int bitErrors, const QString& eye);
 
 private:
   void poll();
+  void pollMsk();
   void ensureWorker();
 
   struct Private;
