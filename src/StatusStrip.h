@@ -21,6 +21,9 @@ public:
   void setRadio(bool connected, const QString& line);
   // Shows "TX gain is too hot" beside the TX gain. Does not change it and does not key.
   void setTxHot(bool hot);
+  // The clock chip: hidden unless the FT decodes say this PC's clock is off.
+  // seconds > 0 is fast. mode names the mode the DTs came from.
+  void setClockOff(bool off, double seconds, const QString& mode, int decodes);
   // samples are float -1..1. A null pointer clears the meter.
   void setRxLevel(const float* samples, int count);
   // Re-reads the spot chip from the Network Configuration settings.

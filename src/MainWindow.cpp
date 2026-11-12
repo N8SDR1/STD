@@ -957,6 +957,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             if (mskPending_.size() > 64)
               mskPending_.clear();
             noteTheirReply(time, db, message);
+            noteClock(time, dt);
             noteDecodeSpot(profile_ ? profile_->digitalMode() : QString(), message, db, freqHz, dt, time);
             refreshDecodes();
           },
@@ -1450,6 +1451,37 @@ void MainWindow::noteSpot(const QString& call, const DxSpot& spot) {
   where += QStringLiteral(" (%1)").arg(spot.source.isEmpty() ? QStringLiteral("cluster") : spot.source);
   const QDateTime when = spot.time.isValid() ? spot.time : QDateTime::currentDateTimeUtc();
   hot_->noteSpot(call, where, when, spot.metres, mode, mode.isEmpty() ? 0 : spotDialHz(spot, mode));
+}
+
+void MainWindow::noteClock(const QString& time, const QString& dt) {
+  const QString mode = profile_ ? profile_->digitalMode() : QString();
+  bool ok = false;
+  const double seconds = dt.trimmed().toDouble(&ok);
+  if (!ok)
+    return;
+  const ClockCheck::State was = clock_.state();
+  clock_.add(mode, time, seconds, QDateTime::currentMSecsSinceEpoch());
+  const ClockCheck::State now = clock_.state();
+  const bool off = now == ClockCheck::State::Fast || now == ClockCheck::State::Slow;
+  const bool wasOff = was == ClockCheck::State::Fast || was == ClockCheck::State::Slow;
+  if (off && !wasOff)
+    setTxStatus(QStringLiteral("Clock check: the %1 decodes say this PC's clock is %2 s %3. Sync the clock; "
+                               "STD does not change it. Nothing was keyed.")
+                    .arg(mode)
+                    .arg(std::fabs(clock_.offset()), 0, 'f', 1)
+                    .arg(clock_.offset() > 0 ? QStringLiteral("fast") : QStringLiteral("slow")));
+  else if (!off && wasOff)
+    setTxStatus(QStringLiteral("Clock check: the %1 decodes look on time again.").arg(mode));
+  showClock();
+}
+
+void MainWindow::showClock() {
+  if (!statusStrip_)
+    return;
+  const ClockCheck::State s = clock_.state();
+  const bool off = s == ClockCheck::State::Fast || s == ClockCheck::State::Slow;
+  statusStrip_->setClockOff(off, clock_.offset(), profile_ ? profile_->digitalMode() : QString(),
+                            clock_.samples());
 }
 
 qint64 MainWindow::spotDialHz(const DxSpot& spot, const QString& mode) const {
@@ -4568,6 +4600,8 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   }
   if (statusStrip_)
     statusStrip_->setDigitalMode(modeName);
+  clock_.reset();
+  showClock();
   showKeyboardReceive(modeName);
   const bool rtty = rttyMode(modeName);
   const bool psk = keyedPsk(modeName);
@@ -5365,6 +5399,8 @@ void MainWindow::showGuide() {
        "Direct3D 12, OpenGL, and Painter are explicit. The Graphics line names the backend in "
        "use. Choosing a different graphics API restarts STD so that backend is selected. Choosing the "
        "backend already in use replaces the picture immediately. It does not key and does not send START."},
+      {"Clock check",
+       "The clock check watches the DT of the FT8, FT4, and FT2 decodes. When the middle of the last few minutes of them is off by more than 1 s in FT8, 0.5 s in FT4, or 0.3 s in FT2, the status bar shows Clock 1.3 s fast (or slow) and the status line says so once. It needs eight decodes from two periods, and a few stations far off do not move it. STD does not change the clock: sync it with Windows time, Meinberg NTP, or BktTimeSync. It does not key."},
       {"Fox and Hound",
        "Super Hound or Super Fox, on the mode bar, sets 40 m to 7.056 MHz DIGU and moves the RX marker "
        "to 750 Hz. That is the fox. It is still 15 second FT8. TX FIRST and TX SECOND only remember a "

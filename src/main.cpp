@@ -5307,6 +5307,57 @@ By ops fm Berbera (LK20mk); HF
       return fail("a spotted hot call was not marked, or double-click did not go to its spot");
     }
   }
+  // Clock check: the median DT of FT decodes over several periods.
+  {
+    ClockCheck clock;
+    const qint64 t0 = 1000000;
+    // Five stations a period, scattered round +1.4 s: a fast clock.
+    const double fast[] = {1.2, 1.5, 1.4, 1.6, 1.3};
+    for (int p = 0; p < 2; ++p)
+      for (double dt : fast)
+        clock.add(QStringLiteral("FT8"), QStringLiteral("1200%1").arg(p * 15, 2, 10, QLatin1Char('0')), dt,
+                  t0 + p * 15000);
+    const bool fastOk = clock.state() == ClockCheck::State::Fast && std::fabs(clock.offset() - 1.4) < 0.11;
+    // One period is not enough, a sound clock is Ok, slow is caught, and a
+    // few stations far off do not move the median.
+    ClockCheck one;
+    for (double dt : fast)
+      one.add(QStringLiteral("FT8"), QStringLiteral("120000"), dt, t0);
+    ClockCheck good;
+    const double fine[] = {0.1, -0.2, 0.3, 0.0, 2.6, -0.1, 0.2, 0.1, -2.0, 0.4};
+    for (int i = 0; i < 10; ++i)
+      good.add(QStringLiteral("FT8"), QStringLiteral("1200%1").arg((i % 2) * 15, 2, 10, QLatin1Char('0')), fine[i],
+               t0 + i * 1500);
+    ClockCheck slow;
+    for (int i = 0; i < 10; ++i)
+      slow.add(QStringLiteral("FT4"), QStringLiteral("12000%1").arg((i % 2) ? 7 : 0), -0.7 + 0.02 * i, t0 + i * 750);
+    // Old decodes age out after three minutes; another mode starts over.
+    ClockCheck aged = clock;
+    aged.add(QStringLiteral("FT8"), QStringLiteral("120500"), 1.4, t0 + 5 * 60 * 1000);
+    ClockCheck other = clock;
+    other.add(QStringLiteral("JT65A"), QStringLiteral("1210"), 1.4, t0 + 20000);
+    // Hysteresis: once off, 0.9 s still counts as fast in FT8.
+    ClockCheck sticky = clock;
+    for (int i = 0; i < 40; ++i)
+      sticky.add(QStringLiteral("FT8"), QStringLiteral("1201%1").arg((i % 2) * 15, 2, 10, QLatin1Char('0')), 0.9,
+                 t0 + 30000 + i * 100);
+    if (!fastOk || one.state() != ClockCheck::State::Unknown || good.state() != ClockCheck::State::Ok ||
+        slow.state() != ClockCheck::State::Slow || aged.state() != ClockCheck::State::Unknown ||
+        other.state() != ClockCheck::State::Unknown || sticky.state() != ClockCheck::State::Fast ||
+        ClockCheck::limitFor(QStringLiteral("FT2")) != 0.3 || ClockCheck::limitFor(QStringLiteral("PSK31")) != 0.0) {
+      qCritical("clock fast %d %.2f one %d good %d slow %d aged %d other %d sticky %d", int(clock.state()),
+                clock.offset(), int(one.state()), int(good.state()), int(slow.state()), int(aged.state()),
+                int(other.state()), int(sticky.state()));
+      return fail("the clock check misjudged the FT decode DTs");
+    }
+    StatusStrip strip;
+    auto* clockChip = strip.findChild<QLabel*>(QStringLiteral("clockOff"));
+    strip.setClockOff(true, -1.3, QStringLiteral("FT8"), 12);
+    const bool shown = clockChip && !clockChip->isHidden() && clockChip->text() == QLatin1String("Clock 1.3 s slow");
+    strip.setClockOff(false, 0.0, QStringLiteral("FT8"), 12);
+    if (!shown || !clockChip->isHidden())
+      return fail("the status bar clock chip does not show a slow clock or hide again");
+  }
   qInfo("STD self-test ok");
   return 0;
 }

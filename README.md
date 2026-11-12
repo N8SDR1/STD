@@ -58,6 +58,8 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | RADE V2 | Experimental, about 860 Hz, will not talk to V1. BPF (on by default) is the modem band-pass; it is greyed out on V1, which sends without one, as FreeDV does. |
 | WSPR | WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Tx power, Tx Pct, and band hopping. The locator is Options → User. Rows stay in the receive colour, under titles, with a rule between periods. Heard stations post to WSPRnet only when WSPRnet is On, and only while WSPR is the mode. |
 
+**Clock check.** The clock check watches the DT of the FT8, FT4, and FT2 decodes. When the middle of the last few minutes of them is off by more than 1 s in FT8, 0.5 s in FT4, or 0.3 s in FT2, the status bar shows Clock 1.3 s fast (or slow) and the status line says so once. It needs eight decodes from two periods, and a few stations far off do not move it. STD does not change the clock: sync it with Windows time, Meinberg NTP, or BktTimeSync. FT8 is lost when the PC clock is off by much more than a second, so this catches a quiet failure.
+
 ## Receive only
 
 **WEFAX-576** receives. IOC 576, 120 lines per minute. Stations are listed by ITU region, with NOAA hours on the frequencies that have them. A click sets the dial 1.9 kHz under the assigned frequency, USB, marker 1900 Hz. Start, a left-edge click, Auto save, Open folder, and Fit are on that screen. It does not key, and it does not send START.

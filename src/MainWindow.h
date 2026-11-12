@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "ClockCheck.h"
 #include "LiveTx.h"
 #include "MaEngine.h"
 #include "MacroFile.h"
@@ -397,6 +398,7 @@ private:
   WaterfallWidget* waterfall_ = nullptr;
   ModeProfile* profile_ = nullptr;
   StatusStrip* statusStrip_ = nullptr;
+  ClockCheck clock_;
   TciClient* tci_ = nullptr;
   Ft8Decode* ft8_ = nullptr;
   HellEngine* hell_ = nullptr;
@@ -522,6 +524,9 @@ private:
   void hotTune(const QString& call);
   // A cluster spot of a watched DXpedition: mark it on the hot list.
   void noteSpot(const QString& call, const DxSpot& spot);
+  // FT8/FT4/FT2 clock check from the decode DTs. Shows the status bar chip.
+  void noteClock(const QString& time, const QString& dt);
+  void showClock();
   // The dial for a spot: the band's dial for the mode when the spot is
   // within 4 kHz of it, else the spot itself (its kHz for the FT modes,
   // 1500 Hz off for the keyboard modes). 0 when STD does not run the mode.

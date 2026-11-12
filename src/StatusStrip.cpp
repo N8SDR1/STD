@@ -370,6 +370,11 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
       "draws it near the receive level. Receive levels do not raise this. This does not key."));
   txHot->hide();
   layout->addWidget(txHot);
+  auto* clockOff = new QLabel(this);
+  clockOff->setObjectName(QStringLiteral("clockOff"));
+  clockOff->setFont(monoFont(12));
+  clockOff->hide();
+  layout->addWidget(clockOff);
   layout->addWidget(separator());
   layout->addWidget(new PttLamp(this));
   auto* levelTick = new QTimer(this);
@@ -657,6 +662,30 @@ void StatusStrip::refreshRxLevel() {
 void StatusStrip::setTxHot(bool hot) {
   if (QLabel* label = labeled(this, "txGainHot"))
     label->setVisible(hot);
+}
+
+void StatusStrip::setClockOff(bool off, double seconds, const QString& mode, int decodes) {
+  QLabel* label = labeled(this, "clockOff");
+  if (!label)
+    return;
+  label->setVisible(off);
+  if (!off)
+    return;
+  const bool fast = seconds > 0;
+  label->setText(QStringLiteral("Clock %1 s %2").arg(std::fabs(seconds), 0, 'f', 1).arg(fast ? QLatin1String("fast") : QLatin1String("slow")));
+  label->setToolTip(QStringLiteral(
+      "The middle of the last %1 %2 decodes is %3 s %4, so this PC's clock looks %5 s %6. "
+      "%2 needs the clock within about %7 s or replies are missed and your signal is late or early. "
+      "Sync it with Windows time (Settings → Time → Sync now), Meinberg NTP, or BktTimeSync. "
+      "STD does not change the clock. This does not key.")
+                         .arg(decodes)
+                         .arg(mode)
+                         .arg(std::fabs(seconds), 0, 'f', 1)
+                         .arg(fast ? QStringLiteral("late") : QStringLiteral("early"))
+                         .arg(std::fabs(seconds), 0, 'f', 1)
+                         .arg(fast ? QStringLiteral("fast") : QStringLiteral("slow"))
+                         .arg(mode == QLatin1String("FT8") ? QStringLiteral("1") :
+                              mode == QLatin1String("FT4") ? QStringLiteral("0.5") : QStringLiteral("0.3")));
 }
 
 void StatusStrip::setRadio(bool connected, const QString& line) {
