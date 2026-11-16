@@ -1,6 +1,6 @@
 # STD
 
-**Shift, Tone, Decode.** Software in testing. Version 0.1.12. Around the shack it also answers to **Sending Transmittal Disease**.
+**Shift, Tone, Decode.** Software in testing. Version 0.1.13. Around the shack it also answers to **Sending Transmittal Disease**.
 
 The real expansion is Shift, Tone, Decode. The other one is the joke. STD is a 64-bit Windows application, a Qt 6.11.1 MSVC digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air. [Lyra](https://n8sdr1.github.io/Lyra-SDR-cpp/) is the transceiver. [SDRLogger+](https://n8sdr1.github.io/SDRLoggerPlus/) is the logbook. CW stays in Lyra.
 
@@ -104,6 +104,8 @@ Radio → Connect opens one WebSocket. The default port is 50001.
 
 The text command START is never sent.
 
+**QRV.** Options → Network Configuration → QRV is Off until On is selected. On tells [qrvsdr.cc](https://qrvsdr.cc) that this station is QRV: the callsign from Options → User, the band, and the Mode menu (FT8 stays FT8). It posts only while the radio is connected, about every 25 seconds, and sends QRT when you turn it off, disconnect, or quit. Share exact frequency is off until ticked; off, the board shows the band only. The optional note is 40 characters, and the server drops links and mentions. Options → QRV board lists who is on: call, app, band, mode, and Hz when a station shared it. Q65A is posted as Q65. RADE, WEFAX-576, and Q65B are not on the board. There is no second callsign field. It does not key, and START is never sent. Details are in [QRV](docs/qrv.md).
+
 Options → PSK Reporter map opens the map for the callsign in Options → User. Options → Network Configuration uploads a spot after a decode only when Enable is checked. Antenna is the description sent with the spot. Also send WSPR spots to PSK Reporter stays off until checked. WSPRnet is Off or On in that same dialog, and Off posts nothing. That box is off until the operator turns it on. FreeDV Reporter is Off or On there too: On shows your call, locator, dial and TX on qso.freedv.org while a RADE mode is selected, and reports each RADE station you hear with its SNR. The box beside On is the Message column (name, QTH, rig), also on the RADE screen as Reporter message. The bottom status strip has a spot chip for the reporter the current mode feeds (PSK RPT in FT8/FT4/FT2/JT65/Q65/MSK144/MSKMS/JS8, WSPRNET in WSPR, FREEDV RPT in RADE): click the name to open that service's live page in your browser, and On/Off to turn it on or off. View FreeDV Reporter opens the map without connecting. There is no second callsign field. File → Backup settings saves layouts and the callsign and locator from Options → User. It does not copy the TCI host or port. File → Import settings, Backup logbook, and Export ADIF do not key.
 
 **Who heard me.** Options → Network Configuration → Show who heard me (PSK Reporter), off until ticked, puts a chip on the status bar: HEARD, the number of stations that reported hearing your callsign (from Options → User) in the last 15 minutes on the band you are on, and the farthest of them, for example "HEARD 23 · 20m · best VK3XX 16400 km". It is green when someone heard you and grey when nobody has. Click it for the list, farthest first: call, country, band, mode, the SNR they heard you at, distance, and time. STD asks PSK Reporter every five minutes, as PSK Reporter asks, and only while you have transmitted in the last half hour; listening sends nothing. Changing band redraws the chip at once for the new band, and the Need column with it.
@@ -116,13 +118,13 @@ STD is a 64-bit Windows application. The kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\
 
 ## Run
 
-The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.12.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
+The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.13.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
 
 A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_QPA_PLATFORM=offscreen`, then run `build\std.exe`. Exit status 0 prints `STD self-test ok`.
 
 ## More
 
 - Web version of this page: <https://n8sdr1.github.io/STD/>
-- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.12, testing phase · highly transmissible)
+- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.13, testing phase · highly transmissible)
 - Wiki: <https://github.com/N8SDR1/STD/wiki>
-- Longer notes: [modes](docs/modes.md), [DXpeditions and the hot list](docs/dxpeditions.md), [Hell](docs/hell.md), [macros](docs/macros.md), [contest](docs/contest.md), [connect](docs/connect.md)
+- Longer notes: [modes](docs/modes.md), [QRV](docs/qrv.md), [DXpeditions and the hot list](docs/dxpeditions.md), [Hell](docs/hell.md), [macros](docs/macros.md), [contest](docs/contest.md), [connect](docs/connect.md)

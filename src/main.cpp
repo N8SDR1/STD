@@ -89,6 +89,7 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QRadioButton>
 #include <QScrollArea>
 #include <QPalette>
 #include <QMenu>
@@ -4634,7 +4635,9 @@ int shellReady(MainWindow& window) {
   {
     bool qrvOk = false;
     QString qrvWhy;
-    QTimer::singleShot(0, [&] {
+    // The checks are a named lambda. MSVC treats a '>' inside a lambda that
+    // is written directly in QTimer::singleShot as the end of that template.
+    const auto checkQrv = [&] {
       auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
       if (!dialog) {
         qrvWhy = QStringLiteral("network dialog did not open");
@@ -4655,7 +4658,8 @@ int shellReady(MainWindow& window) {
         dialog->reject();
         return;
       }
-      for (const auto* edit : dialog->findChildren<QLineEdit*>()) {
+      const QList<QLineEdit*> edits = dialog->findChildren<QLineEdit*>();
+      for (const QLineEdit* edit : edits) {
         const QString name = edit->objectName().toLower();
         if (name.contains(QLatin1String("call")) || name.contains(QLatin1String("grid")) ||
             name.contains(QLatin1String("locat"))) {
@@ -4666,7 +4670,8 @@ int shellReady(MainWindow& window) {
       }
       qrvOk = true;
       dialog->reject();
-    });
+    };
+    QTimer::singleShot(0, checkQrv);
     if (auto* action = window.findChild<QAction*>(QStringLiteral("networkConfig")))
       action->trigger();
     if (!qrvOk) {
