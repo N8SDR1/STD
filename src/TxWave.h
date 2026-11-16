@@ -30,6 +30,29 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
 // defaults back. Self-test only.
 QString decodeSequencedMessage(const QString& mode, const std::vector<float>& wave48k, bool allOptions = false);
 
+// MSK144 and MSKMS T/R period in ms, MSHV's TX/RX box: 5, 7.5, 10, 15,
+// or 30 s. Both default to MSHV's 30 s. Saved per mode.
+int mskPeriodMs(const QString& mode);
+void setMskPeriodMs(const QString& mode, int periodMs);
+// MSHV's DF Tol for MSK144 and MSKMS: 10, 20, 50, then 100 to 400 in
+// 50 Hz steps around 1500 Hz. Default 150.
+int mskDfTolerance();
+void setMskDfTolerance(int hz);
+// MSHV's Sh (MSK40 short messages) and SWL boxes, MSK144 only.
+bool mskShortMessages();
+bool mskSwl();
+
+// One MSK144 or MSKMS 72 ms frame (20 ms for an MSK40 short message) at
+// 48 kHz, unrepeated. Empty when the message cannot be encoded.
+std::vector<float> mskFrame(const QString& mode, const QString& message);
+
+// Decimate a 48 kHz MSK144 or MSKMS wave to 12 kHz, run MSHV's real-time
+// ping decoder over it block by block, and return the first line. myCall
+// and hisCall feed the MSK40 hash. Self-test only.
+QString decodeMskMessage(const QString& mode, const std::vector<float>& wave48k, bool shortMessages = false,
+                         const QString& myCall = QString(), const QString& hisCall = QString(),
+                         QString* report = nullptr);
+
 // 48 kHz samples for one transmitted character. Hell, RTTY, and PSK stay
 // 0 here and pace the echo from the echoAt list buildTxWave fills. A mode
 // with no modulator stays 0 so the receive echo does not print text that

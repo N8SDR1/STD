@@ -46,6 +46,12 @@ constexpr qint64 kPeriodMs = 15000;
 constexpr qint64 kDecodeAtMs = 12640;
 // MSHV scales int16 audio by 1/2560, which is 12.8 at full scale.
 constexpr double kMshvScale = 32768.0 * 0.000390625;
+// MSHV's real-time MSK decoder skips a block whose RMS is under 1 in its
+// 24-bit scale. A fixed lift keeps quiet TCI audio above that gate; the
+// decoder normalizes each block, so the gain does not change the copy.
+constexpr double kMskLift = 64.0;
+// One real-time block holds MSK_BLOCK_SAMPLES; the decoder zero-pads to 8192.
+constexpr int kMskBuffer = MSK_BLOCK_SAMPLES + 1024;
 
 struct Hit {
   QString time;
@@ -53,6 +59,13 @@ struct Hit {
   QString dt;
   QString message;
   int freqHz = 0;
+  bool msk = false;
+  int widthMs = 0;
+  QString rpt;
+  int df = 0;
+  int navg = 0;
+  int bitErrors = 0;
+  QString eye;
 };
 
 struct Job {
@@ -76,6 +89,13 @@ struct Job {
   QByteArray hisCall;
   QByteArray hisGrid;
   QByteArray deepSearchDb;
+  // kind 5: one MSK real-time block.
+  int mskms = 0;
+  int istart = 0;
+  int endOfPeriod = 0;
+  int shortMsgs = 0;
+  int swl = 0;
+  int tolerance = 150;
 };
 
 class Worker : public QThread {
@@ -133,6 +153,8 @@ public:
     auto setMulti = reinterpret_cast<decltype(&ft8_session_set_multi_answer)>(
         GetProcAddress(module, "ft8_session_set_multi_answer"));
     auto setSlow = reinterpret_cast<decltype(&slow_set_options)>(GetProcAddress(module, "slow_set_options"));
+    auto mskOptions = reinterpret_cast<decltype(&msk_set_options)>(GetProcAddress(module, "msk_set_options"));
+    auto mskBlock = reinterpret_cast<decltype(&msk_decode_block)>(GetProcAddress(module, "msk_decode_block"));
     if (!open || !close || !decode) {
       emitHit(Hit{QString(), 0, QString(), QStringLiteral("FT8 decoder did not load."), 0});
       FreeLibrary(module);
@@ -154,6 +176,44 @@ public:
           break;
         job = std::move(queue_.front());
         queue_.pop_front();
+      }
+      if (job.kind == 5) {
+        if (!mskOptions || !mskBlock) {
+          emitHit(Hit{QString(), 0, QString(), QStringLiteral("MSK144 decoder did not load."), 0});
+          continue;
+        }
+        double sum = 0.0;
+        for (int i = 0; i < MSK_BLOCK_SAMPLES; ++i)
+          sum += job.samples[static_cast<size_t>(i)];
+        const double average = sum / MSK_BLOCK_SAMPLES;
+        for (int i = 0; i < MSK_BLOCK_SAMPLES; ++i)
+          job.samples[static_cast<size_t>(i)] =
+              (job.samples[static_cast<size_t>(i)] - average) * kMshvScale * kMskLift;
+        job.samples.resize(static_cast<size_t>(kMskBuffer), 0.0);
+        mskOptions(job.tolerance, job.depth, job.shortMsgs, job.swl, job.myCall.constData(),
+                   job.hisCall.constData());
+        const QByteArray stamp = job.stamp.toLatin1();
+        const auto takeMsk = [](const char* time, int db, const char* t0, const char* message, int freqHz,
+                                int widthMs, const char* rpt, int df, int navg, int bitErrors,
+                                const char* eye, void* user) {
+          Hit hit;
+          hit.time = QString::fromUtf8(time);
+          hit.db = db;
+          hit.dt = QString::fromUtf8(t0);
+          hit.message = QString::fromUtf8(message);
+          hit.freqHz = freqHz;
+          hit.msk = true;
+          hit.widthMs = widthMs;
+          hit.rpt = QString::fromUtf8(rpt);
+          hit.df = df;
+          hit.navg = navg;
+          hit.bitErrors = bitErrors;
+          hit.eye = QString::fromUtf8(eye);
+          static_cast<Worker*>(user)->emitHit(hit);
+        };
+        mskBlock(job.samples.data(), kMskBuffer, job.istart, job.mskms, job.endOfPeriod, stamp.constData(),
+                 takeMsk, this);
+        continue;
       }
       int minimum = kMinKeep;
       if (job.kind == 2)
@@ -302,10 +362,25 @@ struct Ft8Decode::Private {
   QByteArray hisCall;
   QByteArray hisGrid;
   QByteArray deepSearchDb;
+  // MSK real-time blocks: period start index in the ring, next block
+  // offset, and blocks waiting for the worker.
+  int mskPeriodMs = 30000;
+  bool mskShort = false;
+  bool mskSwl = false;
+  int mskTolerance = 150;
+  qint64 mskPeriod = -1;
+  qint64 mskBase = 0;
+  int mskNext = 0;
+  int mskPeriodSamples = 0;
+  QString mskStamp;
+  std::deque<Job> mskPending;
 };
 
 Ft8Decode::Ft8Decode(QObject* parent) : QObject(parent), d_(new Private) {
   d_->worker.onHit = [this](const Hit& hit) {
+    if (hit.msk)
+      emit mskDecoded(hit.time, hit.db, hit.dt, hit.message, hit.freqHz, hit.widthMs, hit.rpt, hit.df, hit.navg,
+                      hit.bitErrors, hit.eye);
     emit decoded(hit.time, hit.db, hit.dt, hit.message, hit.freqHz);
   };
   connect(&d_->timer, &QTimer::timeout, this, [this] { poll(); });
@@ -342,10 +417,26 @@ void Ft8Decode::setMode(Period mode) {
   if (d_->mode == mode)
     return;
   d_->mode = mode;
+  d_->mskPeriod = -1;
+  d_->mskPending.clear();
   // JT65 and Q65 averages belong to the old mode or submode.
   d_->clearAverage = true;
   d_->stagePeriod = -1;
   d_->stageDone = 0;
+}
+
+void Ft8Decode::setMskOptions(int periodMs, bool shortMessages, bool swl, int toleranceHz) {
+  QMutexLocker lock(&d_->mutex);
+  if (periodMs != 5000 && periodMs != 7500 && periodMs != 10000 && periodMs != 15000 && periodMs != 30000)
+    periodMs = 30000;
+  if (d_->mskPeriodMs != periodMs) {
+    d_->mskPeriodMs = periodMs;
+    d_->mskPeriod = -1;
+    d_->mskPending.clear();
+  }
+  d_->mskShort = shortMessages;
+  d_->mskSwl = swl;
+  d_->mskTolerance = std::clamp(toleranceHz, 10, 400);
 }
 
 void Ft8Decode::setMultiAnswer(bool on) {
@@ -392,6 +483,8 @@ void Ft8Decode::clear() {
   d_->decim = 0;
   d_->residual = 0;
   d_->rate = 0;
+  d_->mskPeriod = -1;
+  d_->mskPending.clear();
 }
 
 void Ft8Decode::ensureWorker() {
@@ -440,6 +533,68 @@ void Ft8Decode::pushAudio(const float* samples, int count, int sampleRateHz) {
   d_->newestMs = now;
 }
 
+void Ft8Decode::pollMsk() {
+  Job next;
+  {
+    QMutexLocker lock(&d_->mutex);
+    const qint64 clock = d_->newestMs + d_->clockOffsetMs;
+    const qint64 periodMs = d_->mskPeriodMs;
+    const qint64 periodStart = (clock / periodMs) * periodMs;
+    const int mskms = d_->mode == Period::Mskms ? 1 : 0;
+    const auto block = [&](qint64 first, int istart, int end, const QString& stamp) {
+      Job job;
+      job.kind = 5;
+      job.samples.assign(static_cast<size_t>(MSK_BLOCK_SAMPLES), 0.0);
+      const qint64 oldest = d_->total > kRing ? d_->total - kRing : 0;
+      for (int n = 0; n < MSK_BLOCK_SAMPLES; ++n) {
+        const qint64 index = first + n;
+        if (index >= oldest && index < d_->total)
+          job.samples[static_cast<size_t>(n)] = d_->ring[static_cast<size_t>(index % kRing)];
+      }
+      job.mskms = mskms;
+      job.istart = istart;
+      job.endOfPeriod = end;
+      job.depth = d_->depth;
+      job.shortMsgs = (d_->mskShort && !mskms) ? 1 : 0;
+      job.swl = (d_->mskSwl && !mskms) ? 1 : 0;
+      job.tolerance = d_->mskTolerance;
+      job.myCall = d_->myCall;
+      job.hisCall = d_->hisCall;
+      job.stamp = stamp;
+      // A slow worker drops the oldest blocks instead of falling behind.
+      if (d_->mskPending.size() >= 8)
+        d_->mskPending.pop_front();
+      d_->mskPending.push_back(std::move(job));
+    };
+    if (periodStart != d_->mskPeriod) {
+      // MSHV decodes the tail of the period that just ended once more,
+      // and that pass prints MSKMS's report for it.
+      if (d_->mskPeriod >= 0 && d_->mskPeriodSamples >= MSK_BLOCK_SAMPLES)
+        block(d_->mskBase + d_->mskPeriodSamples - MSK_BLOCK_SAMPLES, d_->mskPeriodSamples - MSK_BLOCK_SAMPLES, 1,
+              d_->mskStamp);
+      d_->mskPeriod = periodStart;
+      d_->mskPeriodSamples = int(qint64(d_->mskPeriodMs) * kAudioRate / 1000);
+      d_->mskBase = (d_->total - 1) - static_cast<qint64>(std::llround(double(clock - periodStart) * 12.0));
+      d_->mskNext = 0;
+      d_->mskStamp = QDateTime::fromMSecsSinceEpoch(periodStart, QTimeZone::utc()).toString(QStringLiteral("hhmmss"));
+    }
+    while (d_->mskNext + MSK_BLOCK_SAMPLES <= d_->mskPeriodSamples &&
+           d_->mskBase + d_->mskNext + MSK_BLOCK_SAMPLES <= d_->total) {
+      block(d_->mskBase + d_->mskNext, d_->mskNext, 0, d_->mskStamp);
+      d_->mskNext += MSK_BLOCK_STEP;
+    }
+    if (d_->mskPending.empty())
+      return;
+    next = d_->mskPending.front();
+  }
+  ensureWorker();
+  if (d_->worker.submit(std::move(next))) {
+    QMutexLocker lock(&d_->mutex);
+    if (!d_->mskPending.empty())
+      d_->mskPending.pop_front();
+  }
+}
+
 void Ft8Decode::poll() {
   Job job;
   bool ready = false;
@@ -447,6 +602,11 @@ void Ft8Decode::poll() {
     QMutexLocker lock(&d_->mutex);
     if (!d_->armed || d_->newestMs <= 0)
       return;
+    if (d_->mode == Period::Msk144 || d_->mode == Period::Mskms) {
+      lock.unlock();
+      pollMsk();
+      return;
+    }
     const qint64 clock = d_->newestMs + d_->clockOffsetMs;
     const Period mode = d_->mode;
     // FT4 is 7.5 s. MSHV starts one decode once the period clock passes

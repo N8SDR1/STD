@@ -1432,15 +1432,14 @@ void WaterfallWidget::setGraphicsMode(const QString& mode) {
 }
 
 void WaterfallWidget::gpuFallback(const QString& why) {
-  qWarning("waterfall graphics device unavailable (%s)",
+  qWarning("waterfall graphics device unavailable (%s); Painter",
            why.isEmpty() ? "no device" : qPrintable(why));
   releaseGpu();
   gpuBroken_ = true;
-  const QString requested = graphicsMode();
-  if (sessionMode_ == requested)
+  if (sessionMode_ == QLatin1String("painter"))
     return;
-  sessionMode_ = requested;
-  emit graphicsModeChanged(requested);
+  sessionMode_ = QStringLiteral("painter");
+  emit graphicsModeChanged(sessionMode_);
   queueFrame();
 }
 

@@ -17,6 +17,7 @@
 #include "wspr/WsprModem.h"
 
 #include <QCoreApplication>
+#include <QSettings>
 #include <QString>
 #include <QThread>
 
@@ -80,6 +81,44 @@ bool buildFt4(const QString& message, int toneHz, std::vector<float>* out) {
 
 bool buildFt2(const QString& message, int toneHz, std::vector<float>* out) {
   return buildFt("ft2_generate", 220000, message, toneHz, out);
+}
+
+using MskGenerateFn = int (*)(const char*, int, int*, int);
+
+std::vector<float> mskFrameWave(const QString& mode, const QString& message) {
+  std::vector<float> frame;
+  const QString path = QCoreApplication::applicationDirPath() + QStringLiteral("/ft8dec.dll");
+  HMODULE module = GetModuleHandleW(reinterpret_cast<const wchar_t*>(path.utf16()));
+  if (!module)
+    module = LoadLibraryExW(reinterpret_cast<const wchar_t*>(path.utf16()), nullptr,
+                            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+  if (!module)
+    return frame;
+  auto generate = reinterpret_cast<MskGenerateFn>(GetProcAddress(module, "msk_generate"));
+  if (!generate)
+    return frame;
+  constexpr int kCap = 234 * 24;
+  std::vector<int> wave(static_cast<size_t>(kCap), 0);
+  const QByteArray text = message.toUpper().toLatin1();
+  const int n = generate(text.constData(), mskmsMode(mode) ? 1 : 0, wave.data(), kCap);
+  if (n > 0)
+    fromInts(wave.data(), n, &frame);
+  return frame;
+}
+
+// MSHV keeps sending the frame from 250 ms into the slot until 370 ms
+// before it ends. The frame is continuous phase, so back-to-back copies
+// join without a click.
+bool buildMsk(const QString& mode, const QString& message, std::vector<float>* out) {
+  const std::vector<float> frame = mskFrameWave(mode, message);
+  if (frame.empty())
+    return false;
+  const int total = (mskPeriodMs(mode) - 250 - 370) * (kRate / 1000);
+  out->clear();
+  out->reserve(static_cast<size_t>(total));
+  while (int(out->size()) + int(frame.size()) <= total)
+    out->insert(out->end(), frame.begin(), frame.end());
+  return !out->empty();
 }
 
 using Jt65GenerateFn = int (*)(const char*, int, int*, int);
@@ -422,6 +461,8 @@ bool buildTxWave(const QString& mode, const QString& message, int toneHz, std::v
     return buildJt65(mode, text, out);
   if (q65Mode(mode))
     return buildQ65(mode, text, tone, out);
+  if (mskMode(mode))
+    return buildMsk(mode, text, out);
   if (hellFamily(mode))
     return buildHell(mode, text, tone, out, echoAt);
   if (rttyMode(mode)) {
@@ -591,6 +632,11 @@ bool txStampIsFirstHalf(const QString& mode, int minute, int second) {
     periodCs = 6000;
   } else if (q65Mode(mode)) {
     periodCs = 3000;
+  } else if (mskMode(mode)) {
+    periodCs = mskPeriodMs(mode) / 10;
+    // A 7.5 s slot starting at :07.5 is stamped :07, as FT4 is.
+    if (periodCs == 750 && second % 15 == 7)
+      cs = 50;
   }
   int pos = minute * 6000 + second * 100 + cs;
   const int pair = periodCs * 2;
@@ -728,6 +774,128 @@ public:
 };
 
 }  // namespace
+
+int mskPeriodMs(const QString& mode) {
+  const int value = QSettings().value(QStringLiteral("msk/periodMs/%1").arg(mode), 30000).toInt();
+  if (value == 5000 || value == 7500 || value == 10000 || value == 15000 || value == 30000)
+    return value;
+  return 30000;
+}
+
+void setMskPeriodMs(const QString& mode, int periodMs) {
+  if (!mskMode(mode) ||
+      (periodMs != 5000 && periodMs != 7500 && periodMs != 10000 && periodMs != 15000 && periodMs != 30000))
+    return;
+  QSettings().setValue(QStringLiteral("msk/periodMs/%1").arg(mode), periodMs);
+}
+
+int mskDfTolerance() {
+  const int value = QSettings().value(QStringLiteral("msk/dfTol"), 150).toInt();
+  return std::clamp(value, 10, 400);
+}
+
+void setMskDfTolerance(int hz) {
+  QSettings().setValue(QStringLiteral("msk/dfTol"), std::clamp(hz, 10, 400));
+}
+
+bool mskShortMessages() {
+  return QSettings().value(QStringLiteral("msk/shortMessages"), false).toBool();
+}
+
+bool mskSwl() {
+  return QSettings().value(QStringLiteral("msk/swl"), false).toBool();
+}
+
+std::vector<float> mskFrame(const QString& mode, const QString& message) {
+  if (!mskMode(mode))
+    return {};
+  return mskFrameWave(mode, message.trimmed());
+}
+
+namespace {
+
+struct MskHit {
+  QString message;
+  QString report;
+};
+
+void takeMskHit(const char*, int, const char*, const char* message, int, int, const char* rpt, int, int, int,
+                const char*, void* user) {
+  auto* hit = static_cast<MskHit*>(user);
+  const QString text = QString::fromUtf8(message).trimmed();
+  if (!text.isEmpty() && hit->message.isEmpty())
+    hit->message = text;
+  const QString report = QString::fromUtf8(rpt).trimmed();
+  if (!report.isEmpty())
+    hit->report = report;
+}
+
+// The MSK decoder keeps 25 MB of analytic-signal buffers on its object.
+class MskDecodeThread : public QThread {
+public:
+  QString mode;
+  const std::vector<float>* wave = nullptr;
+  bool shortMessages = false;
+  QByteArray myCall;
+  QByteArray hisCall;
+  MskHit hit;
+
+  void run() override {
+    if (!wave)
+      return;
+    const QString path = QCoreApplication::applicationDirPath() + QStringLiteral("/ft8dec.dll");
+    HMODULE module = GetModuleHandleW(reinterpret_cast<const wchar_t*>(path.utf16()));
+    if (!module)
+      module = LoadLibraryExW(reinterpret_cast<const wchar_t*>(path.utf16()), nullptr,
+                              LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!module)
+      return;
+    auto options = reinterpret_cast<decltype(&msk_set_options)>(GetProcAddress(module, "msk_set_options"));
+    auto block = reinterpret_cast<decltype(&msk_decode_block)>(GetProcAddress(module, "msk_decode_block"));
+    if (!options || !block)
+      return;
+    const bool ms = mskmsMode(mode);
+    options(150, 2, shortMessages && !ms ? 1 : 0, 0, myCall.constData(), hisCall.constData());
+    // 48 kHz to 12 kHz, the same MSHV scale the live path uses.
+    std::vector<double> d12;
+    for (size_t i = 0; i + 3 < wave->size(); i += 4)
+      d12.push_back(double((*wave)[i]) * 12.8 * 64.0);
+    const int period = mskPeriodMs(mode) * 12;
+    d12.resize(static_cast<size_t>(std::max<int>(period, int(d12.size()))), 0.0);
+    std::vector<double> buf(static_cast<size_t>(MSK_BLOCK_SAMPLES + 1024), 0.0);
+    const auto run = [&](int pos, int end) {
+      std::fill(buf.begin(), buf.end(), 0.0);
+      for (int i = 0; i < MSK_BLOCK_SAMPLES; ++i)
+        buf[static_cast<size_t>(i)] = d12[static_cast<size_t>(pos + i)];
+      block(buf.data(), int(buf.size()), pos, ms ? 1 : 0, end, "000000", takeMskHit, &hit);
+    };
+    int pos = 0;
+    for (; pos + MSK_BLOCK_SAMPLES <= period; pos += MSK_BLOCK_STEP)
+      run(pos, 0);
+    run(period - MSK_BLOCK_SAMPLES, 1);
+  }
+};
+
+}  // namespace
+
+QString decodeMskMessage(const QString& mode, const std::vector<float>& wave48k, bool shortMessages,
+                         const QString& myCall, const QString& hisCall, QString* report) {
+  if (!mskMode(mode))
+    return {};
+  MskDecodeThread thread;
+  thread.mode = mode;
+  thread.wave = &wave48k;
+  thread.shortMessages = shortMessages;
+  thread.myCall = myCall.toUpper().toLatin1();
+  thread.hisCall = hisCall.toUpper().toLatin1();
+  thread.setStackSize(16 * 1024 * 1024);
+  thread.start();
+  if (!thread.wait(60000))
+    return {};
+  if (report)
+    *report = thread.hit.report;
+  return thread.hit.message;
+}
 
 QString decodeSequencedMessage(const QString& mode, const std::vector<float>& wave48k, bool allOptions) {
   if (!jt65Mode(mode) && !q65Mode(mode))

@@ -21,6 +21,8 @@ sent.
 | Q65B | Decode and TX. 30 s. Wider tone spacing than Q65A. |
 | Q65C | Decode and TX. 30 s. Wider tone spacing than Q65B. |
 | Q65D | Decode and TX. 30 s. Wider tone spacing than Q65C. |
+| MSK144 | Decode and TX. Meteor scatter. 5, 7.5, 10, 15, or 30 s, 30 s by default, DF Tol 150 Hz. Tones fixed at 1000 and 2000 Hz. MSHV's real-time decoder runs on 0.6 s blocks, so pings print as they land. Sh and SWL, MSHV's ping display, and MSHV's list columns. DIGU. |
+| MSKMS | Decode and TX. MSHV's MSK144ms: 72-bit messages and the duration-strength report from the ping. 30 s by default. |
 
 Contest exchanges on Tx1 through Tx6 are the MSHV activity list. They are
 not extra modes.
@@ -31,8 +33,6 @@ These do not key. Do not drop them. They are leftover and not shipping. The 1102
 
 | Mode | MSHV note |
 | --- | --- |
-| MSK144 | Meteor scatter. |
-| MSKMS | MSHV comments call this MSK144ms. |
 | JTMS | |
 | FSK441 | |
 | FSK315 | |

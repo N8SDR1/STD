@@ -52,6 +52,9 @@ public:
   void say(const QString& text);
 
   bool available() const;
+  bool muted() const { return muted_; }
+  QString outputId() const { return outputId_; }
+  QString voiceId() const { return voiceId_; }
 
 private:
   void flush(bool all);

@@ -299,6 +299,8 @@ void MainWindow::logRadeContact(const QString& station, const QString& grid, int
     return;
   }
   const QsoLog::Result result = qsoLog_ ? qsoLog_->store(record) : QsoLog::Result{};
+  if (result.wrote)
+    loggedQso();
   if (!result.wrote)
     setTxStatus(QStringLiteral("%1 was not logged. %2 Nothing was keyed. START was not sent.")
                     .arg(who, result.detail));

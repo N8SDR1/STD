@@ -94,6 +94,8 @@ void showDigitalMode(QPushButton* chip, const QString& mode) {
     fill = QStringLiteral("#1f7a4d");
   else if (text.startsWith(QLatin1String("Q65")))
     fill = QStringLiteral("#7a3e6d");
+  else if (text.startsWith(QLatin1String("MSK")))
+    fill = QStringLiteral("#2f6fb0");
   else if (text.contains(QLatin1String("Hell"))) {
     fill = QStringLiteral("#c4a35a");
     ink = QStringLiteral("#2a1404");
@@ -117,7 +119,7 @@ QPushButton* digitalModeChip(QWidget* parent) {
   chip->setFont(font);
   chip->setFixedHeight(22);
   chip->setToolTip(QStringLiteral(
-      "Active digital mode. Click to cycle FT8, FT4, FT2, JT65, Q65, the Hell list, RTTY, the PSK speeds, "
+      "Active digital mode. Click to cycle FT8, FT4, FT2, JT65, Q65, MSK144, MSKMS, the Hell list, RTTY, the PSK speeds, "
       "Olivia, Contestia, MFSK, DominoEX, Thor, and WEFAX-576. This does not key."));
   showDigitalMode(chip, QStringLiteral("FT8"));
   return chip;
@@ -348,6 +350,17 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
       emit spotMapRequested(service);
   });
   applySpot(QStringLiteral("FT8"));
+  auto* heard = new QPushButton(this);
+  heard->setObjectName(QStringLiteral("heardChip"));
+  heard->setFlat(true);
+  heard->setFocusPolicy(Qt::NoFocus);
+  heard->setCursor(Qt::PointingHandCursor);
+  heard->setFixedHeight(22);
+  heard->setFont(monoFont(12));
+  heard->hide();
+  layout->addWidget(heard);
+  connect(heard, &QPushButton::clicked, this,
+          [this, heard] { emit heardClicked(heard->mapToGlobal(QPoint(0, 0))); });
   layout->addWidget(separator());
   layout->addWidget(readout("DIAL", "dialValue", QString::fromUtf8("—")));
   layout->addWidget(separator());
@@ -368,6 +381,11 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
       "draws it near the receive level. Receive levels do not raise this. This does not key."));
   txHot->hide();
   layout->addWidget(txHot);
+  auto* clockOff = new QLabel(this);
+  clockOff->setObjectName(QStringLiteral("clockOff"));
+  clockOff->setFont(monoFont(12));
+  clockOff->hide();
+  layout->addWidget(clockOff);
   layout->addWidget(separator());
   layout->addWidget(new PttLamp(this));
   auto* levelTick = new QTimer(this);
@@ -655,6 +673,43 @@ void StatusStrip::refreshRxLevel() {
 void StatusStrip::setTxHot(bool hot) {
   if (QLabel* label = labeled(this, "txGainHot"))
     label->setVisible(hot);
+}
+
+void StatusStrip::setClockOff(bool off, double seconds, const QString& mode, int decodes) {
+  QLabel* label = labeled(this, "clockOff");
+  if (!label)
+    return;
+  label->setVisible(off);
+  if (!off)
+    return;
+  const bool fast = seconds > 0;
+  label->setText(QStringLiteral("Clock %1 s %2").arg(std::fabs(seconds), 0, 'f', 1).arg(fast ? QLatin1String("fast") : QLatin1String("slow")));
+  label->setToolTip(QStringLiteral(
+      "The middle of the last %1 %2 decodes is %3 s %4, so this PC's clock looks %5 s %6. "
+      "%2 needs the clock within about %7 s or replies are missed and your signal is late or early. "
+      "Sync it with Windows time (Settings → Time → Sync now), Meinberg NTP, or BktTimeSync. "
+      "STD does not change the clock. This does not key.")
+                         .arg(decodes)
+                         .arg(mode)
+                         .arg(std::fabs(seconds), 0, 'f', 1)
+                         .arg(fast ? QStringLiteral("late") : QStringLiteral("early"))
+                         .arg(std::fabs(seconds), 0, 'f', 1)
+                         .arg(fast ? QStringLiteral("fast") : QStringLiteral("slow"))
+                         .arg(mode == QLatin1String("FT8") ? QStringLiteral("1") :
+                              mode == QLatin1String("FT4") ? QStringLiteral("0.5") : QStringLiteral("0.3")));
+}
+
+void StatusStrip::setHeard(bool shown, const QString& text, bool heard, const QString& tip) {
+  auto* chip = findChild<QPushButton*>(QStringLiteral("heardChip"));
+  if (!chip)
+    return;
+  chip->setVisible(shown);
+  chip->setText(text);
+  chip->setToolTip(tip);
+  chip->setStyleSheet(heard ? QStringLiteral("QPushButton#heardChip { color: #0b1a10; background: #3ccf6b; "
+                                             "border-radius: 3px; padding: 0 8px; }")
+                            : QStringLiteral("QPushButton#heardChip { color: #8a94a6; background: transparent; "
+                                             "border: 1px solid #3a4352; border-radius: 3px; padding: 0 8px; }"));
 }
 
 void StatusStrip::setRadio(bool connected, const QString& line) {

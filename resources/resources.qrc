@@ -10,5 +10,6 @@
     <file>biohazard-off.svg</file>
     <file>biohazard-hover.svg</file>
     <file>check-on.svg</file>
+    <file>cty.dat</file>
   </qresource>
 </RCC>

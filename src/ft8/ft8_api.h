@@ -111,6 +111,35 @@ int jt65_decode_wave(double* samples, int count, int nfqso, int ntol, int submod
 int q65_decode_wave(double* samples, int count, int lowHz, int highHz, int rxHz, int modid, int periodSec,
                     const char* hhmmss, Ft8LineFn fn, void* user);
 
+/* MSHV MSK144 and MSKMS. MSK144 carries 77-bit messages, and with
+   shortMsgs also MSK40 "<CALL1 CALL2> RPT" frames. MSKMS is MSHV's
+   MSK144 variant with the 72-bit packing and the duration-strength
+   report (26, R27). Tones are fixed at 1000 and 2000 Hz.
+   msk_set_options: ntol is the Df tolerance around 1500 Hz (10..400),
+   depth 1..3. swl decodes MSK40 frames between any two recent calls.
+   The calls feed the MSK40 hash. Nothing here transmits.
+   MskLineFn adds MSHV's list columns: the ping width in ms, MSKMS's
+   report ("" otherwise), DF from 1500 Hz, frames averaged, bit errors
+   corrected, and the eye opening. */
+typedef void (*MskLineFn)(const char* time, int db, const char* t0, const char* message, int freqHz,
+                          int widthMs, const char* rpt, int df, int navg, int bitErrors, const char* eye,
+                          void* user);
+#define MSK_BLOCK_SAMPLES 7168
+#define MSK_BLOCK_STEP 3583
+void msk_set_options(int ntol, int depth, int shortMsgs, int swl, const char* myCall, const char* hisCall);
+/* One whole period, 12 kHz doubles in MSHV scale, at most 30*12000. */
+int msk_decode_wave(double* samples, int count, int mskms, const char* hhmmss, MskLineFn fn, void* user);
+/* MSHV's real-time ping decoder. samples is one MSK_BLOCK_SAMPLES block
+   that starts istart samples into the period; the buffer must hold
+   MSK_BLOCK_SAMPLES + 1024 doubles (the decoder zero-pads in place).
+   endOfPeriod prints MSKMS's report line for the period. */
+int msk_decode_block(double* samples, int count, int istart, int mskms, int endOfPeriod, const char* hhmmss,
+                     MskLineFn fn, void* user);
+/* One frame at 48 kHz: 144 symbols (3456 samples, 72 ms), or 40 for an
+   MSK40 "<CALL1 CALL2> RPT" message (MSK144 only). Repeat it to fill the
+   period. capacity must be at least 234*24. Returns 0 if it cannot encode. */
+int msk_generate(const char* message, int mskms, int* samples, int capacity);
+
 #ifdef __cplusplus
 }
 #endif

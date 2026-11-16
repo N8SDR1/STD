@@ -22,10 +22,11 @@ public:
   // Null means stay on the software trace.
   static Api resolve(const QString& choice, QString* liveName);
   // Reads the saved choice. A Painter value left by a failed init becomes
-  // Auto. Auto probes Vulkan, then Direct3D 11 on Windows, then Painter.
-  // When applyEnvironment is true, software-renderer variables are cleared
-  // and the widget compositor is aimed at this backend before any window
-  // exists.
+  // Auto. Auto is Direct3D 11 on Windows and Vulkan elsewhere. It does not
+  // construct a Vulkan instance before QApplication. When applyEnvironment
+  // is true, software-renderer variables are cleared and the widget
+  // compositor is aimed at this backend before any window exists. Painter
+  // leaves RHI unset so widgets paint in software.
   static QString prepareProcessBackend(bool applyEnvironment);
   static QString processBackend();
   static QString probeAutoBackend();
