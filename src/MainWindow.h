@@ -27,6 +27,7 @@
 #include <vector>
 
 class QCloseEvent;
+class QDialog;
 class QEvent;
 
 class Ft8Decode;
@@ -63,6 +64,7 @@ class QResizeEvent;
 class QShowEvent;
 class QToolBar;
 class StatusStrip;
+class QrvClient;
 class QsoLog;
 class TciClient;
 class WaterfallWidget;
@@ -129,6 +131,9 @@ private:
   void openTimeDialog();
   void openMacrosDialog(int index = -1);
   void openNetworkDialog();
+  void openQrvBoard();
+  void refreshQrvBoard();
+  void syncQrv();
   void openUserDialog();
   void openWeatherDialog();
   void openLookupDialog();
@@ -416,6 +421,8 @@ private:
   StatusStrip* statusStrip_ = nullptr;
   ClockCheck clock_;
   TciClient* tci_ = nullptr;
+  QrvClient* qrv_ = nullptr;
+  QDialog* qrvBoard_ = nullptr;
   Ft8Decode* ft8_ = nullptr;
   HellEngine* hell_ = nullptr;
   SpeechReader* speech_ = nullptr;

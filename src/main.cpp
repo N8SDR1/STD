@@ -37,6 +37,7 @@
 #include "rade/RadeLink.h"
 #include "rade/RadeScreen.h"
 #include "wspr/WsprModem.h"
+#include "qrv/QrvProtocol.h"
 #include "spot/FreeDvReporter.h"
 #include "spot/PskReporter.h"
 #include "spot/WsprNet.h"
@@ -4564,8 +4565,115 @@ int shellReady(MainWindow& window) {
       wsprLink->toolTip().contains(QLatin1String("does not key yet")))
     return fail("WSPRnet reports link is missing");
   if (!network || !network->toolTip().contains(QLatin1String("WSPRnet")) ||
-      !network->toolTip().contains(QLatin1String("password")))
+      !network->toolTip().contains(QLatin1String("password")) ||
+      !network->toolTip().contains(QLatin1String("QRV")))
     return fail("WSPRnet is missing from Network");
+  if (qrv::qrvModeForStd(QStringLiteral("FT8")) != QLatin1String("FT8") ||
+      qrv::qrvModeForStd(QStringLiteral("FT4")) != QLatin1String("FT4") ||
+      qrv::qrvModeForStd(QStringLiteral("FT2")) != QLatin1String("FT2") ||
+      qrv::qrvModeForStd(QStringLiteral("JT65A")) != QLatin1String("JT65A") ||
+      qrv::qrvModeForStd(QStringLiteral("JT65B")) != QLatin1String("JT65B") ||
+      qrv::qrvModeForStd(QStringLiteral("JT65C")) != QLatin1String("JT65C") ||
+      qrv::qrvModeForStd(QStringLiteral("Q65A")) != QLatin1String("Q65") ||
+      qrv::qrvModeForStd(QStringLiteral("Q65C")) != QLatin1String("Q65C") ||
+      qrv::qrvModeForStd(QStringLiteral("Q65D")) != QLatin1String("Q65D") ||
+      !qrv::qrvModeForStd(QStringLiteral("Q65B")).isEmpty() ||
+      qrv::qrvModeForStd(QStringLiteral("PSK31")) != QLatin1String("PSK") ||
+      qrv::qrvModeForStd(QStringLiteral("QPSK125")) != QLatin1String("QPSK") ||
+      qrv::qrvModeForStd(QStringLiteral("Olivia 8/250")) != QLatin1String("OLIVIA") ||
+      qrv::qrvModeForStd(QStringLiteral("Contestia 16/500")) != QLatin1String("CONTESTIA") ||
+      qrv::qrvModeForStd(QStringLiteral("MFSK16")) != QLatin1String("MFSK") ||
+      qrv::qrvModeForStd(QStringLiteral("DominoEX Micro")) != QLatin1String("DOMINOEX") ||
+      qrv::qrvModeForStd(QStringLiteral("Thor 22")) != QLatin1String("THOR") ||
+      qrv::qrvModeForStd(QStringLiteral("MT63-1000L")) != QLatin1String("MT63") ||
+      qrv::qrvModeForStd(QStringLiteral("Feld Hell")) != QLatin1String("HELL") ||
+      qrv::qrvModeForStd(QStringLiteral("Hell 80")) != QLatin1String("HELL") ||
+      qrv::qrvModeForStd(QStringLiteral("JS8")) != QLatin1String("JS8") ||
+      qrv::qrvModeForStd(QStringLiteral("WSPR")) != QLatin1String("WSPR") ||
+      qrv::qrvModeForStd(QStringLiteral("MSK144")) != QLatin1String("MSK144") ||
+      qrv::qrvModeForStd(QStringLiteral("MSKMS")) != QLatin1String("MSKMS") ||
+      qrv::qrvModeForStd(QStringLiteral("RTTY")) != QLatin1String("RTTY") ||
+      !qrv::qrvModeForStd(QStringLiteral("RADE V1")).isEmpty() ||
+      !qrv::qrvModeForStd(radeV2Name()).isEmpty() ||
+      !qrv::qrvModeForStd(QStringLiteral("WEFAX-576")).isEmpty())
+    return fail("QRV mode token is wrong");
+  if (qrv::bandForHz(14074000) != QLatin1String("20m") || qrv::bandForHz(7074000) != QLatin1String("40m") ||
+      qrv::bandForHz(50100000) != QLatin1String("6m") || qrv::bandForHz(1000000) != QLatin1String("GEN") ||
+      !qrv::bandForHz(0).isEmpty())
+    return fail("QRV band is wrong");
+  {
+    qrv::HeartbeatRequest beat;
+    beat.call = QStringLiteral("N8SDR");
+    beat.band = QStringLiteral("20m");
+    beat.mode = QStringLiteral("FT8");
+    beat.note = QStringLiteral("net");
+    const QByteArray quiet = qrv::encodeHeartbeat(beat);
+    if (!quiet.contains("\"app\":\"STD\"") || !quiet.contains("\"mode\":\"FT8\"") || quiet.contains("hz") ||
+        quiet.contains("install_key"))
+      return fail("QRV heartbeat invented Hz or a key");
+    beat.hasHz = true;
+    beat.hz = 14074000;
+    beat.installKey = QStringLiteral("abc");
+    const QByteArray shared = qrv::encodeHeartbeat(beat);
+    if (!shared.contains("\"hz\":14074000") || !shared.contains("\"install_key\":\"abc\""))
+      return fail("QRV heartbeat dropped opted-in Hz");
+  }
+  if (qrv::sanitizeNote(QStringLiteral("see https://example.com @me now")).contains(QLatin1String("http")) ||
+      qrv::sanitizeNote(QString(50, QLatin1Char('A'))).size() != 40)
+    return fail("QRV note was not cleaned");
+  {
+    const qrv::ApiResult parsed = qrv::parseWriteResponse(
+        QByteArray("{\"ok\":true,\"stale_s\":180,\"install_key\":"
+                   "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}"),
+        200);
+    if (!parsed.ok || parsed.installKey.size() != 64)
+      return fail("QRV key parse failed");
+  }
+  if (!window.findChild<QAction*>(QStringLiteral("qrvBoardAction")))
+    return fail("QRV board is missing");
+  {
+    bool qrvOk = false;
+    QString qrvWhy;
+    QTimer::singleShot(0, [&] {
+      auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+      if (!dialog) {
+        qrvWhy = QStringLiteral("network dialog did not open");
+        return;
+      }
+      const auto* off = dialog->findChild<QRadioButton*>(QStringLiteral("qrvOff"));
+      const auto* on = dialog->findChild<QRadioButton*>(QStringLiteral("qrvOn"));
+      const auto* share = dialog->findChild<QCheckBox*>(QStringLiteral("qrvShareHz"));
+      const auto* note = dialog->findChild<QLineEdit*>(QStringLiteral("qrvNote"));
+      if (!off || !on || !share || !note || note->maxLength() != 40) {
+        qrvWhy = QStringLiteral("QRV controls missing");
+        dialog->reject();
+        return;
+      }
+      if (on->isChecked() != QSettings().value(QStringLiteral("qrv/optIn"), false).toBool() ||
+          share->isChecked() != QSettings().value(QStringLiteral("qrv/shareHz"), false).toBool()) {
+        qrvWhy = QStringLiteral("QRV default does not match the saved switch");
+        dialog->reject();
+        return;
+      }
+      for (const auto* edit : dialog->findChildren<QLineEdit*>()) {
+        const QString name = edit->objectName().toLower();
+        if (name.contains(QLatin1String("call")) || name.contains(QLatin1String("grid")) ||
+            name.contains(QLatin1String("locat"))) {
+          qrvWhy = QStringLiteral("QRV added a callsign field");
+          dialog->reject();
+          return;
+        }
+      }
+      qrvOk = true;
+      dialog->reject();
+    });
+    if (auto* action = window.findChild<QAction*>(QStringLiteral("networkConfig")))
+      action->trigger();
+    if (!qrvOk) {
+      qCritical("qrv dialog [%s]", qPrintable(qrvWhy));
+      return fail("QRV network controls are wrong");
+    }
+  }
   if (stdVersionName() != QStringLiteral("testing phase \u00B7 highly transmissible"))
     return fail("version subtitle is wrong");
   if (!UpdateChecker::isNewer(QStringLiteral("v0.1.1"), QStringLiteral("0.1.0")) ||
