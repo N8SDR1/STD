@@ -7,7 +7,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(STD
-  VERSION 0.1.12
+  VERSION 0.1.13
   DESCRIPTION "STD — Shift, Tone, Decode"
   LANGUAGES CXX)
 
@@ -157,6 +157,10 @@ qt_add_executable(std
   # RNNoise from https://github.com/freedv/rnnoise at
   # 8b12912d0e4a4503ca7d83fd1111f00f7e8298e8 (scripts/build_rnnoise.sh).
   # The weight objects are not compiled into this MSVC target.
+  src/qrv/QrvProtocol.cpp
+  src/qrv/QrvProtocol.h
+  src/qrv/QrvClient.cpp
+  src/qrv/QrvClient.h
   src/spot/PskReporter.cpp
   src/spot/PskReporter.h
   src/spot/WsprNet.cpp

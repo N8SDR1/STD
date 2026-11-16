@@ -37,6 +37,7 @@
 #include "HotListView.h"
 #include "Callbook.h"
 #include "ModeProfile.h"
+#include "qrv/QrvClient.h"
 #include "QsoLog.h"
 #include "StationFiles.h"
 #include "StatusStrip.h"
@@ -1107,6 +1108,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     if (!problem.isEmpty())
       setTxStatus(problem);
   });
+  qrv_ = new QrvClient(this);
+  connect(qrv_, &QrvClient::rosterChanged, this, [this] { refreshQrvBoard(); });
+  connect(qrv_, &QrvClient::lastErrorChanged, this, [this] { refreshQrvBoard(); });
+  syncQrv();
 }
 
 void MainWindow::buildBrandBar() {
@@ -3907,10 +3912,21 @@ void MainWindow::buildMenus() {
   auto* networkConfig = optionsMenu->addAction(QStringLiteral("Network Configuration"));
   networkConfig->setObjectName(QStringLiteral("networkConfig"));
   networkConfig->setToolTip(QStringLiteral(
-      "PSK Reporter and WSPRnet. PSK Reporter stays off until Enable is checked. "
+      "PSK Reporter, WSPRnet, FreeDV Reporter, and the QRV board. "
+      "PSK Reporter stays off until Enable is checked. "
       "WSPRnet stays off until On is selected. "
-      "WSPRnet does not ask for a password. Does not key and does not send START."));
+      "WSPRnet does not ask for a password. "
+      "QRV stays off until On is selected. The callsign is Options → User. "
+      "Does not key and does not send START."));
   connect(networkConfig, &QAction::triggered, this, [this] { openNetworkDialog(); });
+
+  auto* qrvBoard = optionsMenu->addAction(QStringLiteral("QRV board…"));
+  qrvBoard->setObjectName(QStringLiteral("qrvBoardAction"));
+  qrvBoard->setToolTip(QStringLiteral(
+      "Who is on the QRV board at qrvsdr.cc. Call, app, band, and mode. "
+      "Hz shows only when that station chose to share it. "
+      "Does not key and does not send START."));
+  connect(qrvBoard, &QAction::triggered, this, [this] { openQrvBoard(); });
 
   auto* pskMap = optionsMenu->addAction(QStringLiteral("PSK Reporter map"));
   pskMap->setObjectName(QStringLiteral("pskReporterLink"));
@@ -4811,6 +4827,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
                           "40 m starts at 7.177 and 80 m at 3.643, both DIGL. "
                           "15 m is 21.313, DIGU. Click the band again to cycle. Extra stores another dial. "
                           "Mic and speaker stay the Speech devices. This does not key. START was not sent."));
+  syncQrv();
 }
 
 void MainWindow::showKeyboardReceive(const QString& mode) {
@@ -5481,6 +5498,8 @@ void MainWindow::showGuide() {
        "Options → Network Configuration → Show who heard me (PSK Reporter), off until ticked, puts a chip on the status bar: HEARD, the number of stations that reported hearing your callsign (from Options → User) in the last 15 minutes on the band you are on, and the farthest of them, for example \"HEARD 23 · 20m · best VK3XX 16400 km\". It is green when someone heard you and grey when nobody has. Click it for the list, farthest first: call, country, band, mode, the SNR they heard you at, distance, and time. STD asks PSK Reporter every five minutes, as PSK Reporter asks, and only while you have transmitted in the last half hour; listening sends nothing. Changing band redraws the chip at once for the new band, and the Need column with it. It does not key."},
       {"Clock check",
        "The clock check watches the DT of the FT8, FT4, and FT2 decodes. When the middle of the last few minutes of them is off by more than 1 s in FT8, 0.5 s in FT4, or 0.3 s in FT2, the status bar shows Clock 1.3 s fast (or slow) and the status line says so once. It needs eight decodes from two periods, and a few stations far off do not move it. STD does not change the clock: sync it with Windows time, Meinberg NTP, or BktTimeSync. It does not key."},
+      {"QRV",
+       "Options → Network Configuration → QRV is Off until On is selected. On tells qrvsdr.cc that this station is QRV: the callsign from Options → User, the band, and the Mode menu (FT8 stays FT8). It posts only while the radio is connected, about every 25 seconds, and sends QRT when you turn it off, disconnect, or quit. Share exact frequency is off until ticked; off, the board shows the band only. The optional note is 40 characters, and the server drops links and mentions. Options → QRV board lists who is on: call, app, band, mode, and Hz when a station shared it. Q65A is posted as Q65. RADE, WEFAX-576, and Q65B are not on the board. The callsign is not asked for again. It does not key, and START is never sent."},
       {"Fox and Hound",
        "Super Hound or Super Fox, on the mode bar, sets 40 m to 7.056 MHz DIGU and moves the RX marker "
        "to 750 Hz. That is the fox. It is still 15 second FT8. TX FIRST and TX SECOND only remember a "
@@ -5746,6 +5765,8 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+  if (qrv_)
+    qrv_->flushQrtBlocking();
   if (txTune_)
     stopTune(false);
   stopUserTx(false);
@@ -10761,6 +10782,57 @@ void MainWindow::openNetworkDialog() {
       "Opens wsprnet.org for stations reported by the callsign in Options → User. "
       "Does not upload, does not key, and does not send START."));
   connect(reports, &QPushButton::clicked, this, [this] { openWsprnetReports(); });
+  auto* qrvChoice = new QWidget(&dialog);
+  qrvChoice->setObjectName(QStringLiteral("qrvChoice"));
+  auto* qrvOff = new QRadioButton(QStringLiteral("Off"), qrvChoice);
+  auto* qrvOn = new QRadioButton(QStringLiteral("On"), qrvChoice);
+  qrvOff->setObjectName(QStringLiteral("qrvOff"));
+  qrvOn->setObjectName(QStringLiteral("qrvOn"));
+  qrvOff->setStyleSheet(wsprRadioStyle);
+  qrvOn->setStyleSheet(wsprRadioStyle);
+  auto* qrvGroup = new QButtonGroup(qrvChoice);
+  qrvGroup->setExclusive(true);
+  qrvGroup->addButton(qrvOff);
+  qrvGroup->addButton(qrvOn);
+  const bool qrvSaved = qrv_ && qrv_->optIn();
+  qrvOn->setChecked(qrvSaved);
+  qrvOff->setChecked(!qrvSaved);
+  const QString qrvTip = QStringLiteral(
+      "On tells qrvsdr.cc that this station is QRV: the callsign from Options → User, the band, "
+      "and the Mode menu. Off sends QRT and posts nothing. Does not key. START is never sent.");
+  qrvOff->setToolTip(qrvTip);
+  qrvOn->setToolTip(qrvTip);
+  auto* qrvLabel = new QLabel(QStringLiteral("QRV"), qrvChoice);
+  qrvLabel->setStyleSheet(QStringLiteral("color: #f7ffff; font-size: 14px;"));
+  auto* qrvRow = new QHBoxLayout(qrvChoice);
+  qrvRow->setContentsMargins(0, 6, 0, 0);
+  qrvRow->setSpacing(14);
+  qrvRow->addWidget(qrvLabel);
+  qrvRow->addWidget(qrvOff);
+  qrvRow->addWidget(qrvOn);
+  qrvRow->addStretch(1);
+  auto* qrvHz = new QCheckBox(QStringLiteral("Share exact frequency"), &dialog);
+  qrvHz->setObjectName(QStringLiteral("qrvShareHz"));
+  qrvHz->setChecked(qrv_ && qrv_->shareHz());
+  qrvHz->setToolTip(QStringLiteral(
+      "Off, the usual choice: the board shows the band only. On also sends the dial in Hz. "
+      "Discord never receives the frequency. Does not key. START is never sent."));
+  auto* qrvNote = new QLineEdit(qrv_ ? qrv_->note() : QString(), &dialog);
+  qrvNote->setObjectName(QStringLiteral("qrvNote"));
+  qrvNote->setMaxLength(40);
+  qrvNote->setPlaceholderText(QStringLiteral("Optional note, 40 characters"));
+  qrvNote->setToolTip(QStringLiteral(
+      "A short note on the in-app board. The server drops links and mentions. "
+      "Discord does not show it. This is not a callsign. Does not key. START is never sent."));
+  auto* qrvHelp = new QLabel(
+      QStringLiteral("QRV is the live roster at qrvsdr.cc. STD posts only while On is selected and the radio "
+                     "is connected, about every 25 seconds, and sends QRT when you turn it off, disconnect, "
+                     "or quit. The callsign is the one in Options → User. The mode is the Mode menu "
+                     "(FT8 stays FT8). Options → QRV board lists who is on. "
+                     "This does not send START and does not key."),
+      &dialog);
+  qrvHelp->setObjectName(QStringLiteral("qrvHelp"));
+  qrvHelp->setWordWrap(true);
   auto* ok = new QPushButton(QStringLiteral("OK"), &dialog);
   auto* cancel = new QPushButton(QStringLiteral("Cancel"), &dialog);
   auto* buttons = new QHBoxLayout;
@@ -10780,6 +10852,10 @@ void MainWindow::openNetworkDialog() {
   layout->addWidget(wsprNote);
   layout->addWidget(fdvChoice);
   layout->addWidget(fdvNote);
+  layout->addWidget(qrvChoice);
+  layout->addWidget(qrvHz);
+  layout->addWidget(qrvNote);
+  layout->addWidget(qrvHelp);
   layout->addLayout(buttons);
   connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
   connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -10810,6 +10886,92 @@ void MainWindow::openNetworkDialog() {
     statusStrip_->refreshSpot();
   if (auto* screen = findChild<RadeScreen*>(QStringLiteral("radeScreen")))
     screen->refreshMessage();
+  if (qrv_) {
+    qrv_->setShareHz(qrvHz->isChecked());
+    qrv_->setNote(qrvNote->text());
+    qrv_->setOptIn(qrvOn->isChecked());
+  }
+  syncQrv();
+}
+
+void MainWindow::syncQrv() {
+  if (!qrv_)
+    return;
+  qrv_->setStationCall(stationCall());
+  qrv_->setRadioConnected(tci_ && tci_->isOpen());
+  const qint64 hz = liveDialHz_ > 100000 ? liveDialHz_ : (profile_ ? profile_->dialHz() : 0);
+  qrv_->setActivity(hz, profile_ ? profile_->digitalMode() : QString());
+}
+
+void MainWindow::openQrvBoard() {
+  if (!qrv_)
+    return;
+  if (!qrvBoard_) {
+    auto* dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("qrvBoard"));
+    dialog->setWindowTitle(QStringLiteral("QRV"));
+    dialog->setMinimumSize(640, 360);
+    dialog->setModal(false);
+    auto* status = new QLabel(dialog);
+    status->setObjectName(QStringLiteral("qrvStatus"));
+    status->setWordWrap(true);
+    auto* table = new QTableWidget(dialog);
+    table->setObjectName(QStringLiteral("qrvRoster"));
+    table->setColumnCount(6);
+    table->setHorizontalHeaderLabels({QStringLiteral("Call"), QStringLiteral("App"), QStringLiteral("Band"),
+                                       QStringLiteral("Mode"), QStringLiteral("Hz"), QStringLiteral("Note")});
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->verticalHeader()->setVisible(false);
+    auto* layout = new QVBoxLayout(dialog);
+    layout->addWidget(status);
+    layout->addWidget(table);
+    qrvBoard_ = dialog;
+    connect(dialog, &QDialog::finished, this, [this] {
+      if (qrv_)
+        qrv_->setRosterWatching(false);
+    });
+  }
+  qrv_->setRosterWatching(true);
+  refreshQrvBoard();
+  qrvBoard_->show();
+  qrvBoard_->raise();
+  qrvBoard_->activateWindow();
+}
+
+void MainWindow::refreshQrvBoard() {
+  auto* dialog = qrvBoard_;
+  if (!dialog || !qrv_)
+    return;
+  auto* status = dialog->findChild<QLabel*>(QStringLiteral("qrvStatus"));
+  auto* table = dialog->findChild<QTableWidget*>(QStringLiteral("qrvRoster"));
+  if (status) {
+    const QString error = qrv_->lastError();
+    if (!qrv_->optIn())
+      status->setText(QStringLiteral("QRV is off. The list is whoever is on qrvsdr.cc. This does not key."));
+    else if (!error.isEmpty())
+      status->setText(error);
+    else if (qrv_->onAir())
+      status->setText(QStringLiteral("On the board as STD. This does not key."));
+    else if (tci_ && tci_->isOpen())
+      status->setText(QStringLiteral("QRV is on. Waiting for a band and a mode the board accepts."));
+    else
+      status->setText(QStringLiteral("QRV is on. It posts when the radio is connected."));
+  }
+  if (!table)
+    return;
+  const qrv::Roster& roster = qrv_->roster();
+  table->setRowCount(roster.entries.size());
+  for (int row = 0; row < roster.entries.size(); ++row) {
+    const qrv::RosterEntry& entry = roster.entries.at(row);
+    const QStringList cells = {entry.call, entry.app, entry.band, entry.mode,
+                               entry.hasHz ? QString::number(entry.hz) : QString(), entry.note};
+    for (int column = 0; column < cells.size(); ++column) {
+      auto* item = new QTableWidgetItem(cells.at(column));
+      table->setItem(row, column, item);
+    }
+  }
 }
 
 void MainWindow::rememberQso(const QString& call, const QString& grid, const QString& theirReport,
@@ -11489,6 +11651,7 @@ void MainWindow::openUserDialog() {
   refreshDecodes();
   applyStationLock();
   refreshTxFields();
+  syncQrv();
 }
 
 void MainWindow::setReceivePlaceholder(bool connected) {
@@ -11526,6 +11689,7 @@ void MainWindow::showRadioDown(const QString& error) {
   refreshDialBox();
   if (ft8_)
     ft8_->clear();
+  syncQrv();
 }
 
 void MainWindow::showRadioUp(const QString& host, quint16 port) {
@@ -11543,6 +11707,7 @@ void MainWindow::showRadioUp(const QString& host, quint16 port) {
     waterfall_->setRadio(true, dialText_);
   }
   refreshDialBox();
+  syncQrv();
 }
 
 void MainWindow::showDial(qint64 hz) {
@@ -11563,6 +11728,7 @@ void MainWindow::showDial(qint64 hz) {
   if (waterfall_)
     waterfall_->setRadio(true, dialText_);
   refreshDialBox();
+  syncQrv();
 }
 
 void MainWindow::refreshDialBox() {
