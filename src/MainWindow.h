@@ -516,6 +516,8 @@ private:
   mutable CtyTable cty_;
   mutable bool ctyLoaded_ = false;
   bool markNeeded_ = false;
+  bool colorMyCall_ = true;
+  QColor myCallColor_{0xE0, 0x40, 0xC8};
   mutable qint64 workedStamp_ = 0;
   mutable qint64 workedSize_ = -1;
   mutable bool workedLoading_ = false;
@@ -611,6 +613,8 @@ private:
   double qsoMeterDbm_ = 0.0;
   RstMeter qsoRstMeter_;
   bool qsoLogged_ = false;
+  // Start stamp of the multi-answer row already written, so the 73 does not log again.
+  QString maLogStarted_;
   // Contest mode: their exchange read from received text, and the dupes.
   QString contestHeard_;
   QSet<QString> contestDupes_;
