@@ -832,7 +832,8 @@ int shellReady(MainWindow& window) {
   const char* dxNames[] = {"decodeThreeStage", "decodeAp",     "decodeDepthFast", "decodeDepthNormal",
                            "decodeDepthDeep",  "timeSync",     "macrosEdit",      "userSettings",
                            "networkConfig", "contestTags",
-                           "listShowTime",     "listShowFreq", "listClearPeriod", "logAuto",
+                           "listShowTime",     "listShowFreq", "listClearPeriod", "colorMyCall",
+                           "myCallColor",      "logAuto",
                            "logPrompt",        "logFileDialog",   "aseqMostDistant", "txConfirm73",
                            "autoResetQso"};
   for (const char* name : dxNames) {

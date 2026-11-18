@@ -1,6 +1,6 @@
 # STD
 
-**Shift, Tone, Decode.** Software in testing. Version 0.1.13. Around the shack it also answers to **Sending Transmittal Disease**.
+**Shift, Tone, Decode.** Software in testing. Version 0.1.14. Around the shack it also answers to **Sending Transmittal Disease**.
 
 The real expansion is Shift, Tone, Decode. The other one is the joke. STD is a 64-bit Windows application, a Qt 6.11.1 MSVC digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air. [Lyra](https://n8sdr1.github.io/Lyra-SDR-cpp/) is the transceiver. [SDRLogger+](https://n8sdr1.github.io/SDRLoggerPlus/) is the logbook. CW stays in Lyra.
 
@@ -57,6 +57,10 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 | RADE V1 | FreeDV RADE digital voice, about 1500 Hz wide, from the FreeDV rade_c library. DIGL on 160, 80, and 40 m, DIGU on 60 m and 30 m and up, the FreeDV convention. 60 m (the 5.3 chip) has the FreeDV Reporter dials 5.3685 and 5.4035, and FT8 has 5.357; other modes hide it. Speech from the Speech microphone. The end-of-over carries your callsign from Options → User the way the FreeDV app sends it, so FreeDV stations and FreeDV Reporter can show who you are, and **Heard** shows the call from the other station's end-of-over. **Offset** shows the received station's frequency offset in Hz, as FreeDV shows it. The microphone is levelled before the encoder, as FreeDV does. TX waits about a quarter second to fill its buffer, so the modem frames go out without gaps, and holds 200 ms of silence after the end-of-over. Drive 100 is the FreeDV app's level. Gain, 0 to 30 dB, sits after the microphone and before the speech-level bar. The top bar shows the radio dial in every mode, green while receiving and red while transmitting, with DIGU or DIGL in the box. **RX** (green while receiving) and **TX** work like the radio's switch; click RX to end your over with your callsign. Halt is hidden in RADE. **Scan** steps the FreeDV Reporter calling dials (Dwell 5–30 s each) and listens for a RADE station; **Stay on sync** stops it on the first one heard, or it keeps looping. Right-click Scan to scan all bands or only the ones you check. Dials you add with Extra are scanned too; right-click Extra to edit or delete them. **Mic NR** (RNNoise noise suppression) and **BW expand** (decoded speech widened to 48 kHz) are on by default, as in the FreeDV app. FreeDV Reporter is in Options → Network Configuration. |
 | RADE V2 | Experimental, about 860 Hz, will not talk to V1. BPF (on by default) is the modem band-pass; it is greyed out on V1, which sends without one, as FreeDV does. |
 | WSPR | WSPR-2 from WSJT-X and JTDX. Even UTC minutes. Tx power, Tx Pct, and band hopping. The locator is Options → User. Rows stay in the receive colour, under titles, with a rule between periods. Heard stations post to WSPRnet only when WSPRnet is On, and only while WSPR is the mode. |
+
+**My call in a decode.** Options → Decode List Options → Color my call in a decode is on until you turn it off. A line on the FT8, FT4, FT2, JT65, Q65, and MSK list is colored when it contains the callsign from Options → User. My call color… picks that color. The first color is magenta, and it is the color shown when that line is also a needed station. It does not key.
+
+**One QSO, one log.** With TX Confirmation on, the 73 that answers their RR73 is not written again, and it is not sent again to SDRLogger+. A later QSO with that station still logs when it has its own start time and a report you sent.
 
 **Needed stations.** Options → Decode List Options → Mark Needed Stations, off until ticked, adds a Need column to the FT8, FT4, FT2, JT65, and Q65 list, checked against your ADIF log. NEW (deep red) is a DXCC entity never worked; BAND (amber) an entity worked but not on the band you are on; GRID (blue) a grid never worked; GRID+BAND (light blue) a grid worked, but not on this band; B4 (dim) a call already worked on this band. Worked QSOs count; confirmations do not. The station is the one sending: the call after CQ, or the second call in a reply. Entities come from AD1C's cty.dat (country-files.com), built in; a newer cty.dat placed in %APPDATA%\N8SDR\STD is used instead. What counts as worked is set in Options → Log Options → Log file and logger → Worked list: STD's ADIF file only (the default); STD's ADIF file plus another ADIF file, read but never written (WSJT-X's wsjtx_log.adi, or an export from Log4OM, DXKeeper, N1MM, and others), read again whenever it changes; or STD's ADIF file plus SDRLogger+ (live), which asks SDRLogger+ on this PC (127.0.0.1, port 5050 unless changed) for its whole log every five minutes and ten seconds after each QSO, and keeps the last copy so the marks still work while SDRLogger+ is closed. The same list drives Hide QSO B4.
 
@@ -118,13 +122,13 @@ STD is a 64-bit Windows application. The kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\
 
 ## Run
 
-The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.13.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
+The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.14.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
 
 A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_QPA_PLATFORM=offscreen`, then run `build\std.exe`. Exit status 0 prints `STD self-test ok`.
 
 ## More
 
 - Web version of this page: <https://n8sdr1.github.io/STD/>
-- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.13, testing phase · highly transmissible)
+- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.14, testing phase · highly transmissible)
 - Wiki: <https://github.com/N8SDR1/STD/wiki>
 - Longer notes: [modes](docs/modes.md), [QRV](docs/qrv.md), [DXpeditions and the hot list](docs/dxpeditions.md), [Hell](docs/hell.md), [macros](docs/macros.md), [contest](docs/contest.md), [connect](docs/connect.md)

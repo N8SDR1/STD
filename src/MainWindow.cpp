@@ -59,6 +59,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QColor>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QCloseEvent>
 #include <QDataStream>
@@ -3514,6 +3515,38 @@ void MainWindow::applyMskOptions() {
     ft8_->setMskOptions(mskPeriodMs(mode), mskShortMessages(), mskSwl(), mskDfTolerance());
 }
 
+namespace {
+
+// The call as its own token: N8SDR, <N8SDR>, and N8SDR/P. KN8SDR does not count.
+bool lineHasCall(const QString& message, const QString& call) {
+  const QString mine = call.trimmed().toUpper();
+  if (mine.size() < 3)
+    return false;
+  const QString text = message.toUpper();
+  int from = 0;
+  while ((from = text.indexOf(mine, from)) >= 0) {
+    const bool left = from == 0 || !text.at(from - 1).isLetterOrNumber();
+    const int end = from + mine.size();
+    const bool right = end >= text.size() || !text.at(end).isLetterOrNumber();
+    if (left && right)
+      return true;
+    from = end;
+  }
+  return false;
+}
+
+QIcon colorSwatch(const QColor& color) {
+  QPixmap pix(16, 16);
+  pix.fill(Qt::transparent);
+  QPainter paint(&pix);
+  paint.setPen(QColor(20, 24, 28));
+  paint.setBrush(color);
+  paint.drawRoundedRect(1, 1, 14, 14, 2, 2);
+  return QIcon(pix);
+}
+
+}  // namespace
+
 void MainWindow::refreshDecodes() {
   auto* edit = findChild<QPlainTextEdit*>("receiveText");
   auto* filter = findChild<QLineEdit*>("decodeFilter");
@@ -3559,14 +3592,18 @@ void MainWindow::refreshDecodes() {
     all.select(QTextCursor::Document);
     all.setCharFormat(QTextCharFormat());
   }
-  // Needed stations: a tint for NEW, BAND, and GRID; worked before is dim.
-  if (markNeeded_) {
-    QTextBlock block = edit->document()->begin();
-    for (int i = 0; i < needs.size() && block.isValid(); ++i, block = block.next()) {
+  // A line with our call uses that color, ahead of the Need tints.
+  const QString mine = stationCall();
+  QTextBlock block = edit->document()->begin();
+  for (int i = 0; i < shownDecodes_.size() && block.isValid(); ++i, block = block.next()) {
+    QTextCharFormat format;
+    if (colorMyCall_ && lineHasCall(shownDecodes_.at(i).message, mine)) {
+      format.setBackground(myCallColor_);
+      const int luma =
+          (myCallColor_.red() * 299 + myCallColor_.green() * 587 + myCallColor_.blue() * 114) / 1000;
+      format.setForeground(luma > 150 ? QColor(20, 24, 28) : QColor(255, 255, 255));
+    } else if (markNeeded_ && i < needs.size()) {
       const Need need = needs.at(i);
-      if (need == Need::None)
-        continue;
-      QTextCharFormat format;
       if (need == Need::Entity)
         format.setBackground(QColor(150, 40, 80, 170));
       else if (need == Need::Band)
@@ -3575,12 +3612,14 @@ void MainWindow::refreshDecodes() {
         format.setBackground(QColor(30, 100, 150, 150));
       else if (need == Need::GridBand)
         format.setBackground(QColor(30, 100, 150, 85));
-      else
+      else if (need != Need::None)
         format.setForeground(QColor(120, 128, 140));
-      QTextCursor cursor(block);
-      cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
-      cursor.mergeCharFormat(format);
     }
+    if (format.background().style() == Qt::NoBrush && format.foreground().style() == Qt::NoBrush)
+      continue;
+    QTextCursor cursor(block);
+    cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+    cursor.mergeCharFormat(format);
   }
   edit->moveCursor(QTextCursor::End);
 }
@@ -4071,6 +4110,23 @@ void MainWindow::buildMenus() {
                           "entity not worked on this band, GRID a grid never worked, GRID+BAND a grid not "
                           "worked on this band, and B4 a call already worked on this band, shown dim. Worked "
                           "QSOs count; confirmations do not. Entities are from AD1C's cty.dat. This does not key."));
+  addCheck(listMenu, "colorMyCall", QStringLiteral("Color my call in a decode"), "dx/colorMyCall", true,
+           QStringLiteral(
+               "The whole decode line is colored when it contains the callsign from Options → User, "
+               "the way MSHV, WSJT-X, and JTDX mark a line addressed to you. That color is used instead "
+               "of the Need tints on that line. This does not key."));
+  auto* myColor = listMenu->addAction(QStringLiteral("My call color…"));
+  myColor->setObjectName(QStringLiteral("myCallColor"));
+  myColor->setToolTip(QStringLiteral(
+      "Pick the color for a decode that contains your callsign. Saved. This does not key."));
+  connect(myColor, &QAction::triggered, this, [this] {
+    const QColor chosen =
+        QColorDialog::getColor(myCallColor_, this, QStringLiteral("My call in a decode"));
+    if (!chosen.isValid())
+      return;
+    QSettings().setValue(QStringLiteral("dx/myCallColor"), chosen.name(QColor::HexRgb));
+    applyDxOptions();
+  });
   auto* miles = listMenu->addAction(QStringLiteral("Distance in miles"));
   miles->setObjectName(QStringLiteral("distUnitMiles"));
   miles->setCheckable(true);
@@ -5494,6 +5550,8 @@ void MainWindow::showGuide() {
        "backend already in use replaces the picture immediately. It does not key and does not send START."},
       {"Needed stations",
        "Options → Decode List Options → Mark Needed Stations, off until ticked, adds a Need column to the FT8, FT4, FT2, JT65, and Q65 list, checked against your ADIF log. NEW (deep red) is a DXCC entity never worked; BAND (amber) an entity worked but not on the band you are on; GRID (blue) a grid never worked; GRID+BAND (light blue) a grid worked, but not on this band; B4 (dim) a call already worked on this band. Worked QSOs count; confirmations do not. The station is the one sending: the call after CQ, or the second call in a reply. Entities come from AD1C's cty.dat (country-files.com), built in; a newer cty.dat placed in %APPDATA%\\N8SDR\\STD is used instead. What counts as worked is set in Options → Log Options → Log file and logger → Worked list: STD's ADIF file only (the default); STD's ADIF file plus another ADIF file, read but never written (WSJT-X's wsjtx_log.adi, or an export from Log4OM, DXKeeper, N1MM, and others), read again whenever it changes; or STD's ADIF file plus SDRLogger+ (live), which asks SDRLogger+ on this PC (127.0.0.1, port 5050 unless changed) for its whole log every five minutes and ten seconds after each QSO, and keeps the last copy so the marks still work while SDRLogger+ is closed. The same list drives Hide QSO B4. It does not key."},
+      {"My call in a decode",
+       "Options → Decode List Options → Color my call in a decode is on until you turn it off. A line on the FT8, FT4, FT2, JT65, Q65, and MSK list is colored when it contains the callsign from Options → User, as a whole call, including <N8SDR> and N8SDR/P. A longer call that merely starts the same way is left alone. My call color… picks that color; the first color is magenta, which is not the red, amber, or blue of the Need marks. On a line that is both, the my-call color is the one shown. It does not key."},
       {"Who heard me",
        "Options → Network Configuration → Show who heard me (PSK Reporter), off until ticked, puts a chip on the status bar: HEARD, the number of stations that reported hearing your callsign (from Options → User) in the last 15 minutes on the band you are on, and the farthest of them, for example \"HEARD 23 · 20m · best VK3XX 16400 km\". It is green when someone heard you and grey when nobody has. Click it for the list, farthest first: call, country, band, mode, the SNR they heard you at, distance, and time. STD asks PSK Reporter every five minutes, as PSK Reporter asks, and only while you have transmitted in the last half hour; listening sends nothing. Changing band redraws the chip at once for the new band, and the Need column with it. It does not key."},
       {"Clock check",
@@ -7125,6 +7183,14 @@ void MainWindow::logMaQsos(const QVector<MaEngine::Logged>& done) {
   for (const MaEngine::Logged& q : done) {
     if (!txFinishedCalls_.contains(q.call))
       txFinishedCalls_.push_back(q.call);
+    // TX Confirmation answers their RR73 with 73, and that second pass was
+    // written again. A late R+report did the same, with no sent report.
+    // A new QSO has its own start time and a report we sent.
+    const bool same = qsoCall_.compare(q.call, Qt::CaseInsensitive) == 0 && qsoLogged_;
+    const bool stub = q.txRpt.trimmed().isEmpty();
+    if (same && (stub || q.started == maLogStarted_))
+      continue;
+    maLogStarted_ = q.started;
     rememberQso(q.call, q.grid, q.rxRpt, true);
     const QDateTime started = QDateTime::fromString(q.started, QStringLiteral("yyyyMMdd hh:mm"));
     if (started.isValid()) {
@@ -9765,6 +9831,13 @@ void MainWindow::applyDxOptions() {
   filterHidePrefix_ = settings.value(QStringLiteral("dx/hidePrefix")).toString().trimmed().toUpper();
   filterQsoB4_ = settings.value(QStringLiteral("dx/hideQsoB4"), false).toBool();
   markNeeded_ = settings.value(QStringLiteral("dx/markNeeded"), false).toBool();
+  colorMyCall_ = settings.value(QStringLiteral("dx/colorMyCall"), true).toBool();
+  {
+    const QColor saved(settings.value(QStringLiteral("dx/myCallColor"), QStringLiteral("#E040C8")).toString());
+    myCallColor_ = saved.isValid() ? saved : QColor(0xE0, 0x40, 0xC8);
+  }
+  if (auto* swatch = findChild<QAction*>(QStringLiteral("myCallColor")))
+    swatch->setIcon(colorSwatch(myCallColor_));
   const QString hide = settings.value(QStringLiteral("dx/hideContinent")).toString();
   for (int i = 0; i < 7; ++i)
     hideContinent_[i] = hide.size() > i && hide.at(i) == QLatin1Char('1');
