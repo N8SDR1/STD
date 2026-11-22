@@ -137,13 +137,14 @@ QString WaterfallGpu::prepareProcessBackend(bool applyEnvironment) {
     backend = probeAutoBackend();
   gProcessBackend = backend;
   if (applyEnvironment) {
-    if (backend == QLatin1String("painter") || backend == QLatin1String("software")) {
-      qunsetenv("QT_WIDGETS_RHI");
-      qunsetenv("QT_WIDGETS_RHI_BACKEND");
-    } else {
-      qputenv("QT_WIDGETS_RHI", "1");
-      qputenv("QT_WIDGETS_RHI_BACKEND", backend.toLatin1());
-    }
+    // Only the main window goes through the GPU, and only because the
+    // waterfall lives in it: the waterfall's API picks that window's
+    // backend. QT_WIDGETS_RHI=1 would also give every menu, tooltip, and
+    // dialog its own swapchain, and AMD's Vulkan driver spins a full core
+    // on the swapchain a closed popup leaves behind. A copy restarted from
+    // the Graphics menu inherits the old environment, so clear it here.
+    qunsetenv("QT_WIDGETS_RHI");
+    qunsetenv("QT_WIDGETS_RHI_BACKEND");
   }
   return backend;
 }

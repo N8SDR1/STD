@@ -1407,6 +1407,9 @@ void WaterfallWidget::setGraphicsMode(const QString& mode) {
   QSettings saved;
   saved.setValue(QStringLiteral("waterfall/graphics"), graphicsChoice_);
   saved.setValue(QStringLiteral("waterfall/graphicsRev"), 1);
+  // The restarted copy reads this before this one has exited, so it has to
+  // be on disk now, not when this QSettings goes out of scope.
+  saved.sync();
   const QString previous = WaterfallGpu::processBackend();
   const QString requested = (key == QLatin1String("auto") || key.isEmpty())
                                 ? WaterfallGpu::probeAutoBackend()
@@ -1460,6 +1463,13 @@ void WaterfallWidget::ensureGpu() {
   }
   if (gpu_ && gpu_->api() != api)
     releaseGpu();
+  // Vulkan needs an instance on the main window before the waterfall joins
+  // it. Qt only makes one for itself when every window goes through the GPU,
+  // which STD no longer asks for.
+  if (!gpu_ && api == WaterfallGpu::Api::Vulkan && !WaterfallGpu::attachVulkan(this)) {
+    gpuFallback(QStringLiteral("no Vulkan instance"));
+    return;
+  }
   if (!gpu_) {
     gpu_ = new WaterfallGpu(api, this);
     gpu_->setObjectName(QStringLiteral("waterfallGpu"));

@@ -5547,7 +5547,9 @@ void MainWindow::showGuide() {
        "Vulkan on other systems, then Painter if that device fails. Vulkan, Direct3D 11, "
        "Direct3D 12, OpenGL, and Painter are explicit. The Graphics line names the backend in "
        "use. Choosing a different graphics API restarts STD so that backend is selected. Choosing the "
-       "backend already in use replaces the picture immediately. It does not key and does not send START."},
+       "backend already in use replaces the picture immediately. Only the window with the waterfall uses "
+       "the backend; menus, tooltips, and dialogs are drawn the ordinary way, so no extra GPU work is "
+       "left behind when they close. The choice is saved before STD restarts. It does not key and does not send START."},
       {"Needed stations",
        "Options → Decode List Options → Mark Needed Stations, off until ticked, adds a Need column to the FT8, FT4, FT2, JT65, and Q65 list, checked against your ADIF log. NEW (deep red) is a DXCC entity never worked; BAND (amber) an entity worked but not on the band you are on; GRID (blue) a grid never worked; GRID+BAND (light blue) a grid worked, but not on this band; B4 (dim) a call already worked on this band. Worked QSOs count; confirmations do not. The station is the one sending: the call after CQ, or the second call in a reply. Entities come from AD1C's cty.dat (country-files.com), built in; a newer cty.dat placed in %APPDATA%\\N8SDR\\STD is used instead. What counts as worked is set in Options → Log Options → Log file and logger → Worked list: STD's ADIF file only (the default); STD's ADIF file plus another ADIF file, read but never written (WSJT-X's wsjtx_log.adi, or an export from Log4OM, DXKeeper, N1MM, and others), read again whenever it changes; or STD's ADIF file plus SDRLogger+ (live), which asks SDRLogger+ on this PC (127.0.0.1, port 5050 unless changed) for its whole log every five minutes and ten seconds after each QSO, and keeps the last copy so the marks still work while SDRLogger+ is closed. The same list drives Hide QSO B4. It does not key."},
       {"My call in a decode",
