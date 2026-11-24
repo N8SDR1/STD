@@ -19,6 +19,9 @@
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
+#include "sstv/SstvModem.h"
+#include "sstv/SstvPanel.h"
+#include "sstv/SstvTxPanel.h"
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
 #include "wspr/WsprModem.h"
@@ -505,7 +508,7 @@ QIcon stdIcon() {
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-  setWindowTitle("STD");
+  setWindowTitle(QStringLiteral(STD_APP_NAME));
   setWindowIcon(stdIcon());
   resize(1240, 860);
   setMinimumSize(880, 620);
@@ -678,6 +681,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         mt63_->pushAudio(gained, count, rate);
       if (wefax_)
         wefax_->pushAudio(gained, count, rate);
+      if (sstv_)
+        sstv_->pushAudio(gained, count, rate);
       if (js8_)
         js8_->pushAudio(gained, count, rate);
       if (wspr_)
@@ -859,6 +864,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
       }
     }
   });
+  if (!sstv_)
+    sstv_ = new SstvEngine(this);
   wefax_ = new WefaxEngine(this);
   connect(wefax_, &WefaxEngine::imageChanged, this, [this] {
     auto* view = findChild<QLabel*>(QStringLiteral("wefaxView"));
@@ -1029,6 +1036,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const bool hell = hellFamily(mode);
     const bool armed =
         autoMonitor_ && profile_->mshvFamily() && sequencedFamily(mode) && profile_->autoDecode();
+    if (sstv_)
+      sstv_->setArmed(autoMonitor_ && sstvMode(mode));
     if (hell_) {
       hell_->setArmed(autoMonitor_ && hell);
       if (hell && waterfall_)
@@ -1821,6 +1830,24 @@ QWidget* MainWindow::makeTextPanel(const QString& editName, const QString& place
     layout->addWidget(js8Bands);
     layout->addWidget(makeJs8Actions(panel));
     layout->addWidget(makeWefaxStations(panel));
+    sstvTx_ = new SstvTxPanel(panel);
+    sstvTx_->hide();
+    connect(sstvTx_, &SstvTxPanel::status, this, [this](const QString& text) { setTxStatus(text); });
+    connect(sstvTx_, &SstvTxPanel::logRequested, this, [this] { setTxStatus(logSstvQso()); });
+    sstvTx_->setFieldsProvider([this] {
+      SstvFields f;
+      const QDateTime utc = QDateTime::currentDateTimeUtc();
+      f.insert(QStringLiteral("{MYCALL}"), stationCall().toUpper());
+      f.insert(QStringLiteral("{MYGRID}"), stationGrid().toUpper());
+      f.insert(QStringLiteral("{MYNAME}"), QSettings().value(QStringLiteral("user/name")).toString());
+      f.insert(QStringLiteral("{DATE}"), utc.toString(QStringLiteral("yyyy-MM-dd")));
+      f.insert(QStringLiteral("{UTC}"), utc.toString(QStringLiteral("HH:mm")) + QStringLiteral("Z"));
+      f.insert(QStringLiteral("{BAND}"), qsoBandForHz(liveDialHz_));
+      f.insert(QStringLiteral("{FREQ}"),
+               liveDialHz_ > 0 ? QString::number(double(liveDialHz_) / 1e6, 'f', 3) : QString());
+      return f;
+    });
+    layout->addWidget(sstvTx_, 1);
 
     auto* rttyRow = new QWidget(panel);
     rttyRow->setObjectName(QStringLiteral("rttyOptions"));
@@ -3381,6 +3408,17 @@ QWidget* MainWindow::makeReceivePanel() {
   faxScroll->setWidget(faxHost);
   layout->addWidget(faxScroll, 1);
 
+  if (!sstv_)
+    sstv_ = new SstvEngine(this);
+  auto* sstvPanel = new SstvPanel(sstv_, panel);
+  sstvPanel->hide();
+  connect(sstvPanel, &SstvPanel::status, this, [this](const QString& text) { setTxStatus(text); });
+  connect(sstvPanel, &SstvPanel::replyWith, this, [this](const QImage& picture, const QString& from) {
+    if (sstvTx_)
+      sstvTx_->setReplyPicture(picture, from);
+  });
+  layout->addWidget(sstvPanel, 1);
+
   auto* edit = new QPlainTextEdit(panel);
   edit->setObjectName("receiveText");
   edit->setPlaceholderText(
@@ -4564,6 +4602,16 @@ void MainWindow::buildMenus() {
   modes->addAction(faxAction);
   connect(faxAction, &QAction::triggered, this,
           [this] { activateDigitalMode(QStringLiteral("WEFAX-576")); });
+  auto* sstvAction = modeMenu->addAction(QStringLiteral("SSTV"));
+  sstvAction->setCheckable(true);
+  sstvAction->setObjectName(QStringLiteral("modeSstv"));
+  sstvAction->setToolTip(QStringLiteral(
+      "SSTV pictures: Robot 36 and 72, Martin M1 and M2, Scottie S1, S2 and DX, and PD-50 to PD-290. "
+      "Receive reads the mode from the VIS header and saves each picture to the RX folder. TX sends the "
+      "picture picked in the transmit pane, only when you press it; choosing the mode does not key. "
+      "START is never sent."));
+  modes->addAction(sstvAction);
+  connect(sstvAction, &QAction::triggered, this, [this] { activateDigitalMode(QStringLiteral("SSTV")); });
   if (statusStrip_) {
     if (auto* chip = statusStrip_->findChild<QPushButton*>(QStringLiteral("digitalModeChip")))
       connect(chip, &QPushButton::clicked, this, [this] { cycleDigitalMode(); });
@@ -4729,7 +4777,7 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool rade = radeMode(modeName);
   const bool family = sequenced || hell || rade;
   if (profile_) {
-    if (sequenced || text || wsprMode(modeName) || wefaxMode(modeName) || rade)
+    if (sequenced || text || wsprMode(modeName) || wefaxMode(modeName) || sstvMode(modeName) || rade)
       profile_->setDigitalMode(modeName);
     profile_->setMshvFamily(family);
   }
@@ -4761,7 +4809,12 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool js8 = js8Mode(modeName);
   const bool wspr = wsprMode(modeName);
   const bool fax = wefaxMode(modeName);
+  const bool sstv = sstvMode(modeName);
   const bool radeHere = radeMode(modeName);
+  // SSTV tones are fixed: 1200 Hz sync, 1500 to 2300 Hz picture. The marker
+  // sits mid-band so the passband shows on the waterfall.
+  if (sstv && waterfall_)
+    waterfall_->setRxHz(1700);
   if ((hell || rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr) && waterfall_)
     waterfall_->setRxHz(1500);
   if (jt65Mode(modeName) && waterfall_) {
@@ -4836,11 +4889,13 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
       wefax_->clear();
     wefax_->setArmed(autoMonitor_ && fax);
   }
+  if (sstv_)
+    sstv_->setArmed(autoMonitor_ && sstv);
   if (tci_ && tci_->isOpen()) {
     radioSide_.clear();
     if (radeHere)
       tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
-    else if (rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax)
+    else if (rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax || sstv)
       tci_->setSideband(QStringLiteral("DIGU"));
     refreshDialBox();
   }
@@ -4969,7 +5024,10 @@ void MainWindow::showKeyboardReceive(const QString& mode) {
   if (auto* clrSent = findChild<QPushButton*>(QStringLiteral("clrSent")))
     clrSent->setVisible(hell);
   applySpeechSettings();
-  const bool decodeListOn = !text && !fax && !wspr && !rade;
+  const bool sstvOn = sstvMode(mode);
+  const bool decodeListOn = !text && !fax && !wspr && !rade && !sstvOn;
+  if (auto* sstvPane = findChild<QWidget*>(QStringLiteral("sstvPanel")))
+    sstvPane->setVisible(sstvOn);
   if (auto* panel = findChild<QWidget*>(QStringLiteral("mskPanel")))
     panel->setVisible(mskMode(mode));
   // MSHV shows only the ping display in MSK144; the frequency waterfall goes.
@@ -5330,6 +5388,38 @@ void MainWindow::showGuide() {
        "A ▶ macro also presses TX when Macros key is on. Hell, RTTY, BPSK, QPSK, "
        "Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
        "CW stays in Lyra. START is never sent."},
+      {"SSTV",
+       "Mode → SSTV receives and sends pictures. START is never sent. Tune USB to an SSTV frequency; 14.230 MHz is the busiest. The tones are "
+       "fixed: sync 1200 Hz, black 1500 Hz, white 2300 Hz, so the marker sits at 1700 Hz and the waterfall shows "
+       "the passband. Each picture starts with a VIS header that names its mode, and STD picks the mode from it: "
+       "Robot 36 and 72, Martin M1 and M2, Scottie S1, S2 and DX, and PD-50, 90, 120, 160, 180, 240 and 290. "
+       "A tuning error of up to about 150 Hz is measured on the header and taken out; the status line shows it. "
+       "Each line's sync pulse is followed as it arrives, so a sound card running a little fast or slow does not "
+       "slant the picture. For a picture already under way, pick its mode and press Start; the lines lock to the "
+       "next sync pulses. If the signal fades or a burst of QRM knocks the lines off, STD searches wider for the "
+       "next sync pulse and carries on; a picture ends only after about 12 seconds with no sync, or when a new "
+       "VIS header starts another. While waiting, the status line says why the last picture ended. "
+       "Stop ends the picture and Clear empties it. Auto save, on by default, writes each finished picture as a PNG "
+       "named with the UTC time and mode. Save writes the picture so far. Open shows the folder and Folder "
+       "picks it; until you pick one, pictures save under Documents\\STD\\SSTV\\RX. The list on the right "
+       "shows the pictures in that folder, newest first; click one to look at it until the next picture starts. "
+       "To send, the transmit pane lists the pictures in Documents\\STD\\SSTV\\Images (Add… copies "
+       "pictures in, Open shows the folder). Click one, pick Send as (Martin M1 and Scottie S1 are usual on "
+       "14.230, PD-120 is sharper, Robot 36 is quickest), and the preview shows it at the mode's shape with "
+       "the time on the air. Shape decides how a picture of another shape fits: Crop fills the frame and cuts "
+       "the rest (drag the preview to choose what is kept, double-click to center; remembered per picture), "
+       "Fit shows all of it with black bars, and Stretch squeezes it. Save as… keeps the picture as framed now "
+       "as a new picture in the Images folder, under a name you choose, so next time one click sets it. TX keys only when you press it, sends the VIS header and the picture, and drops "
+       "TRX when the picture ends; Halt stops at once. While it goes out, the preview shows the sent lines "
+       "bright and the rest dimmed, with a red line where the transmitter is, and a bar gives the line and "
+       "the time left. When it ends the pane says when it was sent. WEB RX, on the bottom row after PTT in "
+       "SSTV, opens pages where stations put the pictures they receive on 14.230 MHz (CQ SSTV live, DC4ML, "
+       "M0PWX), so you can see whether yours was copied. "
+       "Receive pauses while you transmit. A copy of what "
+       "went out is saved in the TX folder beside RX. "
+       "Templates put text and pictures together: the list shows Templates first (CQ, Reply and 73 starters are made the first time), then your pictures. A template has a background (a picture from Images or a plain colour) and layers: text with any font, size, fill colour, outline and shadow; a box for their picture; and coloured boxes. Text can hold fields that fill in when you send: {MYCALL}, {MYGRID} and {MYNAME} from Options → User, {CALL}, {RST} and {NAME} from the Call, RST and Name boxes in the transmit pane, and {DATE}, {UTC}, {BAND}, {FREQ} and {MODE}. Templates… (or a double-click on one) opens the editor: drag a layer to move it, drag its corner to resize it, and Save. Positions follow the frame, so one template fits every mode. Templates are saved as small files in the Templates folder beside Images. To answer with their picture, pick it in the receive pane and press Reply with it, right-click it in the list, or click the Their picture box to choose one from the RX folder. It fills a reply template's box, or goes in a corner of one of your own pictures (the Inset choice: off or a corner), the usual SSTV reply. Log, at the end of that row, logs the QSO: Call, RST sent and RST rcvd, Name, band and frequency, mode SSTV with the picture mode in the comment. It goes to STD's ADIF log and, when Options → Log links a logger, to SDRLogger+ like the other modes; then Call, Name, RST rcvd and their picture clear for the next station. CW ID, on by default, sends your callsign in Morse half a second after the picture, at 20 WPM on an 800 Hz tone with soft edges, as part of the same transmission. "
+       "SSTV is not posted to the QRV board. CW keying stays in Lyra; the SSTV CW ID is audio "
+       "inside the picture transmission."},
       {"WEFAX",
        "Mode → WEFAX-576 receives only. Switching to it hides the Hell box, the TX buttons, and the "
        "macros. It does not key and it does not send START. IOC is 576 and "
@@ -5547,7 +5637,9 @@ void MainWindow::showGuide() {
        "Vulkan on other systems, then Painter if that device fails. Vulkan, Direct3D 11, "
        "Direct3D 12, OpenGL, and Painter are explicit. The Graphics line names the backend in "
        "use. Choosing a different graphics API restarts STD so that backend is selected. Choosing the "
-       "backend already in use replaces the picture immediately. It does not key and does not send START."},
+       "backend already in use replaces the picture immediately. Only the window with the waterfall uses "
+       "the backend; menus, tooltips, and dialogs are drawn the ordinary way, so no extra GPU work is "
+       "left behind when they close. The choice is saved before STD restarts. It does not key and does not send START."},
       {"Needed stations",
        "Options → Decode List Options → Mark Needed Stations, off until ticked, adds a Need column to the FT8, FT4, FT2, JT65, and Q65 list, checked against your ADIF log. NEW (deep red) is a DXCC entity never worked; BAND (amber) an entity worked but not on the band you are on; GRID (blue) a grid never worked; GRID+BAND (light blue) a grid worked, but not on this band; B4 (dim) a call already worked on this band. Worked QSOs count; confirmations do not. The station is the one sending: the call after CQ, or the second call in a reply. Entities come from AD1C's cty.dat (country-files.com), built in; a newer cty.dat placed in %APPDATA%\\N8SDR\\STD is used instead. What counts as worked is set in Options → Log Options → Log file and logger → Worked list: STD's ADIF file only (the default); STD's ADIF file plus another ADIF file, read but never written (WSJT-X's wsjtx_log.adi, or an export from Log4OM, DXKeeper, N1MM, and others), read again whenever it changes; or STD's ADIF file plus SDRLogger+ (live), which asks SDRLogger+ on this PC (127.0.0.1, port 5050 unless changed) for its whole log every five minutes and ten seconds after each QSO, and keeps the last copy so the marks still work while SDRLogger+ is closed. The same list drives Hide QSO B4. It does not key."},
       {"My call in a decode",
@@ -5665,7 +5757,7 @@ void MainWindow::applyMacroBar() {
   const bool hell = hellFamily(mode);
   const bool mshv = profile_ && profile_->mshvFamily() && !hell;
   const bool wspr = wsprMode(mode);
-  macroDock_->setVisible(!mshv && !wspr && !wefaxMode(mode) && !radeMode(mode));
+  macroDock_->setVisible(!mshv && !wspr && !wefaxMode(mode) && !sstvMode(mode) && !radeMode(mode));
 }
 
 void MainWindow::syncWfHellControls() {
@@ -6392,6 +6484,8 @@ void MainWindow::applyChannelWidth() {
     width = 50;
   else if (wefaxMode(mode))
     width = 900;
+  else if (sstvMode(mode))
+    width = 1300;
   int rx = width;
   int tx = width;
   if (profile_->superHound())
@@ -7489,10 +7583,80 @@ bool startTonesOf(const QWidget* window, const QString& mode) {
   return true;
 }
 
+// SSTV Log: one ADIF record, mode SSTV, through the same log and logger
+// link as the other modes. The picture mode goes in the comment, since ADIF
+// has no SSTV submodes.
+QString MainWindow::logSstvQso() {
+  if (!sstvTx_)
+    return QString();
+  QsoLog::Record record;
+  record.call = sstvTx_->theirCall();
+  if (record.call.isEmpty())
+    return QStringLiteral("Nothing logged: Call is empty. Nothing was keyed. START was not sent.");
+  record.mode = QStringLiteral("SSTV");
+  record.rstSent = sstvTx_->rstSent();
+  record.rstRcvd = sstvTx_->rstRcvd();
+  record.name = sstvTx_->theirName();
+  record.comment = QStringLiteral("SSTV %1").arg(sstvModeName(sstvTx_->mode()));
+  record.myCall = stationCall();
+  record.myGrid = stationGrid();
+  record.freqHz = liveDialHz_ > 0 ? liveDialHz_ : (profile_ ? profile_->dialHz() : 0);
+  record.timeOff = QDateTime::currentDateTimeUtc();
+  record.timeOn = record.timeOff;
+  sstvLastRecord_ = QsoLog::adifRecord(record);
+  if (qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return QStringLiteral("Logged %1. Nothing was keyed. START was not sent.").arg(record.call);
+  const QsoLog::Result result = qsoLog_ ? qsoLog_->store(record) : QsoLog::Result{};
+  if (!result.wrote)
+    return QStringLiteral("%1 was not logged. %2 Nothing was keyed. START was not sent.")
+        .arg(record.call, result.detail);
+  loggedQso();
+  sstvTx_->clearQso();
+  return QStringLiteral("Logged %1, SSTV, to %2. Nothing was keyed. START was not sent.")
+      .arg(record.call, result.path);
+}
+
+// A copy of each SSTV picture as it went out, in the TX folder.
+void MainWindow::saveSstvTxCopy() {
+  if (!sstvTx_ || qEnvironmentVariableIsSet("STD_SELFTEST"))
+    return;
+  const QImage picture = sstvTx_->picture();
+  if (picture.isNull() || !QDir().mkpath(sstvTxDirectory()))
+    return;
+  QString mode = sstvModeName(sstvTx_->mode());
+  mode.remove(QLatin1Char(' '));
+  const QString stamp = QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd_HHmmss"));
+  picture.save(QDir(sstvTxDirectory()).filePath(QStringLiteral("%1_%2.png").arg(stamp, mode)), "PNG");
+}
+
 bool MainWindow::rebuildTxWave() {
   if (!profile_)
     return false;
   const QString mode = profile_->digitalMode();
+  if (sstvMode(mode)) {
+    // The picture picked in the SSTV pane, in its chosen mode, VIS first.
+    txCursor_ = 0;
+    txHold_ = 0;
+    txKeySent_ = false;
+    txLoggedThisPass_ = false;
+    txPlayOriginMs_ = 0;
+    txLastPullMs_ = 0;
+    txGuardDeadlineMs_ = 0;
+    txPeriodEndMs_ = 0;
+    txEchoAt_.clear();
+    const QImage picture = sstvTx_ ? sstvTx_->picture() : QImage();
+    if (picture.isNull())
+      return false;
+    txSamples_ = sstvModulate(sstvTx_->mode(), picture, 48000, 0.6);
+    // The CW ID rides on the end of the same transmission.
+    if (sstvTx_->cwId() && !stationCall().isEmpty()) {
+      const std::vector<float> id =
+          sstvCwId(stationCall().toUpper(), sstvTx_->cwWpm(), sstvTx_->cwToneHz(), 48000, 0.5);
+      txSamples_.insert(txSamples_.end(), id.begin(), id.end());
+    }
+    txSymbolSamples_ = 0;
+    return !txSamples_.empty();
+  }
   const QString text = transmitMessage();
   // Live modes can key with an empty box, as Fldigi does: they send idle
   // until something is typed.
@@ -7609,6 +7773,11 @@ void MainWindow::refreshTxChrome() {
     js8Bands->setVisible(js8Mode(mode));
   showJs8Layout(js8Mode(mode));
   const bool fax = wefaxMode(mode);
+  const bool sstvTx = sstvMode(mode);
+  if (sstvTx_)
+    sstvTx_->setVisible(sstvTx);
+  if (statusStrip_)
+    statusStrip_->setWebRxShown(sstvTx);
   if (auto* stations = findChild<QWidget*>(QStringLiteral("wefaxStations"))) {
     stations->setVisible(fax);
     if (fax)
@@ -7642,8 +7811,12 @@ void MainWindow::refreshTxChrome() {
     QWidget* target = rade ? findChild<QWidget*>(QStringLiteral("radeKeySlot"))
                            : findChild<QWidget*>(QStringLiteral("txButtonRow"));
     if (target && keyPair->parentWidget() != target) {
-      if (auto* row = qobject_cast<QHBoxLayout*>(target->layout()))
+      if (auto* row = qobject_cast<QHBoxLayout*>(target->layout())) {
         row->addWidget(keyPair);
+        // Moving a widget to a new parent hides it; show the pair again
+        // (TX and Halt inside it keep their own visibility).
+        keyPair->show();
+      }
     }
   }
   if (auto* send = findChild<QPushButton*>(QStringLiteral("txSend"))) {
@@ -7666,7 +7839,7 @@ void MainWindow::refreshTxChrome() {
                                  "txPick3",    "tx3",        "txPick4", "tx4", "txPick5", "tx5",
                                  "txPick6",    "tx6",        "txPick7", "txExtra", "txQso",
                                  "txClrQueue", "txClrNow"};
-  if (textMode || wspr || fax || rade) {
+  if (textMode || wspr || fax || sstvTx || rade) {
     for (const char* name : sequenceNames) {
       if (auto* widget = findChild<QWidget*>(QLatin1String(name)))
         widget->setVisible(false);
@@ -7924,7 +8097,7 @@ bool MainWindow::periodReady(const QString& mode) {
     txPeriodMark_ = into;
     return crossed || into < 200;
   }
-  if (keyboardTextMode(mode))
+  if (keyboardTextMode(mode) || sstvMode(mode))
     return true;
   if (wsprMode(mode)) {
     const int into = utcIntoPeriodMs(120000);
@@ -8327,7 +8500,13 @@ void MainWindow::setUserTx(bool on) {
   txJs8Part_.clear();
   txJs8Next_ = 0;
   txJs8Pending_ = 0;
-  if (text.isEmpty() && !liveTextMode(mode)) {
+  if (sstvMode(mode) && (!sstvTx_ || sstvTx_->picture().isNull())) {
+    release();
+    setTxStatus(QStringLiteral(
+        "Pick a picture in the SSTV pane first. Nothing was keyed. START was not sent."));
+    return;
+  }
+  if (text.isEmpty() && !liveTextMode(mode) && !sstvMode(mode)) {
     release();
     setTxStatus(wsprMode(mode)
                     ? QStringLiteral(
@@ -8344,7 +8523,7 @@ void MainWindow::setUserTx(bool on) {
   const RttyOptions rtty = rttyOptionsOf(this);
   if (js8Mode(mode))
     txJs8Text_ = text;
-  const bool waveOk = (js8Mode(mode) || liveTextMode(mode))
+  const bool waveOk = (js8Mode(mode) || liveTextMode(mode) || sstvMode(mode))
                           ? rebuildTxWave()
                           : buildTxWave(mode, text, tone, &txSamples_, &txEchoAt_,
                                         rttyMode(mode) ? &rtty : nullptr, startTonesOf(this, mode)) &&
@@ -8392,6 +8571,8 @@ void MainWindow::setUserTx(bool on) {
   else if (keyboardTextMode(mode))
     setTxStatus(QStringLiteral(
         "Sending. Sent characters print in the receive pane as they go out. START was not sent."));
+  else if (sstvMode(mode))
+    setTxStatus(QStringLiteral("Keying for the SSTV picture. START was not sent."));
   else if (wsprMode(mode))
     setTxStatus(QStringLiteral(
                     "Armed for the next even UTC minute. Tx Pct is %1. START was not sent.")
@@ -8782,7 +8963,8 @@ void MainWindow::pumpUserTx() {
       ma_.txStarted();
       paintMultiLists();
     }
-    if (!rebuildTxWave()) {
+    // An SSTV picture was built when TX was pressed and does not change.
+    if (!(sstvMode(mode) && !txSamples_.empty()) && !rebuildTxWave()) {
       setTxStatus(QStringLiteral("The selected line is empty. Nothing was keyed. START was not sent."));
       stopUserTx(true);
       return;
@@ -8815,6 +8997,10 @@ void MainWindow::pumpUserTx() {
       // Filled character by character as the box is encoded.
       txSentText_.clear();
       txLiveTextMs_ = now;
+    } else if (sstvMode(mode)) {
+      txSentText_ = sstvTx_ ? QStringLiteral("SSTV %1 picture").arg(sstvModeName(sstvTx_->mode()))
+                            : QStringLiteral("SSTV picture");
+      saveSstvTxCopy();
     } else {
       txSentText_ = txEchoAt_.empty() ? transmitMessage() : transmitMessage().trimmed();
     }
@@ -8861,6 +9047,11 @@ void MainWindow::pumpUserTx() {
     else if (wsprMode(mode))
       setTxStatus(QStringLiteral(
           "On the air. WSPR runs to the end of this frame. START was not sent."));
+    else if (sstvMode(mode))
+      setTxStatus(QStringLiteral("On the air, SSTV %1, %2 s. TRX drops when the picture ends; Halt "
+                                 "stops now. START was not sent.")
+                      .arg(sstvTx_ ? sstvModeName(sstvTx_->mode()) : QString())
+                      .arg(int(txSamples_.size() / 48000)));
     else
       setTxStatus(QStringLiteral(
                       "On the air, %1. TRX stays up until this slot ends. START was not sent.")
@@ -8869,10 +9060,20 @@ void MainWindow::pumpUserTx() {
     return;
   }
   if (slotShouldEnd(mode)) {
+    // Before finishTxPass, which may stop TX and would report it as cut short.
+    if (sstvMode(mode) && sstvTx_)
+      sstvTx_->setTxDone(true);
     finishTxPass();
     return;
   }
   pushRealtimeTx();
+  if (sstvMode(mode) && sstvTx_ && txPlayOriginMs_ > 0) {
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - sstvProgressMs_ >= 200) {
+      sstvProgressMs_ = now;
+      sstvTx_->setTxProgress(double(now - txPlayOriginMs_) / 1000.0);
+    }
+  }
 }
 
 void MainWindow::finishTxPass() {
@@ -9225,6 +9426,9 @@ void MainWindow::applyTheirReply(const QString& time, int db, const QString& mes
 void MainWindow::stopUserTx(bool uncheck) {
   if (txTune_)
     return;
+  // Halt or an error while an SSTV picture was going out.
+  if (sstvTx_)
+    sstvTx_->setTxDone(false);
   // Stopped before the end: a keyed macro's <LOG> and the rest do not run.
   macroSendFinished(false);
   logLiveTx();

@@ -10,7 +10,7 @@ On tells the board this station is QRV. It posts only while On is selected and t
 
 The callsign is the one in Options → User. There is no second callsign field, and no locator field on this dialog.
 
-The mode is the Mode menu. FT8 stays FT8. It is not collapsed to DIGU. Q65A is posted as Q65. The Hell family is posted as HELL. Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 are posted as the family name. RADE, WEFAX-576, and Q65B are not on the board, so those modes post nothing.
+The mode is the Mode menu. FT8 stays FT8. It is not collapsed to DIGU. Q65A is posted as Q65. The Hell family is posted as HELL. Olivia, Contestia, MFSK, DominoEX, Thor, and MT63 are posted as the family name. RADE, WEFAX-576, SSTV, and Q65B are not on the board, so those modes post nothing.
 
 **Share exact frequency** is off until ticked. Off, the board shows the band only. On also sends the dial in Hz. Discord never receives the frequency.
 

@@ -157,7 +157,7 @@ bool allowedMode(const QString& token) {
 
 QString qrvModeForStd(const QString& stdMode) {
   const QString mode = stdMode.trimmed();
-  if (mode.isEmpty() || radeMode(mode) || wefaxMode(mode))
+  if (mode.isEmpty() || radeMode(mode) || wefaxMode(mode) || sstvMode(mode))
     return {};
   if (mode == QLatin1String("Q65A"))
     return QStringLiteral("Q65");

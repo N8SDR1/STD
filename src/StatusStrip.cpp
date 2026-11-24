@@ -3,10 +3,15 @@
 
 #include "DigitalMode.h"
 #include "StatusStrip.h"
+#include "sstv/SstvModem.h"
 
 #include <algorithm>
 #include <cmath>
 
+#include <QDesktopServices>
+#include <QMenu>
+#include <QToolButton>
+#include <QUrl>
 #include <QDateTime>
 #include <QFont>
 #include <QFontMetrics>
@@ -120,7 +125,7 @@ QPushButton* digitalModeChip(QWidget* parent) {
   chip->setFixedHeight(22);
   chip->setToolTip(QStringLiteral(
       "Active digital mode. Click to cycle FT8, FT4, FT2, JT65, Q65, MSK144, MSKMS, the Hell list, RTTY, the PSK speeds, "
-      "Olivia, Contestia, MFSK, DominoEX, Thor, and WEFAX-576. This does not key."));
+      "Olivia, Contestia, MFSK, DominoEX, Thor, WEFAX-576, and SSTV. This does not key."));
   showDigitalMode(chip, QStringLiteral("FT8"));
   return chip;
 }
@@ -388,6 +393,32 @@ StatusStrip::StatusStrip(QWidget* parent) : QWidget(parent) {
   layout->addWidget(clockOff);
   layout->addWidget(separator());
   layout->addWidget(new PttLamp(this));
+  {
+    auto* web = new QToolButton(this);
+    web->setObjectName(QStringLiteral("sstvWebRx"));
+    web->setText(QStringLiteral("WEB RX"));
+    web->setFont(monoFont(12));
+    web->setFixedHeight(22);
+    web->setFocusPolicy(Qt::NoFocus);
+    web->setCursor(Qt::PointingHandCursor);
+    web->setPopupMode(QToolButton::InstantPopup);
+    web->setStyleSheet(QStringLiteral(
+        "QToolButton#sstvWebRx { color: #8a94a6; background: transparent; border: 1px solid #3a4352; "
+        "border-radius: 3px; padding: 0 8px; } QToolButton#sstvWebRx::menu-indicator { image: none; }"));
+    web->setToolTip(QStringLiteral(
+        "SSTV: pages where stations post the pictures they receive on 14.230 MHz. After you send, open one "
+        "to see whether your picture was copied. Opens your web browser. This does not key."));
+    auto* menu = new QMenu(web);
+    for (const SstvWebGallery& g : sstvWebGalleries()) {
+      auto* action = menu->addAction(QStringLiteral("%1  (%2)").arg(QLatin1String(g.name), QLatin1String(g.place)));
+      const QString url = QLatin1String(g.url);
+      action->setToolTip(url);
+      connect(action, &QAction::triggered, this, [url] { QDesktopServices::openUrl(QUrl(url)); });
+    }
+    web->setMenu(menu);
+    web->hide();
+    layout->addWidget(web);
+  }
   auto* levelTick = new QTimer(this);
   connect(levelTick, &QTimer::timeout, this, [this] { refreshRxLevel(); });
   levelTick->start(100);
@@ -710,6 +741,11 @@ void StatusStrip::setHeard(bool shown, const QString& text, bool heard, const QS
                                              "border-radius: 3px; padding: 0 8px; }")
                             : QStringLiteral("QPushButton#heardChip { color: #8a94a6; background: transparent; "
                                              "border: 1px solid #3a4352; border-radius: 3px; padding: 0 8px; }"));
+}
+
+void StatusStrip::setWebRxShown(bool shown) {
+  if (auto* web = findChild<QToolButton*>(QStringLiteral("sstvWebRx")))
+    web->setVisible(shown);
 }
 
 void StatusStrip::setRadio(bool connected, const QString& line) {

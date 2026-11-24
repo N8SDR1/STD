@@ -7,7 +7,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(STD
-  VERSION 0.1.14
+  VERSION 0.1.16
   DESCRIPTION "STD — Shift, Tone, Decode"
   LANGUAGES CXX)
 
@@ -126,6 +126,16 @@ qt_add_executable(std
   src/psk/PskModem.h
   src/wefax/WefaxModem.cpp
   src/wefax/WefaxModem.h
+  src/sstv/SstvModem.cpp
+  src/sstv/SstvModem.h
+  src/sstv/SstvPanel.cpp
+  src/sstv/SstvPanel.h
+  src/sstv/SstvTxPanel.cpp
+  src/sstv/SstvTxPanel.h
+  src/sstv/SstvTemplate.cpp
+  src/sstv/SstvTemplate.h
+  src/sstv/SstvTemplateEditor.cpp
+  src/sstv/SstvTemplateEditor.h
   src/olivia/OliviaModem.cpp
   src/olivia/OliviaModem.h
   src/mfsk/MfskModem.cpp
@@ -198,7 +208,17 @@ qt_add_executable(std
 # Windows subsystem, and the capsule in src/std.rc is the executable icon.
 set_target_properties(std PROPERTIES WIN32_EXECUTABLE TRUE)
 
+# A development copy keeps its own settings and AppData folder (STD-dev), so it
+# can run next to the installed STD without changing that copy's setup.
+option(STD_DEV_PROFILE "Build a development copy with its own settings" OFF)
+if(STD_DEV_PROFILE)
+  set(STD_APP_NAME "STD-dev")
+else()
+  set(STD_APP_NAME "STD")
+endif()
+
 target_compile_definitions(std PRIVATE
+  STD_APP_NAME="${STD_APP_NAME}"
   STD_VERSION="${PROJECT_VERSION}"
   STD_REPO_OWNER="N8SDR1"
   STD_REPO_NAME="STD")

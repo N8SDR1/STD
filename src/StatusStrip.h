@@ -26,6 +26,8 @@ public:
   void setClockOff(bool off, double seconds, const QString& mode, int decodes);
   // Who heard me: hidden when off; green when someone heard us on this band.
   void setHeard(bool shown, const QString& text, bool heard, const QString& tip);
+  // SSTV: a menu of web pages showing pictures other stations received.
+  void setWebRxShown(bool shown);
   // samples are float -1..1. A null pointer clears the meter.
   void setRxLevel(const float* samples, int count);
   // Re-reads the spot chip from the Network Configuration settings.

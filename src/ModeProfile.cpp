@@ -900,6 +900,8 @@ void ModeProfile::setDigitalMode(const QString& mode) {
     next = QStringLiteral("WSPR");
   else if (wefaxMode(mode))
     next = mode;
+  else if (sstvMode(mode))
+    next = QStringLiteral("SSTV");
   else if (radeMode(mode))
     next = radeV2(mode) ? radeV2Name() : radeV1Name();
   const bool same = next == mode_;
@@ -932,6 +934,11 @@ void ModeProfile::setDigitalMode(const QString& mode) {
                                          "V2 is experimental and does not talk to V1. "
                                          "Mic and speaker are the Speech devices. "
                                          "This does not key. START is never sent.")
+                    : sstvMode(mode_) ? QStringLiteral(
+                                          "SSTV receives pictures. Tune USB to an SSTV frequency (14.230 MHz "
+                                          "is the busiest). Each picture's VIS header picks the mode, and "
+                                          "finished pictures save to the RX folder. TX sends the picture picked below. "
+                                          "START is never sent.")
                     : wefaxMode(mode_) ? QStringLiteral(
                                           "WEFAX-576 receives weather charts. Pick a region and a station "
                                           "below: the dial goes 1.9 kHz under the carrier and the marker to "

@@ -31,6 +31,9 @@
 #include "olivia/OliviaModem.h"
 #include "psk/PskModem.h"
 #include "rtty/RttyModem.h"
+#include "sstv/SstvModem.h"
+#include "sstv/SstvTemplate.h"
+#include "sstv/SstvTxPanel.h"
 #include "wefax/WefaxModem.h"
 #include "js8/Js8Modem.h"
 #include "modem/ToneClock.h"
@@ -80,6 +83,7 @@
 #include <QFrame>
 #include <QToolBar>
 #include <QImage>
+#include <QProgressBar>
 #include <QSettings>
 #include <QCoreApplication>
 #include <QDockWidget>
@@ -231,7 +235,7 @@ int shellReady(MainWindow& window) {
     return 1;
   };
 
-  if (window.windowTitle() != QLatin1String("STD"))
+  if (window.windowTitle() != QLatin1String(STD_APP_NAME))
     return fail("window title is not STD");
   if (window.windowIcon().isNull())
     return fail("window icon is missing");
@@ -3477,9 +3481,107 @@ int shellReady(MainWindow& window) {
     if (!europe.contains(QLatin1String("3855.0")) || europe.contains(QLatin1String("4235.0")) ||
         !americas.contains(QLatin1String("4235.0")) || !boston || !fallFax || fallFax->rxHz() != 1900)
       return fail("WEFAX region stations or the 1900 Hz marker are wrong");
+    {
+      // SSTV: the picture pane takes the decode area, transmit stays off,
+      // the macros go, and the mode follows.
+      auto* sstvAction = window.findChild<QAction*>(QStringLiteral("modeSstv"));
+      if (!sstvAction || !sstvAction->toolTip().contains(QLatin1String("does not key")) ||
+          !sstvAction->toolTip().contains(QLatin1String("START")))
+        return fail("SSTV mode action is missing");
+      sstvAction->trigger();
+      auto* sstvPane = window.findChild<QWidget*>(QStringLiteral("sstvPanel"));
+      auto* sstvView = window.findChild<QLabel*>(QStringLiteral("sstvView"));
+      auto* decodeList = window.findChild<QWidget*>(QStringLiteral("decodeList"));
+      auto* faxScroll = window.findChild<QWidget*>(QStringLiteral("wefaxScroll"));
+      const auto* send = window.findChild<QPushButton*>(QStringLiteral("txSend"));
+      const auto* tune = window.findChild<QPushButton*>(QStringLiteral("txTune"));
+      if (profile->digitalMode() != QLatin1String("SSTV"))
+        return fail("SSTV left the previous mode in charge");
+      if (!sstvPane || !sstvView || !sstvPane->isVisibleTo(&window) ||
+          (decodeList && decodeList->isVisibleTo(&window)) || (faxScroll && faxScroll->isVisibleTo(&window)))
+        return fail("SSTV picture pane is not shown in place of the decode list");
+      // Transmit: the picture pane replaces the FT8 lines; TX is the key.
+      auto* sstvTxPane = window.findChild<QWidget*>(QStringLiteral("sstvTxPanel"));
+      // Rows sent follow the clock: none during the header, all at the end.
+      if (sstvRowsSentAt(SstvMode::MartinM1, 0.5) != 0 || sstvRowsSentAt(SstvMode::MartinM1, 60.0) < 120 ||
+          sstvRowsSentAt(SstvMode::MartinM1, 60.0) > 135 ||
+          sstvRowsSentAt(SstvMode::MartinM1, sstvSeconds(SstvMode::MartinM1)) != 256 ||
+          sstvRowsSentAt(SstvMode::PD120, sstvSeconds(SstvMode::PD120)) != 496)
+        return fail("SSTV transmit progress does not follow the picture");
+      for (const char* name : {"sstvTxCall", "sstvTxRst", "sstvTxName", "sstvTxCwId", "sstvTxTemplates",
+                               "sstvTxReply", "sstvReplyWith", "sstvTxInset"}) {
+        if (!window.findChild<QWidget*>(QLatin1String(name))) {
+          qCritical("SSTV control %s is missing", name);
+          return fail("SSTV template or QSO control is missing");
+        }
+      }
+      // Log: one ADIF record with mode SSTV, both reports, and the picture
+      // mode in the comment.
+      {
+        auto* call = window.findChild<QLineEdit*>(QStringLiteral("sstvTxCall"));
+        auto* rstIn = window.findChild<QLineEdit*>(QStringLiteral("sstvTxRstIn"));
+        auto* rstOut = window.findChild<QLineEdit*>(QStringLiteral("sstvTxRst"));
+        auto* logBtn = window.findChild<QPushButton*>(QStringLiteral("sstvTxLog"));
+        if (!call || !rstIn || !rstOut || !logBtn)
+          return fail("SSTV Log or its fields are missing");
+        const QString keepRst = rstOut->text();
+        call->setText(QStringLiteral("w1aw"));
+        rstIn->setText(QStringLiteral("575"));
+        rstOut->setText(QStringLiteral("595"));
+        logBtn->click();
+        const QString rec = window.sstvLastRecord();
+        if (!rec.contains(QLatin1String("<CALL:4>W1AW")) || !rec.contains(QLatin1String("<MODE:4>SSTV")) ||
+            !rec.contains(QLatin1String("<RST_SENT:3>595")) || !rec.contains(QLatin1String("<RST_RCVD:3>575")) ||
+            !rec.contains(QLatin1String("<COMMENT:")) || !rec.contains(QLatin1String("SSTV Martin"))) {
+          qCritical("SSTV log record [%s]", qPrintable(rec));
+          return fail("SSTV Log did not build the right ADIF record");
+        }
+        if (send && send->isChecked())
+          return fail("SSTV Log keyed");
+        call->clear();
+        rstIn->clear();
+        rstOut->setText(keepRst);
+      }
+      auto* webRx = window.findChild<QToolButton*>(QStringLiteral("sstvWebRx"));
+      if (!webRx || !webRx->menu() || webRx->menu()->actions().size() != int(sstvWebGalleries().size()) ||
+          !webRx->isVisibleTo(&window) || sstvTxPane->isAncestorOf(webRx) ||
+          !window.findChild<QProgressBar*>(QStringLiteral("sstvTxProgress")))
+        return fail("SSTV WEB RX is not on the bottom row, or the transmit progress bar is missing");
+      for (const auto& g : sstvWebGalleries())
+        if (!QLatin1String(g.url).startsWith(QLatin1String("https://")))
+          return fail("SSTV Web RX page is not https");
+      auto* line1 = window.findChild<QWidget*>(QStringLiteral("tx1"));
+      auto* sstvTxMode = window.findChild<QComboBox*>(QStringLiteral("sstvTxMode"));
+      if (!sstvTxPane || !sstvTxPane->isVisibleTo(&window) || (line1 && line1->isVisibleTo(&window)) ||
+          !send || !send->isVisibleTo(&window) || (macros && macros->isVisibleTo(&window)) || !sstvTxMode ||
+          sstvTxMode->count() != int(sstvModes().size()))
+      {
+        qCritical("SSTV tx pane %d visible %d line1 %d send %d/%d macros %d combo %d",
+                  sstvTxPane != nullptr, sstvTxPane && sstvTxPane->isVisibleTo(&window),
+                  line1 && line1->isVisibleTo(&window), send != nullptr, send && send->isVisibleTo(&window),
+                  macros && macros->isVisibleTo(&window), sstvTxMode ? sstvTxMode->count() : -1);
+        return fail("SSTV transmit pane is not shown in place of the FT8 lines");
+      }
+      auto* sstvStart = window.findChild<QPushButton*>(QStringLiteral("sstvStart"));
+      auto* sstvPick = window.findChild<QComboBox*>(QStringLiteral("sstvMode"));
+      if (!sstvStart || !sstvPick || sstvPick->count() != int(sstvModes().size()) + 1)
+        return fail("SSTV mode picker is missing a mode");
+      // Nothing in the pane keys the radio.
+      for (const char* name : {"sstvStart", "sstvStop", "sstvSave"}) {
+        auto* b = window.findChild<QPushButton*>(QLatin1String(name));
+        if (b && b->isEnabled())
+          b->click();
+      }
+      if (send && send->isChecked())
+        return fail("an SSTV button keyed");
+    }
     ft8Back->trigger();
     if (profile->digitalMode() != QLatin1String("FT8") || !stations->isHidden())
       return fail("leaving WEFAX did not restore the mode");
+    if (auto* sstvPane = window.findChild<QWidget*>(QStringLiteral("sstvPanel")); sstvPane && !sstvPane->isHidden())
+      return fail("leaving SSTV left the picture pane up");
+    if (auto* webRx = window.findChild<QWidget*>(QStringLiteral("sstvWebRx")); webRx && !webRx->isHidden())
+      return fail("leaving SSTV left WEB RX on the bottom row");
   }
   {
     // WSPR rows stay in the receive colour after a red TX echo, and a rule
@@ -3892,6 +3994,255 @@ int shellReady(MainWindow& window) {
     return fail("MT63-1000S is missing");
   if (keyboardTextMode(QStringLiteral("WEFAX-576")))
     return fail("WEFAX is a keyboard mode");
+  {
+    // SSTV: every mode through the encoder and back through the receiver.
+    // Color bars over a gray ramp, so a swapped channel or a slipped line shows.
+    QImage bars(320, 256, QImage::Format_RGB32);
+    const QRgb barColors[] = {qRgb(235, 235, 235), qRgb(235, 235, 30), qRgb(30, 235, 235), qRgb(30, 235, 30),
+                              qRgb(235, 30, 235), qRgb(235, 30, 30), qRgb(30, 30, 235), qRgb(30, 30, 30)};
+    for (int y = 0; y < bars.height(); ++y) {
+      for (int x = 0; x < bars.width(); ++x) {
+        const int g = 20 + x * 215 / bars.width();
+        bars.setPixel(x, y, y < bars.height() * 2 / 3 ? barColors[x * 8 / bars.width()] : qRgb(g, g, g));
+      }
+    }
+    const auto sstvError = [&bars](const SstvResult& back) {
+      const QImage want = bars.scaled(back.image.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+      double total = 0.0;
+      long long n = 0;
+      const int w = want.width();
+      const int h = want.height();
+      for (int y = 4; y < h - 4; ++y) {
+        const int band = y * 3 / h;
+        if (y > h * 2 / 3 - 6 && y < h * 2 / 3 + 6)
+          continue;
+        for (int x = 0; x < w; ++x) {
+          // Skip the bar edges, where any receiver smears a little.
+          const int edge = (x * 8) % w;
+          if (band < 2 && (edge < w / 16 || edge > w - w / 16))
+            continue;
+          const QRgb a = want.pixel(x, y);
+          const QRgb b = back.image.pixel(x, y);
+          total += std::abs(qRed(a) - qRed(b)) + std::abs(qGreen(a) - qGreen(b)) + std::abs(qBlue(a) - qBlue(b));
+          n += 3;
+        }
+      }
+      return n ? total / double(n) : 255.0;
+    };
+    for (SstvMode sstvMode : sstvModes()) {
+      const int rate = (sstvMode == SstvMode::Robot36 || sstvMode == SstvMode::MartinM1 || sstvMode == SstvMode::ScottieS1 ||
+                        sstvMode == SstvMode::PD120)
+                           ? 48000
+                           : 12000;
+      const std::vector<float> tones = sstvModulate(sstvMode, bars, rate);
+      const SstvResult back = sstvDecode(tones.data(), int(tones.size()), rate);
+      if (back.mode != sstvMode) {
+        qCritical("SSTV %s: VIS read as %s", qPrintable(sstvModeName(sstvMode)), qPrintable(sstvModeName(back.mode)));
+        return fail("SSTV VIS header was not read");
+      }
+      if (back.rows != sstvHeight(sstvMode) || back.image.width() != sstvWidth(sstvMode))
+        return fail("SSTV picture is short");
+      const double err = sstvError(back);
+      if (err > 14.0) {
+        qCritical("SSTV %s error %.1f", qPrintable(sstvModeName(sstvMode)), err);
+        return fail("SSTV picture came back wrong");
+      }
+    }
+    // A receiver 80 Hz off, and a sound card 0.3 percent fast.
+    {
+      const std::vector<float> off = sstvModulate(SstvMode::MartinM2, bars, 12000, 0.5, 80.0);
+      const SstvResult back = sstvDecode(off.data(), int(off.size()), 12000);
+      if (back.mode != SstvMode::MartinM2 || std::abs(back.offsetHz - 80.0) > 10.0 || sstvError(back) > 16.0)
+        return fail("SSTV did not correct the tuning offset");
+      const std::vector<float> fast = sstvModulate(SstvMode::ScottieS2, bars, 12036);
+      const SstvResult slanted = sstvDecode(fast.data(), int(fast.size()), 12000);
+      if (slanted.mode != SstvMode::ScottieS2 || sstvError(slanted) > 16.0)
+        return fail("SSTV slanted with a fast sound card");
+    }
+    // A fade in the middle of the picture, then a lost chunk of audio that
+    // throws the line timing off. The picture must pick up again and run to
+    // the end, with the lower part right.
+    {
+      const auto lowerError = [&bars](const SstvResult& back) {
+        const QImage want = bars.scaled(back.image.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        double total = 0.0;
+        long long n = 0;
+        for (int y = back.image.height() * 3 / 4; y < back.image.height() - 4; ++y) {
+          for (int x = 0; x < want.width(); ++x) {
+            const QRgb a = want.pixel(x, y);
+            const QRgb b = back.image.pixel(x, y);
+            total += std::abs(qRed(a) - qRed(b)) + std::abs(qGreen(a) - qGreen(b)) + std::abs(qBlue(a) - qBlue(b));
+            n += 3;
+          }
+        }
+        return n ? total / double(n) : 255.0;
+      };
+      std::mt19937 rng(11);
+      std::normal_distribution<float> hiss(0.0f, 0.4f);
+      // A flat mid-gray picture sits right on the 1900 Hz header tone. A fade
+      // over it must not be read as a new header, and a fade in the first
+      // lines (before the timing has locked) must still pick up again.
+      {
+        QImage gray(320, 256, QImage::Format_RGB32);
+        gray.fill(qRgb(128, 128, 128));
+        for (int y = 200; y < 256; ++y)
+          for (int x = 0; x < 320; ++x)
+            gray.setPixel(x, y, qRgb(20 + x * 215 / 320, 20 + x * 215 / 320, 20 + x * 215 / 320));
+        std::vector<float> tones = sstvModulate(SstvMode::MartinM2, gray, 12000);
+        const size_t early = size_t(12000 * 1.6);  // just after the header
+        for (size_t i = early; i < early + 12000 * 3; ++i)
+          tones[i] = hiss(rng);
+        const size_t mid = tones.size() / 2;
+        for (size_t i = mid; i < mid + 12000 * 3; ++i)
+          tones[i] = hiss(rng) * 0.3f;
+        const SstvResult back = sstvDecode(tones.data(), int(tones.size()), 12000);
+        if (back.mode != SstvMode::MartinM2 || back.starts != 1 || back.rows != 256 ||
+            back.endReason != QLatin1String("complete")) {
+          qCritical("SSTV gray fade: mode %s starts %d rows %d end [%s]", qPrintable(sstvModeName(back.mode)),
+                    back.starts, back.rows, qPrintable(back.endReason));
+          return fail("SSTV read picture content as a new header, or lost an early fade");
+        }
+        const QImage ramp = back.image.copy(0, 220, 320, 20);
+        if (qGray(ramp.pixel(10, 10)) > 70 || qGray(ramp.pixel(300, 10)) < 180)
+          return fail("SSTV gray fade picture came back wrong");
+      }
+      for (SstvMode faded : {SstvMode::MartinM2, SstvMode::ScottieS2}) {
+        std::vector<float> tones = sstvModulate(faded, bars, 12000);
+        // Four seconds of band noise a third of the way in.
+        const size_t fadeAt = tones.size() / 3;
+        for (size_t i = fadeAt; i < fadeAt + 12000 * 4 && i < tones.size(); ++i)
+          tones[i] = hiss(rng);
+        // 40 ms of audio lost two thirds of the way in.
+        const size_t dropAt = tones.size() * 2 / 3;
+        tones.erase(tones.begin() + static_cast<std::ptrdiff_t>(dropAt),
+                    tones.begin() + static_cast<std::ptrdiff_t>(dropAt + 480));
+        const SstvResult back = sstvDecode(tones.data(), int(tones.size()), 12000);
+        const double err = back.mode == faded ? lowerError(back) : 255.0;
+        if (back.mode != faded || back.rows != sstvHeight(faded) || err > 16.0) {
+          qCritical("SSTV %s fade: rows %d lower error %.1f", qPrintable(sstvModeName(faded)), back.rows, err);
+          return fail("SSTV did not pick the picture up again after a fade");
+        }
+      }
+    }
+    // Noise, and a few seconds of band noise in front of the picture.
+    {
+      std::mt19937 rng(7);
+      std::normal_distribution<float> noise(0.0f, 0.18f);
+      std::vector<float> noisy(static_cast<size_t>(12000 * 3));
+      const std::vector<float> clean = sstvModulate(SstvMode::Robot36, bars, 12000);
+      noisy.insert(noisy.end(), clean.begin(), clean.end());
+      for (float& v : noisy)
+        v += noise(rng);
+      SstvResult back = sstvDecode(noisy.data(), int(noisy.size()), 12000);
+      // Noise speckles single pixels, so judge 8 by 8 blocks: the colors and
+      // the line timing must still be right.
+      const auto blocks = [](const QImage& img) {
+        return img.scaled(img.width() / 8, img.height() / 8, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+            .scaled(img.size(), Qt::IgnoreAspectRatio, Qt::FastTransformation);
+      };
+      double blockError = 255.0;
+      if (back.mode == SstvMode::Robot36) {
+        const QImage want = blocks(bars.scaled(back.image.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
+        const QImage got = blocks(back.image);
+        double total = 0.0;
+        long long n = 0;
+        for (int y = 8; y < got.height() - 8; ++y) {
+          for (int x = 0; x < got.width(); ++x) {
+            const QRgb a = want.pixel(x, y);
+            const QRgb b = got.pixel(x, y);
+            total += std::abs(qRed(a) - qRed(b)) + std::abs(qGreen(a) - qGreen(b)) +
+                     std::abs(qBlue(a) - qBlue(b));
+            n += 3;
+          }
+        }
+        blockError = n ? total / double(n) : 255.0;
+      }
+      if (back.mode != SstvMode::Robot36 || blockError > 22.0) {
+        if (!qEnvironmentVariable("STD_SSTV_DUMP").isEmpty())
+          back.image.save(qEnvironmentVariable("STD_SSTV_DUMP"));
+        qCritical("SSTV noise: mode %s rows %d error %.1f", qPrintable(sstvModeName(back.mode)), back.rows,
+                  blockError);
+        return fail("SSTV lost the picture in noise");
+      }
+    }
+    // Pressing TX builds the whole picture at 48 kHz. The longest mode must
+    // still be quick, or the window would stall at the key-down.
+    {
+      QElapsedTimer clock;
+      clock.start();
+      const std::vector<float> longest = sstvModulate(SstvMode::PD290, bars, 48000, 0.6);
+      const qint64 ms = clock.elapsed();
+      qInfo("SSTV PD-290 picture built in %lld ms (%zu samples)", ms, longest.size());
+      if (longest.empty() || ms > 3000)
+        return fail("SSTV picture took too long to build");
+    }
+    // Templates: fields fill in, text lands on the picture, the file format
+    // round-trips, and their picture goes in its box.
+    {
+      SstvFields fields;
+      fields.insert(QStringLiteral("{MYCALL}"), QStringLiteral("N8SDR"));
+      fields.insert(QStringLiteral("{CALL}"), QStringLiteral("W1AW"));
+      fields.insert(QStringLiteral("{RST}"), QStringLiteral("595"));
+      if (sstvFillFields(QStringLiteral("{call} DE {MYCALL} UR {RST}"), fields) !=
+          QLatin1String("W1AW DE N8SDR UR 595"))
+        return fail("SSTV template fields do not fill");
+      const std::vector<SstvTemplate> starters = sstvStarterTemplates();
+      if (starters.size() != 3)
+        return fail("SSTV starter templates are missing");
+      if (const QString dump = qEnvironmentVariable("STD_SSTV_DUMP_TPL"); !dump.isEmpty()) {
+        QImage sample(64, 48, QImage::Format_RGB32);
+        sample.fill(qRgb(90, 140, 200));
+        for (const SstvTemplate& t : starters)
+          sstvRenderTemplate(t, QSize(320, 256), fields, sample)
+              .save(QStringLiteral("%1/%2.png").arg(dump, t.name));
+      }
+      for (const SstvTemplate& t : starters) {
+        const SstvTemplate back = SstvTemplate::fromJson(t.toJson());
+        if (back.name != t.name || back.layers.size() != t.layers.size() ||
+            back.backgroundColor != t.backgroundColor ||
+            (!back.layers.empty() && (back.layers[0].rect != t.layers[0].rect)))
+          return fail("SSTV template file does not round-trip");
+      }
+      // The 73 template on its plain background: text makes bright pixels.
+      const SstvTemplate& seventy = starters[2];
+      const QImage drawn = sstvRenderTemplate(seventy, QSize(320, 256), fields);
+      int bright = 0;
+      for (int y = 0; y < drawn.height(); y += 2)
+        for (int x = 0; x < drawn.width(); x += 2)
+          bright += qGray(drawn.pixel(x, y)) > 200 ? 1 : 0;
+      if (bright < 300)
+        return fail("SSTV template text was not drawn");
+      // Reply: their picture fills its box.
+      const SstvTemplate& replyTpl = starters[1];
+      QImage red(64, 48, QImage::Format_RGB32);
+      red.fill(qRgb(230, 10, 10));
+      const QImage withRx = sstvRenderTemplate(replyTpl, QSize(320, 256), fields, red);
+      const QRgb mid = withRx.pixel(int(320 * 0.29), int(256 * 0.5));
+      if (qRed(mid) < 180 || qGreen(mid) > 60)
+        return fail("SSTV their picture is not in the reply template");
+    }
+    // CW ID: half a second of quiet, then the call at the set speed.
+    {
+      const std::vector<float> id = sstvCwId(QStringLiteral("N8SDR"), 20, 800, 48000, 0.5, 500);
+      // N8SDR in dot units: N 5, 8 15, S 5, D 7, R 7, gaps 4x3, tail 2 = 53
+      const double unit = 1.2 / 20.0 * 48000.0;
+      const double expect = 24000.0 + 53.0 * unit;
+      if (std::abs(double(id.size()) - expect) > unit)
+        return fail("SSTV CW ID is the wrong length");
+      float quiet = 0.0f;
+      for (int i = 0; i < 23000; ++i)
+        quiet = std::max(quiet, std::abs(id[size_t(i)]));
+      float loud = 0.0f;
+      for (size_t i = 24000; i < id.size(); ++i)
+        loud = std::max(loud, std::abs(id[i]));
+      if (quiet > 1e-6f || loud < 0.45f || std::abs(id.front()) > 1e-6f)
+        return fail("SSTV CW ID gap or level is wrong");
+    }
+    // The receive path never keys.
+    std::vector<float> sstvWave;
+    if (buildTxWave(QStringLiteral("SSTV"), QStringLiteral("E"), 1900, &sstvWave))
+      return fail("SSTV keyed");
+  }
   std::vector<float> faxWave;
   if (buildTxWave(QStringLiteral("WEFAX-576"), QStringLiteral("E"), 1900, &faxWave))
     return fail("WEFAX keyed");
@@ -5723,18 +6074,40 @@ static LONG WINAPI crashTrace(EXCEPTION_POINTERS* info) {
 }
 #endif
 
+// The development copy (STD-dev) starts from a copy of the installed STD's
+// settings the first time it runs, then keeps its own. The installed copy's
+// settings are only read, never written.
+static void seedDevSettings() {
+  if (QLatin1String(STD_APP_NAME) == QLatin1String("STD"))
+    return;
+  QSettings dev(QStringLiteral("N8SDR"), QStringLiteral(STD_APP_NAME));
+  if (!dev.allKeys().isEmpty())
+    return;
+  const QSettings installed(QStringLiteral("N8SDR"), QStringLiteral("STD"));
+  for (const QString& key : installed.allKeys())
+    dev.setValue(key, installed.value(key));
+  // The installed STD already reports this station. A second copy with the
+  // same call must not post spots, sit on the QRV board, or feed the logger.
+  for (const char* key : {"dx/reportEnabled", "dx/wsprnetEnabled", "dx/freedvReporterEnabled", "qrv/optIn",
+                          "log/udpLink", "log/udpQso", "log/udpAccept"})
+    dev.setValue(QLatin1String(key), false);
+  dev.setValue(QStringLiteral("dev/seededFromStd"), true);
+  dev.sync();
+}
+
 int main(int argc, char* argv[]) {
 #if defined(_WIN32)
   if (qEnvironmentVariableIsSet("STD_CRASH_TRACE"))
     AddVectoredExceptionHandler(1, crashTrace);
 #endif
   const bool selftest = qEnvironmentVariableIsSet("STD_SELFTEST");
+  seedDevSettings();
   WaterfallGpu::prepareProcessBackend(!selftest);
 
   QApplication app(argc, argv);
   QApplication::setOrganizationName("N8SDR");
-  QApplication::setApplicationName("STD");
-  QApplication::setApplicationDisplayName("STD");
+  QApplication::setApplicationName(STD_APP_NAME);
+  QApplication::setApplicationDisplayName(STD_APP_NAME);
   QApplication::setApplicationVersion(STD_VERSION);
   QApplication::setWindowIcon(stdIcon());
 
