@@ -133,6 +133,11 @@ inline bool wefaxMode(const QString& mode) {
   return mode.startsWith(QLatin1String("WEFAX"), Qt::CaseInsensitive);
 }
 
+// SSTV. Receive in this stage; the mode comes from the VIS header.
+inline bool sstvMode(const QString& mode) {
+  return mode.compare(QLatin1String("SSTV"), Qt::CaseInsensitive) == 0;
+}
+
 // MSHV JT65. The generator tone stays near 1270 Hz. A is HF, B and C
 // are the wider spacings. 60 second period.
 inline bool jt65Mode(const QString& mode) {
@@ -276,7 +281,8 @@ inline bool carrierCenteredMode(const QString& mode) {
     return true;
   if (sequencedFamily(mode) || mode.startsWith(QLatin1String("JS8"), Qt::CaseInsensitive))
     return false;
-  if (hellFamily(mode) || rttyMode(mode) || keyedPsk(mode) || wsprMode(mode) || wefaxMode(mode))
+  if (hellFamily(mode) || rttyMode(mode) || keyedPsk(mode) || wsprMode(mode) || wefaxMode(mode) ||
+      sstvMode(mode))
     return true;
   return mode.startsWith(QLatin1String("Olivia "), Qt::CaseInsensitive) ||
          mode.startsWith(QLatin1String("Contestia "), Qt::CaseInsensitive) ||

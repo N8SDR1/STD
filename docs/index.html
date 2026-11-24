@@ -223,20 +223,20 @@ layout: null
       <p class="joke">The real expansion is Shift, Tone, Decode. Around the shack it also answers to Sending Transmittal Disease, because this build is still in the contagious stage. It keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air.</p>
       <p class="bourbon">STD: Help keep the infections spreading and buy us a shot of bourbon.</p>
       <div class="chips">
-        <span class="badge">v0.1.15 · testing phase · highly transmissible · GPL v3</span>
-        <a class="badge chip-download" href="https://github.com/N8SDR1/STD/releases/download/v0.1.15/STD-Setup-0.1.15.exe">Download STD</a>
-        <a class="badge chip-release" href="https://github.com/N8SDR1/STD/releases/tag/v0.1.15">Releases</a>
+        <span class="badge">v0.1.16 · testing phase · highly transmissible · GPL v3</span>
+        <a class="badge chip-download" href="https://github.com/N8SDR1/STD/releases/download/v0.1.16/STD-Setup-0.1.16.exe">Download STD</a>
+        <a class="badge chip-release" href="https://github.com/N8SDR1/STD/releases/tag/v0.1.16">Releases</a>
       </div>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/N8SDR1/STD/releases/download/v0.1.15/STD-Setup-0.1.15.exe">Download STD</a>
-        <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD/releases/tag/v0.1.15">Releases</a>
+        <a class="btn btn-primary" href="https://github.com/N8SDR1/STD/releases/download/v0.1.16/STD-Setup-0.1.16.exe">Download STD</a>
+        <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD/releases/tag/v0.1.16">Releases</a>
         <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD">★ GitHub</a>
         <a class="btn btn-ghost" href="https://github.com/N8SDR1/STD/wiki">📖 Wiki</a>
         <a class="btn btn-ghost" href="https://www.paypal.com/donate/?business=NP2ZQS4LR454L&amp;no_recurring=0&amp;item_name=STD%3A+Help+keep+the+infections+spreading+and+buy+us+a+shot+of+bourbon.&amp;currency_code=USD">☕ Bourbon</a>
         <a class="btn btn-ghost" href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a>
         <a class="btn btn-ghost" href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a>
       </div>
-      <p class="platforms">Windows installer · STD-Setup-0.1.15.exe · not a zip · 64-bit · Qt 6.11.1 MSVC · CW stays in Lyra</p>
+      <p class="platforms">Windows installer · STD-Setup-0.1.16.exe · not a zip · 64-bit · Qt 6.11.1 MSVC · CW stays in Lyra</p>
     </header>
 
     <section class="showcase">
@@ -300,6 +300,7 @@ layout: null
     <section>
       <h2>Receive only</h2>
       <div class="grid">
+        <div class="card"><h3><span class="ico">🖼️</span> SSTV</h3><p>Picture receive, with the mode read from the VIS header: Robot 36 and 72, Martin M1 and M2, Scottie S1, S2 and DX, and PD-50 to PD-290. Tuning errors and a fast or slow sound card are corrected, and each picture saves as a PNG to an RX folder listed beside it. To send, pick a picture or a template (text with your call, theirs and the report, and their picture in a reply) and a mode; TX keys only when you press it and drops when the picture ends, with an optional CW ID. Log writes the QSO as mode SSTV, with both reports, to the ADIF log and SDRLogger+. START is never sent.</p></div>
         <div class="card"><h3><span class="ico">🗞️</span> WEFAX-576</h3><p>IOC 576, 120 lines per minute. Stations are listed by ITU region, with NOAA hours on the frequencies that have them. A click sets the dial 1.9&nbsp;kHz under the assigned frequency, USB, marker 1900&nbsp;Hz. Start, a left-edge click, Auto save, Open folder, and Fit are on that screen. TX does not send this mode, and START is never sent.</p></div>
       </div>
     </section>
@@ -308,7 +309,7 @@ layout: null
       <h2>Spots, the log, and a copy of your settings</h2>
       <p class="marquee-sub">None of these key the radio, and none of them send START.</p>
       <div class="grid">
-        <div class="card"><h3><span class="ico">🟢</span> QRV</h3><p>Options → Network Configuration → QRV is Off until On is selected. On tells <a href="https://qrvsdr.cc">qrvsdr.cc</a> that this station is QRV: the callsign from Options → User, the band, and the Mode menu (FT8 stays FT8). It posts only while the radio is connected, about every 25 seconds, and sends QRT when you turn it off, disconnect, or quit. Share exact frequency is off until ticked. The optional note is 40 characters. Options → QRV board lists who is on. Q65A is posted as Q65. RADE, WEFAX-576, and Q65B are not on the board. There is no second callsign. It does not key, and START is never sent. <a href="https://github.com/N8SDR1/STD/wiki/QRV">QRV notes</a>.</p></div>
+        <div class="card"><h3><span class="ico">🟢</span> QRV</h3><p>Options → Network Configuration → QRV is Off until On is selected. On tells <a href="https://qrvsdr.cc">qrvsdr.cc</a> that this station is QRV: the callsign from Options → User, the band, and the Mode menu (FT8 stays FT8). It posts only while the radio is connected, about every 25 seconds, and sends QRT when you turn it off, disconnect, or quit. Share exact frequency is off until ticked. The optional note is 40 characters. Options → QRV board lists who is on. Q65A is posted as Q65. RADE, WEFAX-576, SSTV, and Q65B are not on the board. There is no second callsign. It does not key, and START is never sent. <a href="https://github.com/N8SDR1/STD/wiki/QRV">QRV notes</a>.</p></div>
         <div class="card"><h3><span class="ico">🌐</span> WSPRnet</h3><p>Options → Network Configuration. Off and On. On posts each WSPR station STD decodes. Off posts nothing. No password. It does not post your own transmission. The reports page lists stations reported by the callsign in Options → User.</p></div>
         <div class="card"><h3><span class="ico">🎙️</span> FreeDV Reporter</h3><p>Options → Network Configuration. Off and On. On shows your call, locator, dial and TX on qso.freedv.org while a RADE mode is selected, and reports each RADE station you hear with its SNR. The box beside On, or Reporter message on the RADE screen, fills the Message column. The status strip has a FREEDV RPT chip in RADE (and PSK RPT or WSPRNET in the modes that use them): click the name to open the live page, On/Off to toggle. Off connects to nothing. View FreeDV Reporter opens the map. The RADE screen also lists stations in a table, with Filter, All or This band, row tints, double-click tune, and Request QSY.</p></div>
         <div class="card"><h3><span class="ico">🗺️</span> PSK Reporter</h3><p>Upload stays off until Enable is checked. Antenna is the description sent with each spot. Also send WSPR spots to PSK Reporter stays off until that box is checked. The map uses the callsign already saved under Options → User. There is no second callsign. Show who heard me (off until ticked) puts a HEARD chip on the status bar: how many stations reported hearing you in the last 15 minutes on this band, and the farthest; it follows the band as you change it; click it for the list.</p></div>
@@ -373,7 +374,7 @@ layout: null
 
   <footer>
     <p>© 2026 Rick Langford (N8SDR) · Shift, Tone, Decode · Sending Transmittal Disease · GPL v3</p>
-    <p style="margin-top:6px;"><a href="https://github.com/N8SDR1/STD/releases/download/v0.1.15/STD-Setup-0.1.15.exe">Download STD</a> · <a href="https://github.com/N8SDR1/STD/releases/tag/v0.1.15">Releases</a> · <a href="https://github.com/N8SDR1/STD">GitHub</a> · <a href="https://github.com/N8SDR1/STD/wiki">Wiki</a> · <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a> · <a href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a></p>
+    <p style="margin-top:6px;"><a href="https://github.com/N8SDR1/STD/releases/download/v0.1.16/STD-Setup-0.1.16.exe">Download STD</a> · <a href="https://github.com/N8SDR1/STD/releases/tag/v0.1.16">Releases</a> · <a href="https://github.com/N8SDR1/STD">GitHub</a> · <a href="https://github.com/N8SDR1/STD/wiki">Wiki</a> · <a href="https://n8sdr1.github.io/Lyra-SDR-cpp/">Lyra</a> · <a href="https://n8sdr1.github.io/SDRLoggerPlus/">SDRLogger+</a></p>
   </footer>
 </body>
 </html>

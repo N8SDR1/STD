@@ -6,3 +6,5 @@ compile_commands.json
 *.user
 *.autosave
 build_dbg/
+build-dev/
+build-test/

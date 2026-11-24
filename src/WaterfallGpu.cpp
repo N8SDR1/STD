@@ -117,7 +117,7 @@ QString WaterfallGpu::probeAutoBackend() {
 
 QString WaterfallGpu::prepareProcessBackend(bool applyEnvironment) {
   clearSoftwareRendererEnv();
-  QSettings settings(QStringLiteral("N8SDR"), QStringLiteral("STD"));
+  QSettings settings(QStringLiteral("N8SDR"), QStringLiteral(STD_APP_NAME));
   QString key = settings.value(QStringLiteral("waterfall/graphics"), QStringLiteral("auto"))
                     .toString()
                     .trimmed()

@@ -44,6 +44,8 @@ class OliviaEngine;
 class PskEngine;
 class RttyEngine;
 class WefaxEngine;
+class SstvEngine;
+class SstvTxPanel;
 class Js8Engine;
 class WsprEngine;
 class PskUploader;
@@ -316,6 +318,8 @@ private:
   void armUserTx();
   void retargetLiveTx();
   bool rebuildTxWave();
+  void saveSstvTxCopy();
+  QString logSstvQso();
   void finishTxPass();
   void appendQso(const QString& side, const QString& text);
   void noteTheirReply(const QString& time, int db, const QString& message);
@@ -677,6 +681,16 @@ private:
   DominoEngine* domino_ = nullptr;
   ThorEngine* thor_ = nullptr;
   WefaxEngine* wefax_ = nullptr;
+  SstvEngine* sstv_ = nullptr;
+  SstvTxPanel* sstvTx_ = nullptr;
+  qint64 sstvProgressMs_ = 0;
+  // The last SSTV ADIF record built by Log (for the self-test).
+  QString sstvLastRecord_;
+
+public:
+  QString sstvLastRecord() const { return sstvLastRecord_; }
+
+private:
   Js8Engine* js8_ = nullptr;
   QVector<Js8BandRow> js8Band_;
   QHash<QString, Js8CallRow> js8Calls_;
