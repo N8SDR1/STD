@@ -64,6 +64,7 @@ private:
   QFontComboBox* font_ = nullptr;
   QCheckBox* bold_ = nullptr;
   QCheckBox* italic_ = nullptr;
+  QCheckBox* stacked_ = nullptr;
   QDoubleSpinBox* size_ = nullptr;
   QPushButton* fill_ = nullptr;
   QPushButton* outline_ = nullptr;
@@ -75,5 +76,8 @@ private:
   QDoubleSpinBox* boxOpacity_ = nullptr;
   QCheckBox* border_ = nullptr;
   QPushButton* borderColor_ = nullptr;
+  QComboBox* photo_ = nullptr;
+  // Any layer
+  QDoubleSpinBox* angle_ = nullptr;
   QPushButton* save_ = nullptr;
 };

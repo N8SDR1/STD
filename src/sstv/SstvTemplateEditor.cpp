@@ -28,6 +28,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 
 // The preview: the template drawn at the 320 by 256 shape, with the selected
@@ -61,9 +62,18 @@ protected:
                   r.height() * f.height());
   }
 
-  QRectF handle(int i) const {
+  // A point turned about the layer's centre, by the layer's angle (or back).
+  QPointF turn(int i, const QPointF& pt, double sign) const {
     const QRectF r = layerRect(i);
-    return QRectF(r.right() - 6, r.bottom() - 6, 12, 12);
+    const double a = sign * tpl_->layers[size_t(i)].angle * 3.14159265358979323846 / 180.0;
+    const QPointF d = pt - r.center();
+    return r.center() + QPointF(d.x() * std::cos(a) - d.y() * std::sin(a), d.x() * std::sin(a) + d.y() * std::cos(a));
+  }
+
+  // The corner square sits on the turned box's corner.
+  QRectF handle(int i) const {
+    const QPointF corner = turn(i, layerRect(i).bottomRight(), 1.0);
+    return QRectF(corner.x() - 6, corner.y() - 6, 12, 12);
   }
 
   void paintEvent(QPaintEvent*) override {
@@ -75,7 +85,13 @@ protected:
     if (*layer_ >= 0 && *layer_ < int(tpl_->layers.size())) {
       p.setPen(QPen(QColor(0, 229, 255), 1.5, Qt::DashLine));
       p.setBrush(Qt::NoBrush);
-      p.drawRect(layerRect(*layer_));
+      const QRectF r = layerRect(*layer_);
+      const double angle = tpl_->layers[size_t(*layer_)].angle;
+      p.save();
+      p.translate(r.center());
+      p.rotate(angle);
+      p.drawRect(QRectF(-r.width() / 2.0, -r.height() / 2.0, r.width(), r.height()));
+      p.restore();
       p.fillRect(handle(*layer_), QColor(0, 229, 255));
     }
   }
@@ -87,7 +103,8 @@ protected:
     } else {
       int hit = -1;
       for (int i = int(tpl_->layers.size()) - 1; i >= 0; --i) {
-        if (layerRect(i).contains(at)) {
+        // Hit-test in the layer's own, unturned frame.
+        if (layerRect(i).contains(turn(i, at, -1.0))) {
           hit = i;
           break;
         }
@@ -111,8 +128,15 @@ protected:
     const double dy = (e->position().y() - dragFrom_.y()) / f.height();
     QRectF r = startRect_;
     if (resizing_) {
-      r.setWidth(std::clamp(startRect_.width() + dx, 0.03, 1.0 - r.x()));
-      r.setHeight(std::clamp(startRect_.height() + dy, 0.03, 1.0 - r.y()));
+      // Resize along the layer's own sides, so a turned box grows the way
+      // its corner is dragged.
+      const double a = -tpl_->layers[size_t(*layer_)].angle * 3.14159265358979323846 / 180.0;
+      const double px = (e->position().x() - dragFrom_.x());
+      const double py = (e->position().y() - dragFrom_.y());
+      const double lx = (px * std::cos(a) - py * std::sin(a)) / f.width();
+      const double ly = (px * std::sin(a) + py * std::cos(a)) / f.height();
+      r.setWidth(std::clamp(startRect_.width() + lx, 0.03, 1.2));
+      r.setHeight(std::clamp(startRect_.height() + ly, 0.03, 1.2));
     } else {
       r.moveTo(std::clamp(startRect_.x() + dx, -0.5 * r.width(), 1.0 - 0.5 * r.width()),
                std::clamp(startRect_.y() + dy, -0.5 * r.height(), 1.0 - 0.5 * r.height()));
@@ -151,6 +175,8 @@ QString layerLabel(const SstvLayer& l) {
       return QStringLiteral("Their picture");
     case SstvLayer::Kind::Box:
       return QStringLiteral("Box");
+    case SstvLayer::Kind::Photo:
+      return QStringLiteral("Photo: %1").arg(l.image.isEmpty() ? QStringLiteral("(none)") : l.image);
     default: {
       QString t = l.text;
       t.replace(QLatin1Char('\n'), QLatin1Char(' '));
@@ -239,7 +265,9 @@ SstvTemplateEditor::SstvTemplateEditor(const SstvFields& fields, const QImage& r
   addText->setObjectName(QStringLiteral("sstvTplAddText"));
   auto* addRx = new QPushButton(QStringLiteral("+ Their picture"), this);
   auto* addBox = new QPushButton(QStringLiteral("+ Box"), this);
-  for (auto* b : {addText, addRx, addBox})
+  auto* addPhoto = new QPushButton(QStringLiteral("+ Photo"), this);
+  addPhoto->setToolTip(QStringLiteral("One of your pictures as a layer, for example your shack or station photo."));
+  for (auto* b : {addText, addRx, addBox, addPhoto})
     layerBtns->addWidget(b);
   right->addLayout(layerBtns);
   auto* orderBtns = new QHBoxLayout();
@@ -269,6 +297,12 @@ SstvTemplateEditor::SstvTemplateEditor(const SstvFields& fields, const QImage& r
   auto* style = new QHBoxLayout();
   style->addWidget(bold_);
   style->addWidget(italic_);
+  stacked_ = new QCheckBox(QStringLiteral("Stacked"), textPage);
+  stacked_->setObjectName(QStringLiteral("sstvTplStacked"));
+  stacked_->setToolTip(QStringLiteral(
+      "Letters upright, one under another, down the box: a vertical call that reads without tilting your head. "
+      "Make the box tall and narrow. A space leaves a gap."));
+  style->addWidget(stacked_);
   size_ = new QDoubleSpinBox(textPage);
   size_->setRange(2.0, 80.0);
   size_->setSuffix(QStringLiteral(" % of height"));
@@ -305,12 +339,37 @@ SstvTemplateEditor::SstvTemplateEditor(const SstvFields& fields, const QImage& r
   boxOpacity_->setSuffix(QStringLiteral(" %"));
   border_ = new QCheckBox(QStringLiteral("Border"), boxPage);
   borderColor_ = new QPushButton(QStringLiteral("Border colour"), boxPage);
+  photo_ = new QComboBox(boxPage);
+  photo_->setObjectName(QStringLiteral("sstvTplPhoto"));
   bf->addRow(QStringLiteral("Box colour"), boxColor_);
   bf->addRow(QStringLiteral("Opacity"), boxOpacity_);
   bf->addRow(QString(), border_);
   bf->addRow(QString(), borderColor_);
+  bf->addRow(QStringLiteral("Picture"), photo_);
   props_->addWidget(boxPage);
   right->addWidget(props_, 1);
+  auto* angleRow = new QHBoxLayout();
+  angle_ = new QDoubleSpinBox(this);
+  angle_->setObjectName(QStringLiteral("sstvTplAngle"));
+  angle_->setRange(-180.0, 180.0);
+  angle_->setDecimals(0);
+  angle_->setSingleStep(5.0);
+  angle_->setSuffix(QStringLiteral(" °"));
+  angle_->setToolTip(QStringLiteral(
+      "Turn the selected layer about its centre: positive is clockwise. Text at 90 or -90 runs up or down a tall, "
+      "narrow box; an angle between gives a slanted banner."));
+  angleRow->addWidget(new QLabel(QStringLiteral("Angle"), this));
+  angleRow->addWidget(angle_, 1);
+  for (const int preset : {0, 90, -90}) {
+    auto* b = new QPushButton(preset == 0 ? QStringLiteral("Level") : QStringLiteral("%1°").arg(preset), this);
+    b->setToolTip(preset == 0 ? QStringLiteral("Straight across.")
+                              : preset > 0 ? QStringLiteral("Vertical, reading downward.")
+                                           : QStringLiteral("Vertical, reading upward."));
+    angleRow->addWidget(b);
+    connect(b, &QPushButton::clicked, this, [this, preset] { angle_->setValue(preset); });
+  }
+  right->addLayout(angleRow);
+  connect(angle_, &QDoubleSpinBox::valueChanged, this, [this] { layerChanged(); });
 
   auto* bottom = new QHBoxLayout();
   save_ = new QPushButton(QStringLiteral("Save"), this);
@@ -324,11 +383,14 @@ SstvTemplateEditor::SstvTemplateEditor(const SstvFields& fields, const QImage& r
 
   // Backgrounds: plain colour, or a picture from the Images folder.
   background_->addItem(QStringLiteral("Plain colour"), QString());
+  photo_->addItem(QStringLiteral("(pick a picture)"), QString());
   for (const QFileInfo& info : QDir(sstvImagesDirectory())
                                    .entryInfoList({QStringLiteral("*.png"), QStringLiteral("*.jpg"),
                                                    QStringLiteral("*.jpeg"), QStringLiteral("*.bmp")},
-                                                  QDir::Files, QDir::Name))
+                                                  QDir::Files, QDir::Name)) {
     background_->addItem(info.fileName(), info.fileName());
+    photo_->addItem(info.fileName(), info.fileName());
+  }
 
   auto pickColor = [this](QPushButton* b, bool alpha) {
     const QColor c = QColorDialog::getColor(swatch(b), this, QStringLiteral("Colour"),
@@ -413,6 +475,13 @@ SstvTemplateEditor::SstvTemplateEditor(const SstvFields& fields, const QImage& r
     l.color = QColor(0, 0, 0, 140);
     addLayer(l);
   });
+  connect(addPhoto, &QPushButton::clicked, this, [addLayer] {
+    SstvLayer l;
+    l.kind = SstvLayer::Kind::Photo;
+    l.rect = QRectF(0.58, 0.05, 0.38, 0.38);
+    l.outline = Qt::white;
+    addLayer(l);
+  });
   connect(up, &QPushButton::clicked, this, [this] {
     if (layer_ < 0 || layer_ + 1 >= int(current_.layers.size()))
       return;
@@ -445,7 +514,7 @@ SstvTemplateEditor::SstvTemplateEditor(const SstvFields& fields, const QImage& r
       connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] { layerChanged(); });
   }
   connect(text_, &QPlainTextEdit::textChanged, this, [this] { layerChanged(); });
-  for (QCheckBox* c : {bold_, italic_, shadow_, border_})
+  for (QCheckBox* c : {bold_, italic_, stacked_, shadow_, border_})
     connect(c, &QCheckBox::toggled, this, [this] { layerChanged(); });
   for (QPushButton* b : {fill_, outline_, borderColor_}) {
     connect(b, &QPushButton::clicked, this, [this, b, pickColor] {
@@ -453,6 +522,7 @@ SstvTemplateEditor::SstvTemplateEditor(const SstvFields& fields, const QImage& r
         layerChanged();
     });
   }
+  connect(photo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] { layerChanged(); });
   connect(boxColor_, &QPushButton::clicked, this, [this, pickColor] {
     if (pickColor(boxColor_, false))
       layerChanged();
@@ -606,16 +676,20 @@ void SstvTemplateEditor::showLayer() {
   loading_ = true;
   if (layer_ < 0 || layer_ >= int(current_.layers.size())) {
     props_->setCurrentIndex(0);
+    angle_->setEnabled(false);
     loading_ = false;
     return;
   }
   const SstvLayer& l = current_.layers[size_t(layer_)];
+  angle_->setEnabled(true);
+  angle_->setValue(l.angle);
   if (l.kind == SstvLayer::Kind::Text) {
     props_->setCurrentIndex(1);
     text_->setPlainText(l.text);
     font_->setCurrentFont(QFont(l.font));
     bold_->setChecked(l.bold);
     italic_->setChecked(l.italic);
+    stacked_->setChecked(l.stacked);
     size_->setValue(l.size * 100.0);
     paintSwatch(fill_, l.fill);
     paintSwatch(outline_, l.outline);
@@ -633,6 +707,9 @@ void SstvTemplateEditor::showLayer() {
     borderColor_->setEnabled(!box);
     border_->setChecked(l.border);
     paintSwatch(borderColor_, l.outline);
+    photo_->setEnabled(l.kind == SstvLayer::Kind::Photo);
+    const int at = photo_->findData(l.image);
+    photo_->setCurrentIndex(at < 0 ? 0 : at);
   }
   loading_ = false;
 }
@@ -641,11 +718,13 @@ void SstvTemplateEditor::layerChanged() {
   if (loading_ || layer_ < 0 || layer_ >= int(current_.layers.size()))
     return;
   SstvLayer& l = current_.layers[size_t(layer_)];
+  l.angle = angle_->value();
   if (l.kind == SstvLayer::Kind::Text) {
     l.text = text_->toPlainText();
     l.font = font_->currentFont().family();
     l.bold = bold_->isChecked();
     l.italic = italic_->isChecked();
+    l.stacked = stacked_->isChecked();
     l.size = size_->value() / 100.0;
     l.fill = swatch(fill_);
     l.outline = swatch(outline_);
@@ -663,6 +742,11 @@ void SstvTemplateEditor::layerChanged() {
   } else {
     l.border = border_->isChecked();
     l.outline = swatch(borderColor_);
+    if (l.kind == SstvLayer::Kind::Photo) {
+      l.image = photo_->currentData().toString();
+      if (auto* item = layers_->item(layer_))
+        item->setText(layerLabel(l));
+    }
   }
   setDirty(true);
   canvas_->update();

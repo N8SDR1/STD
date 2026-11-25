@@ -8,7 +8,9 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDesktopServices>
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -102,6 +104,16 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
       "Save each picture as a PNG in the RX folder when it ends, named with the UTC time and mode. "
       "This does not key."));
   engine_->setAutoSave(autoSave_->isChecked());
+  autoReply_ = new QCheckBox(QStringLiteral("FSK ID sets reply"), this);
+  autoReply_->setObjectName(QStringLiteral("sstvAutoReply"));
+  autoReply_->setFont(panelFont(12));
+  autoReply_->setChecked(QSettings().value(QStringLiteral("sstv/autoReply"), false).toBool());
+  autoReply_->setToolTip(QStringLiteral(
+      "Off until you tick it. When a picture ends with an FSK ID naming the sender, that picture becomes their "
+      "picture for a reply (as Reply with it does), and their call goes in Call if Call is empty. Then a reply "
+      "is: pick the Reply template, check the preview, press TX. This does not key."));
+  connect(autoReply_, &QCheckBox::toggled, this,
+          [](bool on) { QSettings().setValue(QStringLiteral("sstv/autoReply"), on); });
   state_ = new QLabel(this);
   state_->setObjectName(QStringLiteral("sstvState"));
   state_->setFont(panelFont(12));
@@ -114,6 +126,7 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
   row->addWidget(save_);
   row->addWidget(autoSave_);
   row->addWidget(reply);
+  row->addWidget(autoReply_);
   row->addWidget(open);
   row->addWidget(folder);
   row->addWidget(state_, 1);
@@ -137,7 +150,7 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
   saved_->setViewMode(QListView::ListMode);
   saved_->setIconSize(QSize(kThumbWidth, kThumbWidth * 3 / 4));
   saved_->setFont(panelFont(11));
-  saved_->setMinimumWidth(kThumbWidth + 40);
+  saved_->setMinimumWidth(kThumbWidth + 28);
   saved_->setToolTip(QStringLiteral(
       "Pictures in the RX folder, newest first. Click one to show it; it stays until the next picture "
       "starts. Right-click one to reply with it. This does not key."));
@@ -145,6 +158,7 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
   split->addWidget(saved_);
   split->setStretchFactor(0, 1);
   split->setStretchFactor(1, 0);
+  split->setSizes({1000, kThumbWidth + 40});
   layout->addWidget(split, 1);
 
   connect(mode_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
@@ -256,7 +270,37 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
       showPicture();
     showState();
   });
-  connect(engine_, &SstvEngine::pictureFinished, this, [this] { showState(); });
+  connect(engine_, &SstvEngine::pictureFinished, this, [this] {
+    lastFskId_.clear();
+    showState();
+  });
+  connect(engine_, &SstvEngine::fskIdHeard, this, [this](const QString& call) {
+    lastFskId_ = call;
+    if (autoReply_->isChecked()) {
+      QImage picture;
+      if (!lastSaved_.isEmpty())
+        picture.load(lastSaved_);
+      if (picture.isNull() && !engine_->image().isNull() && engine_->rowCount() > 0)
+        picture = engine_->image().copy(0, 0, engine_->image().width(), engine_->rowCount());
+      if (!picture.isNull())
+        emit replyWith(picture, QStringLiteral("%1's picture").arg(call));
+    }
+    // Put the call in the name of the picture just saved, so the RX folder
+    // shows who sent it.
+    const QFileInfo info(lastSaved_);
+    if (info.exists() && info.lastModified().secsTo(QDateTime::currentDateTime()) < 30 &&
+        !info.completeBaseName().endsWith(call)) {
+      QString safe = call;
+      safe.replace(QLatin1Char('/'), QLatin1Char('-'));
+      const QString renamed =
+          info.dir().filePath(QStringLiteral("%1_%2.%3").arg(info.completeBaseName(), safe, info.suffix()));
+      if (QFile::rename(info.filePath(), renamed)) {
+        lastSaved_ = renamed;
+        refreshSaved();
+      }
+    }
+    showState();
+  });
   connect(engine_, &SstvEngine::imageSaved, this, [this](const QString& path) {
     lastSaved_ = path;
     refreshSaved();
@@ -279,9 +323,10 @@ void SstvPanel::refreshSaved() {
     if (shown++ >= kSavedShown)
       break;
     const QPixmap thumb = QPixmap(info.filePath()).scaledToWidth(kThumbWidth, Qt::SmoothTransformation);
-    auto* item = new QListWidgetItem(QIcon(thumb), info.completeBaseName(), saved_);
+    // Thumbnails only, so the list stays narrow; the name is on hover.
+    auto* item = new QListWidgetItem(QIcon(thumb), QString(), saved_);
     item->setData(Qt::UserRole, info.filePath());
-    item->setToolTip(info.filePath());
+    item->setToolTip(info.fileName());
   }
 }
 
@@ -318,6 +363,8 @@ void SstvPanel::showState() {
     text = QStringLiteral("Waiting for a VIS header.");
     if (!engine_->endReason().isEmpty())
       text += QStringLiteral(" Last picture: %1.").arg(engine_->endReason());
+    if (!lastFskId_.isEmpty())
+      text += QStringLiteral(" FSK ID: %1.").arg(lastFskId_);
   }
   if (!lastSaved_.isEmpty() && viewing_.isEmpty())
     text += QStringLiteral("   Last saved: %1").arg(QFileInfo(lastSaved_).fileName());

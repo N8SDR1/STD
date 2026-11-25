@@ -84,6 +84,8 @@
 #include <QToolBar>
 #include <QImage>
 #include <QProgressBar>
+#include <QTabBar>
+#include <QListWidget>
 #include <QSettings>
 #include <QCoreApplication>
 #include <QDockWidget>
@@ -3509,7 +3511,8 @@ int shellReady(MainWindow& window) {
           sstvRowsSentAt(SstvMode::PD120, sstvSeconds(SstvMode::PD120)) != 496)
         return fail("SSTV transmit progress does not follow the picture");
       for (const char* name : {"sstvTxCall", "sstvTxRst", "sstvTxName", "sstvTxCwId", "sstvTxTemplates",
-                               "sstvTxReply", "sstvReplyWith", "sstvTxInset"}) {
+                               "sstvTxReply", "sstvReplyWith", "sstvTxInset", "sstvTxGrid", "sstvTxQth",
+                               "sstvTxFskId", "sstvTxMakeTemplate"}) {
         if (!window.findChild<QWidget*>(QLatin1String(name))) {
           qCritical("SSTV control %s is missing", name);
           return fail("SSTV template or QSO control is missing");
@@ -3528,11 +3531,14 @@ int shellReady(MainWindow& window) {
         call->setText(QStringLiteral("w1aw"));
         rstIn->setText(QStringLiteral("575"));
         rstOut->setText(QStringLiteral("595"));
+        if (auto* grid = window.findChild<QLineEdit*>(QStringLiteral("sstvTxGrid")))
+          grid->setText(QStringLiteral("fn31"));
         logBtn->click();
         const QString rec = window.sstvLastRecord();
         if (!rec.contains(QLatin1String("<CALL:4>W1AW")) || !rec.contains(QLatin1String("<MODE:4>SSTV")) ||
             !rec.contains(QLatin1String("<RST_SENT:3>595")) || !rec.contains(QLatin1String("<RST_RCVD:3>575")) ||
-            !rec.contains(QLatin1String("<COMMENT:")) || !rec.contains(QLatin1String("SSTV Martin"))) {
+            !rec.contains(QLatin1String("<COMMENT:")) || !rec.contains(QLatin1String("SSTV Martin")) ||
+            !rec.contains(QLatin1String("<GRIDSQUARE:4>FN31"))) {
           qCritical("SSTV log record [%s]", qPrintable(rec));
           return fail("SSTV Log did not build the right ADIF record");
         }
@@ -3541,6 +3547,25 @@ int shellReady(MainWindow& window) {
         call->clear();
         rstIn->clear();
         rstOut->setText(keepRst);
+        if (auto* grid = window.findChild<QLineEdit*>(QStringLiteral("sstvTxGrid")))
+          grid->clear();
+        // The Pictures tab shows no templates; the CQ tab shows only CQ ones.
+        auto* tabs = window.findChild<QTabBar*>(QStringLiteral("sstvTxTabs"));
+        auto* list = window.findChild<QListWidget*>(QStringLiteral("sstvTxList"));
+        if (!tabs || !list || tabs->count() != 6)
+          return fail("SSTV transmit tabs are missing");
+        const int keepTab = tabs->currentIndex();
+        tabs->setCurrentIndex(5);
+        for (int i = 0; i < list->count(); ++i)
+          if (list->item(i)->data(Qt::UserRole + 1).toString() == QLatin1String("tpl"))
+            return fail("SSTV Pictures tab shows templates");
+        tabs->setCurrentIndex(1);
+        for (int i = 0; i < list->count(); ++i)
+          if (list->item(i)->data(Qt::UserRole + 1).toString() == QLatin1String("img") ||
+              (list->item(i)->data(Qt::UserRole + 1).toString() == QLatin1String("tpl") &&
+               list->item(i)->data(Qt::UserRole + 2).toString() != QLatin1String("CQ")))
+            return fail("SSTV CQ tab shows something else");
+        tabs->setCurrentIndex(keepTab);
       }
       auto* webRx = window.findChild<QToolButton*>(QStringLiteral("sstvWebRx"));
       if (!webRx || !webRx->menu() || webRx->menu()->actions().size() != int(sstvWebGalleries().size()) ||
@@ -3561,6 +3586,30 @@ int shellReady(MainWindow& window) {
                   line1 && line1->isVisibleTo(&window), send != nullptr, send && send->isVisibleTo(&window),
                   macros && macros->isVisibleTo(&window), sstvTxMode ? sstvTxMode->count() : -1);
         return fail("SSTV transmit pane is not shown in place of the FT8 lines");
+      }
+      // Band chips: SSTV calling dials, DIGL on 80 and 40, DIGU above, a
+      // second click cycles, and bands with no SSTV dial are hidden.
+      {
+        const auto chips = profile->findChildren<QPushButton*>(QStringLiteral("profileBand"));
+        if (chips.size() < 9 || !chips[1]->isVisibleTo(&window) || chips[3]->isVisibleTo(&window))
+          return fail("SSTV band chips are not shown, or 30 m is shown");
+        const int keepBand = profile->band();
+        chips[1]->click();
+        if (profile->dialHz() != 3845000 || profile->sideband() != QLatin1String("DIGL")) {
+          qCritical("SSTV 80 m %lld %s", profile->dialHz(), qPrintable(profile->sideband()));
+          return fail("SSTV 80 m is not 3.845 MHz DIGL");
+        }
+        chips[4]->click();
+        if (profile->dialHz() != 14230000 || profile->sideband() != QLatin1String("DIGU"))
+          return fail("SSTV 20 m is not 14.230 MHz DIGU");
+        chips[4]->click();
+        if (profile->dialHz() != 14233000)
+          return fail("SSTV 20 m does not cycle to 14.233 MHz");
+        if (keepBand >= 0 && keepBand < chips.size())
+          chips[keepBand]->click();
+        auto* autoReply = window.findChild<QCheckBox*>(QStringLiteral("sstvAutoReply"));
+        if (!autoReply || autoReply->isChecked() && !QSettings().value(QStringLiteral("sstv/autoReply")).toBool())
+          return fail("SSTV FSK ID sets reply option is missing");
       }
       auto* sstvStart = window.findChild<QPushButton*>(QStringLiteral("sstvStart"));
       auto* sstvPick = window.findChild<QComboBox*>(QStringLiteral("sstvMode"));
@@ -4220,6 +4269,113 @@ int shellReady(MainWindow& window) {
       const QRgb mid = withRx.pixel(int(320 * 0.29), int(256 * 0.5));
       if (qRed(mid) < 180 || qGreen(mid) > 60)
         return fail("SSTV their picture is not in the reply template");
+      // Their picture goes in whole: its left edge must still show, not be
+      // cropped to the box's shape.
+      QImage edged = red;
+      for (int y = 0; y < edged.height(); ++y)
+        for (int x = 0; x < 6; ++x)
+          edged.setPixel(x, y, qRgb(10, 230, 10));
+      const QImage whole = sstvRenderTemplate(replyTpl, QSize(320, 256), fields, edged);
+      const QRgb edge = whole.pixel(int(320 * 0.04) + 5, int(256 * 0.51));
+      if (qGreen(edge) < 180 || qRed(edge) > 80)
+        return fail("SSTV their picture was cropped in the reply template");
+    }
+    // FSK ID: the call after a picture is read back, in the clear and in
+    // noise, and a picture without one reads none.
+    {
+      std::vector<float> tones = sstvModulate(SstvMode::Robot36, bars, 12000);
+      const SstvResult plain = sstvDecode(tones.data(), int(tones.size()), 12000);
+      if (!plain.fskId.isEmpty())
+        return fail("SSTV read an FSK ID that was not sent");
+      const std::vector<float> id = sstvFskId(QStringLiteral("n8sdr"), 12000, 0.5);
+      tones.insert(tones.end(), id.begin(), id.end());
+      const SstvResult clean = sstvDecode(tones.data(), int(tones.size()), 12000);
+      if (clean.fskId != QLatin1String("N8SDR") || clean.mode != SstvMode::Robot36) {
+        qCritical("SSTV FSK ID [%s]", qPrintable(clean.fskId));
+        return fail("SSTV FSK ID was not read back");
+      }
+      std::mt19937 fskRng(5);
+      std::normal_distribution<float> fskNoise(0.0f, 0.12f);
+      std::vector<float> noisy = tones;
+      for (float& v : noisy)
+        v += fskNoise(fskRng);
+      const SstvResult heard = sstvDecode(noisy.data(), int(noisy.size()), 12000);
+      if (heard.fskId != QLatin1String("N8SDR")) {
+        qCritical("SSTV FSK ID in noise [%s]", qPrintable(heard.fskId));
+        return fail("SSTV FSK ID was lost in noise");
+      }
+      const std::vector<float> portable = sstvFskId(QStringLiteral("VE3/N8SDR"), 12000, 0.5);
+      std::vector<float> two = sstvModulate(SstvMode::MartinM2, bars, 12000);
+      two.insert(two.end(), portable.begin(), portable.end());
+      if (sstvDecode(two.data(), int(two.size()), 12000).fskId != QLatin1String("VE3/N8SDR"))
+        return fail("SSTV FSK ID with a slash was not read back");
+    }
+    // Make template and the photo layer.
+    {
+      const SstvTemplate reply = sstvTemplateFromPicture(QStringLiteral("R"), QStringLiteral("Reply"),
+                                                         QStringLiteral("x.png"));
+      bool hasRx = false;
+      for (const SstvLayer& l : reply.layers)
+        hasRx = hasRx || l.kind == SstvLayer::Kind::RxPicture;
+      if (reply.background != QLatin1String("x.png") || !hasRx || reply.category != QLatin1String("Reply"))
+        return fail("SSTV Make template did not build a reply");
+      SstvTemplate withPhoto = reply;
+      SstvLayer photo;
+      photo.kind = SstvLayer::Kind::Photo;
+      photo.image = QStringLiteral("shack.jpg");
+      withPhoto.layers.push_back(photo);
+      const SstvTemplate back = SstvTemplate::fromJson(withPhoto.toJson());
+      if (back.layers.back().kind != SstvLayer::Kind::Photo || back.layers.back().image != QLatin1String("shack.jpg"))
+        return fail("SSTV photo layer does not round-trip");
+      // Turned text: the angle round-trips, and vertical text stays inside a
+      // tall narrow box at the right edge.
+      SstvTemplate turned;
+      turned.backgroundColor = Qt::black;
+      SstvLayer side;
+      side.text = QStringLiteral("N8SDR");
+      side.rect = QRectF(0.88, 0.05, 0.1, 0.9);
+      side.size = 0.2;
+      side.angle = -90.0;
+      side.shadow = false;
+      turned.layers.push_back(side);
+      if (SstvTemplate::fromJson(turned.toJson()).layers.front().angle != -90.0)
+        return fail("SSTV layer angle does not round-trip");
+      const QImage tall = sstvRenderTemplate(turned, QSize(320, 256), SstvFields());
+      int inside = 0;
+      int outside = 0;
+      for (int y = 0; y < 256; ++y)
+        for (int x = 0; x < 320; ++x)
+          if (qGray(tall.pixel(x, y)) > 128)
+            (x >= int(320 * 0.86) ? inside : outside)++;
+      if (inside < 200 || outside > 20) {
+        qCritical("SSTV vertical text inside %d outside %d", inside, outside);
+        return fail("SSTV vertical text did not stay in its box");
+      }
+      SstvTemplate stack;
+      stack.backgroundColor = Qt::black;
+      SstvLayer down = side;
+      down.angle = 0.0;
+      down.stacked = true;
+      stack.layers.push_back(down);
+      if (!SstvTemplate::fromJson(stack.toJson()).layers.front().stacked)
+        return fail("SSTV stacked text does not round-trip");
+      const QImage stackedPic = sstvRenderTemplate(stack, QSize(320, 256), SstvFields());
+      int in = 0;
+      int out = 0;
+      int top = 256;
+      int bottom = 0;
+      for (int y = 0; y < 256; ++y)
+        for (int x = 0; x < 320; ++x)
+          if (qGray(stackedPic.pixel(x, y)) > 128) {
+            (x >= int(320 * 0.86) ? in : out)++;
+            top = std::min(top, y);
+            bottom = std::max(bottom, y);
+          }
+      // Five letters down the box use most of its height.
+      if (in < 200 || out > 20 || bottom - top < 120) {
+        qCritical("SSTV stacked in %d out %d span %d", in, out, bottom - top);
+        return fail("SSTV stacked text is not down its box");
+      }
     }
     // CW ID: half a second of quiet, then the call at the set speed.
     {

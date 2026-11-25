@@ -28,6 +28,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSplitter>
+#include <QTabBar>
 #include <QStandardPaths>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -167,6 +168,10 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
                  QStringLiteral("The report they gave you, for the log. This does not key."), 54);
   name_ = field(QStringLiteral("Name"), QStringLiteral("sstvTxName"),
                 QStringLiteral("Their name. Fills {NAME}. This does not key."), 110);
+  grid_ = field(QStringLiteral("Grid"), QStringLiteral("sstvTxGrid"),
+                QStringLiteral("Their locator, for the log. Fills {GRID}. This does not key."), 64);
+  qth_ = field(QStringLiteral("QTH"), QStringLiteral("sstvTxQth"),
+               QStringLiteral("Where they are, for the log. Fills {QTH}. This does not key."), 110);
   rst_->setText(QSettings().value(QStringLiteral("sstv/rst"), QStringLiteral("595")).toString());
   auto* replyLabel = new QLabel(QStringLiteral("Their picture"), this);
   replyLabel->setFont(paneFont(12));
@@ -225,6 +230,18 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
   qso->addWidget(replyClear);
   qso->addWidget(inset_);
   qso->addWidget(templates);
+  fskId_ = new QCheckBox(QStringLiteral("FSK ID"), this);
+  fskId_->setObjectName(QStringLiteral("sstvTxFskId"));
+  fskId_->setFont(paneFont(12));
+  fskId_->setChecked(QSettings().value(QStringLiteral("sstv/fskId"), true).toBool());
+  fskId_->setToolTip(QStringLiteral(
+      "Right after the picture, send your callsign as a short digital burst (about 2 seconds), the FSK ID "
+      "that MMSSTV and QSSTV read and show as the sender. Part of the same transmission. This does not key."));
+  connect(fskId_, &QCheckBox::toggled, this, [this](bool on) {
+    QSettings().setValue(QStringLiteral("sstv/fskId"), on);
+    showPreview();
+  });
+  qso->addWidget(fskId_);
   qso->addWidget(cwId_);
   auto* log = new QPushButton(QStringLiteral("Log"), this);
   log->setObjectName(QStringLiteral("sstvTxLog"));
@@ -238,7 +255,7 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
   connect(log, &QPushButton::clicked, this, [this] { emit logRequested(); });
   qso->addStretch(1);
   layout->addLayout(qso);
-  for (QLineEdit* e : {call_, rst_, name_}) {
+  for (QLineEdit* e : {call_, rst_, name_, grid_, qth_}) {
     connect(e, &QLineEdit::textChanged, this, [this] {
       QSettings().setValue(QStringLiteral("sstv/rst"), rst_->text().trimmed());
       if (usingTemplate())
@@ -255,11 +272,43 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
 
   auto* split = new QSplitter(Qt::Horizontal, this);
   split->setChildrenCollapsible(false);
-  list_ = new QListWidget(split);
+  auto* listBox = new QWidget(split);
+  auto* listLay = new QVBoxLayout(listBox);
+  listLay->setContentsMargins(0, 0, 0, 0);
+  listLay->setSpacing(4);
+  tabs_ = new QTabBar(listBox);
+  tabs_->setObjectName(QStringLiteral("sstvTxTabs"));
+  tabs_->setFont(paneFont(11));
+  tabs_->setExpanding(false);
+  tabs_->setDrawBase(false);
+  for (const QString& t : {QStringLiteral("All"), QStringLiteral("CQ"), QStringLiteral("Reply"),
+                           QStringLiteral("73"), QStringLiteral("Custom"), QStringLiteral("Pictures")})
+    tabs_->addTab(t);
+  tabs_->setCurrentIndex(std::clamp(QSettings().value(QStringLiteral("sstv/txTab"), 0).toInt(), 0, 5));
+  tabs_->setToolTip(QStringLiteral(
+      "Show templates of one kind, or your pictures. Make template turns the picture shown into a "
+      "template of the kind on the open tab. This does not key."));
+  auto* make = new QPushButton(QStringLiteral("Make template"), listBox);
+  make->setObjectName(QStringLiteral("sstvTxMakeTemplate"));
+  make->setFont(paneFont(11));
+  make->setFocusPolicy(Qt::NoFocus);
+  make->setToolTip(QStringLiteral(
+      "Turn the picture shown into a template, with your call and the usual text for the open tab (CQ, "
+      "Reply with a box for their picture, or 73) already placed, and open it in the editor. "
+      "This does not key."));
+  list_ = new QListWidget(listBox);
+  listLay->addWidget(tabs_);
+  listLay->addWidget(list_, 1);
+  listLay->addWidget(make);
+  connect(tabs_, &QTabBar::currentChanged, this, [this](int i) {
+    QSettings().setValue(QStringLiteral("sstv/txTab"), i);
+    refresh();
+  });
+  connect(make, &QPushButton::clicked, this, [this] { makeTemplate(); });
   list_->setObjectName(QStringLiteral("sstvTxList"));
   list_->setIconSize(QSize(kThumbWidth, kThumbWidth * 3 / 4));
   list_->setFont(paneFont(11));
-  list_->setMinimumWidth(kThumbWidth + 60);
+  list_->setMinimumWidth(kThumbWidth + 28);
   list_->setToolTip(QStringLiteral(
       "Templates, then the pictures in the Images folder. Click one to pick it; TX sends it. Double-click a "
       "template to change it. This does not key."));
@@ -274,10 +323,11 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
       "double-click to center it. This does not key."));
   preview_->installEventFilter(this);
   preview_->setCursor(Qt::OpenHandCursor);
-  split->addWidget(list_);
+  split->addWidget(listBox);
   split->addWidget(preview_);
   split->setStretchFactor(0, 0);
   split->setStretchFactor(1, 1);
+  split->setSizes({kThumbWidth + 40, 1000});
   layout->addWidget(split, 1);
   progress_ = new QProgressBar(this);
   progress_->setObjectName(QStringLiteral("sstvTxProgress"));
@@ -420,6 +470,8 @@ SstvFields SstvTxPanel::fields() const {
   f.insert(QStringLiteral("{CALL}"), theirCall());
   f.insert(QStringLiteral("{RST}"), rstSent());
   f.insert(QStringLiteral("{NAME}"), theirName());
+  f.insert(QStringLiteral("{GRID}"), theirGrid());
+  f.insert(QStringLiteral("{QTH}"), theirQth());
   f.insert(QStringLiteral("{MODE}"), sstvModeName(mode()));
   return f;
 }
@@ -444,12 +496,58 @@ QString SstvTxPanel::rstSent() const {
   return rst_ ? rst_->text().trimmed() : QString();
 }
 
+QString SstvTxPanel::theirGrid() const {
+  return grid_ ? grid_->text().trimmed().toUpper() : QString();
+}
+
+QString SstvTxPanel::theirQth() const {
+  return qth_ ? qth_->text().trimmed() : QString();
+}
+
+bool SstvTxPanel::fskId() const {
+  return fskId_ && fskId_->isChecked();
+}
+
+bool SstvTxPanel::offerCall(const QString& call) {
+  if (!call_ || call.isEmpty() || !theirCall().isEmpty())
+    return false;
+  call_->setText(call.toUpper());
+  return true;
+}
+
+void SstvTxPanel::makeTemplate() {
+  if (path_.isEmpty() || source_.isNull() || usingTemplate()) {
+    emit status(QStringLiteral("Pick one of your pictures first; Make template builds on it. Nothing was keyed."));
+    return;
+  }
+  QString category = tabs_->tabText(tabs_->currentIndex());
+  if (category == QLatin1String("All") || category == QLatin1String("Pictures"))
+    category = QStringLiteral("CQ");
+  bool ok = false;
+  const QString name =
+      QInputDialog::getText(this, QStringLiteral("Make template"),
+                            QStringLiteral("Name for the %1 template:").arg(category), QLineEdit::Normal,
+                            QStringLiteral("%1 %2").arg(category, QFileInfo(path_).completeBaseName()), &ok)
+          .trimmed();
+  if (!ok || name.isEmpty())
+    return;
+  // The picture must be in the Images folder for the template to find it.
+  const QFileInfo info(path_);
+  if (QFileInfo(QDir(sstvImagesDirectory()).filePath(info.fileName())).absoluteFilePath() !=
+      info.absoluteFilePath())
+    QFile::copy(path_, QDir(sstvImagesDirectory()).filePath(info.fileName()));
+  sstvSaveTemplate(sstvTemplateFromPicture(name, category, info.fileName()));
+  refresh();
+  pickTemplate(name);
+  openEditor();
+}
+
 QString SstvTxPanel::rstRcvd() const {
   return rstIn_ ? rstIn_->text().trimmed() : QString();
 }
 
 void SstvTxPanel::clearQso() {
-  for (QLineEdit* e : {call_, name_, rstIn_})
+  for (QLineEdit* e : {call_, name_, rstIn_, grid_, qth_})
     e->clear();
   setReplyPicture(QImage(), QString());
 }
@@ -569,7 +667,7 @@ bool SstvTxPanel::eventFilter(QObject* watched, QEvent* event) {
         this, QStringLiteral("Their picture"), sstvRxDirectory(),
         QStringLiteral("Pictures (%1)").arg(kPictureFilters.join(QLatin1Char(' '))));
     if (!file.isEmpty()) {
-      const QImage img(file);
+      const QImage img = sstvLoadPicture(file);
       if (img.isNull())
         emit status(QStringLiteral("%1 is not a picture STD can read. Nothing was keyed.").arg(file));
       else
@@ -641,33 +739,43 @@ void SstvTxPanel::refresh() {
     item->setFont(f);
   };
   templates_ = sstvLoadTemplates();
-  header(QStringLiteral("Templates"));
+  const QString tab = tabs_ ? tabs_->tabText(tabs_->currentIndex()) : QStringLiteral("All");
+  const bool showPictures = tab == QLatin1String("All") || tab == QLatin1String("Pictures");
+  const bool showTemplates = tab != QLatin1String("Pictures");
+  if (showTemplates)
+    header(QStringLiteral("Templates"));
   const SstvFields f = fields();
   for (const SstvTemplate& t : templates_) {
+    if (!showTemplates || (tab != QLatin1String("All") && t.category.compare(tab, Qt::CaseInsensitive) != 0))
+      continue;
     const QImage thumb = sstvRenderTemplate(t, QSize(kThumbWidth, kThumbWidth * 4 / 5), f, reply_, true);
-    auto* item = new QListWidgetItem(QIcon(QPixmap::fromImage(thumb)),
-                                     QStringLiteral("%1  (%2)").arg(t.name, t.category), list_);
+    // Thumbnails only, so the list stays narrow; the name is on hover.
+    auto* item = new QListWidgetItem(QIcon(QPixmap::fromImage(thumb)), QString(), list_);
     item->setData(Qt::UserRole, t.name);
     item->setData(Qt::UserRole + 1, QStringLiteral("tpl"));
-    item->setToolTip(QStringLiteral("Template %1. Double-click to change it.").arg(t.name));
+    item->setToolTip(QStringLiteral("Template %1 (%2). Double-click to change it.").arg(t.name, t.category));
+    item->setData(Qt::UserRole + 2, t.category);
     if (t.name == template_)
       list_->setCurrentItem(item);
   }
+  if (!showPictures)
+    return;
   header(QStringLiteral("Pictures"));
   const QDir dir(sstvImagesDirectory());
   for (const QFileInfo& info : dir.entryInfoList(kPictureFilters, QDir::Files, QDir::Name)) {
-    const QPixmap thumb = QPixmap(info.filePath()).scaledToWidth(kThumbWidth, Qt::SmoothTransformation);
-    auto* item = new QListWidgetItem(QIcon(thumb), info.completeBaseName(), list_);
+    const QPixmap thumb =
+        QPixmap::fromImage(sstvLoadPicture(info.filePath()).scaledToWidth(kThumbWidth, Qt::SmoothTransformation));
+    auto* item = new QListWidgetItem(QIcon(thumb), QString(), list_);
     item->setData(Qt::UserRole, info.filePath());
     item->setData(Qt::UserRole + 1, QStringLiteral("img"));
-    item->setToolTip(info.filePath());
+    item->setToolTip(info.fileName());
     if (template_.isEmpty() && info.filePath() == path_)
       list_->setCurrentItem(item);
   }
 }
 
 void SstvTxPanel::pick(const QString& path) {
-  QImage img(path);
+  QImage img = sstvLoadPicture(path);
   if (img.isNull()) {
     emit status(QStringLiteral("%1 is not a picture STD can read. Nothing was keyed.").arg(path));
     return;
