@@ -43,10 +43,13 @@ private:
   QPushButton* stop_ = nullptr;
   QPushButton* save_ = nullptr;
   QCheckBox* autoSave_ = nullptr;
+  // When an FSK ID names the sender, make that picture their picture.
+  QCheckBox* autoReply_ = nullptr;
   QLabel* state_ = nullptr;
   QLabel* view_ = nullptr;
   QListWidget* saved_ = nullptr;
   QString lastSaved_;
+  QString lastFskId_;
   // A saved picture opened from the list; cleared when a new one starts.
   QString viewing_;
 };

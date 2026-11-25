@@ -19,7 +19,7 @@
 // folder, so they can be copied and shared.
 
 struct SstvLayer {
-  enum class Kind { Text, RxPicture, Box };
+  enum class Kind { Text, RxPicture, Box, Photo };
   Kind kind = Kind::Text;
   // Where the layer sits, as fractions of the frame width and height.
   QRectF rect{0.05, 0.05, 0.9, 0.2};
@@ -35,11 +35,19 @@ struct SstvLayer {
   // Outline width as a fraction of the frame height (0 for none).
   double outlineWidth = 0.012;
   bool shadow = true;
+  // Letters upright, one under another, down the box (for a vertical call
+  // that reads without tilting your head).
+  bool stacked = false;
   Qt::Alignment align = Qt::AlignCenter;
   // Box and the RX picture's frame
   QColor color{0, 0, 0, 140};
-  // RX picture: draw a border of the outline colour around it.
+  // RX picture and photo: draw a border of the outline colour around it.
   bool border = true;
+  // Photo: a picture from the Images folder (file name).
+  QString image;
+  // Turn, in degrees, about the box's centre (positive is clockwise). Text
+  // at 90 or -90 runs along a tall, narrow box.
+  double angle = 0.0;
 };
 
 struct SstvTemplate {
@@ -66,6 +74,14 @@ QString sstvFillFields(const QString& text, const SstvFields& fields);
 // layer; with none, that layer shows a placeholder.
 QImage sstvRenderTemplate(const SstvTemplate& tpl, const QSize& size, const SstvFields& fields,
                           const QImage& rxPicture = QImage(), bool placeholders = false);
+
+// Reads a picture the right way up: phones often store a photo sideways with
+// a flag saying how to turn it.
+QImage sstvLoadPicture(const QString& path);
+
+// A new template for one of your pictures, with the usual text for the
+// category already placed (CQ, Reply, 73, or Custom).
+SstvTemplate sstvTemplateFromPicture(const QString& name, const QString& category, const QString& pictureFile);
 
 QString sstvTemplatesDirectory();
 // Every template in the folder, by name. Writes the starter templates the

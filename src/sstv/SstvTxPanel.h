@@ -15,6 +15,7 @@
 class QCheckBox;
 class QComboBox;
 class QLineEdit;
+class QTabBar;
 class QLabel;
 class QListWidget;
 
@@ -55,6 +56,12 @@ public:
   QString rstSent() const;
   QString theirName() const;
   QString rstRcvd() const;
+  QString theirGrid() const;
+  QString theirQth() const;
+  // FSK ID after the picture.
+  bool fskId() const;
+  // Put a call heard in an FSK ID into Call, unless one is typed already.
+  bool offerCall(const QString& call);
   // After a QSO is logged: clear Call, Name, RST rcvd and their picture.
   void clearQso();
   // While transmitting: seconds of the picture gone out so far. The preview
@@ -78,6 +85,8 @@ private:
   void pickTemplate(const QString& name);
   const SstvTemplate* currentTemplate() const;
   void openEditor();
+  // A template from the picture shown, with the text for the open tab.
+  void makeTemplate();
   void showPreview();
 
   QComboBox* mode_ = nullptr;
@@ -90,6 +99,11 @@ private:
   QLineEdit* rst_ = nullptr;
   QLineEdit* name_ = nullptr;
   QLineEdit* rstIn_ = nullptr;
+  QLineEdit* grid_ = nullptr;
+  QLineEdit* qth_ = nullptr;
+  QCheckBox* fskId_ = nullptr;
+  // All, CQ, Reply, 73, Custom, Pictures.
+  QTabBar* tabs_ = nullptr;
   QLabel* replyThumb_ = nullptr;
   // Where their picture goes on one of your own pictures: off or a corner.
   QComboBox* inset_ = nullptr;

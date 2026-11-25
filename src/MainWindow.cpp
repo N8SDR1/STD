@@ -2725,9 +2725,18 @@ void MainWindow::qsyDial(qint64 hz) {
     return;
   // Band buttons and WSPR hopping. Connect already sent AUDIO_START:0.
   // This writes the dial only. START is never sent, and this does not key.
+  // The dial goes first: a radio that remembers a mode per band restores it
+  // when the dial crosses into another band, which would undo a sideband
+  // sent before. The sideband is sent again a moment later in case that
+  // restore lands late.
   radioSide_.clear();
-  tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
+  const QString side = profile_ ? profile_->sideband() : QStringLiteral("DIGU");
   tci_->setDialHz(hz);
+  tci_->setSideband(side);
+  QTimer::singleShot(400, this, [this, side, hz] {
+    if (tci_ && tci_->isOpen() && liveDialHz_ == hz && profile_ && profile_->sideband() == side)
+      tci_->setSideband(side);
+  });
   showDial(hz);
 }
 
@@ -3413,6 +3422,13 @@ QWidget* MainWindow::makeReceivePanel() {
   auto* sstvPanel = new SstvPanel(sstv_, panel);
   sstvPanel->hide();
   connect(sstvPanel, &SstvPanel::status, this, [this](const QString& text) { setTxStatus(text); });
+  connect(sstv_, &SstvEngine::fskIdHeard, this, [this](const QString& call) {
+    const bool filled = sstvTx_ && sstvTx_->offerCall(call);
+    setTxStatus(filled ? QStringLiteral("SSTV FSK ID: %1, put in Call. Nothing was keyed. START was not sent.").arg(call)
+                       : QStringLiteral("SSTV FSK ID: %1 (Call already has a call, left as it is). Nothing was "
+                                        "keyed. START was not sent.")
+                             .arg(call));
+  });
   connect(sstvPanel, &SstvPanel::replyWith, this, [this](const QImage& picture, const QString& from) {
     if (sstvTx_)
       sstvTx_->setReplyPicture(picture, from);
@@ -4606,7 +4622,7 @@ void MainWindow::buildMenus() {
   sstvAction->setCheckable(true);
   sstvAction->setObjectName(QStringLiteral("modeSstv"));
   sstvAction->setToolTip(QStringLiteral(
-      "SSTV pictures: Robot 36 and 72, Martin M1 and M2, Scottie S1, S2 and DX, and PD-50 to PD-290. "
+      "SSTV pictures: Robot 36 and 72, Martin M1 and M2, Scottie S1, S2 and DX, PD-50 to PD-290, and Wraase SC2-180. "
       "Receive reads the mode from the VIS header and saves each picture to the RX folder. TX sends the "
       "picture picked in the transmit pane, only when you press it; choosing the mode does not key. "
       "START is never sent."));
@@ -4775,7 +4791,8 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
   const bool text = keyboardTextMode(modeName);
   const bool sequenced = sequencedFamily(modeName);
   const bool rade = radeMode(modeName);
-  const bool family = sequenced || hell || rade;
+  // SSTV uses the band chips too, with its own calling dials.
+  const bool family = sequenced || hell || rade || sstvMode(modeName);
   if (profile_) {
     if (sequenced || text || wsprMode(modeName) || wefaxMode(modeName) || sstvMode(modeName) || rade)
       profile_->setDigitalMode(modeName);
@@ -4893,9 +4910,9 @@ void MainWindow::activateDigitalMode(const QString& modeName) {
     sstv_->setArmed(autoMonitor_ && sstv);
   if (tci_ && tci_->isOpen()) {
     radioSide_.clear();
-    if (radeHere)
+    if (radeHere || sstv)
       tci_->setSideband(profile_ ? profile_->sideband() : QStringLiteral("DIGU"));
-    else if (rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax || sstv)
+    else if (rtty || psk || olivia || mfsk || domino || thor || mt63 || js8 || wspr || fax)
       tci_->setSideband(QStringLiteral("DIGU"));
     refreshDialBox();
   }
@@ -5095,8 +5112,10 @@ void MainWindow::tuneActiveBand() {
   // FT8 and FT4 stay DIGU. RADE uses the reporter sideband for this band.
   // This is not START and it does not key.
   radioSide_.clear();
-  tci_->setSideband(profile_->sideband());
+  // Dial first, then the sideband, so a per-band mode memory in the radio
+  // cannot undo it (see qsyDial).
   tci_->setDialHz(hz);
+  tci_->setSideband(profile_->sideband());
   refreshDialBox();
 }
 
@@ -5389,16 +5408,19 @@ void MainWindow::showGuide() {
        "Olivia, Contestia, MFSK, DominoEX, Thor, MT63, and JS8 can key. FT8, FT4, FT2, JT65, and Q65 stay on the MSHV sequencer. "
        "CW stays in Lyra. START is never sent."},
       {"SSTV",
-       "Mode → SSTV receives and sends pictures. START is never sent. Tune USB to an SSTV frequency; 14.230 MHz is the busiest. The tones are "
+       "Mode → SSTV receives and sends pictures. START is never sent. The band chips move the radio to the SSTV calling dials: 80 m 3.845 (3.730 in Europe), 40 m 7.171 (7.165 in Europe), 20 m 14.230 (14.233, 14.227), 17 m 18.160, 15 m 21.340, 12 m 24.975, 10 m 28.680. Click a band again to cycle its dials. 80 and 40 m use DIGL, as SSTV is lower sideband there by custom; the other bands use DIGU. Bands with no common SSTV dial are hidden. Or tune USB to an SSTV frequency; 14.230 MHz is the busiest. The tones are "
        "fixed: sync 1200 Hz, black 1500 Hz, white 2300 Hz, so the marker sits at 1700 Hz and the waterfall shows "
        "the passband. Each picture starts with a VIS header that names its mode, and STD picks the mode from it: "
-       "Robot 36 and 72, Martin M1 and M2, Scottie S1, S2 and DX, and PD-50, 90, 120, 160, 180, 240 and 290. "
+       "Robot 36 and 72, Martin M1 and M2, Scottie S1, S2 and DX, PD-50, 90, 120, 160, 180, 240 and 290, and Wraase SC2-180. "
        "A tuning error of up to about 150 Hz is measured on the header and taken out; the status line shows it. "
        "Each line's sync pulse is followed as it arrives, so a sound card running a little fast or slow does not "
        "slant the picture. For a picture already under way, pick its mode and press Start; the lines lock to the "
        "next sync pulses. If the signal fades or a burst of QRM knocks the lines off, STD searches wider for the "
        "next sync pulse and carries on; a picture ends only after about 12 seconds with no sync, or when a new "
-       "VIS header starts another. While waiting, the status line says why the last picture ended. "
+       "VIS header starts another. While waiting, the status line says why the last picture ended. If the "
+       "sender added an FSK ID (their call as a short digital burst after the picture, as MMSSTV and QSSTV "
+       "send), STD reads it, shows it, adds it to the saved picture's name, and puts it in Call when Call is "
+       "empty. FSK ID sets reply, off until you tick it, makes a picture that ends with an FSK ID their picture for a reply as soon as it is read, so a reply is the Reply template and TX. "
        "Stop ends the picture and Clear empties it. Auto save, on by default, writes each finished picture as a PNG "
        "named with the UTC time and mode. Save writes the picture so far. Open shows the folder and Folder "
        "picks it; until you pick one, pictures save under Documents\\STD\\SSTV\\RX. The list on the right "
@@ -5417,7 +5439,7 @@ void MainWindow::showGuide() {
        "M0PWX), so you can see whether yours was copied. "
        "Receive pauses while you transmit. A copy of what "
        "went out is saved in the TX folder beside RX. "
-       "Templates put text and pictures together: the list shows Templates first (CQ, Reply and 73 starters are made the first time), then your pictures. A template has a background (a picture from Images or a plain colour) and layers: text with any font, size, fill colour, outline and shadow; a box for their picture; and coloured boxes. Text can hold fields that fill in when you send: {MYCALL}, {MYGRID} and {MYNAME} from Options → User, {CALL}, {RST} and {NAME} from the Call, RST and Name boxes in the transmit pane, and {DATE}, {UTC}, {BAND}, {FREQ} and {MODE}. Templates… (or a double-click on one) opens the editor: drag a layer to move it, drag its corner to resize it, and Save. Positions follow the frame, so one template fits every mode. Templates are saved as small files in the Templates folder beside Images. To answer with their picture, pick it in the receive pane and press Reply with it, right-click it in the list, or click the Their picture box to choose one from the RX folder. It fills a reply template's box, or goes in a corner of one of your own pictures (the Inset choice: off or a corner), the usual SSTV reply. Log, at the end of that row, logs the QSO: Call, RST sent and RST rcvd, Name, band and frequency, mode SSTV with the picture mode in the comment. It goes to STD's ADIF log and, when Options → Log links a logger, to SDRLogger+ like the other modes; then Call, Name, RST rcvd and their picture clear for the next station. CW ID, on by default, sends your callsign in Morse half a second after the picture, at 20 WPM on an 800 Hz tone with soft edges, as part of the same transmission. "
+       "Templates put text and pictures together: the list shows Templates first (CQ, Reply and 73 starters are made the first time), then your pictures. A template has a background (a picture from Images or a plain colour) and layers: text with any font, size, fill colour, outline and shadow; a box for their picture; and coloured boxes. Text can hold fields that fill in when you send: {MYCALL}, {MYGRID} and {MYNAME} from Options → User, {CALL}, {RST} and {NAME} from the Call, RST and Name boxes in the transmit pane, and {DATE}, {UTC}, {BAND}, {FREQ} and {MODE}. Templates… (or a double-click on one) opens the editor: drag a layer to move it, drag its corner to resize it, and Save. Positions follow the frame, so one template fits every mode. Templates are saved as small files in the Templates folder beside Images. To answer with their picture, pick it in the receive pane and press Reply with it, right-click it in the list, or click the Their picture box to choose one from the RX folder. It fills a reply template's box, or goes in a corner of one of your own pictures (the Inset choice: off or a corner), the usual SSTV reply. Grid and QTH sit in the same row and are logged too. Tabs over the list show All, CQ, Reply, 73, Custom, or only your Pictures. Make template turns the picture shown into a template of the open tab's kind, with your call and the usual text already placed and, for Reply, a box for their picture, then opens the editor. The editor's + Photo adds one of your pictures as a layer, such as a station photo. Angle turns the selected layer about its centre (Level, 90 and -90 are one click); text at 90 or -90 runs up or down a tall, narrow box, and an angle between gives a slanted banner. Stacked, next to Bold and Italic, puts the letters upright one under another down the box, so a vertical call reads without tilting your head. Phone photos are turned the right way up. Log, at the end of that row, logs the QSO: Call, RST sent and RST rcvd, Name, Grid, QTH, band and frequency, mode SSTV with the picture mode in the comment. It goes to STD's ADIF log and, when Options → Log links a logger, to SDRLogger+ like the other modes; then Call, Name, RST rcvd and their picture clear for the next station. FSK ID, on by default, sends your callsign as a short digital burst right after the picture (about 2 seconds), which MMSSTV, QSSTV and STD show as the sender. If a transmission runs 10 seconds past its own length, STD stops it. CW ID, on by default, sends your callsign in Morse half a second after the picture, at 20 WPM on an 800 Hz tone with soft edges, as part of the same transmission. "
        "SSTV is not posted to the QRV board. CW keying stays in Lyra; the SSTV CW ID is audio "
        "inside the picture transmission."},
       {"WEFAX",
@@ -7597,6 +7619,8 @@ QString MainWindow::logSstvQso() {
   record.rstSent = sstvTx_->rstSent();
   record.rstRcvd = sstvTx_->rstRcvd();
   record.name = sstvTx_->theirName();
+  record.grid = sstvTx_->theirGrid();
+  record.qth = sstvTx_->theirQth();
   record.comment = QStringLiteral("SSTV %1").arg(sstvModeName(sstvTx_->mode()));
   record.myCall = stationCall();
   record.myGrid = stationGrid();
@@ -7648,7 +7672,12 @@ bool MainWindow::rebuildTxWave() {
     if (picture.isNull())
       return false;
     txSamples_ = sstvModulate(sstvTx_->mode(), picture, 48000, 0.6);
-    // The CW ID rides on the end of the same transmission.
+    sstvPictureSamples_ = txSamples_.size();
+    // FSK ID, then CW ID, ride on the end of the same transmission.
+    if (sstvTx_->fskId() && !stationCall().isEmpty()) {
+      const std::vector<float> fsk = sstvFskId(stationCall(), 48000, 0.6);
+      txSamples_.insert(txSamples_.end(), fsk.begin(), fsk.end());
+    }
     if (sstvTx_->cwId() && !stationCall().isEmpty()) {
       const std::vector<float> id =
           sstvCwId(stationCall().toUpper(), sstvTx_->cwWpm(), sstvTx_->cwToneHz(), 48000, 0.5);
@@ -9058,6 +9087,16 @@ void MainWindow::pumpUserTx() {
                       .arg(count));
     pushRealtimeTx();
     return;
+  }
+  // SSTV backstop: never more than 10 s past the transmission's own length.
+  if (sstvMode(mode) && txKeySent_ && txPlayOriginMs_ > 0) {
+    const qint64 needMs = qint64(txSamples_.size()) * 1000 / 48000;
+    if (QDateTime::currentMSecsSinceEpoch() - txPlayOriginMs_ > needMs + 10000) {
+      setTxStatus(QStringLiteral("SSTV TX ran 10 s past the picture and was stopped. TRX is off. "
+                                 "START was not sent."));
+      stopUserTx(true);
+      return;
+    }
   }
   if (slotShouldEnd(mode)) {
     // Before finishTxPass, which may stop TX and would report it as cut short.

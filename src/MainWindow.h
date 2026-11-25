@@ -684,6 +684,7 @@ private:
   SstvEngine* sstv_ = nullptr;
   SstvTxPanel* sstvTx_ = nullptr;
   qint64 sstvProgressMs_ = 0;
+  size_t sstvPictureSamples_ = 0;
   // The last SSTV ADIF record built by Log (for the self-test).
   QString sstvLastRecord_;
 

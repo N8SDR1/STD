@@ -107,6 +107,33 @@ constexpr int k2mBand = 11;
 // 160, 80, and 40 are the reporter's LSB dials, so the radio uses DIGL
 // there. Every other band is DIGU. 30 m and 6 m are not on that list.
 // Hz, first entry is the one a band click lands on.
+// SSTV calling dials, first entry first: 80 m 3.845 (and 3.730, Europe),
+// 40 m 7.171 (and 7.165, Europe), 20 m 14.230 (and 14.233, 14.227), 17 m
+// 18.160, 15 m 21.340, 12 m 24.975, 10 m 28.680 (sigidwiki SSTV page,
+// W4CSL and XE1M lists). 80 and 40 are LSB by custom, so DIGL; the rest DIGU.
+// 160, 60, 30 m and VHF have no common SSTV dial (6 m and 2 m SSTV is FM).
+void sstvPublished(int index, const qint64*& rows, int& count) {
+  static constexpr qint64 k80[] = {3845000, 3730000};
+  static constexpr qint64 k40[] = {7171000, 7165000};
+  static constexpr qint64 k20[] = {14230000, 14233000, 14227000};
+  static constexpr qint64 k17[] = {18160000};
+  static constexpr qint64 k15[] = {21340000};
+  static constexpr qint64 k12[] = {24975000};
+  static constexpr qint64 k10[] = {28680000};
+  rows = nullptr;
+  count = 0;
+  switch (index) {
+  case 1: rows = k80; count = 2; break;
+  case 2: rows = k40; count = 2; break;
+  case 4: rows = k20; count = 3; break;
+  case 5: rows = k17; count = 1; break;
+  case 6: rows = k15; count = 1; break;
+  case 7: rows = k12; count = 1; break;
+  case 8: rows = k10; count = 1; break;
+  default: break;
+  }
+}
+
 void radePublished(int index, const qint64*& rows, int& count) {
   static constexpr qint64 k160[] = {1870000};
   static constexpr qint64 k80[] = {3643000, 3625000, 3693000, 3697000, 3803000, 3640000};
@@ -1042,7 +1069,7 @@ void ModeProfile::refreshBands() {
   // 60 m, 2 m, and the HF bands in MSK144 or MSKMS only show when the
   // mode has a dial there. Every other chip stays as it was.
   const auto shown = [this](int i) {
-    if (i == k60mBand || i == k2mBand || mskMode(mode_))
+    if (i == k60mBand || i == k2mBand || mskMode(mode_) || sstvMode(mode_))
       return tableHz(i) > 0;
     return true;
   };
@@ -1073,7 +1100,13 @@ void ModeProfile::refreshBands() {
                       .arg(dials.size())
                       .arg(texts.join(QStringLiteral(", ")));
     }
-    if (radeMode(mode_)) {
+    if (sstvMode(mode_)) {
+      const QString side = i <= 2 ? QStringLiteral("DIGL") : QStringLiteral("DIGU");
+      buttons[i]->setToolTip(QStringLiteral("%1 MHz  ·  SSTV %2 Hz  ·  %3%4. SSTV calling dial. Click again to "
+                                            "cycle. Extra keeps another dial for this band. Does not key. "
+                                            "START is never sent.")
+                                 .arg(QString::fromLatin1(kBands[i].label), QString::number(hz), side, cycleNote));
+    } else if (radeMode(mode_)) {
       const QString side = i <= 2 ? QStringLiteral("DIGL") : QStringLiteral("DIGU");
       const QString sstv =
           QLatin1String(kBands[i].label) == QLatin1String("14")
@@ -1222,10 +1255,13 @@ qint64 ModeProfile::dialFor(const QString& mode, int index) const {
   if (index < 0 || index >= kBandCount)
     return 0;
   const Ft8Band& band = kBands[index];
-  if (radeMode(mode)) {
+  if (radeMode(mode) || sstvMode(mode)) {
     const qint64* rows = nullptr;
     int count = 0;
-    radePublished(index, rows, count);
+    if (sstvMode(mode))
+      sstvPublished(index, rows, count);
+    else
+      radePublished(index, rows, count);
     return count > 0 ? rows[0] : 0;
   }
   if (mode == QLatin1String("FT8") && (hound_ || fox_) && QLatin1String(band.label) == QLatin1String("7"))
@@ -1256,10 +1292,13 @@ qint64 ModeProfile::dialFor(const QString& mode, int index) const {
 
 QList<qint64> ModeProfile::cycleDials(int index) const {
   QList<qint64> dials;
-  if (radeMode(mode_)) {
+  if (radeMode(mode_) || sstvMode(mode_)) {
     const qint64* rows = nullptr;
     int count = 0;
-    radePublished(index, rows, count);
+    if (sstvMode(mode_))
+      sstvPublished(index, rows, count);
+    else
+      radePublished(index, rows, count);
     for (int i = 0; i < count; ++i)
       dials.append(rows[i]);
   } else {
@@ -1576,8 +1615,9 @@ void ModeProfile::insertExtra(qint64 hz) {
 }
 
 QString ModeProfile::sideband() const {
-  // FreeDV Reporter uses LSB on 160, 80, and 40. Those chips are the first three.
-  if (radeMode(mode_) && band_ >= 0 && band_ <= 2)
+  // FreeDV Reporter uses LSB on 160, 80, and 40, and SSTV is LSB on 80 and 40
+  // by custom. Those chips are the first three.
+  if ((radeMode(mode_) || sstvMode(mode_)) && band_ >= 0 && band_ <= 2)
     return QStringLiteral("DIGL");
   return QStringLiteral("DIGU");
 }

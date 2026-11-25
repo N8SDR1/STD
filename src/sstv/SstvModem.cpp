@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QMap>
 #include <QDir>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
 
@@ -70,6 +71,7 @@ const std::vector<Spec>& specs() {
       {SstvMode::PD180, "PD-180", 96, 640, 496, 2, ColorModel::Ycc, 0.0, 20.0, 183.040},
       {SstvMode::PD240, "PD-240", 97, 640, 496, 2, ColorModel::Ycc, 0.0, 20.0, 244.480},
       {SstvMode::PD290, "PD-290", 94, 800, 616, 2, ColorModel::Ycc, 0.0, 20.0, 228.800},
+      {SstvMode::WraaseSC2180, "Wraase SC2-180", 55, 320, 256, 1, ColorModel::Rgb, 0.0, 5.5225, 235.000},
   };
   return table;
 }
@@ -84,6 +86,9 @@ const Spec* specFor(SstvMode mode) {
 bool isMartin(const Spec& s) {
   return s.mode == SstvMode::MartinM1 || s.mode == SstvMode::MartinM2;
 }
+bool isWraase(const Spec& s) {
+  return s.mode == SstvMode::WraaseSC2180;
+}
 bool isScottie(const Spec& s) {
   return s.mode == SstvMode::ScottieS1 || s.mode == SstvMode::ScottieS2 || s.mode == SstvMode::ScottieDX;
 }
@@ -97,6 +102,9 @@ std::vector<Element> lineElements(const Spec& s, int line, bool decoding = false
   if (isMartin(s)) {
     return {{s.syncMs, kSyncHz}, {0.572, kBlackHz}, {c, 0, Ch::G}, {0.572, kBlackHz},
             {c, 0, Ch::B}, {0.572, kBlackHz}, {c, 0, Ch::R}, {0.572, kBlackHz}};
+  }
+  if (isWraase(s)) {
+    return {{s.syncMs, kSyncHz}, {0.5, kBlackHz}, {c, 0, Ch::R}, {c, 0, Ch::G}, {c, 0, Ch::B}};
   }
   if (isScottie(s)) {
     return {{1.5, kBlackHz}, {c, 0, Ch::G}, {1.5, kBlackHz}, {c, 0, Ch::B},
@@ -397,6 +405,32 @@ std::vector<float> sstvCwId(const QString& text, int wpm, int toneHz, int sample
   return out;
 }
 
+std::vector<float> sstvFskId(const QString& call, int sampleRateHz, double amplitude) {
+  std::vector<float> out;
+  QString text = call.trimmed().toUpper();
+  if (text.isEmpty() || sampleRateHz <= 0)
+    return out;
+  ToneWriter w(sampleRateHz, amplitude, &out);
+  w.tone(kBlackHz, 300.0);
+  w.tone(2100.0, 100.0);
+  w.tone(1900.0, 22.0);
+  auto symbol = [&w](int value) {
+    for (int bit = 0; bit < 6; ++bit)
+      w.tone(((value >> bit) & 1) ? 1900.0 : 2100.0, 22.0);
+  };
+  symbol(0x20);
+  symbol(0x2A);
+  int check = 0;
+  for (const QChar c : text.left(10)) {
+    const int v = (c.unicode() - 0x20) & 0x3F;
+    check ^= v;
+    symbol(v);
+  }
+  symbol(0x01);
+  symbol(check);
+  return out;
+}
+
 int sstvRowsSentAt(SstvMode mode, double seconds) {
   const Spec* s = specFor(mode);
   if (!s)
@@ -549,6 +583,11 @@ struct SstvEngine::Private {
   QString lastSaved;
   QString endReason;
   bool selftest = false;
+  // FSK ID: where to look after a picture ends, and how far it has looked.
+  long long fskFrom = -1;
+  int fskTries = 0;
+  QString fskId;
+  QDateTime savedAt;
 
   double rate() const { return double(demod.rate()); }
   long long end() const { return base + static_cast<long long>(freq.size()); }
@@ -914,6 +953,65 @@ struct SstvEngine::Private {
   }
 
   // No sync pulse for this long means the station has stopped.
+  // One FSK ID bit: 1 for 1900 Hz, 0 for 2100 Hz, -1 when it is neither.
+  int fskBit(double at) const {
+    const double hz = meanHz(at + ms(4.0), at + ms(18.0)) - offset;
+    if (std::abs(hz - 1900.0) < 80.0)
+      return 1;
+    if (std::abs(hz - 2100.0) < 80.0)
+      return 0;
+    return -1;
+  }
+
+  int fskSymbol(double at) const {
+    int v = 0;
+    for (int bit = 0; bit < 6; ++bit) {
+      const int b = fskBit(at + ms(22.0 * bit));
+      if (b < 0)
+        return -1;
+      v |= b << bit;
+    }
+    return v;
+  }
+
+  // Look for an FSK ID in the few seconds after a picture. Returns the call.
+  QString scanFskId(double from, double until) const {
+    const double symbolLen = ms(22.0 * 6.0);
+    for (double t = from; t + symbolLen * 4 < until; t += ms(1.0)) {
+      if (fskBit(t) < 0)
+        continue;
+      if (fskSymbol(t) != 0x20 || fskSymbol(t + symbolLen) != 0x2A)
+        continue;
+      QString call;
+      int check = 0;
+      double at = t + symbolLen * 2;
+      bool ended = false;
+      for (int n = 0; n < 12 && at + symbolLen <= double(end()); ++n, at += symbolLen) {
+        const int v = fskSymbol(at);
+        if (v < 0)
+          break;
+        if (v == 0x01) {
+          ended = true;
+          at += symbolLen;
+          break;
+        }
+        call += QChar(v + 0x20);
+        check ^= v;
+      }
+      if (!ended || call.size() < 3 || call.size() > 10)
+        continue;
+      static const QRegularExpression callShape(QStringLiteral("^[A-Z0-9/]+$"));
+      if (!callShape.match(call).hasMatch() || !call.contains(QRegularExpression(QStringLiteral("[0-9]"))))
+        continue;
+      // A check symbol may follow; when it does, it must agree.
+      const int sent = at + symbolLen <= double(end()) ? fskSymbol(at) : -1;
+      if (sent >= 0 && sent != check)
+        continue;
+      return call;
+    }
+    return QString();
+  }
+
   bool signalGone() const { return missed > 0 && double(missed) * periodSamples >= ms(12000.0); }
 
   // Returns true when the picture is complete (or the signal is gone).
@@ -1022,6 +1120,9 @@ void SstvEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
   auto finish = [this](const QString& why) {
     d_->phase = Private::Phase::Hunt;
     d_->endReason = why;
+    d_->fskFrom = static_cast<long long>(std::max(0.0, d_->lineStart - d_->ms(500.0)));
+    d_->fskTries = 0;
+    d_->fskId.clear();
     if (d_->autoSave && d_->rows >= 16) {
       const QString path = d_->save();
       if (!path.isEmpty())
@@ -1055,10 +1156,26 @@ void SstvEngine::pushAudio(const float* samples, int count, int sampleRateHz) {
                               : QStringLiteral("complete"));
     }
   }
+  // FSK ID: look 4 and 8 seconds after the picture ended.
+  if (d_->fskFrom >= 0) {
+    const double waited = double(d_->end() - d_->fskFrom);
+    if (d_->fskTries < 2 && waited >= d_->ms(d_->fskTries == 0 ? 4000.0 : 8000.0)) {
+      ++d_->fskTries;
+      const QString call = d_->scanFskId(double(d_->fskFrom), double(d_->end()));
+      if (!call.isEmpty()) {
+        d_->fskId = call;
+        d_->fskFrom = -1;
+        emit fskIdHeard(call);
+      } else if (d_->fskTries >= 2) {
+        d_->fskFrom = -1;
+      }
+    }
+  }
   // Keep a few seconds behind whatever still needs reading.
-  const double keep = d_->phase == Private::Phase::Image
-                          ? std::min(d_->lineStart, d_->lastSyncAt) - d_->ms(2000.0)
-                          : double(d_->huntFrom) - d_->ms(2000.0);
+  double keep = d_->phase == Private::Phase::Image ? std::min(d_->lineStart, d_->lastSyncAt) - d_->ms(2000.0)
+                                                   : double(d_->huntFrom) - d_->ms(2000.0);
+  if (d_->fskFrom >= 0)
+    keep = std::min(keep, double(d_->fskFrom) - d_->ms(500.0));
   d_->trim(static_cast<long long>(keep));
 }
 
@@ -1099,21 +1216,34 @@ SstvResult sstvDecode(const float* samples, int count, int sampleRateHz) {
   engine.setAutoSave(false);
   engine.setArmed(true);
   bool done = false;
-  QObject::connect(&engine, &SstvEngine::pictureFinished, [&done] { done = true; });
-  QObject::connect(&engine, &SstvEngine::pictureStarted, [&result](SstvMode) { ++result.starts; });
+  QObject::connect(&engine, &SstvEngine::pictureFinished, [&] {
+    if (done)
+      return;
+    done = true;
+    result.mode = engine.mode();
+    result.image = engine.image();
+    result.rows = engine.rowCount();
+    result.offsetHz = engine.offsetHz();
+    result.endReason = engine.endReason();
+  });
+  QObject::connect(&engine, &SstvEngine::pictureStarted, [&result, &done](SstvMode) {
+    if (!done)
+      ++result.starts;
+  });
+  QObject::connect(&engine, &SstvEngine::fskIdHeard, [&result](const QString& call) { result.fskId = call; });
   const int chunk = std::max(1, sampleRateHz / 20);
-  for (int i = 0; i < count && !done; i += chunk)
+  for (int i = 0; i < count; i += chunk)
     engine.pushAudio(samples + i, std::min(chunk, count - i), sampleRateHz);
-  // Flush with silence so the last lines are read.
+  // Flush with silence so the last lines are read and an FSK ID is looked for.
+  std::vector<float> quiet(static_cast<size_t>(sampleRateHz), 0.0f);
+  for (int k = 0; k < 9 && (!done || result.fskId.isEmpty()); ++k)
+    engine.pushAudio(quiet.data(), int(quiet.size()), sampleRateHz);
   if (!done) {
-    std::vector<float> quiet(static_cast<size_t>(sampleRateHz), 0.0f);
-    for (int k = 0; k < 3 && !done; ++k)
-      engine.pushAudio(quiet.data(), int(quiet.size()), sampleRateHz);
+    result.mode = engine.mode();
+    result.image = engine.image();
+    result.rows = engine.rowCount();
+    result.offsetHz = engine.offsetHz();
+    result.endReason = engine.endReason();
   }
-  result.mode = engine.mode();
-  result.image = engine.image();
-  result.rows = engine.rowCount();
-  result.offsetHz = engine.offsetHz();
-  result.endReason = engine.endReason();
   return result;
 }

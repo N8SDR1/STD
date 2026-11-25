@@ -31,6 +31,7 @@ enum class SstvMode {
   PD180,
   PD240,
   PD290,
+  WraaseSC2180,
 };
 
 // Every mode STD decodes, in menu order.
@@ -57,6 +58,13 @@ std::vector<float> sstvModulate(SstvMode mode, const QImage& picture, int sample
 // A CW identification sent after the picture as audio: `gapMs` of silence,
 // then `text` in Morse at `wpm` on a `toneHz` tone with 5 ms soft edges.
 // Letters, digits and / only; anything else is skipped.
+// FSK ID: the callsign as a short digital burst after the picture, the way
+// MMSSTV and QSSTV send it. 1500 Hz for 300 ms, 2100 Hz for 100 ms, a 1900 Hz
+// start bit, then 6-bit characters (ASCII minus 0x20, low bit first) at 22 ms
+// a bit, 1900 Hz for a 1 and 2100 Hz for a 0: the header 0x20 0x2A, the
+// call, 0x01, and an XOR check of the call.
+std::vector<float> sstvFskId(const QString& call, int sampleRateHz, double amplitude = 0.5);
+
 std::vector<float> sstvCwId(const QString& text, int wpm, int toneHz, int sampleRateHz, double amplitude = 0.5,
                             int gapMs = 500);
 
@@ -69,6 +77,8 @@ struct SstvResult {
   // How many pictures started while decoding (a false header makes two).
   int starts = 0;
   QString endReason;
+  // The callsign from an FSK ID after the picture, if one came.
+  QString fskId;
 };
 
 // Decode the first picture in a recording. For tests and files.
@@ -121,6 +131,8 @@ signals:
   void imageChanged();
   void pictureFinished();
   void imageSaved(const QString& path);
+  // An FSK ID after a picture named the sender.
+  void fskIdHeard(const QString& call);
 
 private:
   struct Private;
