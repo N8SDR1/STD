@@ -14,7 +14,7 @@
 
 // An SSTV picture template: a background with layers drawn over it. Layer
 // positions are fractions of the frame (0 to 1), so one template fits every
-// mode. Text may hold fill-in fields such as {MYCALL} and {RST}, filled when
+// mode. Text may hold fill-in fields such as {MYCALL} and {RSV}, filled when
 // the picture is built. Templates are small JSON files in the Templates
 // folder, so they can be copied and shared.
 

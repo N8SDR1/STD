@@ -193,7 +193,7 @@ SstvTemplateEditor::SstvTemplateEditor(const SstvFields& fields, const QImage& r
   // Sample values for anything still empty, so the preview shows the layout.
   const std::pair<const char*, const char*> samples[] = {
       {"{MYCALL}", "N0CALL"}, {"{MYGRID}", "EM79"}, {"{MYNAME}", "Pat"},  {"{CALL}", "W1AW"},
-      {"{RST}", "595"},       {"{NAME}", "Joe"},    {"{BAND}", "20m"},    {"{FREQ}", "14.230"},
+      {"{RSV}", "595"},       {"{RST}", "595"},       {"{NAME}", "Joe"},    {"{BAND}", "20m"},    {"{FREQ}", "14.230"},
       {"{MODE}", "Martin M1"}, {"{DATE}", "2026-01-01"}, {"{UTC}", "12:00Z"}};
   for (const auto& s : samples) {
     const QString key = QLatin1String(s.first);
@@ -246,7 +246,7 @@ SstvTemplateEditor::SstvTemplateEditor(const SstvFields& fields, const QImage& r
   mid->addWidget(canvas_, 1);
   auto* note = new QLabel(QStringLiteral(
                               "The preview fills the fields with sample values; when you send, they come from "
-                              "Options → User and the Call, RST and Name boxes. Positions follow the frame, so the "
+                              "Options → User and the Call, RSV and Name boxes. Positions follow the frame, so the "
                               "template fits every mode."),
                           this);
   note->setWordWrap(true);

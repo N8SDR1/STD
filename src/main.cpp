@@ -4235,9 +4235,11 @@ int shellReady(MainWindow& window) {
       SstvFields fields;
       fields.insert(QStringLiteral("{MYCALL}"), QStringLiteral("N8SDR"));
       fields.insert(QStringLiteral("{CALL}"), QStringLiteral("W1AW"));
+      fields.insert(QStringLiteral("{RSV}"), QStringLiteral("595"));
       fields.insert(QStringLiteral("{RST}"), QStringLiteral("595"));
-      if (sstvFillFields(QStringLiteral("{call} DE {MYCALL} UR {RST}"), fields) !=
-          QLatin1String("W1AW DE N8SDR UR 595"))
+      if (sstvFillFields(QStringLiteral("{call} DE {MYCALL} UR {RSV}"), fields) !=
+              QLatin1String("W1AW DE N8SDR UR 595") ||
+          sstvFillFields(QStringLiteral("UR {RST}"), fields) != QLatin1String("UR 595"))
         return fail("SSTV template fields do not fill");
       const std::vector<SstvTemplate> starters = sstvStarterTemplates();
       if (starters.size() != 3)
