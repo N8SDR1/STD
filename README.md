@@ -66,11 +66,11 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 
 **Clock check.** The clock check watches the DT of the FT8, FT4, and FT2 decodes. When the middle of the last few minutes of them is off by more than 1 s in FT8, 0.5 s in FT4, or 0.3 s in FT2, the status bar shows Clock 1.3 s fast (or slow) and the status line says so once. It needs eight decodes from two periods, and a few stations far off do not move it. STD does not change the clock: sync it with Windows time, Meinberg NTP, or BktTimeSync. FT8 is lost when the PC clock is off by much more than a second, so this catches a quiet failure.
 
-## Receive only
+## Pictures
 
 **SSTV** receives and sends pictures. The VIS header picks the mode: Robot 36 and 72, Martin M1 and M2, Scottie S1, S2 and DX, and PD-50 to PD-290. Tuning errors and a fast or slow sound card are corrected, and finished pictures save as PNGs to an RX folder shown beside the picture. To send, pick a picture or a template and a mode; TX keys only when you press it and drops when the picture ends. Templates add text with fonts, outlines and fields such as your call, their call and the report, plus their received picture in a reply, and an optional CW ID follows the picture. Log writes the QSO as mode SSTV, with both reports, to the ADIF log and SDRLogger+. START is never sent.
 
-**WEFAX-576** receives. IOC 576, 120 lines per minute. Stations are listed by ITU region, with NOAA hours on the frequencies that have them. A click sets the dial 1.9 kHz under the assigned frequency, USB, marker 1900 Hz. Start, a left-edge click, Auto save, Open folder, and Fit are on that screen. It does not key, and it does not send START.
+**WEFAX-576** receives only. IOC 576, 120 lines per minute. Stations are listed by ITU region, with NOAA hours on the frequencies that have them. A click sets the dial 1.9 kHz under the assigned frequency, USB, marker 1900 Hz. Start, a left-edge click, Auto save, Open folder, and Fit are on that screen. It does not key, and it does not send START.
 
 ## Still in progress
 
