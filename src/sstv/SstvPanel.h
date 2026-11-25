@@ -45,6 +45,8 @@ private:
   QCheckBox* autoSave_ = nullptr;
   // When an FSK ID names the sender, make that picture their picture.
   QCheckBox* autoReply_ = nullptr;
+  // Off, or file pictures into a folder per day, week, month or year.
+  QComboBox* archive_ = nullptr;
   QLabel* state_ = nullptr;
   QLabel* view_ = nullptr;
   QListWidget* saved_ = nullptr;

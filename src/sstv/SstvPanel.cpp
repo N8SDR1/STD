@@ -10,6 +10,7 @@
 #include <QDesktopServices>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -17,6 +18,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSettings>
@@ -24,12 +26,16 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
 
 constexpr int kThumbWidth = 128;
+// Archive off shows the newest 40; a day, week, month or year shows up to
+// 200 of that period's pictures.
 constexpr int kSavedShown = 40;
+constexpr int kPeriodShown = 200;
 
 QFont panelFont(int pixelSize) {
   QFont font("Inter");
@@ -114,6 +120,21 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
       "is: pick the Reply template, check the preview, press TX. This does not key."));
   connect(autoReply_, &QCheckBox::toggled, this,
           [](bool on) { QSettings().setValue(QStringLiteral("sstv/autoReply"), on); });
+  archive_ = new QComboBox(this);
+  archive_->setObjectName(QStringLiteral("sstvArchive"));
+  archive_->setFont(panelFont(12));
+  archive_->addItem(QStringLiteral("Archive off"), QStringLiteral("off"));
+  archive_->addItem(QStringLiteral("By day"), QStringLiteral("daily"));
+  archive_->addItem(QStringLiteral("By week"), QStringLiteral("weekly"));
+  archive_->addItem(QStringLiteral("By month"), QStringLiteral("monthly"));
+  archive_->addItem(QStringLiteral("By year"), QStringLiteral("yearly"));
+  archive_->setCurrentIndex(std::max(0, archive_->findData(sstvArchivePeriod())));
+  archive_->setToolTip(QStringLiteral(
+      "Keep the RX folder tidy: save each picture into a folder for its UTC day (2026-11-25), week (2026-W48), "
+      "month (2026-11) or year (2026) inside the RX folder. Archive off saves straight into the RX folder. "
+      "Choosing a period offers to file the pictures already there. The list beside the picture follows it: "
+      "only today's, this week's, this month's or this year's pictures; Archive off lists the newest of all. "
+      "The pictures are still in their folders; Open shows them. This does not key."));
   state_ = new QLabel(this);
   state_->setObjectName(QStringLiteral("sstvState"));
   state_->setFont(panelFont(12));
@@ -127,6 +148,7 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
   row->addWidget(autoSave_);
   row->addWidget(reply);
   row->addWidget(autoReply_);
+  row->addWidget(archive_);
   row->addWidget(open);
   row->addWidget(folder);
   row->addWidget(state_, 1);
@@ -226,6 +248,35 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
     refreshSaved();
     emit status(QStringLiteral("SSTV pictures save to %1. Nothing was keyed. START was not sent.").arg(picked));
   });
+  connect(archive_, &QComboBox::activated, this, [this] {
+    const QString period = archive_->currentData().toString();
+    sstvSetArchivePeriod(period);
+    if (period == QLatin1String("off")) {
+      refreshSaved();
+      emit status(QStringLiteral("SSTV pictures save straight into the RX folder, and the list shows the newest "
+                                 "of all of them. Nothing was keyed."));
+      return;
+    }
+    const QDir root(sstvRxDirectory());
+    const int loose =
+        root.entryList({QStringLiteral("*.png"), QStringLiteral("*.jpg"), QStringLiteral("*.bmp")}, QDir::Files)
+            .size();
+    int moved = 0;
+    if (loose > 0 &&
+        QMessageBox::question(this, QStringLiteral("Archive SSTV pictures"),
+                              QStringLiteral("Also file the %1 picture(s) already in the RX folder into dated "
+                                             "folders, %2?")
+                                  .arg(loose)
+                                  .arg(archive_->currentText().toLower()),
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
+      moved = sstvArchiveLoose(sstvRxDirectory(), period);
+    refreshSaved();
+    emit status(QStringLiteral("SSTV pictures now save into dated folders %1, and the list shows only %2%3. "
+                               "Nothing was keyed.")
+                    .arg(archive_->currentText().toLower(),
+                         sstvArchiveSubfolder(QDateTime::currentDateTimeUtc(), period),
+                         moved > 0 ? QStringLiteral("; %1 filed").arg(moved) : QString()));
+  });
   connect(autoSave_, &QCheckBox::toggled, this, [this](bool on) {
     QSettings().setValue(QStringLiteral("sstv/autoSave"), on);
     engine_->setAutoSave(on);
@@ -314,19 +365,18 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
 
 void SstvPanel::refreshSaved() {
   saved_->clear();
-  const QDir dir(sstvRxDirectory());
+  // The list follows the archive: this period's pictures, or with the
+  // archive off the newest of all, from the RX folder and its dated folders.
+  const QString period = sstvArchivePeriod();
   const QFileInfoList files =
-      dir.entryInfoList({QStringLiteral("*.png"), QStringLiteral("*.jpg"), QStringLiteral("*.bmp")}, QDir::Files,
-                        QDir::Time);
-  int shown = 0;
+      sstvPicturesForPeriod(sstvRxDirectory(), period, QDateTime::currentDateTimeUtc(),
+                            period == QLatin1String("off") ? kSavedShown : kPeriodShown);
   for (const QFileInfo& info : files) {
-    if (shown++ >= kSavedShown)
-      break;
     const QPixmap thumb = QPixmap(info.filePath()).scaledToWidth(kThumbWidth, Qt::SmoothTransformation);
     // Thumbnails only, so the list stays narrow; the name is on hover.
     auto* item = new QListWidgetItem(QIcon(thumb), QString(), saved_);
     item->setData(Qt::UserRole, info.filePath());
-    item->setToolTip(info.fileName());
+    item->setToolTip(QDir(sstvRxDirectory()).relativeFilePath(info.filePath()));
   }
 }
 

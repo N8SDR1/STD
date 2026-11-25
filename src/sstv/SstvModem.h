@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <QDateTime>
+#include <QFileInfo>
 #include <QImage>
 #include <QObject>
 #include <QString>
@@ -95,6 +97,28 @@ const std::vector<SstvWebGallery>& sstvWebGalleries();
 
 QString sstvRxDirectory();
 void sstvSetRxDirectory(const QString& directory);
+
+// Archive: received pictures go into a dated folder under the RX folder, one
+// per UTC day ("2026-11-25"), ISO week ("2026-W48"), month ("2026-11") or
+// year ("2026"). The period is "off", "daily", "weekly", "monthly" or
+// "yearly"; off saves straight into the RX folder.
+QString sstvArchivePeriod();
+void sstvSetArchivePeriod(const QString& period);
+QString sstvArchiveSubfolder(const QDateTime& utc, const QString& period);
+// Where a picture received at this UTC time is saved.
+QString sstvRxSaveDirectory(const QDateTime& utc);
+// Move the pictures lying loose in the RX folder into their dated folders,
+// dated by the UTC time at the start of their name, or else by when the file
+// was written. Returns how many were moved.
+int sstvArchiveLoose(const QString& rxDirectory, const QString& period);
+// When a saved picture was received: the UTC time at the start of its name,
+// or else when the file was written.
+QDateTime sstvPictureTime(const QFileInfo& info);
+// The pictures in the RX folder and its dated folders that belong to the
+// current day, week, month or year of the period, newest first; with the
+// period off, all of them. At most `limit`.
+QFileInfoList sstvPicturesForPeriod(const QString& rxDirectory, const QString& period, const QDateTime& nowUtc,
+                                    int limit);
 
 class SstvEngine : public QObject {
   Q_OBJECT

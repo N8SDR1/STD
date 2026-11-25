@@ -78,6 +78,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QDir>
+#include <QTimeZone>
 #include <QFile>
 #include <QFileInfo>
 #include <QFrame>
@@ -3610,6 +3611,9 @@ int shellReady(MainWindow& window) {
         auto* autoReply = window.findChild<QCheckBox*>(QStringLiteral("sstvAutoReply"));
         if (!autoReply || autoReply->isChecked() && !QSettings().value(QStringLiteral("sstv/autoReply")).toBool())
           return fail("SSTV FSK ID sets reply option is missing");
+        auto* archive = window.findChild<QComboBox*>(QStringLiteral("sstvArchive"));
+        if (!archive || archive->count() != 5 || archive->findData(QStringLiteral("weekly")) < 0)
+          return fail("SSTV archive choice is missing");
       }
       auto* sstvStart = window.findChild<QPushButton*>(QStringLiteral("sstvStart"));
       auto* sstvPick = window.findChild<QComboBox*>(QStringLiteral("sstvMode"));
@@ -4340,6 +4344,37 @@ int shellReady(MainWindow& window) {
       turned.layers.push_back(side);
       if (SstvTemplate::fromJson(turned.toJson()).layers.front().angle != -90.0)
         return fail("SSTV layer angle does not round-trip");
+      // Archive folders: day, ISO week (31 Dec 2024 is week 1 of 2025),
+      // month, year; and filing loose pictures by the time in their name.
+      {
+        const QDateTime when(QDate(2024, 12, 31), QTime(23, 30), QTimeZone::UTC);
+        if (sstvArchiveSubfolder(when, QStringLiteral("daily")) != QLatin1String("2024-12-31") ||
+            sstvArchiveSubfolder(when, QStringLiteral("weekly")) != QLatin1String("2025-W01") ||
+            sstvArchiveSubfolder(when, QStringLiteral("monthly")) != QLatin1String("2024-12") ||
+            sstvArchiveSubfolder(when, QStringLiteral("yearly")) != QLatin1String("2024") ||
+            !sstvArchiveSubfolder(when, QStringLiteral("off")).isEmpty())
+          return fail("SSTV archive folder names are wrong");
+        QTemporaryDir rx;
+        QImage dot(4, 4, QImage::Format_RGB32);
+        dot.fill(Qt::red);
+        dot.save(QDir(rx.path()).filePath(QStringLiteral("20261125_143000_Martin1.png")));
+        dot.save(QDir(rx.path()).filePath(QStringLiteral("20250102_010000_Scottie1_N8SDR.png")));
+        if (sstvArchiveLoose(rx.path(), QStringLiteral("monthly")) != 2 ||
+            !QFileInfo::exists(QDir(rx.path()).filePath(QStringLiteral("2026-11/20261125_143000_Martin1.png"))) ||
+            !QFileInfo::exists(
+                QDir(rx.path()).filePath(QStringLiteral("2025-01/20250102_010000_Scottie1_N8SDR.png"))) ||
+            sstvArchiveLoose(rx.path(), QStringLiteral("off")) != 0)
+          return fail("SSTV archive did not file loose pictures");
+        // The list follows the period: November 2026 holds one picture, the
+        // whole folder two, newest first.
+        const QDateTime nov(QDate(2026, 11, 30), QTime(12, 0), QTimeZone::UTC);
+        const QFileInfoList month = sstvPicturesForPeriod(rx.path(), QStringLiteral("monthly"), nov, 200);
+        const QFileInfoList all = sstvPicturesForPeriod(rx.path(), QStringLiteral("off"), nov, 40);
+        if (month.size() != 1 || !month.front().fileName().startsWith(QLatin1String("20261125")) ||
+            all.size() != 2 || !all.front().fileName().startsWith(QLatin1String("20261125")) ||
+            !sstvPicturesForPeriod(rx.path(), QStringLiteral("daily"), nov, 200).isEmpty())
+          return fail("SSTV list does not follow the archive period");
+      }
       const QImage tall = sstvRenderTemplate(turned, QSize(320, 256), SstvFields());
       int inside = 0;
       int outside = 0;

@@ -6,6 +6,10 @@
 #include <QDateTime>
 #include <QMap>
 #include <QDir>
+#include <QDirIterator>
+#include <QTimeZone>
+#include <QFileInfo>
+#include <QFile>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
@@ -541,6 +545,92 @@ void sstvSetRxDirectory(const QString& directory) {
   QSettings().setValue(QStringLiteral("sstv/rxDirectory"), directory);
 }
 
+QString sstvArchivePeriod() {
+  const QString period = QSettings().value(QStringLiteral("sstv/archive"), QStringLiteral("off")).toString();
+  for (const char* known : {"daily", "weekly", "monthly", "yearly"})
+    if (period == QLatin1String(known))
+      return period;
+  return QStringLiteral("off");
+}
+
+void sstvSetArchivePeriod(const QString& period) {
+  QSettings().setValue(QStringLiteral("sstv/archive"), period);
+}
+
+QString sstvArchiveSubfolder(const QDateTime& utc, const QString& period) {
+  const QDate day = utc.toUTC().date();
+  if (period == QLatin1String("daily"))
+    return day.toString(QStringLiteral("yyyy-MM-dd"));
+  if (period == QLatin1String("weekly")) {
+    // ISO week: Monday to Sunday, counted in the year that holds its
+    // Thursday, so the last days of December can be week 1 of the next year.
+    int year = 0;
+    const int week = day.weekNumber(&year);
+    return QStringLiteral("%1-W%2").arg(year).arg(week, 2, 10, QLatin1Char('0'));
+  }
+  if (period == QLatin1String("monthly"))
+    return day.toString(QStringLiteral("yyyy-MM"));
+  if (period == QLatin1String("yearly"))
+    return day.toString(QStringLiteral("yyyy"));
+  return QString();
+}
+
+QString sstvRxSaveDirectory(const QDateTime& utc) {
+  const QString sub = sstvArchiveSubfolder(utc, sstvArchivePeriod());
+  return sub.isEmpty() ? sstvRxDirectory() : QDir(sstvRxDirectory()).filePath(sub);
+}
+
+QDateTime sstvPictureTime(const QFileInfo& info) {
+  QDateTime when = QDateTime::fromString(info.fileName().left(15), QStringLiteral("yyyyMMdd_HHmmss"));
+  if (when.isValid()) {
+    when.setTimeZone(QTimeZone::UTC);
+    return when;
+  }
+  return info.lastModified().toUTC();
+}
+
+QFileInfoList sstvPicturesForPeriod(const QString& rxDirectory, const QString& period, const QDateTime& nowUtc,
+                                    int limit) {
+  const QString current = sstvArchiveSubfolder(nowUtc, period);
+  QList<QPair<QDateTime, QFileInfo>> found;
+  QDirIterator it(rxDirectory, {QStringLiteral("*.png"), QStringLiteral("*.jpg"), QStringLiteral("*.bmp")},
+                  QDir::Files, QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    it.next();
+    const QDateTime when = sstvPictureTime(it.fileInfo());
+    if (current.isEmpty() || sstvArchiveSubfolder(when, period) == current)
+      found.append({when, it.fileInfo()});
+  }
+  std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+  QFileInfoList pictures;
+  for (const auto& entry : found) {
+    if (pictures.size() >= limit)
+      break;
+    pictures.append(entry.second);
+  }
+  return pictures;
+}
+
+int sstvArchiveLoose(const QString& rxDirectory, const QString& period) {
+  if (sstvArchiveSubfolder(QDateTime::currentDateTimeUtc(), period).isEmpty())
+    return 0;
+  const QDir root(rxDirectory);
+  int moved = 0;
+  const QFileInfoList loose =
+      root.entryInfoList({QStringLiteral("*.png"), QStringLiteral("*.jpg"), QStringLiteral("*.bmp")}, QDir::Files);
+  for (const QFileInfo& info : loose) {
+    const QString dir = root.filePath(sstvArchiveSubfolder(sstvPictureTime(info), period));
+    if (!QDir().mkpath(dir))
+      continue;
+    QString target = QDir(dir).filePath(info.fileName());
+    for (int n = 2; QFileInfo::exists(target); ++n)
+      target = QDir(dir).filePath(QStringLiteral("%1-%2.%3").arg(info.completeBaseName()).arg(n).arg(info.suffix()));
+    if (QFile::rename(info.filePath(), target))
+      ++moved;
+  }
+  return moved;
+}
+
 // ---------------------------------------------------------------------------
 
 struct SstvEngine::Private {
@@ -1041,10 +1131,11 @@ struct SstvEngine::Private {
       return QString();
     if (selftest)
       return QStringLiteral("selftest.png");
-    const QString dir = sstvRxDirectory();
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    const QString dir = sstvRxSaveDirectory(now);
     if (!QDir().mkpath(dir))
       return QString();
-    const QString stamp = QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd_HHmmss"));
+    const QString stamp = now.toString(QStringLiteral("yyyyMMdd_HHmmss"));
     QString mode = QString::fromLatin1(spec->name);
     mode.remove(QLatin1Char(' '));
     const QString path = QDir(dir).filePath(QStringLiteral("%1_%2.png").arg(stamp, mode));
