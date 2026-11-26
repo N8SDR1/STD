@@ -17,6 +17,9 @@
 #include <QLineEdit>
 #include <QRegularExpression>
 #include <QHBoxLayout>
+#include "FlowLayout.h"
+
+#include <initializer_list>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
@@ -63,6 +66,18 @@ QString seconds(double s) {
                      : QStringLiteral("%1 s").arg(total);
 }
 
+
+// A label and its box kept together, so a wrapping row never splits them.
+QWidget* sstvTxGroup(QWidget* parent, std::initializer_list<QWidget*> widgets) {
+  auto* box = new QWidget(parent);
+  auto* lay = new QHBoxLayout(box);
+  lay->setContentsMargins(0, 0, 0, 0);
+  lay->setSpacing(4);
+  for (QWidget* w : widgets)
+    lay->addWidget(w);
+  return box;
+}
+
 }  // namespace
 
 QString sstvImagesDirectory() {
@@ -79,7 +94,8 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
   layout->setContentsMargins(0, 2, 0, 2);
   layout->setSpacing(6);
 
-  auto* row = new QHBoxLayout();
+  // Both rows wrap onto another line when the window is too narrow for one.
+  auto* row = new FlowLayout();
   row->setSpacing(6);
   auto* label = new QLabel(QStringLiteral("Send as"), this);
   label->setFont(paneFont(12));
@@ -134,16 +150,27 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
   info_->setObjectName(QStringLiteral("sstvTxInfo"));
   info_->setFont(paneFont(12));
   info_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-  row->addWidget(label);
-  row->addWidget(mode_);
+  info_->setMinimumWidth(80);
+  matchRx_ = new QCheckBox(QStringLiteral("Match RX"), this);
+  matchRx_->setObjectName(QStringLiteral("sstvTxMatchRx"));
+  matchRx_->setFont(paneFont(12));
+  matchRx_->setChecked(QSettings().value(QStringLiteral("sstv/txMatchRx"), true).toBool());
+  matchRx_->setToolTip(QStringLiteral(
+      "When a picture starts coming in, set Send as to its mode, read from the VIS header (or the mode you "
+      "pressed Start with), so a reply goes back in the mode they used: they send Martin M2, you reply in "
+      "Martin M2. Untick it to keep your own choice. You can still change Send as by hand after a picture. "
+      "This does not key."));
+  connect(matchRx_, &QCheckBox::toggled, this,
+          [](bool on) { QSettings().setValue(QStringLiteral("sstv/txMatchRx"), on); });
+  row->addWidget(sstvTxGroup(this, {label, mode_, matchRx_}));
   row->addWidget(shape_);
   row->addWidget(add);
   row->addWidget(saveAs);
   row->addWidget(open);
-  row->addWidget(info_, 1);
+  row->addWidget(info_);
   layout->addLayout(row);
 
-  auto* qso = new QHBoxLayout();
+  auto* qso = new FlowLayout();
   qso->setSpacing(6);
   auto field = [this, qso](const QString& caption, const QString& name, const QString& tip, int width) {
     auto* l = new QLabel(caption, this);
@@ -154,8 +181,7 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
     e->setFixedWidth(width);
     e->setToolTip(tip);
     l->setToolTip(tip);
-    qso->addWidget(l);
-    qso->addWidget(e);
+    qso->addWidget(sstvTxGroup(this, {l, e}));
     return e;
   };
   call_ = field(QStringLiteral("Call"), QStringLiteral("sstvTxCall"),
@@ -226,9 +252,7 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
       "you send with TX.")
                         .arg(cwWpm())
                         .arg(cwToneHz()));
-  qso->addWidget(replyLabel);
-  qso->addWidget(replyThumb_);
-  qso->addWidget(replyClear);
+  qso->addWidget(sstvTxGroup(this, {replyLabel, replyThumb_, replyClear}));
   qso->addWidget(inset_);
   qso->addWidget(templates);
   fskId_ = new QCheckBox(QStringLiteral("FSK ID"), this);
@@ -254,7 +278,6 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
       "the other modes. Then Call, Name, RSV rcvd and their picture clear for the next one. This does not key."));
   qso->addWidget(log);
   connect(log, &QPushButton::clicked, this, [this] { emit logRequested(); });
-  qso->addStretch(1);
   layout->addLayout(qso);
   for (QLineEdit* e : {call_, rst_, name_, grid_, qth_}) {
     connect(e, &QLineEdit::textChanged, this, [this] {
@@ -587,6 +610,16 @@ void SstvTxPanel::openEditor() {
     pickTemplate(chosen);
   else if (!currentTemplate())
     template_.clear();
+}
+
+bool SstvTxPanel::followRxMode(SstvMode rxMode) {
+  if (!matchRx_ || !matchRx_->isChecked() || rxMode == SstvMode::None || rxMode == mode())
+    return false;
+  const int at = mode_->findData(sstvModeName(rxMode));
+  if (at < 0)
+    return false;
+  mode_->setCurrentIndex(at);
+  return true;
 }
 
 SstvMode SstvTxPanel::mode() const {

@@ -5141,6 +5141,7 @@ int shellReady(MainWindow& window) {
       qrv::qrvModeForStd(QStringLiteral("RTTY")) != QLatin1String("RTTY") ||
       !qrv::qrvModeForStd(QStringLiteral("RADE V1")).isEmpty() ||
       !qrv::qrvModeForStd(radeV2Name()).isEmpty() ||
+      qrv::qrvModeForStd(QStringLiteral("SSTV")) != QLatin1String("SSTV") ||
       !qrv::qrvModeForStd(QStringLiteral("WEFAX-576")).isEmpty())
     return fail("QRV mode token is wrong");
   if (qrv::bandForHz(14074000) != QLatin1String("20m") || qrv::bandForHz(7074000) != QLatin1String("40m") ||
