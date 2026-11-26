@@ -1,6 +1,6 @@
 # STD
 
-**Shift, Tone, Decode.** Software in testing. Version 0.1.17. Around the shack it also answers to **Sending Transmittal Disease**.
+**Shift, Tone, Decode.** Software in testing. Version 0.1.18. Around the shack it also answers to **Sending Transmittal Disease**.
 
 The real expansion is Shift, Tone, Decode. The other one is the joke. STD is a 64-bit Windows application, a Qt 6.11.1 MSVC digimode console for a TCI radio, currently in the contagious stage: it keys on the bench, it has not finished making the rounds, and the recommended treatment is another shot of bourbon while the modes get proved on the air. [Lyra](https://n8sdr1.github.io/Lyra-SDR-cpp/) is the transceiver. [SDRLogger+](https://n8sdr1.github.io/SDRLoggerPlus/) is the logbook. CW stays in Lyra.
 
@@ -68,7 +68,7 @@ TX sends one of these when the operator presses TX or Tune. Opening the radio do
 
 ## Pictures
 
-**SSTV** receives and sends pictures. The VIS header picks the mode: Robot 36 and 72, Martin M1 and M2, Scottie S1, S2 and DX, PD-50 to PD-290, and Wraase SC2-180. Tuning errors and a fast or slow sound card are corrected, and finished pictures save as PNGs to an RX folder shown beside the picture, optionally filed by day, week, month or year. To send, pick a picture or a template and a mode; TX keys only when you press it and drops when the picture ends. Templates add text with fonts, outlines and fields such as your call, their call and the report, plus their received picture in a reply, and an optional FSK ID and CW ID follow the picture. A received FSK ID fills in their call. Band chips go to the SSTV calling dials, DIGL on 80 and 40 m and DIGU above. Log writes the QSO as mode SSTV, with both reports, to the ADIF log and SDRLogger+. START is never sent.
+**SSTV** receives and sends pictures. The VIS header picks the mode: Robot 36 and 72, Martin M1 and M2, Scottie S1, S2 and DX, PD-50 to PD-290, and Wraase SC2-180. Tuning errors and a fast or slow sound card are corrected, and finished pictures save as PNGs to an RX folder shown beside the picture, optionally filed by day, week, month or year. To send, pick a picture or a template and a mode; TX keys only when you press it and drops when the picture ends. Templates add text with fonts, outlines and fields such as your call, their call and the report, plus their received picture in a reply, and an optional FSK ID and CW ID follow the picture. A received FSK ID fills in their call. Band chips go to the SSTV calling dials, DIGL on 80 and 40 m and DIGU above. Log writes the QSO as mode SSTV, with both RSV reports, to the ADIF log and SDRLogger+. START is never sent.
 
 **WEFAX-576** receives only. IOC 576, 120 lines per minute. Stations are listed by ITU region, with NOAA hours on the frequencies that have them. A click sets the dial 1.9 kHz under the assigned frequency, USB, marker 1900 Hz. Start, a left-edge click, Auto save, Open folder, and Fit are on that screen. It does not key, and it does not send START.
 
@@ -124,13 +124,13 @@ STD is a 64-bit Windows application. The kit is Qt 6.11.1 MSVC at `C:\Qt\6.11.1\
 
 ## Run
 
-The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.17.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
+The built program is `build\std.exe`. The window title is STD. The icon is the purple capsule from [`resources/std-icon.png`](resources/std-icon.png). The Windows installer is `dist\STD-Setup-0.1.18.exe`, built with Inno Setup the same way as Lyra. Setup, the Start Menu, and the desktop shortcut use that icon.
 
 A headless check constructs the window and exits. Set `STD_SELFTEST=1` and `QT_QPA_PLATFORM=offscreen`, then run `build\std.exe`. Exit status 0 prints `STD self-test ok`.
 
 ## More
 
 - Web version of this page: <https://n8sdr1.github.io/STD/>
-- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.17, testing phase · highly transmissible)
+- Releases: <https://github.com/N8SDR1/STD/releases> (v0.1.18, testing phase · highly transmissible)
 - Wiki: <https://github.com/N8SDR1/STD/wiki>
 - Longer notes: [modes](docs/modes.md), [QRV](docs/qrv.md), [DXpeditions and the hot list](docs/dxpeditions.md), [Hell](docs/hell.md), [macros](docs/macros.md), [contest](docs/contest.md), [connect](docs/connect.md)
