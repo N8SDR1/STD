@@ -36,7 +36,7 @@ constexpr const char* kModes[] = {
     "FT2",     "JT65A",  "JT65B",    "JT65C",   "Q65",     "Q65C",    "Q65D",    "Q65E",
     "MSK144",  "MSKMS",  "JS8",      "JS8CX2",  "WSPR",    "FST4",    "FST4W",   "HELL",
     "RTTY",    "PSK",    "QPSK",     "OLIVIA",  "CONTESTIA", "MFSK",  "DOMINOEX", "THOR",
-    "MT63",    "VARA",   "VARAHF",
+    "MT63",    "VARA",   "VARAHF",  "SSTV",
 };
 
 QString jsonError(const QJsonObject& object) {
@@ -157,8 +157,10 @@ bool allowedMode(const QString& token) {
 
 QString qrvModeForStd(const QString& stdMode) {
   const QString mode = stdMode.trimmed();
-  if (mode.isEmpty() || radeMode(mode) || wefaxMode(mode) || sstvMode(mode))
+  if (mode.isEmpty() || radeMode(mode) || wefaxMode(mode))
     return {};
+  if (sstvMode(mode))
+    return QStringLiteral("SSTV");
   if (mode == QLatin1String("Q65A"))
     return QStringLiteral("Q65");
   if (mode == QLatin1String("Q65B"))

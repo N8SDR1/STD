@@ -60,6 +60,9 @@ public:
   QString theirQth() const;
   // FSK ID after the picture.
   bool fskId() const;
+  // With Match RX ticked, send in the mode of the picture just received.
+  // True when the TX mode changed.
+  bool followRxMode(SstvMode rxMode);
   // Put a call heard in an FSK ID into Call, unless one is typed already.
   bool offerCall(const QString& call);
   // After a QSO is logged: clear Call, Name, RSV rcvd and their picture.
@@ -102,6 +105,7 @@ private:
   QLineEdit* grid_ = nullptr;
   QLineEdit* qth_ = nullptr;
   QCheckBox* fskId_ = nullptr;
+  QCheckBox* matchRx_ = nullptr;
   // All, CQ, Reply, 73, Custom, Pictures.
   QTabBar* tabs_ = nullptr;
   QLabel* replyThumb_ = nullptr;

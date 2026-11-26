@@ -15,6 +15,9 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include "FlowLayout.h"
+
+#include <initializer_list>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
@@ -53,6 +56,18 @@ QPushButton* smallButton(const QString& text, const QString& name, const QString
   return b;
 }
 
+
+// A label and its box kept together, so a wrapping row never splits them.
+QWidget* sstvGroup(QWidget* parent, std::initializer_list<QWidget*> widgets) {
+  auto* box = new QWidget(parent);
+  auto* lay = new QHBoxLayout(box);
+  lay->setContentsMargins(0, 0, 0, 0);
+  lay->setSpacing(4);
+  for (QWidget* w : widgets)
+    lay->addWidget(w);
+  return box;
+}
+
 }  // namespace
 
 SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), engine_(engine) {
@@ -61,7 +76,8 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(6);
 
-  auto* row = new QHBoxLayout();
+  // Wraps onto a second line when the window is too narrow for one.
+  auto* row = new FlowLayout();
   row->setSpacing(6);
   auto* modeLabel = new QLabel(QStringLiteral("Mode"), this);
   modeLabel->setFont(panelFont(12));
@@ -139,8 +155,8 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
   state_->setObjectName(QStringLiteral("sstvState"));
   state_->setFont(panelFont(12));
   state_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-  row->addWidget(modeLabel);
-  row->addWidget(mode_);
+  state_->setMinimumWidth(80);
+  row->addWidget(sstvGroup(this, {modeLabel, mode_}));
   row->addWidget(start_);
   row->addWidget(stop_);
   row->addWidget(clear);
@@ -151,7 +167,7 @@ SstvPanel::SstvPanel(SstvEngine* engine, QWidget* parent) : QWidget(parent), eng
   row->addWidget(archive_);
   row->addWidget(open);
   row->addWidget(folder);
-  row->addWidget(state_, 1);
+  row->addWidget(state_);
   layout->addLayout(row);
 
   auto* split = new QSplitter(Qt::Horizontal, this);
