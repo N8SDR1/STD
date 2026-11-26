@@ -248,7 +248,7 @@ const std::vector<std::pair<QString, QString>>& sstvFieldList() {
       {QStringLiteral("{MYGRID}"), QStringLiteral("your locator")},
       {QStringLiteral("{MYNAME}"), QStringLiteral("your name")},
       {QStringLiteral("{CALL}"), QStringLiteral("their callsign")},
-      {QStringLiteral("{RST}"), QStringLiteral("the report you give them")},
+      {QStringLiteral("{RSV}"), QStringLiteral("the RSV report you give them (Readability, Signal, Video)")},
       {QStringLiteral("{NAME}"), QStringLiteral("their name")},
       {QStringLiteral("{GRID}"), QStringLiteral("their locator")},
       {QStringLiteral("{QTH}"), QStringLiteral("where they are")},
@@ -379,7 +379,7 @@ SstvTemplate sstvTemplateFromPicture(const QString& name, const QString& categor
     rx.rect = QRectF(0.03, 0.52, 0.36, 0.36);
     rx.outline = Qt::white;
     t.layers.push_back(rx);
-    t.layers.push_back(text(QStringLiteral("UR {RST}"), QRectF(0.45, 0.55, 0.52, 0.18), 0.13, Qt::white));
+    t.layers.push_back(text(QStringLiteral("UR {RSV}"), QRectF(0.45, 0.55, 0.52, 0.18), 0.13, Qt::white));
     t.layers.push_back(text(QStringLiteral("DE {MYCALL}"), QRectF(0.45, 0.78, 0.52, 0.18), 0.12, Qt::white));
   } else if (category == QLatin1String("73")) {
     t.layers.push_back(text(QStringLiteral("73 {CALL}"), QRectF(0.02, 0.01, 0.96, 0.2), 0.15, yellow));
@@ -434,7 +434,7 @@ std::vector<SstvTemplate> sstvStarterTemplates() {
     rx.rect = QRectF(0.04, 0.22, 0.50, 0.58);
     rx.outline = Qt::white;
     t.layers.push_back(rx);
-    t.layers.push_back(text(QStringLiteral("UR\n{RST}"), QRectF(0.57, 0.22, 0.40, 0.34), 0.13, Qt::white));
+    t.layers.push_back(text(QStringLiteral("UR\n{RSV}"), QRectF(0.57, 0.22, 0.40, 0.34), 0.13, Qt::white));
     t.layers.push_back(
         text(QStringLiteral("TNX FER\nPIC"), QRectF(0.57, 0.56, 0.40, 0.24), 0.08, QColor(140, 220, 255)));
     t.layers.push_back(text(QStringLiteral("DE {MYCALL}"), QRectF(0.02, 0.82, 0.96, 0.17), 0.13, Qt::white));

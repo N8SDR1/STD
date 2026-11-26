@@ -7,7 +7,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(STD
-  VERSION 0.1.17
+  VERSION 0.1.18
   DESCRIPTION "STD — Shift, Tone, Decode"
   LANGUAGES CXX)
 

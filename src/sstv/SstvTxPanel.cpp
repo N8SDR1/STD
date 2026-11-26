@@ -160,12 +160,13 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
   };
   call_ = field(QStringLiteral("Call"), QStringLiteral("sstvTxCall"),
                 QStringLiteral("The station you are working. Fills {CALL} in a template. This does not key."), 110);
-  rst_ = field(QStringLiteral("RST"), QStringLiteral("sstvTxRst"),
-               QStringLiteral("The report you give them; SSTV uses RSV, where the last digit rates the picture "
-                              "(595 is perfect). Fills {RST}. This does not key."),
+  rst_ = field(QStringLiteral("RSV"), QStringLiteral("sstvTxRst"),
+               QStringLiteral("The report you give them. SSTV reports are RSV, not RST: Readability 1-5, Signal "
+                              "strength 1-9 and Video, the picture quality, 1-5; 595 is a perfect picture. Fills "
+                              "{RSV} (and {RST} in older templates). This does not key."),
                54);
-  rstIn_ = field(QStringLiteral("RST rcvd"), QStringLiteral("sstvTxRstIn"),
-                 QStringLiteral("The report they gave you, for the log. This does not key."), 54);
+  rstIn_ = field(QStringLiteral("RSV rcvd"), QStringLiteral("sstvTxRstIn"),
+                 QStringLiteral("The RSV report they gave you, for the log. This does not key."), 54);
   name_ = field(QStringLiteral("Name"), QStringLiteral("sstvTxName"),
                 QStringLiteral("Their name. Fills {NAME}. This does not key."), 110);
   grid_ = field(QStringLiteral("Grid"), QStringLiteral("sstvTxGrid"),
@@ -248,9 +249,9 @@ SstvTxPanel::SstvTxPanel(QWidget* parent) : QWidget(parent) {
   log->setFont(paneFont(11));
   log->setFocusPolicy(Qt::NoFocus);
   log->setToolTip(QStringLiteral(
-      "Log this QSO: Call, RST sent and received, Name, band and frequency, mode SSTV with the picture mode "
+      "Log this QSO: Call, RSV sent and received, Name, band and frequency, mode SSTV with the picture mode "
       "in the comment. It goes to STD's ADIF log and, when Options → Log links a logger, to SDRLogger+ like "
-      "the other modes. Then Call, Name, RST rcvd and their picture clear for the next one. This does not key."));
+      "the other modes. Then Call, Name, RSV rcvd and their picture clear for the next one. This does not key."));
   qso->addWidget(log);
   connect(log, &QPushButton::clicked, this, [this] { emit logRequested(); });
   qso->addStretch(1);
@@ -468,7 +469,8 @@ void SstvTxPanel::setReplyPicture(const QImage& picture, const QString& from) {
 SstvFields SstvTxPanel::fields() const {
   SstvFields f = provider_ ? provider_() : SstvFields();
   f.insert(QStringLiteral("{CALL}"), theirCall());
-  f.insert(QStringLiteral("{RST}"), rstSent());
+  f.insert(QStringLiteral("{RSV}"), rstSent());
+  f.insert(QStringLiteral("{RST}"), rstSent());  // templates made before {RSV}
   f.insert(QStringLiteral("{NAME}"), theirName());
   f.insert(QStringLiteral("{GRID}"), theirGrid());
   f.insert(QStringLiteral("{QTH}"), theirQth());
