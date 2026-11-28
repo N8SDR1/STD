@@ -338,6 +338,14 @@ QString columnCell(const QString& text, int width) {
   return cut.leftJustified(width, QLatin1Char(' '));
 }
 
+// A dim rule between decode periods, so the slots stay apart without clearing.
+QString periodRule(const QString& time) {
+  QString stamp = time;
+  if (stamp.size() >= 6 && stamp.at(0).isDigit())
+    stamp = stamp.left(2) + QLatin1Char(':') + stamp.mid(2, 2) + QLatin1Char(':') + stamp.mid(4);
+  return QStringLiteral("-------- ") + stamp + QStringLiteral(" --------");
+}
+
 QString decodeColumns(const QString& time, const QString& db, const QString& dt, const QString& dist,
                       const QString& message, const QString& freq, bool showTime, bool showFreq,
                       bool showDist, bool showNeed = false, const QString& need = QString()) {
@@ -3690,6 +3698,29 @@ void MainWindow::refreshDecodes() {
   QVector<Need> needs;
   if (markNeeded_)
     ensureWorkedCalls();
+  auto appendPeriodLine = [&](QString& block, QVector<DecodeRow>& shown, QVector<Need>* needRows,
+                              const QString& time) {
+    if (!separatePeriods_ || time.isEmpty() || shown.isEmpty())
+      return;
+    QString previous;
+    for (int j = shown.size() - 1; j >= 0; --j) {
+      if (shown.at(j).gap)
+        continue;
+      previous = shown.at(j).time;
+      break;
+    }
+    if (previous.isEmpty() || previous == time)
+      return;
+    DecodeRow rule;
+    rule.gap = true;
+    rule.message = periodRule(time);
+    if (!block.isEmpty())
+      block += QLatin1Char('\n');
+    block += rule.message;
+    shown.push_back(rule);
+    if (needRows)
+      needRows->push_back(Need::None);
+  };
   for (const DecodeRow& row : decodes_) {
     QString line;
     if (row.time.isEmpty())
@@ -3710,6 +3741,7 @@ void MainWindow::refreshDecodes() {
       continue;
     if (!keepDecode(row.message))
       continue;
+    appendPeriodLine(text, shownDecodes_, &needs, row.time);
     if (!text.isEmpty())
       text += QLatin1Char('\n');
     text += line;
@@ -3729,6 +3761,7 @@ void MainWindow::refreshDecodes() {
       const bool near = row.freqHz > 0 && std::abs(row.freqHz - rxHz) <= 10;
       if (!near && !lineHasCall(row.message, mine))
         continue;
+      appendPeriodLine(rxText, shownRxDecodes_, nullptr, row.time);
       const QString line = row.msk
                                ? mskColumns(row.time, row.dt, QString::number(row.db), QString::number(row.df),
                                             QString(), row.message, QString::number(row.navg),
@@ -3755,7 +3788,9 @@ void MainWindow::refreshDecodes() {
   QTextBlock block = edit->document()->begin();
   for (int i = 0; i < shownDecodes_.size() && block.isValid(); ++i, block = block.next()) {
     QTextCharFormat format;
-    if (colorMyCall_ && lineHasCall(shownDecodes_.at(i).message, mine)) {
+    if (shownDecodes_.at(i).gap)
+      format.setForeground(QColor(70, 110, 128));
+    else if (colorMyCall_ && lineHasCall(shownDecodes_.at(i).message, mine)) {
       format.setBackground(myCallColor_);
       const int luma =
           (myCallColor_.red() * 299 + myCallColor_.green() * 587 + myCallColor_.blue() * 114) / 1000;
@@ -3793,6 +3828,14 @@ void MainWindow::refreshDecodes() {
     const QString mine = stationCall();
     QTextBlock rxBlock = rxEdit->document()->begin();
     for (int i = 0; i < shownRxDecodes_.size() && rxBlock.isValid(); ++i, rxBlock = rxBlock.next()) {
+      if (shownRxDecodes_.at(i).gap) {
+        QTextCharFormat rule;
+        rule.setForeground(QColor(70, 110, 128));
+        QTextCursor cursor(rxBlock);
+        cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        cursor.mergeCharFormat(rule);
+        continue;
+      }
       if (!lineHasCall(shownRxDecodes_.at(i).message, mine))
         continue;
       QTextCharFormat format;
@@ -4371,9 +4414,26 @@ void MainWindow::buildMenus() {
   connect(speech, &QAction::triggered, this, [this] { openSpeechDialog(); });
   addCheck(listMenu, "listShowFreq", QStringLiteral("Show Frequency Column"), "dx/showFreq", true,
            QStringLiteral("Show or hide the Freq column."));
-  addCheck(listMenu, "listClearPeriod", QStringLiteral("New period clears the message list"),
-           "dx/clearEachPeriod", false,
-           QStringLiteral("Drop the previous period when the next one decodes."));
+  auto* clearPeriod =
+      addCheck(listMenu, "listClearPeriod", QStringLiteral("New period clears the message list"),
+               "dx/clearEachPeriod", false,
+               QStringLiteral("Drop the previous period when the next one decodes. "
+                              "Line between periods is the other choice. This does not key."));
+  auto* separatePeriod =
+      addCheck(listMenu, "listSeparatePeriods", QStringLiteral("Line between periods"), "dx/separatePeriods",
+               false,
+               QStringLiteral(
+                   "Keep earlier periods and draw a line when the next one starts, so the slots stay "
+                   "apart. Off until ticked. Turning this on turns off New period clears the message "
+                   "list. A click on the line does nothing. This does not key."));
+  connect(clearPeriod, &QAction::toggled, this, [separatePeriod](bool on) {
+    if (on && separatePeriod->isChecked())
+      separatePeriod->setChecked(false);
+  });
+  connect(separatePeriod, &QAction::toggled, this, [clearPeriod](bool on) {
+    if (on && clearPeriod->isChecked())
+      clearPeriod->setChecked(false);
+  });
 
   auto* logMenu = optionsMenu->addMenu(QStringLiteral("Log Options"));
   const QString logTip = QStringLiteral(
@@ -5809,6 +5869,8 @@ void MainWindow::showGuide() {
        "Options → Decode List Options → Color my call in a decode is on until you turn it off. A line on the FT8, FT4, FT2, JT65, Q65, and MSK list is colored when it contains the callsign from Options → User, as a whole call, including <N8SDR> and N8SDR/P. A longer call that merely starts the same way is left alone. My call color… picks that color; the first color is magenta, which is not the red, amber, or blue of the Need marks. On a line that is both, the my-call color is the one shown. It does not key."},
       {"RX Frequency list",
        "Options → Decode List Options → Two decode lists is off until ticked. The second list sits on the right of the Receive pane, beside Transmit. A line is copied there when its audio frequency is within 10 Hz of the RX marker, or the message contains the callsign from Options → User. CLR RX FREQ clears that list and leaves the band list. A click moves to that audio frequency. A double-click answers the station. It does not key."},
+      {"Line between periods",
+       "Options → Decode List Options → Line between periods is off until ticked. The list keeps earlier periods, and a line is drawn when the next period starts, with that period's time on it, so the slots stay apart. It is the other choice from New period clears the message list: turning one on turns the other off. The same line is drawn on the RX Frequency list. A click on the line does nothing. It does not key."},
       {"Who heard me",
        "Options → Network Configuration → Show who heard me (PSK Reporter), off until ticked, puts a chip on the status bar: HEARD, the number of stations that reported hearing your callsign (from Options → User) in the last 15 minutes on the band you are on, and the farthest of them, for example \"HEARD 23 · 20m · best VK3XX 16400 km\". It is green when someone heard you and grey when nobody has. Click it for the list, farthest first: call, country, band, mode, the SNR they heard you at, distance, and time. STD asks PSK Reporter every five minutes, as PSK Reporter asks, and only while you have transmitted in the last half hour; listening sends nothing. Changing band redraws the chip at once for the new band, and the Need column with it. It does not key."},
       {"Clock check",
@@ -8370,7 +8432,7 @@ void MainWindow::qsyDecodeLine(int line, bool rxList) {
   if (!qsyOnDecode_ || !waterfall_ || line < 0 || line >= rows.size())
     return;
   const DecodeRow row = rows.at(line);
-  if (row.freqHz <= 0)
+  if (row.gap || row.freqHz <= 0)
     return;
   const QStringList words =
       row.message.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
@@ -8392,6 +8454,8 @@ void MainWindow::loadReplyFromLine(int line, bool rxList) {
   if (line < 0 || line >= rows.size())
     return;
   const DecodeRow row = rows.at(line);
+  if (row.gap)
+    return;
   const QStringList words =
       row.message.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
   if (words.isEmpty()) {
@@ -10254,6 +10318,7 @@ void MainWindow::applyDxOptions() {
     filtersOn_ = button->isChecked();
   qsyOnDecode_ = settings.value(QStringLiteral("dx/qsyOnDecode"), true).toBool();
   clearEachPeriod_ = settings.value(QStringLiteral("dx/clearEachPeriod"), false).toBool();
+  separatePeriods_ = settings.value(QStringLiteral("dx/separatePeriods"), false).toBool();
   maxSignals_ = settings.value(QStringLiteral("dx/maxSignals"), 0).toInt();
   if (maxSignals_ < 0)
     maxSignals_ = 0;

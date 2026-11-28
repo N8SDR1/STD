@@ -412,6 +412,8 @@ private:
     int navg = 0;
     int bitErrors = 0;
     QString eye;
+    // A drawn line between periods. Not a decode, and a click does nothing.
+    bool gap = false;
   };
   // MSK extras arrive just before the matching decoded() line.
   QHash<QString, DecodeRow> mskPending_;
@@ -530,6 +532,7 @@ private:
   mutable bool workedLoading_ = false;
   mutable bool workedAgain_ = false;
   bool clearEachPeriod_ = false;
+  bool separatePeriods_ = false;
   int maxSignals_ = 0;
   QString lastPeriod_;
   float rxGain_ = 1.0f;
