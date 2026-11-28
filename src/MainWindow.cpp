@@ -338,6 +338,14 @@ QString columnCell(const QString& text, int width) {
   return cut.leftJustified(width, QLatin1Char(' '));
 }
 
+// A dim rule between decode periods, so the slots stay apart without clearing.
+QString periodRule(const QString& time) {
+  QString stamp = time;
+  if (stamp.size() >= 6 && stamp.at(0).isDigit())
+    stamp = stamp.left(2) + QLatin1Char(':') + stamp.mid(2, 2) + QLatin1Char(':') + stamp.mid(4);
+  return QStringLiteral("-------- ") + stamp + QStringLiteral(" --------");
+}
+
 QString decodeColumns(const QString& time, const QString& db, const QString& dt, const QString& dist,
                       const QString& message, const QString& freq, bool showTime, bool showFreq,
                       bool showDist, bool showNeed = false, const QString& need = QString()) {
@@ -933,6 +941,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         wefax_->setCenterHz(rxHz);
       if (hell_ && profile_ && hellFamily(profile_->digitalMode()))
         hell_->setToneHz(rxHz);
+      if (twoDecodeLists_)
+        refreshDecodes();
     });
   }
   ft8_ = new Ft8Decode(this);
@@ -960,8 +970,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
           });
   connect(ft8_, &Ft8Decode::decoded, this,
           [this](const QString& time, int db, const QString& dt, const QString& message, int freqHz) {
-            if (clearEachPeriod_ && !time.isEmpty() && time != lastPeriod_)
+            if (clearEachPeriod_ && !time.isEmpty() && time != lastPeriod_) {
               decodes_.clear();
+              rxFreqFrom_ = 0;
+            }
             if (!time.isEmpty()) {
               lastPeriod_ = time;
               for (const DecodeRow& row : decodes_) {
@@ -3462,13 +3474,81 @@ QWidget* MainWindow::makeReceivePanel() {
   auto* decodeLayout = new QVBoxLayout(decodeList);
   decodeLayout->setContentsMargins(0, 0, 0, 0);
   decodeLayout->setSpacing(0);
-  decodeLayout->addWidget(header);
-  decodeLayout->addWidget(edit, 1);
+  auto* split = new QSplitter(Qt::Horizontal, decodeList);
+  split->setObjectName(QStringLiteral("decodeSplit"));
+  split->setChildrenCollapsible(false);
+  split->setHandleWidth(6);
+  split->setStyleSheet(QStringLiteral(
+      "QSplitter#decodeSplit::handle { background: #1f3a46; }"
+      "QSplitter#decodeSplit::handle:hover { background: #00e5ff; }"));
+  auto* band = new QWidget(split);
+  band->setObjectName(QStringLiteral("decodeBand"));
+  auto* bandLayout = new QVBoxLayout(band);
+  bandLayout->setContentsMargins(0, 0, 0, 0);
+  bandLayout->setSpacing(0);
+  bandLayout->addWidget(header);
+  bandLayout->addWidget(edit, 1);
+  auto* rxPane = new QWidget(split);
+  rxPane->setObjectName(QStringLiteral("rxFreqPane"));
+  rxPane->hide();
+  auto* rxLayout = new QVBoxLayout(rxPane);
+  rxLayout->setContentsMargins(0, 0, 0, 0);
+  rxLayout->setSpacing(0);
+  auto* rxBar = new QWidget(rxPane);
+  auto* rxBarLayout = new QHBoxLayout(rxBar);
+  rxBarLayout->setContentsMargins(8, 0, 0, 0);
+  rxBarLayout->setSpacing(6);
+  auto* rxTitle = new QLabel(QStringLiteral("RX Frequency"), rxBar);
+  rxTitle->setObjectName(QStringLiteral("rxFreqTitle"));
+  rxTitle->setFont(interfaceFont(11));
+  auto* rxClear = new QPushButton(QStringLiteral("CLR RX FREQ"), rxBar);
+  rxClear->setObjectName(QStringLiteral("rxFreqClear"));
+  rxClear->setFont(interfaceFont(11));
+  rxClear->setFocusPolicy(Qt::NoFocus);
+  rxClear->setToolTip(QStringLiteral(
+      "Clear this list only. The band list stays. This does not key."));
+  rxBarLayout->addWidget(rxTitle);
+  rxBarLayout->addStretch(1);
+  rxBarLayout->addWidget(rxClear);
+  auto* rxHeader = new QLabel(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"),
+                                             QStringLiteral("DT"), QString(), QStringLiteral("Message"),
+                                             QStringLiteral("Freq"), true, true, false),
+                               rxPane);
+  rxHeader->setObjectName(QStringLiteral("rxFreqHeader"));
+  rxHeader->setFont(monoFont(13));
+  rxHeader->setTextInteractionFlags(Qt::NoTextInteraction);
+  auto* rxEdit = new QPlainTextEdit(rxPane);
+  rxEdit->setObjectName(QStringLiteral("receiveRxFreq"));
+  rxEdit->setReadOnly(true);
+  rxEdit->setFont(monoFont(13));
+  rxEdit->setTabChangesFocus(true);
+  rxEdit->setLineWrapMode(QPlainTextEdit::NoWrap);
+  rxEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  rxEdit->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  rxEdit->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+  rxEdit->document()->setDocumentMargin(0);
+  rxEdit->setToolTip(QStringLiteral(
+      "Decodes within 10 Hz of the RX marker, and any line that contains your callsign. "
+      "A click moves TX to that line. A double-click answers it. This does not key by itself."));
+  rxEdit->viewport()->installEventFilter(this);
+  rxLayout->addWidget(rxBar);
+  rxLayout->addWidget(rxHeader);
+  rxLayout->addWidget(rxEdit, 1);
+  split->addWidget(band);
+  split->addWidget(rxPane);
+  split->setStretchFactor(0, 3);
+  split->setStretchFactor(1, 1);
+  decodeLayout->addWidget(split, 1);
   layout->addWidget(decodeList, 1);
+  connect(rxClear, &QPushButton::clicked, this, [this] {
+    rxFreqFrom_ = decodes_.size();
+    refreshDecodes();
+  });
 
   connect(filter, &QLineEdit::textChanged, this, [this](const QString&) { refreshDecodes(); });
   connect(clear, &QPushButton::clicked, this, [this] {
     decodes_.clear();
+    rxFreqFrom_ = 0;
     refreshDecodes();
     if (auto* tape = findChild<HellRaster*>(QStringLiteral("hellReceive")))
       tape->clear();
@@ -3618,6 +3698,29 @@ void MainWindow::refreshDecodes() {
   QVector<Need> needs;
   if (markNeeded_)
     ensureWorkedCalls();
+  auto appendPeriodLine = [&](QString& block, QVector<DecodeRow>& shown, QVector<Need>* needRows,
+                              const QString& time) {
+    if (!separatePeriods_ || time.isEmpty() || shown.isEmpty())
+      return;
+    QString previous;
+    for (int j = shown.size() - 1; j >= 0; --j) {
+      if (shown.at(j).gap)
+        continue;
+      previous = shown.at(j).time;
+      break;
+    }
+    if (previous.isEmpty() || previous == time)
+      return;
+    DecodeRow rule;
+    rule.gap = true;
+    rule.message = periodRule(time);
+    if (!block.isEmpty())
+      block += QLatin1Char('\n');
+    block += rule.message;
+    shown.push_back(rule);
+    if (needRows)
+      needRows->push_back(Need::None);
+  };
   for (const DecodeRow& row : decodes_) {
     QString line;
     if (row.time.isEmpty())
@@ -3638,11 +3741,39 @@ void MainWindow::refreshDecodes() {
       continue;
     if (!keepDecode(row.message))
       continue;
+    appendPeriodLine(text, shownDecodes_, &needs, row.time);
     if (!text.isEmpty())
       text += QLatin1Char('\n');
     text += line;
     shownDecodes_.push_back(row);
     needs.push_back(need);
+  }
+  QString rxText;
+  shownRxDecodes_.clear();
+  if (twoDecodeLists_) {
+    const int rxHz = waterfall_ ? waterfall_->rxHz() : 1500;
+    const QString mine = stationCall();
+    const int from = std::clamp(rxFreqFrom_, 0, int(decodes_.size()));
+    for (int i = from; i < decodes_.size(); ++i) {
+      const DecodeRow& row = decodes_.at(i);
+      if (row.time.isEmpty())
+        continue;
+      const bool near = row.freqHz > 0 && std::abs(row.freqHz - rxHz) <= 10;
+      if (!near && !lineHasCall(row.message, mine))
+        continue;
+      appendPeriodLine(rxText, shownRxDecodes_, nullptr, row.time);
+      const QString line = row.msk
+                               ? mskColumns(row.time, row.dt, QString::number(row.db), QString::number(row.df),
+                                            QString(), row.message, QString::number(row.navg),
+                                            QString::number(row.bitErrors), row.eye, QString::number(row.freqHz),
+                                            showTime_, true, false)
+                               : decodeColumns(row.time, QString::number(row.db), row.dt, QString(), row.message,
+                                               QString::number(row.freqHz), showTime_, true, false);
+      if (!rxText.isEmpty())
+        rxText += QLatin1Char('\n');
+      rxText += line;
+      shownRxDecodes_.push_back(row);
+    }
   }
   edit->setPlainText(text);
   // setPlainText keeps the old first character's format, so a tint from the
@@ -3657,7 +3788,9 @@ void MainWindow::refreshDecodes() {
   QTextBlock block = edit->document()->begin();
   for (int i = 0; i < shownDecodes_.size() && block.isValid(); ++i, block = block.next()) {
     QTextCharFormat format;
-    if (colorMyCall_ && lineHasCall(shownDecodes_.at(i).message, mine)) {
+    if (shownDecodes_.at(i).gap)
+      format.setForeground(QColor(70, 110, 128));
+    else if (colorMyCall_ && lineHasCall(shownDecodes_.at(i).message, mine)) {
       format.setBackground(myCallColor_);
       const int luma =
           (myCallColor_.red() * 299 + myCallColor_.green() * 587 + myCallColor_.blue() * 114) / 1000;
@@ -3682,6 +3815,40 @@ void MainWindow::refreshDecodes() {
     cursor.mergeCharFormat(format);
   }
   edit->moveCursor(QTextCursor::End);
+  auto* rxEdit = findChild<QPlainTextEdit*>(QStringLiteral("receiveRxFreq"));
+  if (!rxEdit)
+    return;
+  rxEdit->setPlainText(rxText);
+  {
+    QTextCursor all(rxEdit->document());
+    all.select(QTextCursor::Document);
+    all.setCharFormat(QTextCharFormat());
+  }
+  if (colorMyCall_) {
+    const QString mine = stationCall();
+    QTextBlock rxBlock = rxEdit->document()->begin();
+    for (int i = 0; i < shownRxDecodes_.size() && rxBlock.isValid(); ++i, rxBlock = rxBlock.next()) {
+      if (shownRxDecodes_.at(i).gap) {
+        QTextCharFormat rule;
+        rule.setForeground(QColor(70, 110, 128));
+        QTextCursor cursor(rxBlock);
+        cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        cursor.mergeCharFormat(rule);
+        continue;
+      }
+      if (!lineHasCall(shownRxDecodes_.at(i).message, mine))
+        continue;
+      QTextCharFormat format;
+      format.setBackground(myCallColor_);
+      const int luma =
+          (myCallColor_.red() * 299 + myCallColor_.green() * 587 + myCallColor_.blue() * 114) / 1000;
+      format.setForeground(luma > 150 ? QColor(20, 24, 28) : QColor(255, 255, 255));
+      QTextCursor cursor(rxBlock);
+      cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+      cursor.mergeCharFormat(format);
+    }
+  }
+  rxEdit->moveCursor(QTextCursor::End);
 }
 
 QWidget* MainWindow::makeMacroRow() {
@@ -4187,6 +4354,11 @@ void MainWindow::buildMenus() {
     QSettings().setValue(QStringLiteral("dx/myCallColor"), chosen.name(QColor::HexRgb));
     applyDxOptions();
   });
+  addCheck(listMenu, "twoDecodeLists", QStringLiteral("Two decode lists"), "dx/twoDecodeLists", false,
+           QStringLiteral(
+               "MSHV's second list, on the right of Receive, beside Transmit. It shows decodes within "
+               "10 Hz of the RX marker, and any line that contains the callsign from Options → User. "
+               "Off until ticked. CLR RX FREQ clears that list only. This does not key."));
   auto* miles = listMenu->addAction(QStringLiteral("Distance in miles"));
   miles->setObjectName(QStringLiteral("distUnitMiles"));
   miles->setCheckable(true);
@@ -4242,9 +4414,26 @@ void MainWindow::buildMenus() {
   connect(speech, &QAction::triggered, this, [this] { openSpeechDialog(); });
   addCheck(listMenu, "listShowFreq", QStringLiteral("Show Frequency Column"), "dx/showFreq", true,
            QStringLiteral("Show or hide the Freq column."));
-  addCheck(listMenu, "listClearPeriod", QStringLiteral("New period clears the message list"),
-           "dx/clearEachPeriod", false,
-           QStringLiteral("Drop the previous period when the next one decodes."));
+  auto* clearPeriod =
+      addCheck(listMenu, "listClearPeriod", QStringLiteral("New period clears the message list"),
+               "dx/clearEachPeriod", false,
+               QStringLiteral("Drop the previous period when the next one decodes. "
+                              "Line between periods is the other choice. This does not key."));
+  auto* separatePeriod =
+      addCheck(listMenu, "listSeparatePeriods", QStringLiteral("Line between periods"), "dx/separatePeriods",
+               false,
+               QStringLiteral(
+                   "Keep earlier periods and draw a line when the next one starts, so the slots stay "
+                   "apart. Off until ticked. Turning this on turns off New period clears the message "
+                   "list. A click on the line does nothing. This does not key."));
+  connect(clearPeriod, &QAction::toggled, this, [separatePeriod](bool on) {
+    if (on && separatePeriod->isChecked())
+      separatePeriod->setChecked(false);
+  });
+  connect(separatePeriod, &QAction::toggled, this, [clearPeriod](bool on) {
+    if (on && clearPeriod->isChecked())
+      clearPeriod->setChecked(false);
+  });
 
   auto* logMenu = optionsMenu->addMenu(QStringLiteral("Log Options"));
   const QString logTip = QStringLiteral(
@@ -4778,6 +4967,7 @@ void MainWindow::clearModePanes(const QString& previous, const QString& next) {
   if (ft8_)
     ft8_->clear();
   decodes_.clear();
+  rxFreqFrom_ = 0;
   refreshDecodes();
 }
 
@@ -5677,6 +5867,10 @@ void MainWindow::showGuide() {
        "Options → Decode List Options → Mark Needed Stations, off until ticked, adds a Need column to the FT8, FT4, FT2, JT65, and Q65 list, checked against your ADIF log. NEW (deep red) is a DXCC entity never worked; BAND (amber) an entity worked but not on the band you are on; GRID (blue) a grid never worked; GRID+BAND (light blue) a grid worked, but not on this band; B4 (dim) a call already worked on this band. Worked QSOs count; confirmations do not. The station is the one sending: the call after CQ, or the second call in a reply. Entities come from AD1C's cty.dat (country-files.com), built in; a newer cty.dat placed in %APPDATA%\\N8SDR\\STD is used instead. What counts as worked is set in Options → Log Options → Log file and logger → Worked list: STD's ADIF file only (the default); STD's ADIF file plus another ADIF file, read but never written (WSJT-X's wsjtx_log.adi, or an export from Log4OM, DXKeeper, N1MM, and others), read again whenever it changes; or STD's ADIF file plus SDRLogger+ (live), which asks SDRLogger+ on this PC (127.0.0.1, port 5050 unless changed) for its whole log every five minutes and ten seconds after each QSO, and keeps the last copy so the marks still work while SDRLogger+ is closed. The same list drives Hide QSO B4. It does not key."},
       {"My call in a decode",
        "Options → Decode List Options → Color my call in a decode is on until you turn it off. A line on the FT8, FT4, FT2, JT65, Q65, and MSK list is colored when it contains the callsign from Options → User, as a whole call, including <N8SDR> and N8SDR/P. A longer call that merely starts the same way is left alone. My call color… picks that color; the first color is magenta, which is not the red, amber, or blue of the Need marks. On a line that is both, the my-call color is the one shown. It does not key."},
+      {"RX Frequency list",
+       "Options → Decode List Options → Two decode lists is off until ticked. The second list sits on the right of the Receive pane, beside Transmit. A line is copied there when its audio frequency is within 10 Hz of the RX marker, or the message contains the callsign from Options → User. CLR RX FREQ clears that list and leaves the band list. A click moves to that audio frequency. A double-click answers the station. It does not key."},
+      {"Line between periods",
+       "Options → Decode List Options → Line between periods is off until ticked. The list keeps earlier periods, and a line is drawn when the next period starts, with that period's time on it, so the slots stay apart. It is the other choice from New period clears the message list: turning one on turns the other off. The same line is drawn on the RX Frequency list. A click on the line does nothing. It does not key."},
       {"Who heard me",
        "Options → Network Configuration → Show who heard me (PSK Reporter), off until ticked, puts a chip on the status bar: HEARD, the number of stations that reported hearing your callsign (from Options → User) in the last 15 minutes on the band you are on, and the farthest of them, for example \"HEARD 23 · 20m · best VK3XX 16400 km\". It is green when someone heard you and grey when nobody has. Click it for the list, farthest first: call, country, band, mode, the SNR they heard you at, distance, and time. STD asks PSK Reporter every five minutes, as PSK Reporter asks, and only while you have transmitted in the last half hour; listening sends nothing. Changing band redraws the chip at once for the new band, and the Need column with it. It does not key."},
       {"Clock check",
@@ -8204,13 +8398,17 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     return true;
   }
   auto* edit = findChild<QPlainTextEdit*>(QStringLiteral("receiveText"));
-  if (!edit || watched != edit->viewport())
+  auto* rxEdit = findChild<QPlainTextEdit*>(QStringLiteral("receiveRxFreq"));
+  const bool onBand = edit && watched == edit->viewport();
+  const bool onRx = rxEdit && watched == rxEdit->viewport();
+  if (!onBand && !onRx)
     return QMainWindow::eventFilter(watched, event);
+  auto* view = onRx ? rxEdit : edit;
   if (event->type() == QEvent::MouseButtonRelease) {
     const auto* mouse = static_cast<const QMouseEvent*>(event);
     if (mouse->button() == Qt::LeftButton) {
-      const QTextCursor cursor = edit->cursorForPosition(mouse->position().toPoint());
-      qsyDecodeLine(cursor.blockNumber());
+      const QTextCursor cursor = view->cursorForPosition(mouse->position().toPoint());
+      qsyDecodeLine(cursor.blockNumber(), onRx);
     }
     return QMainWindow::eventFilter(watched, event);
   }
@@ -8219,8 +8417,8 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
   const auto* mouse = static_cast<const QMouseEvent*>(event);
   if (mouse->button() != Qt::LeftButton)
     return QMainWindow::eventFilter(watched, event);
-  const QTextCursor cursor = edit->cursorForPosition(mouse->position().toPoint());
-  loadReplyFromLine(cursor.blockNumber());
+  const QTextCursor cursor = view->cursorForPosition(mouse->position().toPoint());
+  loadReplyFromLine(cursor.blockNumber(), onRx);
   return QMainWindow::eventFilter(watched, event);
 }
 
@@ -8229,11 +8427,12 @@ void MainWindow::markWaterfallTx() {
     waterfall_->setTransmitting(txKeySent_ || txTune_);
 }
 
-void MainWindow::qsyDecodeLine(int line) {
-  if (!qsyOnDecode_ || !waterfall_ || line < 0 || line >= shownDecodes_.size())
+void MainWindow::qsyDecodeLine(int line, bool rxList) {
+  const QVector<DecodeRow>& rows = rxList ? shownRxDecodes_ : shownDecodes_;
+  if (!qsyOnDecode_ || !waterfall_ || line < 0 || line >= rows.size())
     return;
-  const DecodeRow row = shownDecodes_.at(line);
-  if (row.freqHz <= 0)
+  const DecodeRow row = rows.at(line);
+  if (row.gap || row.freqHz <= 0)
     return;
   const QStringList words =
       row.message.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
@@ -8250,10 +8449,13 @@ void MainWindow::qsyDecodeLine(int line) {
   waterfall_->qsyAudio(row.freqHz);
 }
 
-void MainWindow::loadReplyFromLine(int line) {
-  if (line < 0 || line >= shownDecodes_.size())
+void MainWindow::loadReplyFromLine(int line, bool rxList) {
+  const QVector<DecodeRow>& rows = rxList ? shownRxDecodes_ : shownDecodes_;
+  if (line < 0 || line >= rows.size())
     return;
-  const DecodeRow row = shownDecodes_.at(line);
+  const DecodeRow row = rows.at(line);
+  if (row.gap)
+    return;
   const QStringList words =
       row.message.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
   if (words.isEmpty()) {
@@ -10063,6 +10265,10 @@ void MainWindow::applyTextStyle() {
   }
   if (auto* header = findChild<QLabel*>(QStringLiteral("decodeHeader")))
     header->setFont(font);
+  if (auto* rxHeader = findChild<QLabel*>(QStringLiteral("rxFreqHeader")))
+    rxHeader->setFont(font);
+  if (auto* rxEdit = findChild<QPlainTextEdit*>(QStringLiteral("receiveRxFreq")))
+    rxEdit->setFont(font);
   alignDecodeHeader();
 }
 
@@ -10086,6 +10292,19 @@ void MainWindow::applyDxOptions() {
   filterQsoB4_ = settings.value(QStringLiteral("dx/hideQsoB4"), false).toBool();
   markNeeded_ = settings.value(QStringLiteral("dx/markNeeded"), false).toBool();
   colorMyCall_ = settings.value(QStringLiteral("dx/colorMyCall"), true).toBool();
+  twoDecodeLists_ = settings.value(QStringLiteral("dx/twoDecodeLists"), false).toBool();
+  if (auto* pane = findChild<QWidget*>(QStringLiteral("rxFreqPane")))
+    pane->setVisible(twoDecodeLists_);
+  if (auto* split = findChild<QSplitter*>(QStringLiteral("decodeSplit"))) {
+    split->setHandleWidth(twoDecodeLists_ ? 6 : 0);
+    if (twoDecodeLists_) {
+      const QList<int> now = split->sizes();
+      if (now.size() == 2 && now.at(1) < 80) {
+        const int total = std::max(480, now.at(0) + now.at(1));
+        split->setSizes({total * 68 / 100, total * 32 / 100});
+      }
+    }
+  }
   {
     const QColor saved(settings.value(QStringLiteral("dx/myCallColor"), QStringLiteral("#E040C8")).toString());
     myCallColor_ = saved.isValid() ? saved : QColor(0xE0, 0x40, 0xC8);
@@ -10099,6 +10318,7 @@ void MainWindow::applyDxOptions() {
     filtersOn_ = button->isChecked();
   qsyOnDecode_ = settings.value(QStringLiteral("dx/qsyOnDecode"), true).toBool();
   clearEachPeriod_ = settings.value(QStringLiteral("dx/clearEachPeriod"), false).toBool();
+  separatePeriods_ = settings.value(QStringLiteral("dx/separatePeriods"), false).toBool();
   maxSignals_ = settings.value(QStringLiteral("dx/maxSignals"), 0).toInt();
   if (maxSignals_ < 0)
     maxSignals_ = 0;
@@ -10130,6 +10350,7 @@ void MainWindow::applyDxOptions() {
 
 void MainWindow::refreshDecodeHeader() {
   auto* header = findChild<QLabel*>("decodeHeader");
+  auto* rxHeader = findChild<QLabel*>(QStringLiteral("rxFreqHeader"));
   if (!header)
     return;
   if (profile_ && mskMode(profile_->digitalMode())) {
@@ -10137,11 +10358,20 @@ void MainWindow::refreshDecodeHeader() {
                                QStringLiteral("DF"), QStringLiteral("Dist"), QStringLiteral("Message"),
                                QStringLiteral("Navg"), QStringLiteral("Bit err"), QStringLiteral("Eye"),
                                QStringLiteral("Freq"), showTime_, showFreq_, showDist_));
+    if (rxHeader)
+      rxHeader->setText(mskColumns(QStringLiteral("Time"), QStringLiteral("T"), QStringLiteral("dB"),
+                                   QStringLiteral("DF"), QString(), QStringLiteral("Message"),
+                                   QStringLiteral("Navg"), QStringLiteral("Bit err"), QStringLiteral("Eye"),
+                                   QStringLiteral("Freq"), showTime_, true, false));
     return;
   }
   header->setText(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"), QStringLiteral("DT"),
                                  QStringLiteral("Dist"), QStringLiteral("Message"), QStringLiteral("Freq"),
                                  showTime_, showFreq_, showDist_, markNeeded_, QStringLiteral("Need")));
+  if (rxHeader)
+    rxHeader->setText(decodeColumns(QStringLiteral("Time"), QStringLiteral("dB"), QStringLiteral("DT"),
+                                     QString(), QStringLiteral("Message"), QStringLiteral("Freq"), showTime_,
+                                     true, false));
 }
 
 void MainWindow::loadMacroStore() {

@@ -6,12 +6,12 @@
 ; resources/std.ico, used for Setup, the Start Menu, and the desktop shortcut.
 ;
 ; Build:  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\std.iss
-; Output: dist\STD-Setup-0.1.19.exe
+; Output: dist\STD-Setup-0.1.20.exe
 ;
 ; Keep AppVersion in sync with CMake project(VERSION) / STD_VERSION.
 
 #define AppName      "STD"
-#define AppVersion   "0.1.19"
+#define AppVersion   "0.1.20"
 #define AppPublisher "Rick Langford (N8SDR)"
 #define AppURL       "https://github.com/N8SDR1/STD"
 #define AppExe       "std.exe"

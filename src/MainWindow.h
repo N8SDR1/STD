@@ -293,8 +293,8 @@ private:
   void pushRealtimeTx();
   void stopUserTx(bool uncheck);
   void setTxStatus(const QString& text);
-  void loadReplyFromLine(int line);
-  void qsyDecodeLine(int line);
+  void loadReplyFromLine(int line, bool rxList = false);
+  void qsyDecodeLine(int line, bool rxList = false);
   void markWaterfallTx();
   void refreshTxFields();
   void refreshTxChrome();
@@ -412,6 +412,8 @@ private:
     int navg = 0;
     int bitErrors = 0;
     QString eye;
+    // A drawn line between periods. Not a decode, and a click does nothing.
+    bool gap = false;
   };
   // MSK extras arrive just before the matching decoded() line.
   QHash<QString, DecodeRow> mskPending_;
@@ -522,11 +524,15 @@ private:
   bool markNeeded_ = false;
   bool colorMyCall_ = true;
   QColor myCallColor_{0xE0, 0x40, 0xC8};
+  // MSHV's second list: lines on the RX marker, and lines that contain our call.
+  bool twoDecodeLists_ = false;
+  int rxFreqFrom_ = 0;
   mutable qint64 workedStamp_ = 0;
   mutable qint64 workedSize_ = -1;
   mutable bool workedLoading_ = false;
   mutable bool workedAgain_ = false;
   bool clearEachPeriod_ = false;
+  bool separatePeriods_ = false;
   int maxSignals_ = 0;
   QString lastPeriod_;
   float rxGain_ = 1.0f;
@@ -714,6 +720,7 @@ private:
   QString pendingUpdateUrl_;
   bool updateCheckManual_ = false;
   QVector<DecodeRow> shownDecodes_;
+  QVector<DecodeRow> shownRxDecodes_;
 };
 
 // QSO bar helpers (MainWindowQso.cpp).
