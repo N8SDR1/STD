@@ -16,7 +16,7 @@ The mode is the Mode menu. FT8 stays FT8. It is not collapsed to DIGU. Q65A is p
 
 The optional note is 40 characters. The server drops links and mentions. Discord does not show the note. The note is not a callsign.
 
-A band or mode change posts again after about 10 seconds. A refused post (the server says the fields are wrong) stops until you change something. A busy server or a dropped connection waits for the next heartbeat.
+The first post waits for the dial the radio reports, so the board never shows the band from your last session. A band or mode change posts again after about 10 seconds, and never sooner than 15 seconds after the last post. If the board says a post came too soon, STD posts again shortly. A refused post (the server says the fields are wrong) stops until you change something, and the QRV board window shows why. A dropped connection waits for the next heartbeat. For a fault report, start STD with STD_QRV_DEBUG=1 set; it writes each QRV step to qrv-debug.log in `%APPDATA%\N8SDR\STD`.
 
 ## Who is on
 

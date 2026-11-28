@@ -62,6 +62,7 @@ private:
   QTimer* heartbeatTimer_ = nullptr;
   QTimer* debounceTimer_ = nullptr;
   QTimer* rosterTimer_ = nullptr;
+  QTimer* retryTimer_ = nullptr;
 
   bool optIn_ = false;
   bool shareHz_ = false;
@@ -77,6 +78,7 @@ private:
   QString boundCall_;
   QString stationCall_;
   QString lastError_;
+  QString postError_;  // last heartbeat failure; a roster refresh must not hide it
   QString modeToken_;
   QString lastBand_;
   QString lastModeSent_;

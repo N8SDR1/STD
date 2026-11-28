@@ -15,7 +15,9 @@ namespace qrv {
 
 inline constexpr auto kDefaultApiBase = "https://qrvsdr.cc";
 inline constexpr auto kAppStd = "STD";
-inline constexpr int kMinPostIntervalMs = 10000;
+// The board refuses a second post from the same key inside 10 s, counted in
+// whole seconds, so an exact 10 s gap can be refused. 15 s stays clear.
+inline constexpr int kMinPostIntervalMs = 15000;
 inline constexpr int kHeartbeatPeriodMs = 25000;
 inline constexpr int kBandModeDebounceMs = 10000;
 inline constexpr int kRosterPeriodMs = 25000;
