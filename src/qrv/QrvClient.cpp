@@ -4,6 +4,10 @@
 #include "qrv/QrvClient.h"
 
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QStandardPaths>
+#include <QTextStream>
 #include <QEventLoop>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -35,6 +39,23 @@ bool selfTest() {
   return qEnvironmentVariableIsSet("STD_SELFTEST");
 }
 
+// STD_QRV_DEBUG=1 writes each QRV decision to qrv-debug.log in the STD data
+// folder, so a silent "not posting" can be traced.
+void qrvLog(const QString& line) {
+  static const bool on = qEnvironmentVariableIsSet("STD_QRV_DEBUG");
+  if (!on)
+    return;
+  static const QString path = [] {
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(dir);
+    return dir + QStringLiteral("/qrv-debug.log");
+  }();
+  QFile file(path);
+  if (!file.open(QIODevice::Append | QIODevice::Text))
+    return;
+  QTextStream(&file) << QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs) << ' ' << line << Qt::endl;
+}
+
 }  // namespace
 
 QrvClient::QrvClient(QObject* parent)
@@ -42,12 +63,15 @@ QrvClient::QrvClient(QObject* parent)
       nam_(new QNetworkAccessManager(this)),
       heartbeatTimer_(new QTimer(this)),
       debounceTimer_(new QTimer(this)),
-      rosterTimer_(new QTimer(this)) {
+      rosterTimer_(new QTimer(this)),
+      retryTimer_(new QTimer(this)) {
   heartbeatTimer_->setInterval(qrv::kHeartbeatPeriodMs);
   connect(heartbeatTimer_, &QTimer::timeout, this, [this] { maybeHeartbeat(false); });
   debounceTimer_->setSingleShot(true);
   debounceTimer_->setInterval(qrv::kBandModeDebounceMs);
   connect(debounceTimer_, &QTimer::timeout, this, [this] { maybeHeartbeat(true); });
+  retryTimer_->setSingleShot(true);
+  connect(retryTimer_, &QTimer::timeout, this, [this] { maybeHeartbeat(true); });
   rosterTimer_->setInterval(qrv::kRosterPeriodMs);
   connect(rosterTimer_, &QTimer::timeout, this, [this] { fetchRoster(); });
   load();
@@ -76,6 +100,7 @@ void QrvClient::persist() {
 void QrvClient::setError(const QString& error) {
   if (lastError_ == error)
     return;
+  qrvLog(QStringLiteral("error '%1' -> '%2'").arg(lastError_, error));
   lastError_ = error;
   emit lastErrorChanged();
 }
@@ -180,9 +205,13 @@ void QrvClient::setRosterWatching(bool on) {
 }
 
 void QrvClient::reconsider() {
+  qrvLog(QStringLiteral("reconsider optIn=%1 radio=%2 hold=%3 call=%4 mode=%5 hz=%6 band=%7 onAir=%8 inFlight=%9")
+             .arg(optIn_).arg(radioConnected_).arg(hold_).arg(stationCall_, modeToken_)
+             .arg(vfoHz_).arg(qrv::bandForHz(vfoHz_)).arg(onAir_).arg(inFlight_));
   if (!canPublish()) {
     heartbeatTimer_->stop();
     debounceTimer_->stop();
+    retryTimer_->stop();
     if (onAir_) {
       if (inFlight_)
         qrtAfterFlight_ = true;
@@ -219,18 +248,32 @@ qrv::HeartbeatRequest QrvClient::currentHeartbeat() const {
 }
 
 void QrvClient::maybeHeartbeat(bool force) {
-  if (!canPublish() || inFlight_ || selfTest())
+  if (!canPublish() || inFlight_ || selfTest()) {
+    qrvLog(QStringLiteral("maybeHeartbeat skip canPublish=%1 inFlight=%2 selfTest=%3")
+               .arg(canPublish()).arg(inFlight_).arg(selfTest()));
     return;
+  }
   const qint64 now = QDateTime::currentMSecsSinceEpoch();
-  if (!qrv::intervalElapsed(lastPostMs_, now, force ? qrv::kMinPostIntervalMs : qrv::kHeartbeatPeriodMs))
+  if (!qrv::intervalElapsed(lastPostMs_, now, force ? qrv::kMinPostIntervalMs : qrv::kHeartbeatPeriodMs)) {
+    qrvLog(QStringLiteral("maybeHeartbeat skip interval force=%1 sinceLast=%2ms").arg(force).arg(now - lastPostMs_));
+    // A band or mode change that comes too soon after the last post goes out
+    // as soon as the board allows, not at the next 25 s heartbeat.
+    if (force)
+      retryTimer_->start(int(qrv::kMinPostIntervalMs - (now - lastPostMs_)) + 250);
     return;
+  }
+  retryTimer_->stop();
   postHeartbeat();
 }
 
 void QrvClient::postHeartbeat() {
   const qrv::HeartbeatRequest request = currentHeartbeat();
-  if (request.call.isEmpty() || request.band.isEmpty() || request.mode.isEmpty() || selfTest())
+  if (request.call.isEmpty() || request.band.isEmpty() || request.mode.isEmpty() || selfTest()) {
+    qrvLog(QStringLiteral("postHeartbeat skip call=%1 band=%2 mode=%3").arg(request.call, request.band, request.mode));
     return;
+  }
+  qrvLog(QStringLiteral("POST heartbeat %1").arg(QString::fromUtf8(qrv::encodeHeartbeat(request))
+                                                     .replace(request.installKey, QStringLiteral("<key>"))));
   inFlight_ = true;
   lastPostMs_ = QDateTime::currentMSecsSinceEpoch();
   lastBand_ = request.band;
@@ -300,6 +343,9 @@ void QrvClient::onReplyFinished(QNetworkReply* reply, const QString& kind) {
 
   const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
   const QByteArray body = reply->readAll();
+  if (kind != QLatin1String("roster"))
+    qrvLog(QStringLiteral("reply %1 http=%2 net=%3 body=%4")
+               .arg(kind).arg(status).arg(int(reply->error())).arg(QString::fromUtf8(body.left(300))));
   if (kind == QLatin1String("roster")) {
     qrv::Roster parsed = qrv::parseRosterResponse(body, status);
     if (reply->error() != QNetworkReply::NoError && !parsed.ok && parsed.error.isEmpty())
@@ -307,9 +353,9 @@ void QrvClient::onReplyFinished(QNetworkReply* reply, const QString& kind) {
     else if (!parsed.ok && parsed.error.isEmpty())
       parsed.error = QStringLiteral("QRV unavailable");
     if (parsed.ok)
-      setError(QString());
+      setError(postError_);
     else if (!parsed.error.isEmpty())
-      setError(parsed.error);
+      setError(postError_.isEmpty() ? parsed.error : postError_);
     roster_ = parsed;
     emit rosterChanged();
     return;
@@ -328,6 +374,7 @@ void QrvClient::onReplyFinished(QNetworkReply* reply, const QString& kind) {
         boundCall_ = qrv::normalizeCall(stationCall_);
         persist();
       }
+      postError_.clear();
       setError(QString());
       if (qrtAfterFlight_ || !canPublish()) {
         qrtAfterFlight_ = false;
@@ -352,7 +399,15 @@ void QrvClient::onReplyFinished(QNetworkReply* reply, const QString& kind) {
           emit onAirChanged();
         }
       }
-      setError(parsed.error.isEmpty() ? QStringLiteral("QRV unavailable") : parsed.error);
+      if (parsed.error == QLatin1String("rate_limited") || status == 429) {
+        // Posted too soon after the last one: try again once the board allows.
+        postError_ = QStringLiteral("QRV board said too soon; posting again shortly.");
+        if (!stop && canPublish())
+          retryTimer_->start(qrv::kMinPostIntervalMs);
+      } else {
+        postError_ = parsed.error.isEmpty() ? QStringLiteral("QRV unavailable") : parsed.error;
+      }
+      setError(postError_);
     }
     return;
   }

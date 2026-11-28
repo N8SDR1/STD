@@ -5876,7 +5876,7 @@ void MainWindow::showGuide() {
       {"Clock check",
        "The clock check watches the DT of the FT8, FT4, and FT2 decodes. When the middle of the last few minutes of them is off by more than 1 s in FT8, 0.5 s in FT4, or 0.3 s in FT2, the status bar shows Clock 1.3 s fast (or slow) and the status line says so once. It needs eight decodes from two periods, and a few stations far off do not move it. STD does not change the clock: sync it with Windows time, Meinberg NTP, or BktTimeSync. It does not key."},
       {"QRV",
-       "Options → Network Configuration → QRV is Off until On is selected. On tells qrvsdr.cc that this station is QRV: the callsign from Options → User, the band, and the Mode menu (FT8 stays FT8). It posts only while the radio is connected, about every 25 seconds, and sends QRT when you turn it off, disconnect, or quit. Share exact frequency is off until ticked; off, the board shows the band only. The optional note is 40 characters, and the server drops links and mentions. Options → QRV board lists who is on: call, app, band, mode, and Hz when a station shared it. Q65A is posted as Q65 and SSTV as SSTV. RADE, WEFAX-576, and Q65B are not on the board. The callsign is not asked for again. It does not key, and START is never sent."},
+       "Options → Network Configuration → QRV is Off until On is selected. On tells qrvsdr.cc that this station is QRV: the callsign from Options → User, the band, and the Mode menu (FT8 stays FT8). It posts only while the radio is connected, about every 25 seconds, and sends QRT when you turn it off, disconnect, or quit. Share exact frequency is off until ticked; off, the board shows the band only. The optional note is 40 characters, and the server drops links and mentions. Options → QRV board lists who is on: call, app, band, mode, and Hz when a station shared it. Q65A is posted as Q65 and SSTV as SSTV. RADE, WEFAX-576, and Q65B are not on the board. The first post waits for the dial the radio reports. A band or mode change posts again after about 10 seconds, never sooner than 15 seconds after the last post; if the board says too soon, STD posts again shortly, and the QRV board window shows why a post was refused. STD_QRV_DEBUG=1 writes each QRV step to qrv-debug.log in %APPDATA%\\N8SDR\\STD for a fault report. The callsign is not asked for again. It does not key, and START is never sent."},
       {"Fox and Hound",
        "Super Hound or Super Fox, on the mode bar, sets 40 m to 7.056 MHz DIGU and moves the RX marker "
        "to 750 Hz. That is the fox. It is still 15 second FT8. TX FIRST and TX SECOND only remember a "
@@ -11456,7 +11456,9 @@ void MainWindow::syncQrv() {
     return;
   qrv_->setStationCall(stationCall());
   qrv_->setRadioConnected(tci_ && tci_->isOpen());
-  const qint64 hz = liveDialHz_ > 100000 ? liveDialHz_ : (profile_ ? profile_->dialHz() : 0);
+  // Post only the dial the radio reports. The saved band from the last session
+  // would put the wrong band on the board until the real dial arrived.
+  const qint64 hz = liveDialHz_ > 100000 ? liveDialHz_ : 0;
   qrv_->setActivity(hz, profile_ ? profile_->digitalMode() : QString());
 }
 
