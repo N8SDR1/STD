@@ -840,6 +840,7 @@ int shellReady(MainWindow& window) {
                            "decodeDepthDeep",  "timeSync",     "macrosEdit",      "userSettings",
                            "networkConfig", "contestTags",
                            "listShowTime",     "listShowFreq", "listClearPeriod", "colorMyCall",
+                           "twoDecodeLists",
                            "myCallColor",      "logAuto",
                            "logPrompt",        "logFileDialog",   "aseqMostDistant", "txConfirm73",
                            "autoResetQso"};
