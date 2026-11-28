@@ -3129,12 +3129,17 @@ int shellReady(MainWindow& window) {
       if (!action)
         return fail("an FT list mode is missing");
       action->trigger();
-      if (header->parentWidget() != listHost || list->parentWidget() != listHost ||
-          !listHost->isVisibleTo(&window) || !header->isVisibleTo(&window) ||
+      // The band list and the RX Frequency list share decodeList. The titles
+      // and the rows stay together in the band side of that split.
+      const bool underTitles = header->parentWidget() && list->parentWidget() == header->parentWidget() &&
+                               listHost->isAncestorOf(header) && listHost->isAncestorOf(list);
+      if (!underTitles || !listHost->isVisibleTo(&window) || !header->isVisibleTo(&window) ||
           !list->isVisibleTo(&window) || !filter->isVisibleTo(&window) ||
           !clear->isVisibleTo(&window) || (split && split->isVisibleTo(&window)))
         return fail("FT decode rows are not under the column titles");
     }
+    if (!window.findChild<QPlainTextEdit*>(QStringLiteral("receiveRxFreq")))
+      return fail("the RX Frequency list is missing");
     auto* rttyMode = window.findChild<QAction*>(QStringLiteral("modeRtty"));
     if (!rttyMode)
       return fail("RTTY mode action is missing");
